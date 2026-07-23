@@ -2,9 +2,13 @@ import { app, BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { registerIpc } from './ipc/registerIpc';
+import { PiRuntimeService } from './pi/PiRuntimeService';
+import { ProjectService } from './projects/ProjectService';
 import { secureWebPreferences } from './security/windowOptions';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
+const runtime = new PiRuntimeService();
+const projects = new ProjectService();
 let mainWindow: BrowserWindow | null = null;
 
 function createWindow(): BrowserWindow {
@@ -57,11 +61,15 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
-  registerIpc();
+  registerIpc({ runtime, projects });
   mainWindow = createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  void runtime.dispose();
 });
 
 app.on('window-all-closed', () => {

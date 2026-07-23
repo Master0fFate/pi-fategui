@@ -10,6 +10,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { IconButton } from '../../components/IconButton';
+import { useRuntimeStore } from '../../stores/runtimeStore';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -23,6 +24,14 @@ const navigation = [
 ];
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+  const runtime = useRuntimeStore((state) => state.runtime);
+  const setRuntime = useRuntimeStore((state) => state.setRuntime);
+  const selectProject = () => {
+    if ('piDesktop' in window) void window.piDesktop.selectProject().then(setRuntime);
+  };
+  const newSession = () => {
+    if ('piDesktop' in window) void window.piDesktop.newSession().then(setRuntime);
+  };
   return (
     <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`} aria-label="Primary navigation">
       <div className="window-drag-region" />
@@ -31,7 +40,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {!collapsed && (
           <div className="brand-copy">
             <strong>Pi Desktop</strong>
-            <span>No project open</span>
+            <span>{runtime.project?.name ?? 'No project open'}</span>
           </div>
         )}
         <IconButton label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={onToggle}>
@@ -40,11 +49,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </div>
 
       {!collapsed && (
-        <button className="primary-button" type="button">
+        <button className="primary-button" type="button" onClick={selectProject}>
           <FolderOpen size={16} /> Open project
         </button>
       )}
-      <button className={`new-session ${collapsed ? 'icon-only' : ''}`} type="button" disabled>
+      <button className={`new-session ${collapsed ? 'icon-only' : ''}`} type="button" disabled={runtime.status !== 'ready'} onClick={newSession}>
         <MessageSquarePlus size={17} />
         {!collapsed && 'New session'}
       </button>
@@ -65,11 +74,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         ))}
       </nav>
 
-      {!collapsed && (
+      {!collapsed && runtime.sessionId === null && (
         <div className="empty-sessions">
           <FileText size={19} />
           <p>No sessions yet</p>
-          <span>Open a project to start working with Pi.</span>
+          <span>{runtime.status === 'auth-required' ? 'Authenticate with the Pi CLI, then reopen this project.' : 'Open a project to start working with Pi.'}</span>
         </div>
       )}
 

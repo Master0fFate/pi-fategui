@@ -1,5 +1,7 @@
 confirmModulesPurge: false
 allowBuilds:
+  '@google/genai': false
   electron: true
   esbuild: true
   node-pty: true
+  protobufjs: false

@@ -10,10 +10,10 @@ export default defineConfig({
     },
     outDir: path.resolve('dist/main'),
     emptyOutDir: true,
-    target: 'node20',
+    target: 'node22',
     minify: false,
     rollupOptions: {
-      external: ['electron', 'node:path', 'node:url'],
+      external: (id) => id === 'electron' || id.startsWith('node:') || id === '@earendil-works/pi-coding-agent',
     },
   },
 });

@@ -9,6 +9,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { IconButton } from '../../components/IconButton';
+import { useRuntimeStore } from '../../stores/runtimeStore';
 
 interface InspectorProps {
   onCollapse: () => void;
@@ -28,6 +29,7 @@ const emptyStates = {
 };
 
 export function Inspector({ onCollapse }: InspectorProps) {
+  const runtime = useRuntimeStore((state) => state.runtime);
   return (
     <aside className="inspector" aria-label="Project inspector">
       <div className="inspector-heading">
@@ -58,11 +60,11 @@ export function Inspector({ onCollapse }: InspectorProps) {
         })}
         <Tabs.Content value="context" className="tab-content">
           <div className="context-list">
-            <div><span>Project</span><strong>Not selected</strong></div>
-            <div><span>Agent</span><strong>Not connected</strong></div>
-            <div><span>Model</span><strong>—</strong></div>
-            <div><span>Thinking</span><strong>—</strong></div>
-            <div className="trust-row"><ShieldCheck size={16} /><span>Project trust starts after selection</span></div>
+            <div><span>Project</span><strong>{runtime.project?.name ?? 'Not selected'}</strong></div>
+            <div><span>Agent</span><strong>{runtime.status}</strong></div>
+            <div><span>Model</span><strong>{runtime.model?.name ?? '—'}</strong></div>
+            <div><span>Thinking</span><strong>{runtime.thinkingLevel}</strong></div>
+            <div className="trust-row"><ShieldCheck size={16} /><span>{runtime.project?.trusted ? `Trusted · ${runtime.project.path}` : 'Project trust starts after selection'}</span></div>
           </div>
         </Tabs.Content>
       </Tabs.Root>

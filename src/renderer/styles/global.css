@@ -120,10 +120,14 @@ body.is-resizing { cursor: col-resize; user-select: none; }
 .workspace-header .eyebrow { color: #606a80; font-size: 9px; font-weight: 700; letter-spacing: 0.13em; }
 .workspace-header strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .session-controls { display: flex; align-items: center; gap: 9px; -webkit-app-region: no-drag; }
-.model-button { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 7px; color: #646d80; background: #121620; font-size: 11px; }
+.model-button, .model-select { display: flex; align-items: center; max-width: 170px; gap: 6px; padding: 6px 8px; border: 1px solid #242938; border-radius: 7px; color: #a3abbd; background: #121620; font-size: 11px; }
 .model-button span { color: #8991a4; }
+.model-select:disabled { color: #646d80; }
+.thinking-select { max-width: 95px; text-transform: capitalize; }
 .connection-state { display: flex; align-items: center; gap: 7px; color: #929aae; font-size: 11px; }
 .connection-state i { width: 7px; height: 7px; border-radius: 50%; background: #d2a94b; box-shadow: 0 0 0 3px rgba(210,169,75,.09); }
+.connection-state--ready i { background: #68bb8c; box-shadow: 0 0 0 3px rgba(104,187,140,.09); }
+.connection-state--error i, .connection-state--auth-required i { background: #d87373; }
 
 .welcome { display: flex; align-items: center; flex: 1; min-height: 0; padding: 34px clamp(24px, 5vw, 78px); flex-direction: column; overflow: auto; }
 .welcome-copy { margin-top: auto; text-align: center; }
@@ -161,6 +165,20 @@ body.is-resizing { cursor: col-resize; user-select: none; }
 .send-button { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: white; background: #7162e9; cursor: pointer; }
 .send-button:disabled { color: #737b90; background: #282d3b; }
 .composer-caption { margin: 9px 0 auto; color: #5d667a; font-size: 10px; }
+.runtime-notice { display: flex; width: min(100%, 680px); margin-top: 20px; padding: 12px 14px; flex-direction: column; gap: 5px; border: 1px solid #574731; border-radius: 9px; color: #d8c69f; background: #1d1915; font-size: 11px; }
+.runtime-notice span { color: #9f9279; line-height: 1.45; }
+.welcome--conversation { align-items: stretch; padding-top: 18px; }
+.conversation { display: flex; width: min(100%, 820px); margin: 0 auto; flex: 1; min-height: 120px; flex-direction: column; gap: 17px; overflow: auto; }
+.chat-message { max-width: 88%; padding: 11px 14px; border: 1px solid #272c3a; border-radius: 10px; background: #121620; }
+.chat-message--user { align-self: flex-end; background: #1e1c35; border-color: #38345b; }
+.chat-message > span { display: block; margin-bottom: 6px; color: #777f93; font-size: 10px; font-weight: 650; text-transform: uppercase; }
+.chat-message pre { margin: 0; color: #d8dbe5; font: 12px/1.55 ui-sans-serif, system-ui, sans-serif; white-space: pre-wrap; word-break: break-word; }
+.chat-message details { margin: 0 0 9px; color: #7f879a; font-size: 11px; }
+.chat-message summary { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.chat-message details pre { max-height: 180px; margin-top: 7px; overflow: auto; color: #8d95a8; font-size: 11px; }
+.welcome--conversation .composer { margin: 18px auto 0; }
+.welcome--conversation .composer-caption { margin-inline: auto; }
+.stop-button { color: #f1b3b3; background: #44272e; }
 
 .inspector { grid-column: 5; display: flex; flex-direction: column; border-left: 1px solid rgba(45,50,66,.55); overflow: hidden; }
 .inspector-heading { display: flex; align-items: flex-end; justify-content: space-between; flex: 0 0 62px; padding: 0 14px 7px 17px; -webkit-app-region: drag; }
