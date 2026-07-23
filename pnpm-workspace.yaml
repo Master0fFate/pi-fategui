@@ -1,0 +1,5 @@
+confirmModulesPurge: false
+allowBuilds:
+  electron: true
+  esbuild: true
+  node-pty: true
