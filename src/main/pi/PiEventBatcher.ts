@@ -64,6 +64,14 @@ export class PiEventBatcher {
     this.pendingBytes = 0;
   }
 
+  /** Drop queued events without emitting them (used at session generation boundaries). */
+  clear(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    this.pending = [];
+    this.pendingBytes = 0;
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.flush();

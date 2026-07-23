@@ -20,18 +20,23 @@ import type {
   PromptInput,
   RuntimeMessage,
   RuntimeState,
+  SessionSummary,
   ThinkingLevel,
 } from '../../shared/contracts/ipc';
 import { PiEventBatcher } from './PiEventBatcher';
 import { PiEventNormalizer, messageText } from './PiEventNormalizer';
 import { PiDesktopError, authRequiredError, normalizeError } from './errors';
+import { PiSessionRepository } from './PiSessionRepository';
 
 export interface PiSdkAdapter {
+  supportsClone?: boolean;
   createModelRuntime: () => Promise<ModelRuntime>;
   createRuntime: (cwd: string, modelRuntime: ModelRuntime) => Promise<AgentSessionRuntime>;
 }
 
 const realPiSdkAdapter: PiSdkAdapter = {
+  // Verified against SDK 0.81.1: clone is runtime.fork(currentLeaf, { position: 'at' }).
+  supportsClone: true,
   createModelRuntime: () => ModelRuntime.create(),
   async createRuntime(cwd, modelRuntime) {
     const factory: CreateAgentSessionRuntimeFactory = async ({ cwd: effectiveCwd, sessionManager, sessionStartEvent }) => {
@@ -93,8 +98,16 @@ export class PiRuntimeService {
   private readonly batcher: PiEventBatcher;
   private readonly normalizer = new PiEventNormalizer(() => this.activeRunId);
   private initialization = 0;
+  private sessionGeneration = 0;
+  private sessionInvalidated = false;
+  private sessions: SessionSummary[] = [];
+  private replacementQueue: Promise<void> = Promise.resolve();
+  private replacementActive = false;
 
-  constructor(private readonly adapter: PiSdkAdapter = realPiSdkAdapter) {
+  constructor(
+    private readonly adapter: PiSdkAdapter = realPiSdkAdapter,
+    private readonly sessionRepository = new PiSessionRepository(),
+  ) {
     this.batcher = new PiEventBatcher((events) => this.eventSink(events));
   }
 
@@ -120,6 +133,19 @@ export class PiRuntimeService {
       thinkingLevel: session?.thinkingLevel ?? 'medium',
       messages,
       commands: session?.promptTemplates?.map((command) => ({ name: command.name, description: command.description ?? '' })) ?? [],
+      sessions: this.sessions,
+      branches: session ? this.sessionRepository.branches(session) : [],
+      forkPoints: session && typeof session.getUserMessagesForForking === 'function' ? session.getUserMessagesForForking() : [],
+      sessionCapabilities: {
+        fork: typeof this.runtime?.fork === 'function',
+        clone: this.adapter.supportsClone === true
+          && typeof this.runtime?.fork === 'function'
+          && typeof session?.sessionManager?.getLeafId === 'function'
+          && Boolean(session.sessionManager.getLeafId()),
+        import: typeof this.runtime?.importFromJsonl === 'function',
+        compact: typeof session?.compact === 'function',
+      },
+      sessionOperation: this.replacementActive,
       error: this.stateError,
     };
   }
@@ -129,6 +155,7 @@ export class PiRuntimeService {
     await this.disposeRuntime();
     this.project = project;
     this.models = [];
+    this.sessions = [];
     this.stateError = null;
     if (!project.trusted) {
       this.status = 'disconnected';
@@ -157,8 +184,14 @@ export class PiRuntimeService {
         return this.getState();
       }
       this.runtime = runtime;
-      runtime.setRebindSession(async (session) => this.bindSession(session));
-      await this.bindSession(runtime.session);
+      runtime.setBeforeSessionInvalidate?.(() => this.invalidateSession());
+      runtime.setRebindSession(async (session) => {
+        await this.replaceSession(session);
+        await this.refreshSessions();
+        this.emitState();
+      });
+      await this.replaceSession(runtime.session);
+      await this.refreshSessions();
       const available = await modelRuntime.getAvailable();
       this.models = available.map(toModelInfo);
       this.status = available.length > 0 ? 'ready' : 'auth-required';
@@ -179,6 +212,7 @@ export class PiRuntimeService {
 
   prompt(input: PromptInput): Promise<PromptAcceptance> {
     const session = this.requireSession();
+    const generation = this.sessionGeneration;
     const runId = randomUUID();
     const images = input.images?.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType }));
     if (images?.length && !session.model?.input.includes('image')) {
@@ -196,6 +230,10 @@ export class PiRuntimeService {
       const accept = (accepted: boolean) => {
         if (settled) return;
         settled = true;
+        if (generation !== this.sessionGeneration) {
+          resolve({ accepted: false, runId });
+          return;
+        }
         if (accepted) this.batcher.enqueue({ type: 'run.accepted', runId, timestamp: Date.now() });
         else this.emitError({ code: 'INVALID_REQUEST', message: 'Pi rejected the prompt before starting.', retryable: true });
         resolve({ accepted, runId });
@@ -205,10 +243,12 @@ export class PiRuntimeService {
         ...(input.behavior === 'prompt' ? {} : { streamingBehavior: input.behavior }),
         preflightResult: accept,
       }).catch((error: unknown) => {
+        if (generation !== this.sessionGeneration) return;
         const normalized = normalizeError(error);
         if (!settled) accept(false);
         this.emitError(normalized);
       }).finally(() => {
+        if (generation !== this.sessionGeneration) return;
         if (ownsActiveRun && this.activeRunId === runId) this.activeRunId = null;
         this.emitState();
       });
@@ -239,9 +279,57 @@ export class PiRuntimeService {
     return this.getState();
   }
 
-  async newSession(): Promise<RuntimeState> {
-    if (!this.runtime) this.requireSession();
-    await this.runtime!.newSession();
+  newSession(): Promise<RuntimeState> {
+    return this.runReplacement(async (runtime) => {
+      await runtime.newSession();
+    });
+  }
+
+  async listSessions(query = ''): Promise<SessionSummary[]> {
+    if (!this.project || !this.runtime) return [];
+    return this.sessionRepository.list(this.project.path, this.runtime.session.sessionId, query);
+  }
+
+  switchSession(sessionId: string): Promise<RuntimeState> {
+    return this.runReplacement(async (runtime) => {
+      const session = await this.sessionRepository.resolve(this.project!.path, sessionId);
+      if (!session) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The selected session no longer exists.', retryable: true });
+      if (!session.active) await runtime.switchSession(session.path);
+    });
+  }
+
+  forkSession(entryId: string): Promise<RuntimeState> {
+    return this.runReplacement(async (runtime) => {
+      if (typeof runtime.fork !== 'function') throw this.unsupported('Session branching');
+      const points = runtime.session.getUserMessagesForForking?.() ?? [];
+      if (!points.some((point) => point.entryId === entryId)) {
+        throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'That branch point is not part of the active session.', retryable: true });
+      }
+      await runtime.fork(entryId);
+    });
+  }
+
+  cloneSession(): Promise<RuntimeState> {
+    return this.runReplacement(async (runtime) => {
+      if (this.adapter.supportsClone !== true || typeof runtime.fork !== 'function') throw this.unsupported('Session cloning');
+      const leafId = runtime.session.sessionManager?.getLeafId?.();
+      if (!leafId) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The current session has no conversation to clone.', retryable: true });
+      await runtime.fork(leafId, { position: 'at' });
+    });
+  }
+
+  importSession(filePath: string): Promise<RuntimeState> {
+    return this.runReplacement(async (runtime) => {
+      if (typeof runtime.importFromJsonl !== 'function') throw this.unsupported('Session import');
+      await runtime.importFromJsonl(filePath, this.project!.path);
+    });
+  }
+
+  async compact(instructions?: string): Promise<RuntimeState> {
+    const session = this.requireSession();
+    if (typeof session.compact !== 'function') throw this.unsupported('Context compaction');
+    await session.compact(instructions);
+    await this.refreshSessions();
     this.emitState();
     return this.getState();
   }
@@ -252,18 +340,40 @@ export class PiRuntimeService {
     this.batcher.dispose();
   }
 
-  private async bindSession(session: AgentSession): Promise<void> {
+  private invalidateSession(): void {
     this.unsubscribeSession?.();
     this.unsubscribeSession = null;
+    ++this.sessionGeneration;
+    this.sessionInvalidated = true;
+    this.activeRunId = null;
+    this.normalizer.resetSession();
+    this.batcher.clear();
+  }
+
+  private async replaceSession(session: AgentSession): Promise<void> {
+    // Real AgentSessionRuntime calls beforeSessionInvalidate synchronously. The
+    // fallback keeps custom/test adapters equally safe if they only rebind.
+    if (!this.sessionInvalidated) this.invalidateSession();
+    const generation = this.sessionGeneration;
     await session.bindExtensions({});
+    if (generation !== this.sessionGeneration || this.runtime?.session !== session) return;
     this.unsubscribeSession = session.subscribe((event: AgentSessionEvent) => {
+      if (generation !== this.sessionGeneration || this.runtime?.session !== session) return;
       const normalizedEvents = this.normalizer.normalize(event);
       for (const normalizedEvent of normalizedEvents) {
         if (normalizedEvent.type === 'error') this.stateError = normalizedEvent.error;
       }
       this.batcher.enqueueMany(normalizedEvents);
       if (event.type === 'agent_start' || event.type === 'agent_end' || event.type === 'thinking_level_changed') this.emitState();
+      if (event.type === 'agent_end' || event.type === 'session_info_changed') {
+        void this.refreshSessions().then(() => {
+          if (generation === this.sessionGeneration) this.emitState();
+        }).catch((error: unknown) => {
+          if (generation === this.sessionGeneration) this.emitError(normalizeError(error));
+        });
+      }
     });
+    this.sessionInvalidated = false;
   }
 
   private requireSession(): AgentSession {
@@ -272,6 +382,59 @@ export class PiRuntimeService {
       throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open and trust a project before using Pi.', retryable: true });
     }
     return this.runtime.session;
+  }
+
+  private requireRuntimeForReplacement(): AgentSessionRuntime {
+    if (!this.runtime) this.requireSession();
+    if (this.runtime!.session.isStreaming) {
+      throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Stop the active run before replacing this session.', retryable: true });
+    }
+    return this.runtime!;
+  }
+
+  private runReplacement(operation: (runtime: AgentSessionRuntime) => Promise<void>): Promise<RuntimeState> {
+    const execute = async (): Promise<RuntimeState> => {
+      const runtime = this.requireRuntimeForReplacement();
+      this.replacementActive = true;
+      this.stateError = null;
+      this.emitState();
+      let failure: AppError | null = null;
+      try {
+        await operation(runtime);
+        await this.refreshSessions();
+        this.status = this.models.length > 0 ? 'ready' : 'auth-required';
+      } catch (error) {
+        failure = error instanceof PiDesktopError ? error.normalized : normalizeError(error);
+        this.status = 'error';
+        this.emitError(failure);
+      } finally {
+        this.replacementActive = false;
+        this.emitState();
+      }
+      if (failure) throw new PiDesktopError(failure);
+      return this.getState();
+    };
+    const result = this.replacementQueue.then(execute, execute);
+    this.replacementQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private unsupported(feature: string): PiDesktopError {
+    return new PiDesktopError({ code: 'INVALID_REQUEST', message: `${feature} is not supported by this Pi SDK version.`, retryable: false });
+  }
+
+  private async refreshSessions(): Promise<void> {
+    if (!this.project || !this.runtime) {
+      this.sessions = [];
+      return;
+    }
+    const generation = this.sessionGeneration;
+    const runtime = this.runtime;
+    const projectPath = this.project.path;
+    const sessions = await this.sessionRepository.list(projectPath, runtime.session.sessionId);
+    if (generation === this.sessionGeneration && this.runtime === runtime && this.project?.path === projectPath) {
+      this.sessions = sessions;
+    }
   }
 
   private emitState(): void {
@@ -291,10 +454,10 @@ export class PiRuntimeService {
   }
 
   private async disposeRuntime(): Promise<void> {
-    this.unsubscribeSession?.();
-    this.unsubscribeSession = null;
+    this.invalidateSession();
     if (this.runtime) await this.runtime.dispose();
     this.runtime = null;
     this.activeRunId = null;
+    this.sessions = [];
   }
 }

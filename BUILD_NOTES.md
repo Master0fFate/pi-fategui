@@ -5,6 +5,7 @@
 - Phase 1 / f1: Electron + Vite + React + Tailwind foundation, secure preload, typed IPC, three-pane shell, tests, and packaging configuration.
 - Phase 2 / f2: canonical project selection and explicit trust, real project-bound Pi `AgentSessionRuntime`, existing Pi authentication/model discovery, prompt preflight acceptance, streamed text/reasoning/tool events, stop, model/thinking/session state, normalized errors, and bounded IPC batching.
 - Phase 3 / f3: entity-indexed conversation/tool state, 5,000-entry virtualized timeline and tool history, streamed message/reasoning/error/compaction rows, structured bounded live tool cards, and a multiline composer with real send/stop/steer/follow-up, prompt-template slash suggestions, file references, and model-gated image attachments.
+- Phase 4 / f4: persistent project session repository, list/search/new/switch, SDK-gated fork/clone/import/compact actions, active branch display, and generation-safe runtime replacement subscriptions.
 
 ## Decisions
 
@@ -18,10 +19,13 @@
 - Conversation IDs and entities are stored separately so deltas preserve unrelated entity and order references. `react-virtuoso` renders both conversation and inspector tool history; live tool output is bounded to 64,000 characters with head/tail context.
 - Image controls are enabled only when Pi's active model declares `image` input. Renderer image data is validated by the typed prompt contract and passed to the SDK's real `images` option; up to four supported images are held only in composer-local state.
 - File references use a main-process native picker rooted at the active project. The selected path is canonicalized, confined to that project, reduced to a relative path, and inserted into the prompt; the renderer receives no filesystem capability.
+- Persistent session metadata is projected from Pi's `SessionManager`; switching resolves renderer-provided IDs against the current project's repository rather than accepting renderer file paths. Import uses a main-process native JSONL picker.
+- Every session invalidation synchronously unsubscribes, advances a monotonic generation, resets normalizer session state, and clears queued IPC events. Rebound callbacks capture the generation and session identity, so late events from disposed sessions are ignored. Replacement operations are serialized; failures move the runtime to a visible recoverable error state.
 
 ## Current limitations
 
-- Session creation is implemented, but saved-session listing/switching/forking UI remains for the sessions slice.
+- Fork and import controls are intentionally absent when the active Pi SDK runtime does not expose their methods. Clone is enabled only for the verified SDK adapter and uses the current session leaf with `{ position: "at" }`; fork uses a selected user-message branch point.
+- Replacement race, failure, capability, and stale-event coverage is deterministic adapter integration coverage. A live SDK replacement smoke remains a manual/release verification step because it depends on real Pi resources and persisted sessions.
 - Terminal, file tree, and Git actions remain future slices.
 - Slash suggestions currently expose Pi file-based prompt templates. The SDK session handles extension commands too, but does not expose its bound extension command registry through the public `AgentSession` API, so undiscoverable extension commands can be typed but are not suggested.
 - Packaging is unsigned and uses generated default application artwork.
@@ -35,12 +39,13 @@
 5. Select a trusted repository. Confirm model and thinking controls populate from the real Pi runtime.
 6. Send a prompt and confirm text/reasoning streams and tool cards update in the timeline and Tools inspector; expand a tool to inspect bounded output.
 7. During a run, verify Stop, Steer, and Follow up. Type `/` to inspect discovered prompt templates and use the file-reference button.
-8. With an image-capable model, attach a PNG/JPEG/GIF/WebP and send it; confirm the image action is disabled for text-only models.
-9. If authentication is absent, run the Pi CLI, enter `/login`, then reopen the project.
-10. Run `pnpm typecheck`, `pnpm test`, `pnpm build`, and `pnpm smoke`.
+8. Create two sessions, search and switch between them, then restart Pi Desktop and confirm both remain listed. Verify fork/clone/import/compact actions and branch rows where supported.
+9. With an image-capable model, attach a PNG/JPEG/GIF/WebP and send it; confirm the image action is disabled for text-only models.
+10. If authentication is absent, run the Pi CLI, enter `/login`, then reopen the project.
+11. Run `pnpm typecheck`, `pnpm test`, `pnpm build`, and `pnpm smoke`.
 
 ## Pi API discrepancies
 
 - SDK 0.81.1 was verified from installed types and docs. `prompt()` uses `preflightResult` because its returned promise intentionally settles only after the complete run.
-- `AgentSessionRuntime` replacement subscriptions and extension bindings are rebound through `setRebindSession`; switch/fork/import commands are not exposed until their dedicated UI slice.
+- `AgentSessionRuntime` replacement subscriptions and extension bindings are rebound through `setBeforeSessionInvalidate` and `setRebindSession`; switch/new/fork/clone/import all use that SDK-owned replacement lifecycle.
 - Project-bound runtime services are created before model availability is evaluated so trusted project extensions can register providers. A no-credential project still initializes its runtime, then reports the exact `/login` recovery step.

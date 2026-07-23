@@ -53,6 +53,10 @@ export class PiEventNormalizer {
 
   constructor(private readonly runId: () => string | null) {}
 
+  resetSession(): void {
+    this.activeAssistantId = null;
+  }
+
   normalize(event: AgentSessionEvent): PiEvent[] {
     const now = timestamp();
     switch (event.type) {

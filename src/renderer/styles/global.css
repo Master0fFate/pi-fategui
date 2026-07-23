@@ -89,6 +89,22 @@ button:disabled { cursor: not-allowed; }
   border: 1px solid #252a38; border-radius: 7px; color: #666f84; background: #0c0f17;
 }
 .session-search input { width: 100%; border: 0; outline: 0; color: #9ca4b8; background: transparent; font-size: 12px; }
+.session-list { display: flex; max-height: 220px; gap: 3px; margin-top: 9px; flex-direction: column; overflow-y: auto; }
+.session-list button { display: flex; min-height: 45px; padding: 7px 9px; flex-direction: column; justify-content: center; border-radius: 7px; color: #99a1b4; background: transparent; cursor: pointer; text-align: left; }
+.session-list button:hover, .session-list button.active { color: #ddd9ff; background: #1a1d2b; }
+.session-list button:disabled { cursor: default; }
+.session-list span, .session-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-list span { font-size: 12px; }
+.session-list small { margin-top: 3px; color: #626b80; font-size: 9px; }
+.session-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 9px; }
+.session-actions button { display: flex; align-items: center; justify-content: center; min-height: 29px; gap: 5px; border: 1px solid #272c3a; border-radius: 6px; color: #8f98ab; background: #131722; cursor: pointer; font-size: 10px; }
+.session-actions button:hover { color: #d9dce7; background: #1a1f2d; }
+.session-actions button:disabled { opacity: .45; }
+.branch-list { min-height: 0; margin-top: 13px; overflow-y: auto; }
+.branch-list > strong { display: block; margin: 0 6px 6px; color: #646d82; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }
+.branch-list div { display: flex; align-items: center; height: 24px; gap: 5px; color: #626b7f; font-size: 10px; }
+.branch-list div.active { color: #aaa1ef; }
+.branch-list div span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-list { display: flex; flex-direction: column; gap: 3px; margin-top: 16px; }
 .nav-list button, .sidebar-footer button {
   display: flex; align-items: center; gap: 11px; width: 100%; height: 38px; padding: 0 11px;
@@ -98,7 +114,7 @@ button:disabled { cursor: not-allowed; }
 .nav-list button:hover, .sidebar-footer button:hover { color: #d9dce7; background: #171b26; }
 .nav-list button.active { color: #c5bdff; background: #1a1d2b; }
 .nav-list button.active svg { color: #8272ff; }
-.empty-sessions { margin: auto 8px; color: #5d667a; text-align: center; }
+.empty-sessions { margin: auto 8px; padding-top: 12px; color: #5d667a; text-align: center; }
 .empty-sessions svg { margin: 0 auto 7px; }
 .empty-sessions p { margin: 0 0 4px; color: #939caf; font-size: 12px; }
 .empty-sessions span { display: block; font-size: 11px; line-height: 1.5; }

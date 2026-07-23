@@ -15,6 +15,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
   const entryCount = useRuntimeStore((state) => state.timelineOrder.length);
   const lastError = useRuntimeStore((state) => state.lastError);
   const connected = runtime.status === 'ready';
+  const activeSession = runtime.sessions?.find((session) => session.active);
 
   const openProject = () => {
     if ('piDesktop' in window) void window.piDesktop.selectProject().then(setRuntime);
@@ -31,7 +32,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
       <header className="workspace-header">
         <div>
           <span className="eyebrow">SESSION</span>
-          <strong>{runtime.project?.name ?? 'Welcome'}</strong>
+          <strong>{activeSession?.title ?? runtime.project?.name ?? 'Welcome'}</strong>
         </div>
         <div className="session-controls">
           <select

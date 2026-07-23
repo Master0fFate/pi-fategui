@@ -2,6 +2,7 @@ import { ipcRenderer } from 'electron';
 import {
   abortResultSchema,
   appInfoSchema,
+  compactInputSchema,
   emptyInputSchema,
   getAppInfoInputSchema,
   ipcChannels,
@@ -10,6 +11,10 @@ import {
   promptAcceptanceSchema,
   promptInputSchema,
   runtimeStateSchema,
+  sessionEntryInputSchema,
+  sessionIdInputSchema,
+  sessionListSchema,
+  sessionSearchInputSchema,
   setModelInputSchema,
   setThinkingInputSchema,
   type PiDesktopApi,
@@ -53,6 +58,30 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   },
   async newSession() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeNewSession, emptyInputSchema.parse({}));
+    return runtimeStateSchema.parse(result);
+  },
+  async listSessions(query = '') {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeListSessions, sessionSearchInputSchema.parse({ query }));
+    return sessionListSchema.parse(result);
+  },
+  async switchSession(sessionId: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeSwitchSession, sessionIdInputSchema.parse({ sessionId }));
+    return runtimeStateSchema.parse(result);
+  },
+  async forkSession(entryId: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeForkSession, sessionEntryInputSchema.parse({ entryId }));
+    return runtimeStateSchema.parse(result);
+  },
+  async cloneSession() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeCloneSession, emptyInputSchema.parse({}));
+    return runtimeStateSchema.parse(result);
+  },
+  async importSession() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeImportSession, emptyInputSchema.parse({}));
+    return result === null ? null : runtimeStateSchema.parse(result);
+  },
+  async compact(instructions?: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeCompact, compactInputSchema.parse({ instructions }));
     return runtimeStateSchema.parse(result);
   },
   onEvents(listener: (events: PiEvent[]) => void) {
