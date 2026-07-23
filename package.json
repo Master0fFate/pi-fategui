@@ -20,15 +20,25 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "build:e2e": "pnpm build && vite build --config vite.e2e.config.ts",
+    "test:e2e": "pnpm build:e2e && playwright test",
+    "verify": "pnpm typecheck && pnpm test && pnpm test:e2e",
     "smoke": "pnpm build && cross-env PI_DESKTOP_SMOKE=1 electron .",
     "package": "pnpm build && electron-builder --dir",
     "dist": "pnpm build && electron-builder"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.81.1",
+    "@monaco-editor/react": "^4.7.0",
+    "@radix-ui/react-dialog": "^1.1.20",
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@tanstack/react-query": "^5.101.4",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "lucide-react": "^0.468.0",
+    "monaco-editor": "^0.56.0",
+    "node-pty": "^1.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-virtuoso": "^4.18.11",
@@ -36,6 +46,7 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "^16.1.0",
     "@testing-library/user-event": "^14.5.2",
@@ -47,7 +58,7 @@
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
     "electron": "^43.2.0",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^26.15.3",
     "jsdom": "^25.0.1",
     "postcss": "^8.4.49",
     "rimraf": "^6.0.1",
@@ -61,6 +72,10 @@
     "appId": "dev.pi.desktop",
     "productName": "Pi Desktop",
     "asar": true,
+    "npmRebuild": false,
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
     "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "release"

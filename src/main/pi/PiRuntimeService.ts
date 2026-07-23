@@ -117,11 +117,19 @@ export class PiRuntimeService {
 
   getState(includeMessages = true): RuntimeState {
     const session = this.runtime?.session;
+    const allMessages = session?.messages ?? [];
     const messages = includeMessages
-      ? (session?.messages ?? [])
+      ? allMessages
           .map((message) => toMessage(message, this.normalizer.messageId(message)))
           .filter((message): message is RuntimeMessage => message !== null)
       : [];
+    let objective = '';
+    for (let index = allMessages.length - 1; index >= 0; index -= 1) {
+      const message = allMessages[index] as { role?: unknown } | undefined;
+      if (message?.role === 'user') { objective = messageText(message).trim().slice(0, 500); break; }
+    }
+    const contextUsage = session?.getContextUsage?.();
+    const skills = this.runtime?.services?.resourceLoader?.getSkills?.().skills.map((skill) => ({ name: skill.name, description: skill.description }));
     return {
       status: this.status,
       project: this.project,
@@ -133,6 +141,9 @@ export class PiRuntimeService {
       thinkingLevel: session?.thinkingLevel ?? 'medium',
       messages,
       commands: session?.promptTemplates?.map((command) => ({ name: command.name, description: command.description ?? '' })) ?? [],
+      skills: skills ?? [],
+      ...(objective ? { objective } : {}),
+      ...(contextUsage ? { contextUsage } : {}),
       sessions: this.sessions,
       branches: session ? this.sessionRepository.branches(session) : [],
       forkPoints: session && typeof session.getUserMessagesForForking === 'function' ? session.getUserMessagesForForking() : [],

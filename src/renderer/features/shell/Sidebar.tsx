@@ -17,6 +17,7 @@ import { useEffect, useState } from 'react';
 import type { SessionSummary } from '../../../shared/contracts/ipc';
 import { IconButton } from '../../components/IconButton';
 import { useRuntimeStore } from '../../stores/runtimeStore';
+import { useUiStore } from '../../stores/uiStore';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -32,6 +33,7 @@ const navigation = [
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const runtime = useRuntimeStore((state) => state.runtime);
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
+  const openSettings = useUiStore((state) => state.setSettingsOpen);
   const [query, setQuery] = useState('');
   const [actionBusy, setActionBusy] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>(runtime.sessions ?? []);
@@ -130,6 +132,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             </div>
           )}
 
+          {((runtime.commands?.length ?? 0) > 0 || (runtime.skills?.length ?? 0) > 0) && (
+            <section className="resource-list" aria-label="Skills and prompt templates">
+              <strong>Resources</strong>
+              {runtime.commands?.slice(0, 4).map((command) => <div key={`prompt:${command.name}`} title={command.description}><Sparkles size={11} /><span>/{command.name}</span></div>)}
+              {runtime.skills?.slice(0, 4).map((skill) => <div key={`skill:${skill.name}`} title={skill.description}><Bot size={11} /><span>{skill.name}</span></div>)}
+            </section>
+          )}
+
           {(runtime.branches?.length ?? 0) > 1 && (
             <section className="branch-list" aria-label="Conversation branches">
               <strong>Branches</strong>
@@ -154,7 +164,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       {collapsed && <nav className="nav-list">{navigation.map(({ label, icon: Icon, active }) => <button key={label} type="button" className={active ? 'active' : ''} title={label}><Icon size={18} /></button>)}</nav>}
 
       <div className="sidebar-footer">
-        <button type="button" title={collapsed ? 'Settings' : undefined}>
+        <button type="button" title={collapsed ? 'Settings' : undefined} onClick={() => openSettings(true)}>
           <Settings size={18} />
           {!collapsed && <span>Settings</span>}
         </button>

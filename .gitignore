@@ -10,3 +10,4 @@ coverage/
 .parallax/
 test-results/
 playwright-report/
+.test-dist/

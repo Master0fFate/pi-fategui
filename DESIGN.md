@@ -1,7 +1,58 @@
-<!-- SEED: established with the user before implementation; re-run $impeccable document once there's code to capture the actual tokens and components. -->
 ---
 name: Pi Desktop
-description: A calm, local-first graphical workspace for the real Pi coding agent.
+description: A calm, local-first graphical workbench for the real Pi coding agent.
+colors:
+  canvas: "#090b12"
+  panel: "#0f121c"
+  raised: "#171b28"
+  border: "#272c3a"
+  text: "#eef0f7"
+  muted: "#8992a7"
+  accent: "#7c6cff"
+  success: "#55c78a"
+  warning: "#d2a94b"
+  danger: "#e35d6a"
+typography:
+  title:
+    fontFamily: "ui-sans-serif, system-ui, sans-serif"
+    fontSize: "16px"
+    fontWeight: 600
+    lineHeight: 1.25
+  body:
+    fontFamily: "ui-sans-serif, system-ui, sans-serif"
+    fontSize: "13px"
+    fontWeight: 400
+    lineHeight: 1.5
+  label:
+    fontFamily: "ui-sans-serif, system-ui, sans-serif"
+    fontSize: "11px"
+    fontWeight: 500
+    lineHeight: 1.4
+  code:
+    fontFamily: "Cascadia Mono, Consolas, monospace"
+    fontSize: "12px"
+    fontWeight: 400
+    lineHeight: 1.5
+rounded:
+  control: "7px"
+  surface: "12px"
+  composer: "15px"
+spacing:
+  xs: "4px"
+  sm: "8px"
+  md: "16px"
+  lg: "24px"
+components:
+  button-primary:
+    backgroundColor: "{colors.accent}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.control}"
+    height: "38px"
+  input:
+    backgroundColor: "{colors.canvas}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.control}"
+    height: "34px"
 ---
 
 # Design System: Pi Desktop
@@ -10,61 +61,64 @@ description: A calm, local-first graphical workspace for the real Pi coding agen
 
 **Creative North Star: “The Focused Workbench”**
 
-Pi Desktop should feel like a purpose-built instrument for sustained coding work: quiet when idle, precise when active, and transparent when the agent uses tools. The world is a near-black blue-charcoal desktop with clearly joined work surfaces, fine separators, cool near-white type, and a rare violet signal for focus and active state.
+Pi Desktop is a purpose-built instrument for sustained coding work: quiet when idle, precise when active, and transparent when Pi uses tools. A continuous blue-charcoal shell joins navigation, conversation, inspector, and terminal rather than presenting a dashboard of floating cards.
 
-The reference in `concept.png` governs atmosphere and first-launch hierarchy. Operational screens replace its broad hero staging with a resizable three-pane workbench; expression never hides state, task, or native desktop affordances.
+The supplied `concept.png` governs atmosphere and first-launch hierarchy. Operational states become denser without losing calm, and expression never obscures state or familiar desktop affordances.
 
 **Key Characteristics:**
-- One continuous desktop shell rather than a dashboard of floating cards.
-- Cool charcoal tonal layers separated by one-pixel rules.
-- Restrained violet used for focus, selection, streaming, and the primary action.
-- Generous breathing room at first launch and compact, stable density during work.
-- Motion acknowledges state without delaying input or shifting layout.
+- Continuous joined panes with fine structural separators.
+- Cool near-white type over charcoal tonal layers.
+- Violet reserved for focus, selection, streaming, and primary action.
+- Spacious first launch; compact, stable density during work.
+- Motion acknowledges state without delaying input or moving layout.
 
 ## Colors
 
-Use a restrained strategy: neutral charcoal owns the application, while one cool violet carries interaction emphasis. Success, warning, and danger colors are semantic only. Exact production tokens are resolved and extracted during implementation.
+Canvas and panel neutrals own nearly the entire interface. Accent is deliberately rare; success, warning, and danger appear only for semantic status.
 
-**The One Signal Rule.** Violet marks the current action or location; it is not ambient decoration across every surface.
+**The One Signal Rule.** Violet marks the current action or location, never ambient decoration across every surface.
 
 ## Typography
 
-Use a native-feeling workhorse UI sans stack for controls, navigation, and conversation. Reserve the platform monospace stack for code, paths, terminal output, diffs, shortcuts, and measured token data. The first-launch heading may be larger, but operational hierarchy stays compact and obvious.
+Native-feeling UI sans handles controls, navigation, and conversation. The platform monospace stack is reserved for code, paths, terminal output, diffs, shortcuts, and measured data. The first-launch heading is the only display-scale type.
 
-**The Tool, Not Costume Rule.** Monospace communicates literal code or machine data; it never serves as a generic “technical” accent.
+**The Tool, Not Costume Rule.** Monospace communicates literal machine content, never generic technical flavor.
 
 ## Layout
 
-The primary composition is a resizable three-column workbench: sessions and project navigation at left, the conversation workspace in the fluid center, and a tabbed project inspector at right. The left pane collapses to an icon rail; the inspector collapses completely and leaves a clear reopen control. A separate terminal panel opens below the workspace.
+The default desktop is a resizable three-column workbench: sessions/resources at left, a fluid conversation center, and Changes/Files/Tools/Context at right. The left pane collapses to a 64px rail; the inspector collapses fully. The manual terminal occupies a bounded lower panel. Panel sizes persist locally, while viewport-relative caps protect the center at narrower widths.
 
-At narrower desktop widths, flexible pane caps preserve the center task before secondary labels disappear. Pane sizes persist locally. Streaming content may grow inside virtualized scrollers but must not alter the surrounding grid.
+Virtualized lists own their scroll regions. Streaming content grows inside the timeline and never changes the outer grid.
 
 ## Elevation & Depth
 
-Depth is primarily tonal and structural. Joined panes use fine borders; floating surfaces such as menus, dialogs, the command palette, and the composer may use one diffuse, offset ambient shadow. There is no decorative glass blur and no zero-offset neon halo.
+Depth is tonal and structural. Joined panes use one-pixel borders. Menus, dialogs, palette, tool detail, and composer may use one diffuse offset shadow. There is no decorative glass blur or zero-offset neon halo.
 
 **The Flat-by-Default Rule.** A surface earns elevation only when it must sit above another interaction layer.
 
 ## Shapes
 
-Controls use compact, gently curved corners; substantive panels remain joined to the application frame. Pills are reserved for small statuses and short selectors. Borders stay one pixel. The composer may have the most generous radius because it is the primary input surface, but it must not turn every surrounding element into a matching rounded card.
+Controls use compact 6–8px corners; dialogs and substantive floating surfaces use 12px; the composer alone reaches 15px. Pills are reserved for tiny statuses. Borders remain one pixel and panel edges stay joined to the application frame.
 
 ## Components
 
-Implementation begins with the joined shell, resize handles, sidebar rows, workspace header, inspector tabs, empty states, composer, and accessible tooltips. Their exact tokens and state recipes are provisional until the first scan-mode extraction.
-
-Every interactive component needs default, hover, focus-visible, active, disabled, loading, and recoverable error behavior where applicable. Disabled future actions must look unavailable and explain the prerequisite rather than behaving like dead buttons.
+- **Primary buttons:** violet fill, cool-white label, 38px height, immediate hover contrast, and visible focus ring.
+- **Rows and tabs:** flat at rest; active state uses a low-contrast fill or thin accent underline.
+- **Composer:** the largest-radius input surface with stable multiline height, explicit queue/stop controls, and capability-gated attachments.
+- **Tool cards:** one chronological entity with status, summarized input, bounded output, duration, and expandable details.
+- **Dialogs/palette:** Radix focus management, dark raised surface, concise labels, no ornamental chrome.
+- **Terminal:** near-black xterm canvas clearly labeled “Manual terminal” and “Separate from Pi tools.”
 
 ## Do's and Don'ts
 
 ### Do:
-- **Do** preserve the concept’s charcoal/violet calm while prioritizing operational clarity.
-- **Do** use semantic hierarchy, stable alignment, and concise product language.
-- **Do** keep project trust, connection, model, thinking, and active-run state findable.
-- **Do** use authored empty, loading, streaming, stopped, compacted, and error states.
+- **Do** keep project trust, connection, model, thinking, active run, and errors findable.
+- **Do** use authored empty, loading, streaming, stopped, compacted, truncated, unavailable, and recovery states.
+- **Do** preserve alignment and stable dimensions while text or tool output streams.
+- **Do** honor keyboard focus and reduced-motion preferences.
 
 ### Don't:
-- **Don't** imitate Pi’s terminal UI or any competing desktop product.
-- **Don't** build the surface from repeated same-size icon cards or nested rounded containers.
-- **Don't** use excessive gradients, decorative glass, neon glows, fake metrics, or visual noise.
-- **Don't** animate in ways that delay interaction, cause layout jumps, or ignore reduced motion.
+- **Don't** imitate Pi’s TUI or another coding desktop product.
+- **Don't** build operational screens from nested rounded cards.
+- **Don't** use decorative glass, neon glows, fake metrics, gradient text, or visual noise.
+- **Don't** present enabled controls without a real action or an honest capability gate.

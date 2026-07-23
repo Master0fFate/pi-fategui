@@ -1,7 +1,6 @@
 import * as Tabs from '@radix-ui/react-tabs';
 import {
   ChevronsRight,
-  FileCode2,
   Files,
   GitCompareArrows,
   Info,
@@ -11,7 +10,10 @@ import {
 import { Virtuoso } from 'react-virtuoso';
 import { IconButton } from '../../components/IconButton';
 import { ToolCard } from '../chat/ToolCard';
+import { ChangesPanel } from '../diffs/ChangesPanel';
+import { FilesPanel } from '../files/FilesPanel';
 import { useRuntimeStore } from '../../stores/runtimeStore';
+import { useUiStore } from '../../stores/uiStore';
 
 interface InspectorProps {
   onCollapse: () => void;
@@ -23,11 +25,6 @@ const tabs = [
   { value: 'tools', label: 'Tools', icon: ListChecks },
   { value: 'context', label: 'Context', icon: Info },
 ];
-
-const emptyStates = {
-  changes: { icon: GitCompareArrows, title: 'No changes', copy: 'Repository changes will appear here.' },
-  files: { icon: FileCode2, title: 'No project files', copy: 'Open a project to browse its file tree.' },
-};
 
 function ToolsPanel() {
   const order = useRuntimeStore((state) => state.toolOrder);
@@ -47,6 +44,8 @@ function ToolsPanel() {
 
 export function Inspector({ onCollapse }: InspectorProps) {
   const runtime = useRuntimeStore((state) => state.runtime);
+  const activeTab = useUiStore((state) => state.inspectorTab);
+  const setActiveTab = useUiStore((state) => state.setInspectorTab);
   return (
     <aside className="inspector" aria-label="Project inspector">
       <div className="inspector-heading">
@@ -55,7 +54,7 @@ export function Inspector({ onCollapse }: InspectorProps) {
           <ChevronsRight size={17} />
         </IconButton>
       </div>
-      <Tabs.Root defaultValue="changes" className="inspector-tabs">
+      <Tabs.Root value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)} className="inspector-tabs">
         <Tabs.List aria-label="Inspector views" className="tab-list">
           {tabs.map(({ value, label, icon: Icon }) => (
             <Tabs.Trigger value={value} key={value} className="tab-trigger">
@@ -63,18 +62,8 @@ export function Inspector({ onCollapse }: InspectorProps) {
             </Tabs.Trigger>
           ))}
         </Tabs.List>
-        {Object.entries(emptyStates).map(([value, state]) => {
-          const Icon = state.icon;
-          return (
-            <Tabs.Content value={value} className="tab-content" key={value}>
-              <div className="inspector-empty">
-                <Icon size={24} />
-                <strong>{state.title}</strong>
-                <p>{state.copy}</p>
-              </div>
-            </Tabs.Content>
-          );
-        })}
+        <Tabs.Content value="changes" className="tab-content"><ChangesPanel /></Tabs.Content>
+        <Tabs.Content value="files" className="tab-content"><FilesPanel /></Tabs.Content>
         <Tabs.Content value="tools" className="tab-content"><ToolsPanel /></Tabs.Content>
         <Tabs.Content value="context" className="tab-content">
           <div className="context-list">
@@ -82,6 +71,10 @@ export function Inspector({ onCollapse }: InspectorProps) {
             <div><span>Agent</span><strong>{runtime.status}</strong></div>
             <div><span>Model</span><strong>{runtime.model?.name ?? '—'}</strong></div>
             <div><span>Thinking</span><strong>{runtime.thinkingLevel}</strong></div>
+            <div><span>Context</span><strong>{runtime.contextUsage?.percent == null ? '—' : `${runtime.contextUsage.percent.toFixed(1)}%`}</strong></div>
+            <div><span>Objective</span><strong>{runtime.objective || 'No active objective'}</strong></div>
+            <div><span>Skills</span><strong>{runtime.skills?.length ? runtime.skills.map((skill) => skill.name).join(', ') : 'None loaded'}</strong></div>
+            <div><span>Templates</span><strong>{runtime.commands?.length ? runtime.commands.map((command) => `/${command.name}`).join(', ') : 'None loaded'}</strong></div>
             <div className="trust-row"><ShieldCheck size={16} /><span>{runtime.project?.trusted ? `Trusted · ${runtime.project.path}` : 'Project trust starts after selection'}</span></div>
           </div>
         </Tabs.Content>

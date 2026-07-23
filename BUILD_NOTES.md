@@ -1,51 +1,60 @@
 # Build Notes
 
-## Completed
+## Completed phases
 
-- Phase 1 / f1: Electron + Vite + React + Tailwind foundation, secure preload, typed IPC, three-pane shell, tests, and packaging configuration.
-- Phase 2 / f2: canonical project selection and explicit trust, real project-bound Pi `AgentSessionRuntime`, existing Pi authentication/model discovery, prompt preflight acceptance, streamed text/reasoning/tool events, stop, model/thinking/session state, normalized errors, and bounded IPC batching.
-- Phase 3 / f3: entity-indexed conversation/tool state, 5,000-entry virtualized timeline and tool history, streamed message/reasoning/error/compaction rows, structured bounded live tool cards, and a multiline composer with real send/stop/steer/follow-up, prompt-template slash suggestions, file references, and model-gated image attachments.
-- Phase 4 / f4: persistent project session repository, list/search/new/switch, SDK-gated fork/clone/import/compact actions, active branch display, and generation-safe runtime replacement subscriptions.
+- **Phase 1:** strict Electron/Vite/React shell, secure preload, Zod IPC, resizable/collapsible three-pane UI, private GitHub repository.
+- **Phase 2:** trusted project selection and real project-bound Pi `AgentSessionRuntime`; authentication/model/thinking state, prompt preflight, streaming, stop, normalized errors.
+- **Phase 3:** entity-indexed and virtualized conversation/tool timelines, reasoning, compaction/error notices, bounded output, composer queues, slash templates, file references, and image gates.
+- **Phase 4:** persistent session list/search/new/switch/fork/clone/import/compact, branch display, serialized replacement, generation-safe subscription/extension rebinding.
+- **Phase 5:** confined file tree/search/read/open, Git status/diff/line counts, lazy Monaco file/diff views, explicit binary/large/submodule/symlink/truncation states, integrated xterm/node-pty terminal.
+- **Phase 6:** command palette, native menus, settings, diagnostics/logs, keyboard shortcuts, reduced motion, Vitest/RTL/integration tests, Playwright Electron coverage, and current-OS packaging.
 
-## Decisions
+## Important architecture decisions
 
-- Main output is ESM; sandbox-compatible preload is bundled as CJS.
-- Renderer IPC is exposed as one frozen, narrow `piDesktop` object. Shared Zod schemas validate both arguments and responses.
-- Pane geometry is renderer-local Zustand state persisted to local storage.
-- `PiRuntimeService` owns the SDK and uses `createAgentSessionRuntime()` with cwd-bound services; its injectable adapter exists only for deterministic tests. Production always uses the real SDK.
-- Pi credentials remain owned by Pi's `ModelRuntime` and normal auth files/environment. The renderer receives only model availability and an actionable auth status, never credentials.
-- Project paths are canonicalized with `realpath`, verified as directories, and persisted through Pi's project trust store only after a native warning dialog.
-- SDK events are normalized into app-owned contracts and coalesced in batches of at most 100 events / 256 KiB. Adjacent text deltas cap at 32 KiB, tool payloads at 64 KiB, and lifecycle snapshots omit repeated message history.
-- Conversation IDs and entities are stored separately so deltas preserve unrelated entity and order references. `react-virtuoso` renders both conversation and inspector tool history; live tool output is bounded to 64,000 characters with head/tail context.
-- Image controls are enabled only when Pi's active model declares `image` input. Renderer image data is validated by the typed prompt contract and passed to the SDK's real `images` option; up to four supported images are held only in composer-local state.
-- File references use a main-process native picker rooted at the active project. The selected path is canonicalized, confined to that project, reduced to a relative path, and inserted into the prompt; the renderer receives no filesystem capability.
-- Persistent session metadata is projected from Pi's `SessionManager`; switching resolves renderer-provided IDs against the current project's repository rather than accepting renderer file paths. Import uses a main-process native JSONL picker.
-- Every session invalidation synchronously unsubscribes, advances a monotonic generation, resets normalizer session state, and clears queued IPC events. Rebound callbacks capture the generation and session identity, so late events from disposed sessions are ignored. Replacement operations are serialized; failures move the runtime to a visible recoverable error state.
+- Main output is ESM for Pi’s ESM-only SDK; sandbox-compatible preload is bundled as CJS.
+- Production uses `createAgentSessionRuntime()` with cwd-bound services. The deterministic adapter exists only under `tests/e2e` and is never packaged.
+- Runtime replacement synchronously unsubscribes, increments a session generation, clears pending batches, rebinds extensions/listeners, and ignores old-generation events. Replacement operations are serialized and expose failure state.
+- Pi credentials remain entirely inside Pi’s `ModelRuntime`. Renderer contracts contain no API-key field.
+- Renderer state stores stable message/tool entities separately from order arrays. `react-virtuoso` keeps 5,000-entry timelines bounded.
+- Event batches cap at 100 events / 256 KiB; adjacent text deltas cap at 32 KiB and live tool output at 64,000 characters.
+- Filesystem and Git services accept project-relative paths only. Reads use one validated open handle for size/sample/content. Git uses `execFile`, NUL-delimited parsing, bounded output, and no destructive commands.
+- Manual terminal PTYs are main-owned, renderer-owner scoped, output-batched, trust-gated, and separate from Pi tool events. xterm and Monaco are lazy chunks.
+- Settings are atomically persisted under Electron user data. Diagnostics expose versions/status/paths but no credentials; logs redact token-like strings and retain 500 entries in memory.
 
 ## Current limitations
 
-- Fork and import controls are intentionally absent when the active Pi SDK runtime does not expose their methods. Clone is enabled only for the verified SDK adapter and uses the current session leaf with `{ position: "at" }`; fork uses a selected user-message branch point.
-- Replacement race, failure, capability, and stale-event coverage is deterministic adapter integration coverage. A live SDK replacement smoke remains a manual/release verification step because it depends on real Pi resources and persisted sessions.
-- Terminal, file tree, and Git actions remain future slices.
-- Slash suggestions currently expose Pi file-based prompt templates. The SDK session handles extension commands too, but does not expose its bound extension command registry through the public `AgentSession` API, so undiscoverable extension commands can be typed but are not suggested.
-- Packaging is unsigned and uses generated default application artwork.
+- Extension commands execute when entered, but only SDK-exposed prompt templates can be suggested.
+- GUI Git accept/revert is omitted because a safe review/apply transaction was not available in this scope.
+- External editor launch cannot be atomic against a malicious concurrent local path swap; only canonical project paths and known text/source extensions are accepted.
+- Native installers are unsigned and use Electron’s default icon.
+- Live provider responses, image input, and real persisted fork/import/compact depend on the user’s Pi credentials and should be manually exercised with their provider/session data.
 
-## Manual verification
+## Verification evidence
 
-1. Run `pnpm install`.
-2. Run `pnpm dev` and confirm the window appears.
-3. Drag both separators, toggle both side panes, and restart to confirm persistence.
-4. Use Tab and arrow keys on separators; verify visible focus.
-5. Select a trusted repository. Confirm model and thinking controls populate from the real Pi runtime.
-6. Send a prompt and confirm text/reasoning streams and tool cards update in the timeline and Tools inspector; expand a tool to inspect bounded output.
-7. During a run, verify Stop, Steer, and Follow up. Type `/` to inspect discovered prompt templates and use the file-reference button.
-8. Create two sessions, search and switch between them, then restart Pi Desktop and confirm both remain listed. Verify fork/clone/import/compact actions and branch rows where supported.
-9. With an image-capable model, attach a PNG/JPEG/GIF/WebP and send it; confirm the image action is disabled for text-only models.
-10. If authentication is absent, run the Pi CLI, enter `/login`, then reopen the project.
-11. Run `pnpm typecheck`, `pnpm test`, `pnpm build`, and `pnpm smoke`.
+- Host Node: 22.22.2; Electron 43.2.0 embeds Node 24.18.0, satisfying Pi 0.81.1’s Node requirement.
+- `pnpm typecheck` passes under strict TypeScript.
+- `pnpm test` passes unit/RTL/adapter integration suites, including schemas, errors, event normalization/batching, replacement races, 5,000 entries, files, Git, settings persistence/recovery, and terminal ownership/output batching.
+- `pnpm test:e2e` passes first launch, renderer isolation, project open, command palette/settings, xterm surface, prompt streaming, tool card, Git diff, and session switch through a test-only main adapter.
+- `pnpm audit --prod` reports no known vulnerabilities; patched transitive versions are pinned through pnpm 11 workspace overrides.
+- Real `node-pty` loaded under Electron and executed `cmd.exe` output `PI_PTY_OK`.
+- `pnpm package` produces `release/win-unpacked/Pi Desktop.exe`; packaged smoke exits 0 and includes unpacked node-pty binaries.
+
+## Manual verification steps
+
+1. Run `pnpm install` and `pnpm dev`.
+2. Select a repository and review the native trust decision.
+3. Confirm real Pi model/thinking controls populate; if not, run Pi `/login`, then reopen the project.
+4. Send a prompt and inspect streaming text, reasoning, tool cards, Stop, Steer, and Follow up.
+5. Create/switch/fork/clone sessions and restart to confirm persistence; import a real Pi JSONL session and compact a long session.
+6. Browse/search files, open a text preview, inspect a changed-file Monaco diff, and verify binary/large states.
+7. Open the manual terminal, run a harmless command, resize/close it, and confirm it is labeled separately from Pi tools.
+8. Open `Ctrl/Cmd+K`, settings, diagnostics, and logs; verify keyboard focus and reduced-motion preference.
+9. Run `pnpm verify`, `pnpm smoke`, and `pnpm package`.
 
 ## Pi API discrepancies
 
-- SDK 0.81.1 was verified from installed types and docs. `prompt()` uses `preflightResult` because its returned promise intentionally settles only after the complete run.
-- `AgentSessionRuntime` replacement subscriptions and extension bindings are rebound through `setBeforeSessionInvalidate` and `setRebindSession`; switch/new/fork/clone/import all use that SDK-owned replacement lifecycle.
-- Project-bound runtime services are created before model availability is evaluated so trusted project extensions can register providers. A no-credential project still initializes its runtime, then reports the exact `/login` recovery step.
+- SDK 0.81.1 was checked against installed types and current `https://pi.dev/docs/latest/sdk` / `rpc` documentation.
+- `prompt()` uses `preflightResult` because its promise resolves after the complete accepted run. Steering/follow-up use `prompt(..., { streamingBehavior })` so rejected queues are not falsely acknowledged and extension commands retain SDK behavior.
+- Clone is the documented `runtime.fork(currentLeaf, { position: "at" })`; normal fork uses an SDK user-message entry.
+- Project-bound services are created before checking model availability so trusted project extensions can register providers.
+- The public `AgentSession` exposes prompt templates but not the complete bound extension-command registry, so autocomplete is limited honestly.

@@ -1,7 +1,12 @@
 confirmModulesPurge: false
+overrides:
+  'ws@>=8.0.0 <8.21.0': 8.21.0
+  'brace-expansion@>=3.0.0 <5.0.7': 5.0.7
+  'dompurify@<3.4.12': 3.4.12
 allowBuilds:
   '@google/genai': false
   electron: true
+  electron-winstaller: false
   esbuild: true
   node-pty: true
   protobufjs: false

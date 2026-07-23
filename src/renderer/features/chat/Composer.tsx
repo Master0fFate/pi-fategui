@@ -114,6 +114,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         ))}</div>}
         <textarea
           ref={textarea}
+          id="pi-composer"
           aria-label="Message Pi"
           aria-controls={commandSuggestions.length ? 'slash-suggestions' : undefined}
           value={draft}

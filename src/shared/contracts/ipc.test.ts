@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appInfoSchema, getAppInfoInputSchema, ipcChannels, piEventBatchSchema, promptInputSchema, runtimeStateSchema } from './ipc';
+import { appInfoSchema, appSettingsSchema, getAppInfoInputSchema, ipcChannels, piEventBatchSchema, promptInputSchema, runtimeStateSchema, terminalCreateInputSchema, terminalWriteInputSchema } from './ipc';
 
 describe('IPC contracts', () => {
   it('accepts only an empty object for system info input', () => {
@@ -28,5 +28,13 @@ describe('IPC contracts', () => {
     expect(() => promptInputSchema.parse({ text: '', extra: true })).toThrow();
     expect(() => piEventBatchSchema.parse(Array.from({ length: 101 }, () => ({ type: 'run.started', runId: 'r', timestamp: 1 })))).toThrow();
     expect(() => runtimeStateSchema.parse({ status: 'ready' })).toThrow();
+  });
+
+  it('bounds terminal payloads and keeps credentials out of settings contracts', () => {
+    expect(terminalCreateInputSchema.parse({ cols: 120, rows: 30 })).toEqual({ cols: 120, rows: 30 });
+    expect(() => terminalCreateInputSchema.parse({ cols: 1, rows: 30 })).toThrow();
+    expect(() => terminalWriteInputSchema.parse({ id: 'not-a-uuid', data: 'x' })).toThrow();
+    expect(() => terminalWriteInputSchema.parse({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', data: 'x'.repeat(65_537) })).toThrow();
+    expect(() => appSettingsSchema.parse({ appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, apiKey: 'secret' })).toThrow();
   });
 });
