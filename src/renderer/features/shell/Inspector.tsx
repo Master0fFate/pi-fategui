@@ -8,7 +8,9 @@ import {
   ListChecks,
   ShieldCheck,
 } from 'lucide-react';
+import { Virtuoso } from 'react-virtuoso';
 import { IconButton } from '../../components/IconButton';
+import { ToolCard } from '../chat/ToolCard';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 
 interface InspectorProps {
@@ -25,8 +27,23 @@ const tabs = [
 const emptyStates = {
   changes: { icon: GitCompareArrows, title: 'No changes', copy: 'Repository changes will appear here.' },
   files: { icon: FileCode2, title: 'No project files', copy: 'Open a project to browse its file tree.' },
-  tools: { icon: ListChecks, title: 'No tool activity', copy: 'Pi tool executions will be shown chronologically.' },
 };
+
+function ToolsPanel() {
+  const order = useRuntimeStore((state) => state.toolOrder);
+  if (order.length === 0) {
+    return <div className="inspector-empty"><ListChecks size={24} /><strong>No tool activity</strong><p>Pi tool executions will be shown chronologically.</p></div>;
+  }
+  return (
+    <Virtuoso
+      className="tool-history"
+      data={order}
+      computeItemKey={(_index, id) => id}
+      itemContent={(_index, id) => <div className="tool-history-row"><ToolCard toolCallId={id} compact /></div>}
+      followOutput="auto"
+    />
+  );
+}
 
 export function Inspector({ onCollapse }: InspectorProps) {
   const runtime = useRuntimeStore((state) => state.runtime);
@@ -58,6 +75,7 @@ export function Inspector({ onCollapse }: InspectorProps) {
             </Tabs.Content>
           );
         })}
+        <Tabs.Content value="tools" className="tab-content"><ToolsPanel /></Tabs.Content>
         <Tabs.Content value="context" className="tab-content">
           <div className="context-list">
             <div><span>Project</span><strong>{runtime.project?.name ?? 'Not selected'}</strong></div>

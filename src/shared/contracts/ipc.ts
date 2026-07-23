@@ -3,6 +3,7 @@ import { z } from 'zod';
 export const ipcChannels = {
   systemGetInfo: 'system:get-info',
   projectSelect: 'project:select',
+  projectSelectFile: 'project:select-file',
   runtimeGetState: 'runtime:get-state',
   runtimePrompt: 'runtime:prompt',
   runtimeAbort: 'runtime:abort',
@@ -47,6 +48,7 @@ export const modelInfoSchema = z.object({
   name: z.string().min(1),
   reasoning: z.boolean(),
   contextWindow: z.number().int().positive(),
+  supportsImages: z.boolean().optional(),
 });
 
 export const projectStateSchema = z.object({
@@ -54,6 +56,7 @@ export const projectStateSchema = z.object({
   name: z.string().min(1),
   trusted: z.boolean(),
 });
+export const projectFileReferenceSchema = z.string().min(1).max(4_096).nullable();
 
 export const runtimeMessageSchema = z.object({
   id: z.string().min(1),
@@ -62,6 +65,11 @@ export const runtimeMessageSchema = z.object({
   reasoning: z.string().optional(),
   timestamp: z.number().finite(),
   error: z.boolean().optional(),
+});
+
+export const slashCommandSchema = z.object({
+  name: z.string().min(1),
+  description: z.string(),
 });
 
 export const runtimeStateSchema = z.object({
@@ -74,6 +82,7 @@ export const runtimeStateSchema = z.object({
   models: z.array(modelInfoSchema),
   thinkingLevel: thinkingLevelSchema,
   messages: z.array(runtimeMessageSchema),
+  commands: z.array(slashCommandSchema).optional(),
   error: appErrorSchema.nullable(),
 });
 
@@ -96,9 +105,15 @@ export const piEventSchema = z.discriminatedUnion('type', [
 ]);
 
 export const piEventBatchSchema = z.array(piEventSchema).min(1).max(100);
+export const promptImageSchema = z.object({
+  data: z.string().min(1).max(20_000_000),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+  name: z.string().min(1).max(255),
+}).strict();
 export const promptInputSchema = z.object({
   text: z.string().trim().min(1).max(200_000),
   behavior: z.enum(['prompt', 'steer', 'followUp']).default('prompt'),
+  images: z.array(promptImageSchema).max(4).optional(),
 }).strict();
 export const promptAcceptanceSchema = z.object({ accepted: z.boolean(), runId: z.string().min(1) });
 export const abortResultSchema = z.object({ aborted: z.boolean() });
@@ -119,6 +134,7 @@ export type PromptAcceptance = z.infer<typeof promptAcceptanceSchema>;
 export interface PiDesktopApi {
   getAppInfo: () => Promise<AppInfo>;
   selectProject: () => Promise<RuntimeState>;
+  selectProjectFile: () => Promise<string | null>;
   getRuntimeState: () => Promise<RuntimeState>;
   prompt: (input: PromptInput) => Promise<PromptAcceptance>;
   abort: () => Promise<{ aborted: boolean }>;

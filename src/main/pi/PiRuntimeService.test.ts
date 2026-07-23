@@ -2,7 +2,7 @@ import type { AgentSessionRuntime, ModelRuntime } from '@earendil-works/pi-codin
 import { describe, expect, it, vi } from 'vitest';
 import { PiRuntimeService, type PiSdkAdapter } from './PiRuntimeService';
 
-const model = { provider: 'test', id: 'model', name: 'Test Model', reasoning: true, contextWindow: 1000 };
+const model = { provider: 'test', id: 'model', name: 'Test Model', reasoning: true, contextWindow: 1000, input: ['text', 'image'] as const };
 
 function fixture(availableModels: typeof model[] = [model]) {
   let settleRun: (() => void) | undefined;
@@ -12,9 +12,10 @@ function fixture(availableModels: typeof model[] = [model]) {
     get isStreaming() { return streaming; },
     bindExtensions: vi.fn(async () => undefined),
     subscribe: vi.fn(() => () => undefined),
-    prompt: vi.fn((_text: string, options: { preflightResult: (accepted: boolean) => void }) => {
-      streaming = true;
+    prompt: vi.fn((_text: string, options: { preflightResult: (accepted: boolean) => void; streamingBehavior?: 'steer' | 'followUp' }) => {
       options.preflightResult(true);
+      if (options.streamingBehavior) return Promise.resolve();
+      streaming = true;
       return new Promise<void>((resolve) => { settleRun = () => { streaming = false; resolve(); }; });
     }),
     steer: vi.fn(async () => undefined), followUp: vi.fn(async () => undefined),
@@ -44,6 +45,35 @@ describe('PiRuntimeService', () => {
     expect(service.getState().streaming).toBe(true);
     fake.settle();
     await Promise.resolve();
+    await service.dispose();
+  });
+
+  it('passes validated image attachments only to an image-capable Pi model', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    const state = await service.openProject({ path: '/project', name: 'project', trusted: true });
+    expect(state.model?.supportsImages).toBe(true);
+    await service.prompt({
+      text: 'inspect', behavior: 'prompt',
+      images: [{ name: 'screen.png', mimeType: 'image/png', data: 'aGVsbG8=' }],
+    });
+    expect(fake.session.prompt).toHaveBeenCalledWith('inspect', expect.objectContaining({
+      images: [{ type: 'image', mimeType: 'image/png', data: 'aGVsbG8=' }],
+    }));
+    fake.settle();
+    await service.dispose();
+  });
+
+  it('queues through prompt preflight so acceptance reflects the real SDK result', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'work', behavior: 'prompt' });
+    const acceptance = await service.prompt({ text: 'change direction', behavior: 'steer' });
+    expect(acceptance.accepted).toBe(true);
+    expect(fake.session.prompt).toHaveBeenLastCalledWith('change direction', expect.objectContaining({ streamingBehavior: 'steer' }));
+    expect(fake.session.steer).not.toHaveBeenCalled();
+    fake.settle();
     await service.dispose();
   });
 

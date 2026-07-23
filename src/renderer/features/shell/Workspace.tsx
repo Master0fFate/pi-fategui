@@ -1,8 +1,7 @@
-import {
-  ArrowUp, Brain, Code2, FolderOpen, PanelRightOpen, SearchCode, Square, TerminalSquare,
-} from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { Code2, FolderOpen, PanelRightOpen, SearchCode } from 'lucide-react';
 import { IconButton } from '../../components/IconButton';
+import { Composer } from '../chat/Composer';
+import { ConversationTimeline } from '../chat/ConversationTimeline';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 
 interface WorkspaceProps {
@@ -11,27 +10,14 @@ interface WorkspaceProps {
 }
 
 export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspaceProps) {
-  const [draft, setDraft] = useState('');
-  const [submitting, setSubmitting] = useState(false);
   const runtime = useRuntimeStore((state) => state.runtime);
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
-  const messagesById = useRuntimeStore((state) => state.messagesById);
-  const messageOrder = useRuntimeStore((state) => state.messageOrder);
-  const reasoning = useRuntimeStore((state) => state.reasoningByMessageId);
+  const entryCount = useRuntimeStore((state) => state.timelineOrder.length);
   const lastError = useRuntimeStore((state) => state.lastError);
-  const messages = useMemo(() => messageOrder.map((id) => messagesById[id]).filter(Boolean), [messageOrder, messagesById]);
   const connected = runtime.status === 'ready';
 
   const openProject = () => {
     if ('piDesktop' in window) void window.piDesktop.selectProject().then(setRuntime);
-  };
-  const submit = (behavior: 'prompt' | 'steer' | 'followUp' = 'prompt') => {
-    const text = draft.trim();
-    if (!text || !('piDesktop' in window)) return;
-    setSubmitting(true);
-    void window.piDesktop.prompt({ text, behavior }).then((acceptance) => {
-      if (acceptance.accepted) setDraft('');
-    }).finally(() => setSubmitting(false));
   };
 
   const statusLabel = runtime.status === 'disconnected' ? 'Ready to connect'
@@ -77,8 +63,8 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
         </div>
       </header>
 
-      <section className={`welcome ${messages.length > 0 ? 'welcome--conversation' : ''}`} aria-labelledby="welcome-title">
-        {messages.length === 0 ? (
+      <section className={`welcome ${entryCount > 0 ? 'welcome--conversation' : ''}`} aria-labelledby="welcome-title">
+        {entryCount === 0 ? (
           <>
             <div className="welcome-copy">
               <div className="welcome-symbol">π</div>
@@ -93,41 +79,15 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
               <button className="action-card" type="button" disabled={!connected}><span className="action-icon"><Code2 size={19} /></span><strong>Work with Pi</strong><small>Use the authenticated real Pi runtime.</small></button>
             </div>
           </>
-        ) : (
-          <div className="conversation" aria-live="polite">
-            {messages.map((message) => (
-              <article className={`chat-message chat-message--${message!.role}`} key={message!.id}>
-                <span>{message!.role === 'user' ? 'You' : message!.role === 'assistant' ? 'Pi' : 'Tool'}</span>
-                {reasoning[message!.id] && <details><summary><Brain size={13} /> Reasoning</summary><pre>{reasoning[message!.id]}</pre></details>}
-                <pre>{message!.text || (runtime.streaming ? '…' : '')}</pre>
-              </article>
-            ))}
-          </div>
-        )}
+        ) : <ConversationTimeline />}
 
-        {lastError && (
+        {lastError && entryCount === 0 && (
           <div className="runtime-notice" role="alert">
             <strong>{lastError.message}</strong>
             {lastError.actionable && <span>{lastError.actionable}</span>}
           </div>
         )}
-
-        <form className="composer" onSubmit={(event) => { event.preventDefault(); submit('prompt'); }}>
-          <textarea aria-label="Message Pi" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={connected ? 'Ask Pi about your project…' : 'Open and trust a project to begin…'} rows={2} disabled={!connected} />
-          <div className="composer-toolbar">
-            <div><button type="button" onClick={openProject}><FolderOpen size={15} /> {runtime.project?.name ?? 'Project'}</button><span className="toolbar-divider" /><button type="button" disabled><TerminalSquare size={15} /> Terminal</button></div>
-            <div>
-              {runtime.streaming && draft.trim() && <><button type="button" onClick={() => submit('steer')}>Steer</button><button type="button" onClick={() => submit('followUp')}>Queue</button></>}
-              <span className="shortcut">Ctrl/⌘ ↵</span>
-              {runtime.streaming ? (
-                <button className="send-button stop-button" type="button" aria-label="Stop Pi" onClick={() => { if ('piDesktop' in window) void window.piDesktop.abort(); }}><Square size={14} fill="currentColor" /></button>
-              ) : (
-                <button className="send-button" type="submit" aria-label="Send message" disabled={!connected || !draft.trim() || submitting}><ArrowUp size={18} /></button>
-              )}
-            </div>
-          </div>
-        </form>
-        <p className="composer-caption">{runtime.project?.trusted ? 'Trusted project · Pi tools run in the selected directory.' : 'Pi can inspect files and run tools only after you trust a project.'}</p>
+        <Composer onOpenProject={openProject} />
       </section>
     </main>
   );

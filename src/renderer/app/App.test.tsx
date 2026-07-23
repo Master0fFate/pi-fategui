@@ -1,6 +1,8 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PiDesktopApi, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
+import { useRuntimeStore } from '../stores/runtimeStore';
 import { useUiStore } from '../stores/uiStore';
 import { App } from './App';
 
@@ -8,6 +10,10 @@ describe('first-launch shell', () => {
   beforeEach(() => {
     localStorage.clear();
     useUiStore.setState({ sidebarCollapsed: false, inspectorCollapsed: false, leftWidth: 264, rightWidth: 332 });
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'piDesktop');
   });
 
   it('renders honest first-launch navigation and inspector tabs', () => {
@@ -38,6 +44,28 @@ describe('first-launch shell', () => {
     sidebarHandle.focus();
     await user.keyboard('{ArrowRight}');
     expect(sidebarHandle).toHaveAttribute('aria-valuenow', '276');
+  });
+
+  it('buffers live events until startup state hydration completes', async () => {
+    let resolveState: ((state: RuntimeState) => void) | undefined;
+    let listener: ((events: PiEvent[]) => void) | undefined;
+    const statePromise = new Promise<RuntimeState>((resolve) => { resolveState = resolve; });
+    const initial: RuntimeState = {
+      status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: true, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    };
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(() => statePromise),
+        onEvents: vi.fn((next: (events: PiEvent[]) => void) => { listener = next; return () => undefined; }),
+      } as unknown as PiDesktopApi,
+    });
+
+    render(<App />);
+    act(() => listener?.([{ type: 'assistant.text', messageId: 'live', delta: 'not lost', timestamp: 1 }]));
+    await act(async () => { resolveState?.(initial); await statePromise; });
+    await waitFor(() => expect(useRuntimeStore.getState().messagesById.live?.text).toBe('not lost'));
   });
 
   it('does not rely on renderer Node globals', () => {

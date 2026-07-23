@@ -50,14 +50,21 @@ const realPiSdkAdapter: PiSdkAdapter = {
   },
 };
 
-function toModelInfo(model: { provider: string; id: string; name: string; reasoning: boolean; contextWindow: number }): ModelInfo {
-  return { provider: model.provider, id: model.id, name: model.name, reasoning: model.reasoning, contextWindow: model.contextWindow };
+function toModelInfo(model: { provider: string; id: string; name: string; reasoning: boolean; contextWindow: number; input?: readonly string[] }): ModelInfo {
+  return {
+    provider: model.provider,
+    id: model.id,
+    name: model.name,
+    reasoning: model.reasoning,
+    contextWindow: model.contextWindow,
+    supportsImages: model.input?.includes('image') ?? false,
+  };
 }
 
 function toMessage(message: unknown, id: string): RuntimeMessage | null {
   if (!message || typeof message !== 'object') return null;
   const value = message as { role?: unknown; timestamp?: unknown; isError?: unknown; stopReason?: unknown; content?: unknown };
-  const role = value.role === 'user' ? 'user' : value.role === 'assistant' ? 'assistant' : value.role === 'toolResult' ? 'tool' : null;
+  const role = value.role === 'user' ? 'user' : value.role === 'assistant' ? 'assistant' : null;
   if (!role) return null;
   const timestamp = typeof value.timestamp === 'number' ? value.timestamp : 0;
   const result: RuntimeMessage = { id, role, text: messageText(message), timestamp };
@@ -112,6 +119,7 @@ export class PiRuntimeService {
       models: this.models,
       thinkingLevel: session?.thinkingLevel ?? 'medium',
       messages,
+      commands: session?.promptTemplates?.map((command) => ({ name: command.name, description: command.description ?? '' })) ?? [],
       error: this.stateError,
     };
   }
@@ -172,17 +180,16 @@ export class PiRuntimeService {
   prompt(input: PromptInput): Promise<PromptAcceptance> {
     const session = this.requireSession();
     const runId = randomUUID();
-    if (input.behavior === 'steer' || input.behavior === 'followUp') {
-      const operation = input.behavior === 'steer' ? session.steer(input.text) : session.followUp(input.text);
-      this.batcher.enqueue({ type: 'run.accepted', runId, timestamp: Date.now() });
-      void operation.catch((error: unknown) => this.emitError(normalizeError(error)));
-      return Promise.resolve({ accepted: true, runId });
+    const images = input.images?.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType }));
+    if (images?.length && !session.model?.input.includes('image')) {
+      throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The active model does not support image input.', retryable: true });
     }
-    if (session.isStreaming) {
+    if (session.isStreaming && input.behavior === 'prompt' && !input.text.trimStart().startsWith('/')) {
       throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Pi is already working. Steer it or queue a follow-up instead.', retryable: true });
     }
 
-    this.activeRunId = runId;
+    const ownsActiveRun = input.behavior === 'prompt' && !session.isStreaming;
+    if (ownsActiveRun) this.activeRunId = runId;
     this.stateError = null;
     let settled = false;
     return new Promise<PromptAcceptance>((resolve) => {
@@ -193,12 +200,16 @@ export class PiRuntimeService {
         else this.emitError({ code: 'INVALID_REQUEST', message: 'Pi rejected the prompt before starting.', retryable: true });
         resolve({ accepted, runId });
       };
-      void session.prompt(input.text, { preflightResult: accept }).catch((error: unknown) => {
+      void session.prompt(input.text, {
+        ...(images ? { images } : {}),
+        ...(input.behavior === 'prompt' ? {} : { streamingBehavior: input.behavior }),
+        preflightResult: accept,
+      }).catch((error: unknown) => {
         const normalized = normalizeError(error);
         if (!settled) accept(false);
         this.emitError(normalized);
       }).finally(() => {
-        if (this.activeRunId === runId) this.activeRunId = null;
+        if (ownsActiveRun && this.activeRunId === runId) this.activeRunId = null;
         this.emitState();
       });
     });

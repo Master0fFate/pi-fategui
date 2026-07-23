@@ -13,10 +13,13 @@ describe('PiEventNormalizer', () => {
     expect(normalizer.normalize(event({ type: 'message_update', message, assistantMessageEvent: { type: 'thinking_delta', delta: 'plan' } }))[0]).toMatchObject({ type: 'assistant.reasoning', delta: 'plan' });
   });
 
-  it('normalizes tool transitions and bounds serialized output', () => {
+  it('normalizes tool transitions and bounds serialized output without duplicating tool-result messages', () => {
     const normalizer = new PiEventNormalizer(() => 'run-1');
     expect(normalizer.normalize(event({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'read', args: { path: 'x' } }))[0]).toMatchObject({ type: 'tool.started', toolCallId: 't1', name: 'read' });
     expect(normalizer.normalize(event({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'read', result: 'ok', isError: false }))[0]).toMatchObject({ type: 'tool.completed', error: false });
+    const toolMessage = { role: 'toolResult', toolCallId: 't1', content: [{ type: 'text', text: 'ok' }] };
+    expect(normalizer.normalize(event({ type: 'message_start', message: toolMessage }))).toEqual([]);
+    expect(normalizer.normalize(event({ type: 'message_end', message: toolMessage }))).toEqual([]);
     expect(safeText('x'.repeat(70_000)).length).toBeLessThan(65_000);
   });
 });

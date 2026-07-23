@@ -6,6 +6,7 @@ import {
   getAppInfoInputSchema,
   ipcChannels,
   piEventBatchSchema,
+  projectFileReferenceSchema,
   promptAcceptanceSchema,
   promptInputSchema,
   runtimeStateSchema,
@@ -25,6 +26,10 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async selectProject() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.projectSelect, emptyInputSchema.parse({}));
     return runtimeStateSchema.parse(result);
+  },
+  async selectProjectFile() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.projectSelectFile, emptyInputSchema.parse({}));
+    return projectFileReferenceSchema.parse(result);
   },
   async getRuntimeState() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGetState, emptyInputSchema.parse({}));

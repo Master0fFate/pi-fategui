@@ -6,6 +6,7 @@ import {
   getAppInfoInputSchema,
   ipcChannels,
   piEventBatchSchema,
+  projectFileReferenceSchema,
   promptAcceptanceSchema,
   promptInputSchema,
   runtimeStateSchema,
@@ -53,6 +54,11 @@ export function registerIpc({ runtime, projects }: IpcServices): void {
     const project = await projects.select(BrowserWindow.fromWebContents(event.sender) ?? undefined);
     if (project) await runtime.openProject(project);
     return runtimeStateSchema.parse(runtime.getState());
+  });
+  register(ipcChannels.projectSelectFile, async (event, input) => {
+    emptyInputSchema.parse(input);
+    const relativePath = await projects.selectFile(BrowserWindow.fromWebContents(event.sender) ?? undefined);
+    return projectFileReferenceSchema.parse(relativePath);
   });
   register(ipcChannels.runtimeGetState, (_event, input) => {
     emptyInputSchema.parse(input);

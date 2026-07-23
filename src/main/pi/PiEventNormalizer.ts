@@ -66,9 +66,11 @@ export class PiEventNormalizer {
         return runId ? [{ type: 'run.completed', runId, aborted: last?.stopReason === 'aborted', timestamp: now }] : [];
       }
       case 'message_start': {
+        const role = messageRole(event.message);
+        if (role === 'tool') return [];
         const id = this.messageId(event.message);
-        if (messageRole(event.message) === 'assistant') this.activeAssistantId = id;
-        return [{ type: 'message.started', messageId: id, role: messageRole(event.message), timestamp: now }];
+        if (role === 'assistant') this.activeAssistantId = id;
+        return [{ type: 'message.started', messageId: id, role, timestamp: now }];
       }
       case 'message_update': {
         const update = event.assistantMessageEvent;
@@ -86,6 +88,7 @@ export class PiEventNormalizer {
       }
       case 'message_end': {
         const role = messageRole(event.message);
+        if (role === 'tool') return [];
         const id = role === 'assistant' && this.activeAssistantId ? this.activeAssistantId : this.messageId(event.message);
         if (role === 'assistant') this.activeAssistantId = null;
         const normalized: PiEvent = { type: 'message.completed', messageId: id, role, text: messageText(event.message), timestamp: now };
