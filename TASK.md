@@ -462,6 +462,21 @@ Implement:
 * packaging
 * documentation
 
+### Phase 7 — Complete session and Git workspace controls (final session phase)
+
+- [x] Expand the session list through the sidebar’s remaining vertical space; remove the detached clone/import/compact footer bar and remove the Import button.
+- [x] Put Fork, Clone, Compact, Rename, and Delete actions on their applicable session rows, switching to an inactive target session before an SDK action when required.
+- [x] Keep the conversation scrollbar’s visible lower endpoint above the floating composer while preserving the existing message clearance and behind-composer scroll behavior.
+- [x] Add bounded, typed Git IPC for worktree discovery/switching, combined working-tree diff, commit history/details, and non-destructive Fetch-all/Pull-ff-only/Push operations.
+- [x] Replace the whole project-bound Pi runtime when changing worktrees so Pi cwd, files, Git, sessions, trust, and terminal ownership remain aligned.
+- [x] Redesign the Changes header with left-side Refresh/current-history/Fetch/Pull/Push controls; a clickable worktree selector; and tooltip-backed file/addition/deletion metrics on the right.
+- [x] Add the three-dot List/Graph view selector, keeping List as the default and rendering a bounded virtualized commit graph as the alternate view.
+- [x] Add a lazy hover/focus commit card with author, relative/exact time, subject, file/line statistics, ref pills, hash copy, and conditional **Open on GitHub**.
+- [x] Expand a selected graph commit into its bounded changed-file tree while keeping per-file rows free of the global summary metrics.
+- [x] Add a global combined-diff preview opened from the header metrics.
+- [x] Use Lucide GitHub/Fetch/Pull/Push/history icons, keyboard-accessible Radix pop-outs, and only existing `--theme-*` colors.
+- [x] Verify contracts, parsers, untrusted-repository hardening, session actions, renderer states, virtualization, worktree replacement, full Vitest, builds, and Playwright; then mark this phase complete.
+
 After every phase, run the application and tests and fix failures before continuing.
 
 ## Testing requirements

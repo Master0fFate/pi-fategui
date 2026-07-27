@@ -1,11 +1,48 @@
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import type { PiEvent } from '../../shared/contracts/ipc';
+import type { PiEvent, RuntimeImage } from '../../shared/contracts/ipc';
 import { normalizeError } from './errors';
 
 const MAX_SERIALIZED_LENGTH = 64_000;
+const MAX_DELTA_LENGTH = 32_000;
+const MAX_DELTA_TOTAL_LENGTH = 1_024_000;
+const MAX_MESSAGE_CONTENT_BLOCKS = 1_000;
+const MAX_SERIALIZATION_NODES = 2_000;
+const MAX_SERIALIZATION_DEPTH = 8;
+const MAX_TOTAL_IMAGE_CHARACTERS = 20_000_000;
+const supportedImageMimeTypes = new Set<RuntimeImage['mimeType']>(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
 function timestamp(): number {
   return Date.now();
+}
+
+function boundedSerializable(value: unknown, state: { nodes: number; characters: number; seen: WeakSet<object> }, depth: number): unknown {
+  if (typeof value === 'string') {
+    const available = Math.max(0, MAX_SERIALIZED_LENGTH * 2 - state.characters);
+    const result = value.slice(0, available);
+    state.characters += result.length;
+    return result;
+  }
+  if (typeof value === 'bigint') return value.toString();
+  if (value === null || typeof value !== 'object') return value;
+  if (depth >= MAX_SERIALIZATION_DEPTH || state.nodes >= MAX_SERIALIZATION_NODES || state.seen.has(value)) return '[truncated]';
+  state.nodes += 1;
+  state.seen.add(value);
+  if (Array.isArray(value)) {
+    return value.slice(0, 200).map((item) => boundedSerializable(item, state, depth + 1));
+  }
+  const result: Record<string, unknown> = {};
+  let inspected = 0;
+  for (const key in value as Record<string, unknown>) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    try {
+      result[key] = boundedSerializable((value as Record<string, unknown>)[key], state, depth + 1);
+    } catch {
+      result[key] = '[unavailable]';
+    }
+    inspected += 1;
+    if (inspected >= 200) break;
+  }
+  return result;
 }
 
 export function safeText(value: unknown, maximum = MAX_SERIALIZED_LENGTH): string {
@@ -13,7 +50,8 @@ export function safeText(value: unknown, maximum = MAX_SERIALIZED_LENGTH): strin
   if (typeof value === 'string') result = value;
   else {
     try {
-      result = JSON.stringify(value, (_key, item: unknown) => typeof item === 'bigint' ? item.toString() : item) ?? String(value);
+      const bounded = boundedSerializable(value, { nodes: 0, characters: 0, seen: new WeakSet() }, 0);
+      result = JSON.stringify(bounded) ?? String(bounded);
     } catch {
       result = String(value);
     }
@@ -24,20 +62,55 @@ export function safeText(value: unknown, maximum = MAX_SERIALIZED_LENGTH): strin
 export function messageText(message: unknown): string {
   if (!message || typeof message !== 'object') return '';
   const candidate = message as { content?: unknown; errorMessage?: unknown };
-  if (typeof candidate.content === 'string') return candidate.content;
-  if (!Array.isArray(candidate.content)) return typeof candidate.errorMessage === 'string' ? candidate.errorMessage : '';
-  const text = candidate.content.flatMap((part: unknown) => {
-    if (!part || typeof part !== 'object') return [];
-    const block = part as { type?: string; text?: unknown; thinking?: unknown };
-    if (block.type === 'text' && typeof block.text === 'string') return [block.text];
-    return [];
-  }).join('');
-  return text || (typeof candidate.errorMessage === 'string' ? candidate.errorMessage : '');
+  if (typeof candidate.content === 'string') return candidate.content.slice(0, MAX_SERIALIZED_LENGTH);
+  if (!Array.isArray(candidate.content)) return typeof candidate.errorMessage === 'string' ? candidate.errorMessage.slice(0, MAX_SERIALIZED_LENGTH) : '';
+  let text = '';
+  for (let index = 0; index < Math.min(candidate.content.length, MAX_MESSAGE_CONTENT_BLOCKS); index += 1) {
+    const part = candidate.content[index];
+    if (!part || typeof part !== 'object') continue;
+    const block = part as { type?: string; text?: unknown };
+    if (block.type !== 'text' || typeof block.text !== 'string') continue;
+    text += block.text.slice(0, MAX_SERIALIZED_LENGTH - text.length);
+    if (text.length >= MAX_SERIALIZED_LENGTH) break;
+  }
+  return text || (typeof candidate.errorMessage === 'string' ? candidate.errorMessage.slice(0, MAX_SERIALIZED_LENGTH) : '');
 }
 
-function messageRole(message: unknown): 'user' | 'assistant' | 'tool' {
-  const role = message && typeof message === 'object' ? (message as { role?: unknown }).role : undefined;
-  return role === 'user' || role === 'assistant' ? role : 'tool';
+function deltaEvents(type: 'assistant.text' | 'assistant.reasoning', messageId: string, delta: string, now: number): PiEvent[] {
+  const events: PiEvent[] = [];
+  const boundedDelta = delta.slice(0, MAX_DELTA_TOTAL_LENGTH);
+  for (let offset = 0; offset < boundedDelta.length; offset += MAX_DELTA_LENGTH) {
+    events.push({ type, messageId, delta: boundedDelta.slice(offset, offset + MAX_DELTA_LENGTH), timestamp: now });
+  }
+  return events;
+}
+
+export function messageImages(message: unknown, altPrefix = 'Generated image'): RuntimeImage[] {
+  if (!message || typeof message !== 'object') return [];
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return [];
+  const images: RuntimeImage[] = [];
+  let totalCharacters = 0;
+  for (let index = 0; index < Math.min(content.length, MAX_MESSAGE_CONTENT_BLOCKS); index += 1) {
+    const part = content[index];
+    if (!part || typeof part !== 'object') continue;
+    const block = part as { type?: unknown; data?: unknown; mimeType?: unknown };
+    if (block.type !== 'image' || typeof block.data !== 'string' || block.data.length === 0 || block.data.length > MAX_TOTAL_IMAGE_CHARACTERS) continue;
+    if (typeof block.mimeType !== 'string' || !supportedImageMimeTypes.has(block.mimeType as RuntimeImage['mimeType'])) continue;
+    if (totalCharacters + block.data.length > MAX_TOTAL_IMAGE_CHARACTERS) break;
+    images.push({ data: block.data, mimeType: block.mimeType as RuntimeImage['mimeType'], alt: `${altPrefix} ${images.length + 1}` });
+    totalCharacters += block.data.length;
+    if (images.length === 8) break;
+  }
+  return images;
+}
+
+function messageRole(message: unknown): 'user' | 'assistant' | 'system' | 'tool' | 'hidden' {
+  if (!message || typeof message !== 'object') return 'hidden';
+  const value = message as { role?: unknown; display?: unknown };
+  if (value.role === 'user' || value.role === 'assistant') return value.role;
+  if (value.role === 'custom') return value.display === true ? 'system' : 'hidden';
+  return value.role === 'toolResult' ? 'tool' : 'hidden';
 }
 
 function messageError(message: unknown): boolean {
@@ -57,6 +130,10 @@ export class PiEventNormalizer {
     this.activeAssistantId = null;
   }
 
+  currentAssistantMessageId(): string | null {
+    return this.activeAssistantId;
+  }
+
   normalize(event: AgentSessionEvent): PiEvent[] {
     const now = timestamp();
     switch (event.type) {
@@ -71,7 +148,7 @@ export class PiEventNormalizer {
       }
       case 'message_start': {
         const role = messageRole(event.message);
-        if (role === 'tool') return [];
+        if (role === 'tool' || role === 'hidden') return [];
         const id = this.messageId(event.message);
         if (role === 'assistant') this.activeAssistantId = id;
         return [{ type: 'message.started', messageId: id, role, timestamp: now }];
@@ -80,10 +157,10 @@ export class PiEventNormalizer {
         const update = event.assistantMessageEvent;
         const messageId = this.activeAssistantId ?? this.messageId(event.message);
         if (update.type === 'text_delta' && update.delta) {
-          return [{ type: 'assistant.text', messageId, delta: update.delta, timestamp: now }];
+          return deltaEvents('assistant.text', messageId, update.delta, now);
         }
         if (update.type === 'thinking_delta' && update.delta) {
-          return [{ type: 'assistant.reasoning', messageId, delta: update.delta, timestamp: now }];
+          return deltaEvents('assistant.reasoning', messageId, update.delta, now);
         }
         if (update.type === 'error') {
           return [{ type: 'error', error: normalizeError(new Error(update.error.errorMessage ?? 'The model request failed.')), timestamp: now }];
@@ -92,10 +169,21 @@ export class PiEventNormalizer {
       }
       case 'message_end': {
         const role = messageRole(event.message);
-        if (role === 'tool') return [];
+        if (role === 'tool' || role === 'hidden') return [];
         const id = role === 'assistant' && this.activeAssistantId ? this.activeAssistantId : this.messageId(event.message);
-        if (role === 'assistant') this.activeAssistantId = null;
-        const normalized: PiEvent = { type: 'message.completed', messageId: id, role, text: messageText(event.message), timestamp: now };
+        if (role === 'assistant') {
+          if (event.message && typeof event.message === 'object') this.messageIds.set(event.message, id);
+          this.activeAssistantId = null;
+        }
+        const images = messageImages(event.message, role === 'user' ? 'Attached image' : 'Generated image');
+        const normalized: PiEvent = {
+          type: 'message.completed',
+          messageId: id,
+          role,
+          text: safeText(messageText(event.message)),
+          ...(images.length ? { images } : {}),
+          timestamp: now,
+        };
         if (messageError(event.message)) normalized.error = true;
         return [normalized];
       }
@@ -103,13 +191,25 @@ export class PiEventNormalizer {
         return [{ type: 'tool.started', toolCallId: event.toolCallId, name: event.toolName, input: safeText(event.args), timestamp: now }];
       case 'tool_execution_update':
         return [{ type: 'tool.updated', toolCallId: event.toolCallId, output: safeText(event.partialResult), timestamp: now }];
-      case 'tool_execution_end':
-        return [{ type: 'tool.completed', toolCallId: event.toolCallId, name: event.toolName, output: safeText(event.result), error: event.isError, timestamp: now }];
+      case 'tool_execution_end': {
+        const images = messageImages(event.result);
+        const text = messageText(event.result);
+        return [{
+          type: 'tool.completed',
+          toolCallId: event.toolCallId,
+          name: event.toolName,
+          output: text ? safeText(text) : (images.length ? '' : safeText(event.result)),
+          ...(images.length ? { images } : {}),
+          error: event.isError,
+          timestamp: now,
+        }];
+      }
       case 'queue_update':
         return [{ type: 'queue.changed', steering: event.steering.length, followUp: event.followUp.length, timestamp: now }];
       case 'compaction_start':
         return [{ type: 'context.compaction', phase: 'started', timestamp: now }];
       case 'compaction_end':
+        if (event.errorMessage) return [{ type: 'context.compaction', phase: 'failed', error: normalizeError(event.errorMessage), timestamp: now }];
         return [{ type: 'context.compaction', phase: 'completed', aborted: event.aborted, timestamp: now }];
       default:
         return [];

@@ -3,11 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src __SCRIPT_CSP__; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws://127.0.0.1:5173 http://127.0.0.1:5173; worker-src 'self' blob:; font-src 'self'"
+      content="default-src 'self'; script-src __SCRIPT_CSP__; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; connect-src 'self' ws://127.0.0.1:5173 http://127.0.0.1:5173; worker-src 'self' blob:; font-src 'self'"
     />
-    <title>Pi Desktop</title>
+    <title>Fate UI</title>
   </head>
   <body class="antialiased">
     <div id="root"></div>

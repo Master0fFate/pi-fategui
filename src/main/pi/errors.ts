@@ -19,6 +19,14 @@ export function normalizeError(error: unknown, fallbackCode: AppError['code'] = 
   if ((error instanceof Error && error.name === 'AbortError') || lower.includes('aborted')) {
     return { code: 'ABORTED', message: 'The active Pi run was stopped.', retryable: true };
   }
+  if (lower.includes('nothing to compact') || lower.includes('already compacted')) {
+    return {
+      code: 'INVALID_REQUEST',
+      message: lower.includes('already compacted') ? 'This conversation is already compacted.' : 'There is not enough conversation context to compact yet.',
+      actionable: 'Continue working, then compact when the session has more history.',
+      retryable: true,
+    };
+  }
   if (
     lower.includes('api key')
     || lower.includes('authentication')

@@ -1,0 +1,185 @@
+import { constants, promises as fs } from 'node:fs';
+import path from 'node:path';
+import {
+  createEditToolDefinition,
+  createReadToolDefinition,
+  createWriteToolDefinition,
+} from '@earendil-works/pi-coding-agent';
+import { PiDesktopError } from './errors';
+import { createGenerateImageTool } from './PiImageTool';
+
+const MAX_PI_READ_BYTES = 8 * 1024 * 1024;
+
+function isContained(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+export interface ProjectToolAccess {
+  fullAccess: boolean;
+}
+
+type ReadableRoots = readonly string[] | (() => readonly string[]);
+
+export class ProjectPathPolicy {
+  private constructor(
+    private readonly root: string,
+    private readonly access: ProjectToolAccess,
+    private readonly readableRoots: ReadableRoots,
+  ) {}
+
+  static async create(
+    root: string,
+    access: ProjectToolAccess = { fullAccess: false },
+    readableRoots: ReadableRoots = [],
+  ): Promise<ProjectPathPolicy> {
+    return new ProjectPathPolicy(path.normalize(await fs.realpath(root)), access, readableRoots);
+  }
+
+  async readable(input: string): Promise<string> {
+    const target = this.resolveInput(input);
+    const canonical = path.normalize(await fs.realpath(target));
+    if (this.access.fullAccess || isContained(this.root, canonical)) return canonical;
+    const configuredRoots = typeof this.readableRoots === 'function' ? this.readableRoots() : this.readableRoots;
+    for (const configuredRoot of new Set(configuredRoots)) {
+      try {
+        const approvedRoot = path.normalize(await fs.realpath(configuredRoot));
+        if (isContained(approvedRoot, canonical)) return canonical;
+      } catch {
+        // A resource removed during reload is no longer readable.
+      }
+    }
+    throw this.denied('Pi can read only the active project and currently loaded skill resources.');
+  }
+
+  async existing(input: string): Promise<string> {
+    const target = this.lexical(input);
+    const canonical = path.normalize(await fs.realpath(target));
+    if (!this.access.fullAccess) this.assertContained(canonical);
+    return canonical;
+  }
+
+  async writable(input: string): Promise<string> {
+    const target = this.lexical(input);
+    if (this.access.fullAccess) return target;
+    try {
+      const canonical = path.normalize(await fs.realpath(target));
+      this.assertContained(canonical);
+      return canonical;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+
+    let ancestor = path.dirname(target);
+    while (true) {
+      try {
+        const canonicalAncestor = path.normalize(await fs.realpath(ancestor));
+        this.assertContained(canonicalAncestor);
+        const canonicalTarget = path.resolve(canonicalAncestor, path.relative(ancestor, target));
+        this.assertContained(canonicalTarget);
+        return canonicalTarget;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        const parent = path.dirname(ancestor);
+        if (parent === ancestor) throw error;
+        ancestor = parent;
+      }
+    }
+  }
+
+  private resolveInput(input: string): string {
+    if (!input.trim()) throw this.denied();
+    return path.resolve(this.root, input);
+  }
+
+  private lexical(input: string): string {
+    const target = this.resolveInput(input);
+    if (!this.access.fullAccess) this.assertContained(target);
+    return target;
+  }
+
+  private assertContained(candidate: string): void {
+    if (!isContained(this.root, candidate)) throw this.denied();
+  }
+
+  private denied(message = 'Pi file tools can access only the active project directory.'): PiDesktopError {
+    return new PiDesktopError({
+      code: 'INVALID_PROJECT',
+      message,
+      retryable: false,
+    });
+  }
+}
+
+export async function createProjectConfinedTools(
+  cwd: string,
+  access: ProjectToolAccess = { fullAccess: false },
+  readableRoots: ReadableRoots = [],
+) {
+  const policy = await ProjectPathPolicy.create(cwd, access, readableRoots);
+  const withReadable = async (filePath: string, read: boolean): Promise<Buffer | undefined> => {
+    const target = await policy.readable(filePath);
+    const handle = await fs.open(target, 'r');
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > MAX_PI_READ_BYTES) {
+        throw new PiDesktopError({
+          code: 'INVALID_PROJECT',
+          message: `Pi reads are limited to regular project files smaller than ${MAX_PI_READ_BYTES / 1024 / 1024} MiB.`,
+          retryable: false,
+        });
+      }
+      const verifiedTarget = await policy.readable(target);
+      if (path.relative(target, verifiedTarget) !== '') throw new PiDesktopError({ code: 'INVALID_PROJECT', message: 'Pi refused a concurrently replaced project or skill file.', retryable: true });
+      return read ? await handle.readFile() : undefined;
+    } finally {
+      await handle.close();
+    }
+  };
+  const readOperations = {
+    readFile: async (filePath: string) => (await withReadable(filePath, true))!,
+    access: async (filePath: string) => { await withReadable(filePath, false); },
+  };
+  const secureWriteFile = async (filePath: string, content: string) => {
+    const target = await policy.writable(filePath);
+    if (access.fullAccess) {
+      await fs.writeFile(target, content);
+      return;
+    }
+
+    let create = false;
+    try {
+      await fs.lstat(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      create = true;
+    }
+    const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
+    const flags = constants.O_WRONLY | noFollow | (create ? constants.O_CREAT | constants.O_EXCL : 0);
+    const handle = await fs.open(target, flags, 0o600);
+    try {
+      const [stat, verifiedTarget] = await Promise.all([handle.stat(), policy.existing(target)]);
+      if (!stat.isFile() || stat.nlink > 1 || path.relative(target, verifiedTarget) !== '') {
+        throw new PiDesktopError({
+          code: 'INVALID_PROJECT',
+          message: 'Pi refused to write a linked or concurrently replaced project file.',
+          retryable: true,
+        });
+      }
+      await handle.truncate(0);
+      await handle.writeFile(content, 'utf8');
+    } finally {
+      await handle.close();
+    }
+  };
+  const writeOperations = {
+    mkdir: async (directoryPath: string) => { await fs.mkdir(await policy.writable(directoryPath), { recursive: true }); },
+    writeFile: secureWriteFile,
+  };
+  return [
+    createReadToolDefinition(cwd, { operations: readOperations }),
+    createWriteToolDefinition(cwd, { operations: writeOperations }),
+    createEditToolDefinition(cwd, { operations: { ...readOperations, writeFile: writeOperations.writeFile } }),
+    createGenerateImageTool(),
+  ];
+}

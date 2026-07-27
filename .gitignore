@@ -11,3 +11,6 @@ coverage/
 test-results/
 playwright-report/
 .test-dist/
+.aislop/
+.codeviewer-mcp.sqlite
+NUL

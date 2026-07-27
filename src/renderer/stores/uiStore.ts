@@ -1,5 +1,17 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { SpeechDownloadProgress, SpeechSettings } from '../../shared/contracts/ipc';
+
+export type AppToastKind = 'info' | 'success' | 'warning' | 'error';
+export interface AppToastMessage {
+  id: number;
+  kind: AppToastKind;
+  title: string;
+  message: string;
+}
+
+let nextToastId = 0;
+let nextComposerDraftRequestId = 0;
 
 export const LEFT_MIN = 220;
 export const LEFT_MAX = 420;
@@ -14,7 +26,14 @@ interface UiState {
   paletteOpen: boolean;
   settingsOpen: boolean;
   terminalOpen: boolean;
-  inspectorTab: 'changes' | 'files' | 'tools' | 'context';
+  musicPlayerEnabled: boolean;
+  musicPlaying: boolean;
+  sendMessageWithModifier: boolean;
+  speech: SpeechSettings;
+  speechDownload: SpeechDownloadProgress | null;
+  toast: AppToastMessage | null;
+  composerDraftRequest: { id: number; text: string; selectAll: boolean; notice?: string } | null;
+  inspectorTab: 'changes' | 'files' | 'tools' | 'resources' | 'context';
   setLeftWidth: (width: number) => void;
   setRightWidth: (width: number) => void;
   toggleSidebar: () => void;
@@ -23,6 +42,15 @@ interface UiState {
   setSettingsOpen: (open: boolean) => void;
   setTerminalOpen: (open: boolean) => void;
   toggleTerminal: () => void;
+  setMusicPlayerEnabled: (enabled: boolean) => void;
+  setMusicPlaying: (playing: boolean) => void;
+  setSendMessageWithModifier: (enabled: boolean) => void;
+  setSpeech: (speech: SpeechSettings) => void;
+  setSpeechDownload: (speechDownload: SpeechDownloadProgress | null) => void;
+  showToast: (toast: Omit<AppToastMessage, 'id'>) => void;
+  dismissToast: () => void;
+  requestComposerDraft: (text: string, selectAll?: boolean, notice?: string) => void;
+  clearComposerDraftRequest: (id: number) => void;
   setInspectorTab: (tab: UiState['inspectorTab']) => void;
 }
 
@@ -39,6 +67,13 @@ export const useUiStore = create<UiState>()(
       paletteOpen: false,
       settingsOpen: false,
       terminalOpen: false,
+      musicPlayerEnabled: false,
+      musicPlaying: false,
+      sendMessageWithModifier: false,
+      speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
+      speechDownload: null,
+      toast: null,
+      composerDraftRequest: null,
       inspectorTab: 'changes',
       setLeftWidth: (leftWidth) => set({ leftWidth: clamp(leftWidth, LEFT_MIN, LEFT_MAX) }),
       setRightWidth: (rightWidth) => set({ rightWidth: clamp(rightWidth, RIGHT_MIN, RIGHT_MAX) }),
@@ -48,6 +83,15 @@ export const useUiStore = create<UiState>()(
       setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
       setTerminalOpen: (terminalOpen) => set({ terminalOpen }),
       toggleTerminal: () => set((state) => ({ terminalOpen: !state.terminalOpen })),
+      setMusicPlayerEnabled: (musicPlayerEnabled) => set({ musicPlayerEnabled }),
+      setMusicPlaying: (musicPlaying) => set({ musicPlaying }),
+      setSendMessageWithModifier: (sendMessageWithModifier) => set({ sendMessageWithModifier }),
+      setSpeech: (speech) => set({ speech }),
+      setSpeechDownload: (speechDownload) => set({ speechDownload }),
+      showToast: (toast) => set({ toast: { ...toast, id: ++nextToastId } }),
+      dismissToast: () => set({ toast: null }),
+      requestComposerDraft: (text, selectAll = false, notice) => set({ composerDraftRequest: { id: ++nextComposerDraftRequestId, text, selectAll, ...(notice ? { notice } : {}) } }),
+      clearComposerDraftRequest: (id) => set((state) => state.composerDraftRequest?.id === id ? { composerDraftRequest: null } : state),
       setInspectorTab: (inspectorTab) => set({ inspectorTab }),
     }),
     {

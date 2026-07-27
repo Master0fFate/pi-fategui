@@ -9,6 +9,9 @@ describe('UI store', () => {
       rightWidth: 332,
       sidebarCollapsed: false,
       inspectorCollapsed: false,
+      musicPlaying: false,
+      sendMessageWithModifier: false,
+      toast: null,
     });
   });
 
@@ -22,6 +25,24 @@ describe('UI store', () => {
     useUiStore.getState().setRightWidth(1);
     expect(useUiStore.getState().leftWidth).toBe(LEFT_MAX);
     expect(useUiStore.getState().rightWidth).toBe(RIGHT_MIN);
+  });
+
+  it('shares transient playback state without coupling it to pane state', () => {
+    useUiStore.getState().setMusicPlaying(true);
+    expect(useUiStore.getState().musicPlaying).toBe(true);
+    expect(useUiStore.getState().sidebarCollapsed).toBe(false);
+  });
+
+  it('shares the saved composer delivery preference with the input surface', () => {
+    useUiStore.getState().setSendMessageWithModifier(true);
+    expect(useUiStore.getState().sendMessageWithModifier).toBe(true);
+  });
+
+  it('keeps transient notifications outside persisted pane state', () => {
+    useUiStore.getState().showToast({ kind: 'warning', title: 'Microphone changed', message: 'Using the system default.' });
+    expect(useUiStore.getState().toast).toMatchObject({ kind: 'warning', title: 'Microphone changed' });
+    useUiStore.getState().dismissToast();
+    expect(useUiStore.getState().toast).toBeNull();
   });
 
   it('toggles both collapsible panes independently', () => {

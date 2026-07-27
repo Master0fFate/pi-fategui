@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import {
   SessionManager,
   type AgentSession,
@@ -9,27 +10,133 @@ import { messageText } from './PiEventNormalizer';
 
 export interface SessionRepositorySource {
   list(cwd: string): Promise<SessionInfo[]>;
+  rename(path: string, name: string): void;
+  remove?(path: string): Promise<void>;
 }
 
 const sdkSource: SessionRepositorySource = {
   list: (cwd) => SessionManager.list(cwd),
+  rename: (sessionPath, name) => { SessionManager.open(sessionPath).appendSessionInfo(name); },
+  remove: (sessionPath) => rm(sessionPath),
 };
 
-/** Project-scoped, read-only projection of Pi's persistent JSONL session store. */
+const FALLBACK_TITLE_LIMIT = 58;
+const EXPLICIT_TITLE_LIMIT = 120;
+const MAX_PROJECTED_BRANCHES = 5_000;
+const MAX_BRANCH_NODES_VISITED = 50_000;
+const MAX_CACHED_SESSIONS = 5_000;
+const MAX_SESSION_SEARCH_TEXT = 64_000;
+const MAX_SESSION_SEARCH_CACHE_CHARACTERS = 20_000_000;
+const SESSION_CACHE_TTL_MS = 2_000;
+const MAX_PROJECT_CACHE_ENTRIES = 4;
+
+export function sessionDisplayTitle(name: string | undefined, firstMessage: string): string {
+  const explicitName = name?.replace(/\s+/g, ' ').trim();
+  if (explicitName) {
+    const characters = [...explicitName];
+    return characters.length <= EXPLICIT_TITLE_LIMIT ? explicitName : `${characters.slice(0, EXPLICIT_TITLE_LIMIT - 1).join('').trimEnd()}…`;
+  }
+  const prompt = firstMessage.replace(/\s+/g, ' ').trim();
+  if (!prompt || prompt === '(no messages)') return 'Untitled session';
+  const characters = [...prompt];
+  if (characters.length <= FALLBACK_TITLE_LIMIT) return prompt;
+  const clipped = characters.slice(0, FALLBACK_TITLE_LIMIT - 1).join('');
+  const wordBoundary = clipped.lastIndexOf(' ');
+  const readable = wordBoundary >= Math.floor(FALLBACK_TITLE_LIMIT * 0.6)
+    ? clipped.slice(0, wordBoundary)
+    : clipped;
+  return `${readable.trimEnd()}…`;
+}
+
+interface CachedSessionInfo { session: SessionInfo; searchText: string }
+
+function boundedSessionSearchText(session: SessionInfo, limit: number): string {
+  if (limit <= 0) return '';
+  let text = '';
+  for (const value of [session.name, session.firstMessage, session.allMessagesText]) {
+    if (!value || text.length >= limit) continue;
+    if (text) text += '\n'.slice(0, limit - text.length);
+    text += value.slice(0, limit - text.length);
+  }
+  return text.toLocaleLowerCase();
+}
+
+/** Project-scoped, bounded projection of Pi's persistent JSONL session store. */
 export class PiSessionRepository {
+  private readonly cache = new Map<string, { expiresAt: number; value: Promise<CachedSessionInfo[]> }>();
+
   constructor(private readonly source: SessionRepositorySource = sdkSource) {}
+
+  invalidate(cwd: string): void {
+    this.cache.delete(this.cacheKey(cwd, false));
+    this.cache.delete(this.cacheKey(cwd, true));
+  }
+
+  private cacheKey(cwd: string, includeSearchText: boolean): string {
+    return `${cwd}\0${includeSearchText ? 'search' : 'summary'}`;
+  }
+
+  private load(cwd: string, includeSearchText: boolean): Promise<CachedSessionInfo[]> {
+    const key = this.cacheKey(cwd, includeSearchText);
+    const cached = this.cache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      this.cache.delete(key);
+      this.cache.set(key, cached);
+      return cached.value;
+    }
+    if (cached) this.cache.delete(key);
+    const value = this.source.list(cwd).then((sessions) => {
+      let remainingSearchCharacters = MAX_SESSION_SEARCH_CACHE_CHARACTERS;
+      return [...sessions]
+        .sort((left, right) => right.modified.getTime() - left.modified.getTime())
+        .slice(0, MAX_CACHED_SESSIONS)
+        .map((session) => {
+          const searchText = includeSearchText
+            ? boundedSessionSearchText(session, Math.min(MAX_SESSION_SEARCH_TEXT, remainingSearchCharacters))
+            : '';
+          remainingSearchCharacters -= searchText.length;
+          const boundedSession: SessionInfo = {
+            path: session.path,
+            id: session.id,
+            cwd: session.cwd,
+            ...(session.name === undefined ? {} : { name: session.name.slice(0, 500) }),
+            ...(session.parentSessionPath === undefined ? {} : { parentSessionPath: session.parentSessionPath }),
+            created: session.created,
+            modified: session.modified,
+            messageCount: session.messageCount,
+            firstMessage: session.firstMessage.slice(0, 2_000),
+            allMessagesText: '',
+          };
+          return { session: boundedSession, searchText };
+        });
+    }).then((sessions) => {
+      const entry = this.cache.get(key);
+      if (entry?.value === value) {
+        entry.expiresAt = Date.now() + SESSION_CACHE_TTL_MS;
+        const expiration = setTimeout(() => {
+          if (this.cache.get(key)?.value === value) this.cache.delete(key);
+        }, SESSION_CACHE_TTL_MS);
+        expiration.unref();
+      }
+      return sessions;
+    }).catch((error) => {
+      if (this.cache.get(key)?.value === value) this.cache.delete(key);
+      throw error;
+    });
+    this.cache.set(key, { expiresAt: Number.POSITIVE_INFINITY, value });
+    while (this.cache.size > MAX_PROJECT_CACHE_ENTRIES) this.cache.delete(this.cache.keys().next().value!);
+    return value;
+  }
 
   async list(cwd: string, activeSessionId: string | null, query = ''): Promise<SessionSummary[]> {
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    const sessions = await this.source.list(cwd);
+    const sessions = await this.load(cwd, normalizedQuery.length > 0);
     return sessions
-      .filter((session) => !normalizedQuery || [session.name, session.firstMessage, session.allMessagesText]
-        .some((value) => value?.toLocaleLowerCase().includes(normalizedQuery)))
-      .sort((left, right) => right.modified.getTime() - left.modified.getTime())
-      .map((session) => ({
+      .filter(({ searchText }) => !normalizedQuery || searchText.includes(normalizedQuery))
+      .map(({ session }) => ({
         id: session.id,
-        title: session.name?.trim() || session.firstMessage.trim() || 'Untitled session',
-        firstMessage: session.firstMessage,
+        title: sessionDisplayTitle(session.name, session.firstMessage),
+        firstMessage: session.firstMessage.slice(0, 2_000),
         path: session.path,
         createdAt: session.created.toISOString(),
         modifiedAt: session.modified.toISOString(),
@@ -43,35 +150,63 @@ export class PiSessionRepository {
     return (await this.list(cwd, null)).find((session) => session.id === sessionId);
   }
 
+  async rename(cwd: string, sessionId: string, name: string): Promise<void> {
+    const session = await this.resolve(cwd, sessionId);
+    if (!session) throw new Error('The selected session no longer exists.');
+    this.source.rename(session.path, name);
+    this.invalidate(cwd);
+  }
+
+  async renameIfUnnamed(cwd: string, sessionId: string, name: string): Promise<boolean> {
+    const session = (await this.source.list(cwd)).find((candidate) => candidate.id === sessionId);
+    if (!session || session.name?.trim()) return false;
+    this.source.rename(session.path, name);
+    this.invalidate(cwd);
+    return true;
+  }
+
+  async delete(cwd: string, sessionId: string): Promise<void> {
+    const session = await this.resolve(cwd, sessionId);
+    if (!session) throw new Error('The selected session no longer exists.');
+    if (!this.source.remove) throw new Error('Deleting sessions is unavailable.');
+    await this.source.remove(session.path);
+    this.invalidate(cwd);
+  }
+
   branches(session: AgentSession): SessionBranch[] {
     const manager = session.sessionManager;
     if (!manager || typeof manager.getTree !== 'function') return [];
-    const activePath = new Set(manager.getBranch().map((entry) => entry.id));
+    const activePath = new Set(manager.getBranch().slice(-MAX_BRANCH_NODES_VISITED).map((entry) => entry.id));
     const result: SessionBranch[] = [];
-    const visit = (node: SessionTreeNode, depth: number) => {
+    const stack: Array<{ node: SessionTreeNode; depth: number }> = manager.getTree()
+      .slice()
+      .reverse()
+      .map((node) => ({ node, depth: 0 }));
+    let visited = 0;
+    while (stack.length > 0 && visited < MAX_BRANCH_NODES_VISITED && result.length < MAX_PROJECTED_BRANCHES) {
+      const { node, depth } = stack.pop()!;
+      visited += 1;
       const entry = node.entry;
       const preview = entry.type === 'message'
         ? messageText(entry.message).replace(/\s+/g, ' ').trim().slice(0, 100)
         : entry.type === 'branch_summary'
           ? entry.summary.replace(/\s+/g, ' ').trim().slice(0, 100)
           : '';
-      // A linear conversation is not a useful branch list. Project only
-      // branch points, labeled checkpoints, and leaves while still traversing
-      // the complete tree to preserve their true depth.
       if (node.children.length !== 1 || node.label) {
         result.push({
-          id: entry.id,
-          parentId: entry.parentId,
-          depth,
-          ...(node.label ? { label: node.label } : {}),
+          id: entry.id.slice(0, 500),
+          parentId: entry.parentId?.slice(0, 500) ?? null,
+          depth: Math.min(depth, MAX_BRANCH_NODES_VISITED),
+          ...(node.label ? { label: node.label.slice(0, 500) } : {}),
           preview,
-          kind: entry.type,
+          kind: entry.type.slice(0, 100),
           active: activePath.has(entry.id),
         });
       }
-      for (const child of node.children) visit(child, depth + 1);
-    };
-    for (const root of manager.getTree()) visit(root, 0);
+      for (let index = node.children.length - 1; index >= 0 && stack.length + visited < MAX_BRANCH_NODES_VISITED; index -= 1) {
+        stack.push({ node: node.children[index]!, depth: depth + 1 });
+      }
+    }
     return result;
   }
 }

@@ -1,4 +1,6 @@
+import { useShallow } from 'zustand/react/shallow';
 import { ResizeHandle } from '../components/ResizeHandle';
+import { WindowChrome } from '../components/WindowChrome';
 import { Inspector } from '../features/shell/Inspector';
 import { Sidebar } from '../features/shell/Sidebar';
 import { Workspace } from '../features/shell/Workspace';
@@ -11,17 +13,27 @@ import {
 } from '../stores/uiStore';
 
 export function AppShell() {
-  const state = useUiStore();
+  const state = useUiStore(useShallow((ui) => ({
+    sidebarCollapsed: ui.sidebarCollapsed,
+    inspectorCollapsed: ui.inspectorCollapsed,
+    leftWidth: ui.leftWidth,
+    rightWidth: ui.rightWidth,
+    toggleSidebar: ui.toggleSidebar,
+    toggleInspector: ui.toggleInspector,
+    setLeftWidth: ui.setLeftWidth,
+    setRightWidth: ui.setRightWidth,
+  })));
   const leftTrack = state.sidebarCollapsed ? '64px' : `min(${state.leftWidth}px, 27vw)`;
   const rightTrack = state.inspectorCollapsed ? '0px' : `min(${state.rightWidth}px, 31vw)`;
 
   return (
     <div
-      className="app-shell"
+      className={`app-shell app-shell--sidebar-${state.sidebarCollapsed ? 'collapsed' : 'open'} app-shell--inspector-${state.inspectorCollapsed ? 'collapsed' : 'open'}`}
       style={{
         gridTemplateColumns: `${leftTrack} ${state.sidebarCollapsed ? 0 : 6}px minmax(340px, 1fr) ${state.inspectorCollapsed ? 0 : 6}px ${rightTrack}`,
       }}
     >
+      <WindowChrome />
       <Sidebar collapsed={state.sidebarCollapsed} onToggle={state.toggleSidebar} />
       {!state.sidebarCollapsed && (
         <ResizeHandle

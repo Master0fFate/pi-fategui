@@ -1,26 +1,53 @@
-import { app, BrowserWindow, Menu, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, screen, session, shell, systemPreferences } from 'electron';
+import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FilesystemService } from './files/FilesystemService';
 import { GitService } from './git/GitService';
 import { registerIpc } from './ipc/registerIpc';
 import { AppLogService } from './logging/AppLogService';
+import { MusicService } from './music/MusicService';
 import { PiRuntimeService } from './pi/PiRuntimeService';
+import { SessionPermissionStore } from './pi/SessionPermissionStore';
 import { ProjectService } from './projects/ProjectService';
 import { secureWebPreferences } from './security/windowOptions';
+import { createTrustedRendererPolicy, isExternalHttpsUrl, isTrustedAudioPermissionRequest, isTrustedRendererUrl } from './security/trustedRenderer';
 import { SettingsService } from './settings/SettingsService';
+import { SpeechService } from './speech/SpeechService';
 import { TerminalService } from './terminal/TerminalService';
-import { appCommandSchema, ipcChannels, type AppCommand } from '../shared/contracts/ipc';
+import { WindowStateService, type WindowPlacement } from './windowState';
+import { installWindowZoomShortcuts } from './windowZoom';
+import { appCommandSchema, ipcChannels, windowStateSchema, type AppCommand } from '../shared/contracts/ipc';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
-const runtime = new PiRuntimeService();
+
+function configurePackagedSpeechLibrary(): void {
+  if (!app.isPackaged || process.env.TRANSCRIBE_LIBRARY) return;
+  const libraryName = process.platform === 'win32' ? 'transcribe.dll' : process.platform === 'darwin' ? 'libtranscribe.dylib' : 'libtranscribe.so';
+  const providers = path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', '@transcribe-cpp');
+  if (!existsSync(providers)) return;
+  const library = readdirSync(providers)
+    .map((provider) => path.join(providers, provider, libraryName))
+    .find((candidate) => existsSync(candidate));
+  if (library) process.env.TRANSCRIBE_LIBRARY = library;
+}
+
+configurePackagedSpeechLibrary();
+const logs = new AppLogService();
+const runtime = new PiRuntimeService(undefined, undefined, new SessionPermissionStore(logs));
 const projects = new ProjectService();
 const files = new FilesystemService();
 const git = new GitService(files);
-const logs = new AppLogService();
 const settings = new SettingsService(logs);
+const windowState = new WindowStateService(logs);
+const music = new MusicService();
+const speech = new SpeechService(logs);
 const terminal = new TerminalService(files, runtime, settings, logs);
 let mainWindow: BrowserWindow | null = null;
+let quitReady = false;
+let shutdown: Promise<void> | null = null;
+const rendererPath = path.join(currentDirectory, '../renderer/index.html');
+const rendererPolicy = createTrustedRendererPolicy(rendererPath, process.env.VITE_DEV_SERVER_URL);
 
 function sendCommand(command: AppCommand): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcChannels.appCommand, appCommandSchema.parse(command));
@@ -39,74 +66,134 @@ function installMenu(): void {
       { label: 'Toggle Sidebar', accelerator: 'CmdOrCtrl+B', click: () => sendCommand('toggle-sidebar') },
       { label: 'Toggle Inspector', accelerator: 'CmdOrCtrl+Shift+B', click: () => sendCommand('toggle-inspector') },
       { label: 'Toggle Terminal', accelerator: 'CmdOrCtrl+`', click: () => sendCommand('open-terminal') },
+      { type: 'separator' },
+      { role: 'zoomIn' },
+      { role: 'zoomOut' },
+      { role: 'resetZoom' },
       { type: 'separator' }, { role: 'reload' }, { role: 'toggleDevTools', visible: !app.isPackaged },
     ] },
     { label: 'Agent', submenu: [
       { label: 'Focus Composer', accelerator: 'CmdOrCtrl+L', click: () => sendCommand('focus-composer') },
-      { label: 'Stop Generation', accelerator: 'Esc', click: () => sendCommand('stop-generation') },
+      { label: 'Stop Generation', click: () => sendCommand('stop-generation') },
     ] },
     { label: 'Help', submenu: [{ label: 'Settings', accelerator: 'CmdOrCtrl+,', click: () => sendCommand('open-settings') }] },
   ]);
   Menu.setApplicationMenu(menu);
 }
 
+function rememberWindowPlacement(window: BrowserWindow | null): void {
+  if (!window || window.isDestroyed()) return;
+  const placement: WindowPlacement = {
+    bounds: window.getNormalBounds(),
+    maximized: window.isMaximized(),
+  };
+  windowState.save(placement);
+}
+
 function createWindow(): BrowserWindow {
   const preload = path.join(currentDirectory, '../preload/index.cjs');
+  const placement = windowState.resolve(screen.getAllDisplays(), screen.getPrimaryDisplay());
   const window = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    ...placement.bounds,
     minWidth: 900,
     minHeight: 620,
     show: false,
-    backgroundColor: '#090b12',
-    title: 'Pi Desktop',
-    titleBarStyle: 'hidden',
-    ...(process.platform !== 'darwin'
-      ? { titleBarOverlay: { color: '#090b12', symbolColor: '#9aa3b7', height: 38 } }
-      : {}),
+    backgroundColor: '#11111b',
+    title: 'Fate UI',
+    frame: false,
     webPreferences: {
       ...secureWebPreferences,
       preload,
+      devTools: !app.isPackaged,
     },
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) void shell.openExternal(url);
+    if (isExternalHttpsUrl(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', (event, url) => {
-    const allowedOrigin = process.env.VITE_DEV_SERVER_URL;
-    if (allowedOrigin && url.startsWith(allowedOrigin)) return;
-    if (url.startsWith('file:')) return;
-    event.preventDefault();
+    if (!isTrustedRendererUrl(url, rendererPolicy)) event.preventDefault();
   });
-  window.once('ready-to-show', () => window.show());
+  const removeWindowZoomShortcuts = installWindowZoomShortcuts(window);
+  window.once('ready-to-show', () => {
+    if (placement.maximized) window.maximize();
+    window.show();
+  });
+  const sendWindowState = () => {
+    if (!window.isDestroyed()) window.webContents.send(ipcChannels.windowState, windowStateSchema.parse({ maximized: window.isMaximized(), minimized: window.isMinimized() }));
+  };
+  window.on('maximize', sendWindowState);
+  window.on('unmaximize', sendWindowState);
+  window.on('minimize', sendWindowState);
+  window.on('restore', sendWindowState);
+  window.webContents.on('did-fail-load', (_event, code, description) => {
+    if (code === -3 || window.isDestroyed()) return;
+    void dialog.showMessageBox(window, {
+      type: 'error',
+      title: 'Fate UI could not start',
+      message: 'The application interface failed to load.',
+      detail: `${description} (${code})`,
+      buttons: ['Quit'],
+    }).finally(() => app.quit());
+  });
 
   if (process.env.PI_DESKTOP_SMOKE === '1') {
     window.webContents.once('did-finish-load', () => {
-      console.log('PI_DESKTOP_SMOKE_OK');
-      setTimeout(() => app.quit(), 100);
+      void speech.getStatus().then((status) => {
+        console.log(`PI_DESKTOP_SPEECH_OK ${status.backend}`);
+        console.log('PI_DESKTOP_SMOKE_OK');
+        setTimeout(() => app.quit(), 100);
+      }).catch((error: unknown) => {
+        console.error(`PI_DESKTOP_SPEECH_FAILED ${error instanceof Error ? error.message : String(error)}`);
+        app.exit(1);
+      });
     });
   }
 
   const developmentUrl = process.env.VITE_DEV_SERVER_URL;
   if (developmentUrl) void window.loadURL(developmentUrl);
-  else void window.loadFile(path.join(currentDirectory, '../renderer/index.html'));
+  else void window.loadFile(rendererPath);
 
   const ownerId = window.webContents.id;
   window.webContents.on('destroyed', () => terminal.disposeOwner(ownerId));
+  window.on('close', () => rememberWindowPlacement(window));
   window.on('closed', () => {
+    removeWindowZoomShortcuts();
     if (mainWindow === window) mainWindow = null;
   });
   return window;
 }
 
 app.whenReady().then(async () => {
-  await settings.load();
-  logs.write('info', 'app', `Pi Desktop ${app.getVersion()} started.`);
-  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  session.defaultSession.setPermissionCheckHandler(() => false);
-  registerIpc({ runtime, projects, files, git, settings, terminal, logs });
+  await Promise.all([settings.load(), windowState.load()]);
+  logs.write('info', 'app', `Fate UI ${app.getVersion()} started.`);
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const mediaTypes = 'mediaTypes' in details ? details.mediaTypes : undefined;
+    callback(permission === 'media' && isTrustedAudioPermissionRequest(rendererPolicy, {
+      documentUrl: webContents.getURL(),
+      mediaTypes,
+    }));
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => (
+    permission === 'media'
+    && details.mediaType === 'audio'
+    && isTrustedAudioPermissionRequest(rendererPolicy, {
+      // Packaged pages report the broad `file://` origin; the exact WebContents URL is the security boundary.
+      documentUrl: webContents?.getURL(),
+      requestingOrigin,
+      mediaTypes: ['audio'],
+    })
+  ));
+  if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('microphone') === 'not-determined') {
+    try {
+      const granted = await systemPreferences.askForMediaAccess('microphone');
+      if (!granted) logs.write('warn', 'microphone', 'Microphone permission was denied in macOS System Settings.');
+    } catch (error) {
+      logs.write('warn', 'microphone', `macOS microphone permission could not be requested: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, rendererPolicy });
   installMenu();
   mainWindow = createWindow();
   app.on('activate', () => {
@@ -114,9 +201,22 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (quitReady) return;
+  event.preventDefault();
+  if (shutdown) return;
+  rememberWindowPlacement(mainWindow);
   terminal.dispose();
-  void runtime.dispose();
+  music.dispose();
+  shutdown = Promise.race([
+    Promise.all([runtime.dispose(), speech.dispose(), windowState.flush()]).then(() => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+  ]).catch((error: unknown) => {
+    logs.write('warn', 'app', `Application shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+  }).finally(() => {
+    quitReady = true;
+    app.exit(0);
+  });
 });
 
 app.on('window-all-closed', () => {

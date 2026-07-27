@@ -5,6 +5,7 @@ import {
   GitCompareArrows,
   Info,
   ListChecks,
+  Sparkles,
   ShieldCheck,
 } from 'lucide-react';
 import { Virtuoso } from 'react-virtuoso';
@@ -12,6 +13,7 @@ import { IconButton } from '../../components/IconButton';
 import { ToolCard } from '../chat/ToolCard';
 import { ChangesPanel } from '../diffs/ChangesPanel';
 import { FilesPanel } from '../files/FilesPanel';
+import { ResourcesPanel } from '../resources/ResourcesPanel';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 
@@ -23,6 +25,7 @@ const tabs = [
   { value: 'changes', label: 'Changes', icon: GitCompareArrows },
   { value: 'files', label: 'Files', icon: Files },
   { value: 'tools', label: 'Tools', icon: ListChecks },
+  { value: 'resources', label: 'Resources', icon: Sparkles },
   { value: 'context', label: 'Context', icon: Info },
 ];
 
@@ -65,6 +68,7 @@ export function Inspector({ onCollapse }: InspectorProps) {
         <Tabs.Content value="changes" className="tab-content"><ChangesPanel /></Tabs.Content>
         <Tabs.Content value="files" className="tab-content"><FilesPanel /></Tabs.Content>
         <Tabs.Content value="tools" className="tab-content"><ToolsPanel /></Tabs.Content>
+        <Tabs.Content value="resources" className="tab-content"><ResourcesPanel /></Tabs.Content>
         <Tabs.Content value="context" className="tab-content">
           <div className="context-list">
             <div><span>Project</span><strong>{runtime.project?.name ?? 'Not selected'}</strong></div>
@@ -73,8 +77,6 @@ export function Inspector({ onCollapse }: InspectorProps) {
             <div><span>Thinking</span><strong>{runtime.thinkingLevel}</strong></div>
             <div><span>Context</span><strong>{runtime.contextUsage?.percent == null ? '—' : `${runtime.contextUsage.percent.toFixed(1)}%`}</strong></div>
             <div><span>Objective</span><strong>{runtime.objective || 'No active objective'}</strong></div>
-            <div><span>Skills</span><strong>{runtime.skills?.length ? runtime.skills.map((skill) => skill.name).join(', ') : 'None loaded'}</strong></div>
-            <div><span>Templates</span><strong>{runtime.commands?.length ? runtime.commands.map((command) => `/${command.name}`).join(', ') : 'None loaded'}</strong></div>
             <div className="trust-row"><ShieldCheck size={16} /><span>{runtime.project?.trusted ? `Trusted · ${runtime.project.path}` : 'Project trust starts after selection'}</span></div>
           </div>
         </Tabs.Content>

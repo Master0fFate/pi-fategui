@@ -1,0 +1,29 @@
+{
+  "themes": [
+    {
+      "id": "storm",
+      "name": "Storm",
+      "tone": "dark",
+      "colors": {
+        "canvas": "#101218",
+        "panel": "#151821",
+        "raised": "#1c202b",
+        "raisedHover": "#252b38",
+        "border": "#303746",
+        "borderStrong": "#444d60",
+        "text": "#f0f2f7",
+        "textSoft": "#c5cad5",
+        "muted": "#8d96a8",
+        "subtle": "#657084",
+        "accent": "#6f8cff",
+        "accentHover": "#8ca2ff",
+        "accentSoft": "#222b49",
+        "onAccent": "#ffffff",
+        "success": "#55c78a",
+        "warning": "#d2a94b",
+        "danger": "#e35d6a",
+        "shadow": "#020308"
+      }
+    }
+  ]
+}

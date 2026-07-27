@@ -2,8 +2,10 @@ import { ChevronDown, ChevronRight, ExternalLink, File, FileWarning, Folder, Fol
 import { useEffect, useMemo } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import type { FileEntry } from '../../../shared/contracts/ipc';
+import { AppTooltip } from '../../components/AppTooltip';
 import { flattenTree, useWorkspaceStore, type VisibleFileEntry } from '../../stores/workspaceStore';
 import { LazyFileViewer } from './LazyMonaco';
+import { RasterImagePreview } from './RasterImagePreview';
 
 function FileRow({ entry, selected, expanded, loading, onActivate }: {
   entry: VisibleFileEntry;
@@ -14,18 +16,19 @@ function FileRow({ entry, selected, expanded, loading, onActivate }: {
 }) {
   const Icon = entry.kind === 'directory' ? (expanded ? FolderOpen : Folder) : File;
   return (
-    <button
-      type="button"
-      className={`file-row${selected ? ' selected' : ''}`}
-      style={{ paddingLeft: 9 + entry.depth * 15 }}
-      onClick={() => onActivate(entry)}
-      title={entry.path}
-    >
-      {entry.kind === 'directory' ? (expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : <span className="file-row-spacer" />}
-      <Icon size={14} className={loading ? 'file-row-loading' : ''} />
-      <span>{entry.name}</span>
-      {entry.symlink && <em>link</em>}
-    </button>
+    <AppTooltip content={entry.path}>
+      <button
+        type="button"
+        className={`file-row${selected ? ' selected' : ''}`}
+        style={{ paddingLeft: 9 + entry.depth * 15 }}
+        onClick={() => onActivate(entry)}
+      >
+        {entry.kind === 'directory' ? (expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : <span className="file-row-spacer" />}
+        <Icon size={14} className={loading ? 'file-row-loading' : ''} />
+        <span>{entry.name}</span>
+        {entry.symlink && <em>link</em>}
+      </button>
+    </AppTooltip>
   );
 }
 
@@ -39,11 +42,12 @@ function PreviewState() {
   return (
     <div className="file-preview">
       <div className="preview-heading">
-        <span title={preview.path}>{preview.path}</span>
-        {preview.state === 'text' && preview.openable && <button type="button" onClick={() => void open()} title="Open in the system editor"><ExternalLink size={13} />Open</button>}
+        <AppTooltip content={preview.path}><span>{preview.path}</span></AppTooltip>
+        {preview.state === 'text' && preview.openable && <AppTooltip content="Open in the system editor"><button type="button" onClick={() => void open()}><ExternalLink size={13} />Open</button></AppTooltip>}
       </div>
       <div className="preview-body">
         {preview.state === 'text' && <LazyFileViewer value={preview.content ?? ''} language={preview.language} path={preview.path} />}
+        {preview.state === 'image' && <RasterImagePreview data={preview.content} mimeType={preview.mimeType} path={preview.path} detail={`${preview.mimeType?.slice('image/'.length).toUpperCase() ?? 'Image'} · ${preview.size.toLocaleString()} bytes`} />}
         {preview.state === 'binary' && <div className="preview-placeholder"><FileWarning size={22} /><strong>Binary file</strong><span>{preview.size.toLocaleString()} bytes · Text preview unavailable</span></div>}
         {preview.state === 'large' && <div className="preview-placeholder"><FileWarning size={22} /><strong>Large file</strong><span>{preview.size.toLocaleString()} bytes · Preview is limited to 1 MiB</span></div>}
       </div>

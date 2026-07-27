@@ -1,5 +1,5 @@
-import * as Tooltip from '@radix-ui/react-tooltip';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import { AppTooltip } from './AppTooltip';
 
 interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   label: string;
@@ -8,18 +8,10 @@ interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 export function IconButton({ label, children, className = '', ...props }: IconButtonProps) {
   return (
-    <Tooltip.Root delayDuration={350}>
-      <Tooltip.Trigger asChild>
-        <button className={`icon-button ${className}`} aria-label={label} {...props}>
-          {children}
-        </button>
-      </Tooltip.Trigger>
-      <Tooltip.Portal>
-        <Tooltip.Content sideOffset={7} className="tooltip">
-          {label}
-          <Tooltip.Arrow className="tooltip-arrow" />
-        </Tooltip.Content>
-      </Tooltip.Portal>
-    </Tooltip.Root>
+    <AppTooltip content={label} wrapTrigger triggerClassName="tooltip-trigger--icon">
+      <button className={`icon-button ${className}`} aria-label={label} {...props}>
+        {children}
+      </button>
+    </AppTooltip>
   );
 }
