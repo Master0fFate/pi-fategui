@@ -13,4 +13,6 @@ playwright-report/
 .test-dist/
 .aislop/
 .codeviewer-mcp.sqlite
+.claude/
+text.txt
 NUL

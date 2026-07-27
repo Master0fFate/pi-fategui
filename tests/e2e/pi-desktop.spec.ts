@@ -407,23 +407,45 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     });
     expect(composerClearance).not.toBeNull();
     expect(composerClearance!).toBeGreaterThanOrEqual(12);
-    const scrollbarMask = await page.evaluate(() => {
-      const conversation = document.querySelector<HTMLElement>('.conversation');
+    const timelineViewport = await page.evaluate(() => {
+      const scroller = document.querySelector<HTMLElement>('.conversation-virtuoso');
       const composer = document.querySelector<HTMLElement>('.composer-wrap');
-      if (!conversation || !composer) return null;
-      const style = getComputedStyle(conversation, '::after');
-      const conversationBox = conversation.getBoundingClientRect();
+      const lastRow = [...document.querySelectorAll<HTMLElement>('.timeline-row')].at(-1);
+      if (!scroller || !composer || !lastRow) return null;
       return {
-        width: Number.parseFloat(style.width),
-        top: conversationBox.bottom - Number.parseFloat(style.height),
+        scrollable: scroller.scrollHeight > scroller.clientHeight,
         composerTop: composer.getBoundingClientRect().top,
-        pointerEvents: style.pointerEvents,
+        lastRowBottom: lastRow.getBoundingClientRect().bottom,
       };
     });
-    expect(scrollbarMask).not.toBeNull();
-    expect(scrollbarMask!.width).toBe(10);
-    expect(Math.abs(scrollbarMask!.top - scrollbarMask!.composerTop)).toBeLessThanOrEqual(1);
-    expect(scrollbarMask!.pointerEvents).toBe('none');
+    expect(timelineViewport).not.toBeNull();
+    expect(timelineViewport!.scrollable).toBe(true);
+    expect(timelineViewport!.lastRowBottom).toBeLessThanOrEqual(timelineViewport!.composerTop - 12);
+    await page.locator('.conversation-virtuoso').evaluate((element) => {
+      const scroller = element as HTMLElement;
+      scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight - 120);
+      scroller.dispatchEvent(new Event('scroll'));
+    });
+    await page.waitForTimeout(50);
+    const conversationScrollLayers = await page.evaluate(() => {
+      const scroller = document.querySelector<HTMLElement>('.conversation-virtuoso');
+      const scrollbar = document.querySelector<HTMLElement>('.conversation-scrollbar');
+      const composer = document.querySelector<HTMLElement>('.composer-wrap');
+      const lastRow = [...document.querySelectorAll<HTMLElement>('.timeline-row')].at(-1);
+      if (!scroller || !scrollbar || !composer || !lastRow) return null;
+      return {
+        nativeScrollbar: getComputedStyle(scroller).scrollbarWidth,
+        scrollbarVisible: getComputedStyle(scrollbar).visibility,
+        scrollbarBottom: scrollbar.getBoundingClientRect().bottom,
+        composerTop: composer.getBoundingClientRect().top,
+        lastRowBottom: lastRow.getBoundingClientRect().bottom,
+      };
+    });
+    expect(conversationScrollLayers).not.toBeNull();
+    expect(conversationScrollLayers!.nativeScrollbar).toBe('none');
+    expect(conversationScrollLayers!.scrollbarVisible).toBe('visible');
+    expect(conversationScrollLayers!.scrollbarBottom).toBeLessThanOrEqual(conversationScrollLayers!.composerTop - 12);
+    expect(conversationScrollLayers!.lastRowBottom).toBeGreaterThan(conversationScrollLayers!.composerTop);
     await expect(page.getByRole('img', { name: 'Mermaid diagram' })).toBeVisible();
     await page.getByRole('button', { name: 'Expand image: Project preview' }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
@@ -455,9 +477,8 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
 
     await page.getByRole('tab', { name: /Changes/ }).click();
     await expect(page.getByRole('button', { name: 'Refresh Git status' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Fetch all remotes' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Pull current branch' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Push current branch' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Switch to branch history' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Fetch all remotes|Pull current branch|Push current branch/ })).toHaveCount(0);
     await expect(page.getByRole('button', { name: '2 changed files. Open combined diff' })).toHaveText('2');
     await expect(page.getByRole('button', { name: '1 lines added. Open combined diff' })).toHaveText('+1');
     await expect(page.getByRole('button', { name: '1 lines removed. Open combined diff' })).toHaveText('−1');
@@ -475,8 +496,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(page.getByRole('img', { name: 'Preview of assets/icon.png' })).toBeVisible();
     await page.screenshot({ path: 'test-results/pi-desktop-image-diff.png' });
 
-    await page.getByRole('button', { name: 'Change Git view' }).click();
-    await page.getByRole('button', { name: /Graph view/ }).click();
+    await page.getByRole('button', { name: 'Switch to branch history' }).click();
     const fixtureCommit = page.locator('.commit-row-main').filter({ hasText: 'fixture' });
     await expect(fixtureCommit).toBeVisible();
     await fixtureCommit.hover();
@@ -488,8 +508,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await fixtureCommit.click();
     await expect(page.getByLabel('Files changed in fixture')).toContainText('src/example.ts');
     await page.screenshot({ path: 'test-results/pi-desktop-git-graph.png' });
-    await page.getByRole('button', { name: 'Change Git view' }).click();
-    await page.getByRole('button', { name: /List view/ }).click();
+    await page.getByRole('button', { name: 'Switch to working-tree diff' }).click();
 
     const worktreeSelector = page.getByRole('button', { name: 'Change worktree. Current branch: main' });
     await worktreeSelector.click();

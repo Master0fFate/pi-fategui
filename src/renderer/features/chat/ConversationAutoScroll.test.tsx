@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiEvent, RuntimeState } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
-import { ConversationTimeline } from './ConversationTimeline';
+import { ConversationTimeline, getConversationScrollbarMetrics } from './ConversationTimeline';
 
 const virtuosoMock = vi.hoisted(() => ({ autoscrollToBottom: vi.fn(), scrollToIndex: vi.fn() }));
 
@@ -58,6 +58,18 @@ const flushAnimationFrames = () => {
 const apply = (events: PiEvent[]) => {
   act(() => useRuntimeStore.getState().applyEvents(events));
 };
+
+describe('conversation scrollbar metrics', () => {
+  it('maps the full conversation range into the bounded visual track', () => {
+    expect(getConversationScrollbarMetrics(2_000, 500, 320, 750)).toEqual({
+      maxScroll: 1_500,
+      scrollTop: 750,
+      thumbHeight: 80,
+      thumbOffset: 120,
+    });
+    expect(getConversationScrollbarMetrics(500, 500, 320, 0)).toBeNull();
+  });
+});
 
 describe('conversation output auto-scroll', () => {
   beforeEach(() => {

@@ -2,10 +2,7 @@ import * as Popover from '@radix-ui/react-popover';
 import {
   Check,
   CircleAlert,
-  CloudDownload,
   Copy,
-  Download,
-  Ellipsis,
   ExternalLink,
   EyeOff,
   FileDiff,
@@ -18,16 +15,13 @@ import {
   GitCommit,
   GitGraph,
   Github,
-  List,
   LoaderCircle,
-  LocateFixed,
   RefreshCw,
-  Upload,
   UserRound,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import type { GitChange, GitCommitDetails, GitCommitSummary, GitOperation } from '../../../shared/contracts/ipc';
+import { Virtuoso } from 'react-virtuoso';
+import type { GitChange, GitCommitDetails, GitCommitSummary } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -35,10 +29,9 @@ import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { LazyDiffViewer, LazyFileViewer } from '../files/LazyMonaco';
 import { RasterImagePreview } from '../files/RasterImagePreview';
 
-const BRANCH_NAME_MAX_LENGTH = 24;
 const GRAPH_LANE_LIMIT = 8;
 
-type ChangesView = 'list' | 'graph';
+type ChangesView = 'diff' | 'branch';
 
 interface CommitGraphRow {
   commit: GitCommitSummary;
@@ -53,13 +46,6 @@ function displayError(error: unknown, fallback: string): string {
     const parsed = JSON.parse(error.message) as { message?: string };
     return parsed.message ?? error.message;
   } catch { return error.message; }
-}
-
-function compactBranchName(name: string): string {
-  const characters = Array.from(name);
-  return characters.length <= BRANCH_NAME_MAX_LENGTH
-    ? name
-    : `${characters.slice(0, BRANCH_NAME_MAX_LENGTH - 1).join('').trimEnd()}…`;
 }
 
 function changeStatus(change: GitChange) {
@@ -271,7 +257,6 @@ export function ChangesPanel() {
   const project = useWorkspaceStore((state) => state.projectPath);
   const git = useWorkspaceStore((state) => state.git);
   const loading = useWorkspaceStore((state) => state.gitLoading);
-  const operation = useWorkspaceStore((state) => state.gitOperation);
   const worktrees = useWorkspaceStore((state) => state.worktrees);
   const worktreesLoading = useWorkspaceStore((state) => state.worktreesLoading);
   const history = useWorkspaceStore((state) => state.history);
@@ -283,46 +268,35 @@ export function ChangesPanel() {
   const loadWorktrees = useWorkspaceStore((state) => state.loadWorktrees);
   const loadHistory = useWorkspaceStore((state) => state.loadHistory);
   const loadCombinedDiff = useWorkspaceStore((state) => state.loadCombinedDiff);
-  const runOperation = useWorkspaceStore((state) => state.runGitOperation);
   const select = useWorkspaceStore((state) => state.selectChange);
   const runtime = useRuntimeStore((state) => state.runtime);
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
   const showToast = useUiStore((state) => state.showToast);
-  const [view, setView] = useState<ChangesView>('list');
+  const [view, setView] = useState<ChangesView>('diff');
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const graph = useMemo(() => buildCommitGraphRows(history?.commits ?? []), [history?.commits]);
-  const graphRef = useRef<VirtuosoHandle>(null);
 
   const switchView = (next: ChangesView) => {
     setView(next);
-    if (next === 'graph') void loadHistory();
+    if (next === 'branch') void loadHistory();
   };
   const refreshAll = async () => {
     try {
       await refresh();
-      if (view === 'graph') await loadHistory(true);
-      const updated = useWorkspaceStore.getState().git;
-      showToast({
-        kind: 'success',
-        title: 'Git status refreshed',
-        message: updated?.branch === ''
-          ? 'Detached HEAD status is current. Check out a branch before pulling or pushing.'
+        if (view === 'branch') await loadHistory(true);
+        const updated = useWorkspaceStore.getState().git;
+        showToast({
+          kind: 'success',
+          title: 'Git status refreshed',
+          message: updated?.branch === ''
+          ? 'Detached HEAD status is current.'
           : updated?.upstream
             ? `${updated.branch} tracks ${updated.upstream}${updated.ahead || updated.behind ? ` · ${updated.ahead} ahead, ${updated.behind} behind` : ' · up to date'}`
-            : updated?.pushTarget ? `${updated.branch} is local. Push publishes it as ${updated.pushTarget} and sets the upstream.` : updated?.branch ? `${updated.branch} is local and no push remote is configured.` : 'Repository status is current.',
-      });
-    } catch (caught) {
-      showToast({ kind: 'error', title: 'Git refresh failed', message: displayError(caught, 'Git status could not be refreshed.') });
-    }
-  };
-  const run = async (nextOperation: GitOperation) => {
-    try {
-      const result = await runOperation(nextOperation);
-      showToast({ kind: 'success', title: nextOperation === 'fetch' ? 'Fetch complete' : nextOperation === 'pull' ? 'Pull complete' : 'Push complete', message: result.message });
-      if (view === 'graph') await loadHistory(true);
-    } catch (caught) {
-      showToast({ kind: 'error', title: `${nextOperation === 'fetch' ? 'Fetch' : nextOperation === 'pull' ? 'Pull' : 'Push'} failed`, message: displayError(caught, 'The Git operation failed.') });
-    }
+            : updated?.branch ? `${updated.branch} status is current.` : 'Repository status is current.',
+        });
+      } catch (caught) {
+        showToast({ kind: 'error', title: 'Git refresh failed', message: displayError(caught, 'Git status could not be refreshed.') });
+      }
   };
   const switchWorktree = async (path: string) => {
     if (!('piDesktop' in window) || worktreeBusy) return;
@@ -340,27 +314,23 @@ export function ChangesPanel() {
       showToast({ kind: 'error', title: 'Worktree change failed', message: displayError(caught, 'The worktree could not be opened.') });
     } finally { setWorktreeBusy(false); }
   };
-  const goToHead = async () => {
-    if (!history) await loadHistory();
-    const current = useWorkspaceStore.getState().history;
-    const index = current?.commits.findIndex((commit) => commit.hash === current.head) ?? -1;
-    if (index >= 0) graphRef.current?.scrollToIndex({ index, align: 'center', behavior: 'smooth' });
-  };
-
   if (!project) return <div className="inspector-empty"><FileDiff size={24} /><strong>No changes</strong><p>Open a project to inspect Git changes.</p></div>;
   if (loading && !git) return <div className="preview-loading"><span className="preview-spinner" />Reading Git status…</div>;
   if (git && !git.repository) return <div className="inspector-empty"><GitBranch size={24} /><strong>Not a Git repository</strong><p>File browsing is available, but there is no Git status for this project.</p></div>;
   const changes = git?.changes ?? [];
   const detached = git?.branch === '';
   const branch = detached ? 'HEAD' : git?.branch ?? 'HEAD';
-  const controlsBusy = loading || Boolean(operation) || worktreeBusy;
+  const controlsBusy = loading || worktreeBusy;
+  const nextView = view === 'diff' ? 'branch' : 'diff';
+  const viewLabel = view === 'diff' ? 'Diff' : 'Branch';
+  const nextViewLabel = nextView === 'diff' ? 'working-tree diff' : 'branch history';
+  const ViewIcon = view === 'diff' ? FileDiff : GitGraph;
   return (
       <div className="changes-panel" data-view={view}>
         <div className="changes-summary">
-          {view === 'graph' && <span className="git-header-controls"><MetricTooltip label="Go to the current history item"><button type="button" aria-label="Go to current history item" onClick={() => void goToHead()} disabled={controlsBusy}><LocateFixed size={13} /></button></MetricTooltip></span>}
           <Popover.Root onOpenChange={(open) => { if (open) void loadWorktrees(); }}>
             <Popover.Trigger asChild>
-              <button className="changes-branch" type="button" aria-label={`Change worktree. Current branch: ${branch}`} disabled={controlsBusy}><GitBranch size={13} aria-hidden="true" /><span>{compactBranchName(branch)}</span></button>
+              <button className="changes-branch" type="button" aria-label={`Change worktree. Current branch: ${branch}`} disabled={controlsBusy}><GitBranch size={13} aria-hidden="true" /><span>{branch}</span></button>
             </Popover.Trigger>
             <Popover.Portal>
               <Popover.Content className="worktree-popover" side="bottom" align="start" sideOffset={7} collisionPadding={12}>
@@ -377,37 +347,17 @@ export function ChangesPanel() {
             </Popover.Portal>
           </Popover.Root>
           <span className="summary-counts">
+            <AppTooltip content={`Switch to ${nextViewLabel}`}>
+              <button className="git-view-toggle" type="button" aria-label={`Switch to ${nextViewLabel}`} onClick={() => switchView(nextView)}><ViewIcon size={12} /><span>{viewLabel}</span></button>
+            </AppTooltip>
             <MetricTooltip label={`${changes.length} changed file${changes.length === 1 ? '' : 's'}`}><button className="summary-metric summary-metric--files" type="button" aria-label={`${changes.length} changed files. Open combined diff`} onClick={() => void loadCombinedDiff()}><Files size={12} /><strong>{changes.length}</strong></button></MetricTooltip>
             <MetricTooltip label={`${git?.additions ?? 0} lines added`}><button className="summary-metric summary-metric--added" type="button" aria-label={`${git?.additions ?? 0} lines added. Open combined diff`} onClick={() => void loadCombinedDiff()}>+{git?.additions ?? 0}</button></MetricTooltip>
             <MetricTooltip label={`${git?.deletions ?? 0} lines removed`}><button className="summary-metric summary-metric--removed" type="button" aria-label={`${git?.deletions ?? 0} lines removed. Open combined diff`} onClick={() => void loadCombinedDiff()}>−{git?.deletions ?? 0}</button></MetricTooltip>
-            <Popover.Root>
-              <Popover.Trigger asChild><button className="changes-view-menu-trigger" type="button" aria-label="Change Git view"><Ellipsis size={14} /></button></Popover.Trigger>
-              <Popover.Portal><Popover.Content className="changes-view-menu" side="bottom" align="end" sideOffset={7} collisionPadding={12}>
-                <Popover.Close asChild><button type="button" data-active={view === 'list'} onClick={() => switchView('list')}><List size={13} /><span>List view</span>{view === 'list' && <Check size={12} />}</button></Popover.Close>
-                <Popover.Close asChild><button type="button" data-active={view === 'graph'} onClick={() => switchView('graph')}><GitGraph size={13} /><span>Graph view</span>{view === 'graph' && <Check size={12} />}</button></Popover.Close>
-              </Popover.Content></Popover.Portal>
-            </Popover.Root>
           </span>
+          <MetricTooltip label={detached ? 'Refresh detached HEAD status' : 'Refresh Git status'}><button className="git-refresh-button" type="button" aria-label={detached ? 'Refresh detached HEAD status' : 'Refresh Git status'} disabled={controlsBusy} onClick={() => void refreshAll()}><RefreshCw className={loading ? 'tool-spinner' : ''} size={13} /></button></MetricTooltip>
         </div>
-        <div className="git-action-bar" aria-label="Git branch actions">
-          <button type="button" data-active={loading} aria-label={detached ? 'Refresh detached HEAD status' : 'Refresh Git status'} disabled={controlsBusy} onClick={() => void refreshAll()}>
-            <RefreshCw className={loading ? 'tool-spinner' : ''} size={13} /><span>{loading ? (detached ? 'Refreshing HEAD' : 'Refreshing') : 'Refresh'}</span>
-          </button>
-          <button type="button" data-active={operation === 'fetch'} aria-label="Fetch all remotes" disabled={controlsBusy} onClick={() => void run('fetch')}>
-            <CloudDownload className={operation === 'fetch' ? 'tool-spinner' : ''} size={13} /><span>{operation === 'fetch' ? 'Fetching' : 'Fetch'}</span>
-          </button>
-          <button type="button" data-active={operation === 'pull'} aria-label="Pull current branch" disabled={controlsBusy || detached} onClick={() => void run('pull')}>
-            <Download className={operation === 'pull' ? 'tool-spinner' : ''} size={13} /><span>{operation === 'pull' ? 'Pulling' : 'Pull'}</span>
-          </button>
-          <button type="button" data-active={operation === 'push'} aria-label="Push current branch" disabled={controlsBusy || detached} onClick={() => void run('push')}>
-            <Upload className={operation === 'push' ? 'tool-spinner' : ''} size={13} /><span>{operation === 'push' ? 'Pushing' : 'Push'}</span>
-          </button>
-        </div>
-        <output className="git-sync-state" aria-live="polite">
-          {operation ? `${operation === 'fetch' ? (detached ? 'Fetching remotes for detached HEAD' : 'Fetching remotes') : operation === 'pull' ? `Pulling ${branch}` : `Pushing ${branch}`}…` : loading ? (detached ? 'Refreshing detached HEAD status…' : 'Refreshing repository status…') : detached ? <><span>Detached HEAD</span><span>Pull and push require a branch</span></> : git?.upstream ? <><span>Push → {git.pushTarget ?? git.upstream}</span><span>{git.ahead} ahead</span><span>{git.behind} behind</span></> : git?.pushTarget ? <><span>Push → {git.pushTarget}</span><span>First push sets upstream</span></> : <><span>Local branch</span><span>Add a remote before pushing</span></>}
-        </output>
         {error && <div className="workspace-error" role="alert">{error}</div>}
-        {view === 'list' ? (
+        {view === 'diff' ? (
           changes.length > 0 ? (
             <div className="changes-list" aria-label="Changed files">
               <Virtuoso data={changes} initialItemCount={Math.min(changes.length, 24)} computeItemKey={(_index, change) => change.path} itemContent={(_index, change) => <ChangeRow change={change} selected={selected === change.path} disabled={diffLoading} onSelect={() => void select(change.path)} />} />
@@ -415,9 +365,9 @@ export function ChangesPanel() {
             </div>
           ) : <div className="mini-empty">Working tree clean</div>
         ) : (
-          <div className="changes-list commit-graph-list" aria-label="Commit graph">
+          <div className="changes-list commit-graph-list" aria-label="Branch history">
             {historyLoading && !history ? <div className="preview-loading"><span className="preview-spinner" />Loading commit graph…</div> : graph.length > 0 ? (
-              <Virtuoso ref={graphRef} data={graph} initialItemCount={Math.min(graph.length, 24)} computeItemKey={(_index, row) => row.commit.hash} itemContent={(_index, row) => <CommitRow row={row} />} />
+              <Virtuoso data={graph} initialItemCount={Math.min(graph.length, 24)} computeItemKey={(_index, row) => row.commit.hash} itemContent={(_index, row) => <CommitRow row={row} />} />
             ) : <div className="mini-empty"><GitCommit size={16} />No commits yet</div>}
             {history?.truncated && <div className="bounded-note">History limited to 500 commits</div>}
           </div>

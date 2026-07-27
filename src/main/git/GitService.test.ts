@@ -457,7 +457,7 @@ describe('GitService', () => {
     await expect(fs.readFile(path.join(root, 'tracked.txt'), 'utf8')).resolves.toBe('three\n');
   }, 60_000);
 
-  it('runs explicit fetch without repository hooks and rejects unsafe local remote protocols', async () => {
+  it('rejects fetches without remotes and unsafe local remote protocols without running repository hooks', async () => {
     const root = await repository();
     await fs.writeFile(path.join(root, 'tracked.txt'), 'value\n');
     await run('git', ['add', 'tracked.txt'], { cwd: root });
@@ -470,7 +470,7 @@ describe('GitService', () => {
     const files = new FilesystemService();
     await files.setRoot(root);
     const git = new GitService(files);
-    await expect(git.runOperation('fetch')).resolves.toMatchObject({ operation: 'fetch', status: { repository: true } });
+    await expect(git.runOperation('fetch')).rejects.toThrow('Cannot fetch because no Git remote is configured. Add a remote, then try again.');
     await run('git', ['remote', 'add', 'origin', root], { cwd: root });
     await expect(git.runOperation('push')).rejects.toThrow();
     await expect(fs.stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });

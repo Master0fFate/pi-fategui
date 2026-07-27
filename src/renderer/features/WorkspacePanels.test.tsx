@@ -69,57 +69,44 @@ describe('workspace inspector panels', () => {
     await refresh;
   });
 
-  it('runs labeled refresh, pull, and push controls with visible operation feedback', async () => {
+  it('keeps a stable view toggle and loads branch history on demand', async () => {
     const status = { repository: true, branch: 'main', upstream: 'origin/main', pushTarget: 'origin/main', ahead: 1, behind: 0, changes: [], additions: 0, deletions: 0, truncated: false };
     const getGitStatus = vi.fn(async () => status);
-    let finishPush: ((value: { operation: 'push'; message: string; status: typeof status }) => void) | undefined;
-    const runGitOperation = vi.fn((operation: 'fetch' | 'pull' | 'push') => operation === 'push'
-      ? new Promise((resolve) => { finishPush = resolve; })
-      : Promise.resolve({ operation, message: `${operation} complete`, status }));
-    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { getGitStatus, runGitOperation } as unknown as PiDesktopApi });
+    const getGitHistory = vi.fn(async () => ({ head: null, commits: [], truncated: false }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { getGitStatus, getGitHistory } as unknown as PiDesktopApi });
     useWorkspaceStore.setState({ git: status });
     render(<ChangesPanel />);
-    expect(screen.getByText('Push → origin/main')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Switch to branch history' })).toHaveTextContent('Diff');
+    expect(screen.queryByRole('button', { name: 'Go to current history item' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Fetch all remotes' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pull current branch' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Push current branch' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh Git status' }));
     await vi.waitFor(() => expect(getGitStatus).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(useUiStore.getState().toast).toMatchObject({ title: 'Git status refreshed' }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Pull current branch' }));
-    await vi.waitFor(() => expect(runGitOperation).toHaveBeenCalledWith('pull'));
-    await vi.waitFor(() => expect(useWorkspaceStore.getState().gitOperation).toBeNull());
-
-    fireEvent.click(screen.getByRole('button', { name: 'Push current branch' }));
-    expect(await screen.findByText('Pushing main…')).toBeInTheDocument();
-    finishPush?.({ operation: 'push', message: 'push complete', status });
-    await vi.waitFor(() => expect(useWorkspaceStore.getState().gitOperation).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to branch history' }));
+    await vi.waitFor(() => expect(getGitHistory).toHaveBeenCalledOnce());
+    expect(screen.getByRole('button', { name: 'Switch to working-tree diff' })).toHaveTextContent('Branch');
+    expect(screen.getByLabelText('Branch history')).toBeInTheDocument();
   });
 
-  it('keeps fetch and refresh available while disabling branch sync on detached HEAD', async () => {
+  it('keeps manual refresh available on detached HEAD without remote controls', async () => {
     const detachedStatus = { repository: true, branch: '', upstream: null, pushTarget: null, ahead: 0, behind: 0, changes: [], additions: 0, deletions: 0, truncated: false };
     const getGitStatus = vi.fn(async () => detachedStatus);
-    const runGitOperation = vi.fn(async (operation: 'fetch' | 'pull' | 'push') => ({ operation, message: `${operation} complete`, status: detachedStatus }));
-    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { getGitStatus, runGitOperation } as unknown as PiDesktopApi });
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { getGitStatus } as unknown as PiDesktopApi });
     useWorkspaceStore.setState({ git: detachedStatus });
 
     render(<ChangesPanel />);
     expect(screen.getByRole('button', { name: 'Change worktree. Current branch: HEAD' })).toHaveTextContent('HEAD');
     expect(screen.getByRole('button', { name: 'Refresh detached HEAD status' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Fetch all remotes' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Pull current branch' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Push current branch' })).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent('Detached HEAD');
-    expect(screen.getByRole('status')).toHaveTextContent('Pull and push require a branch');
-    expect(screen.getByRole('status')).not.toHaveTextContent('Local branch');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Fetch all remotes' }));
-    await vi.waitFor(() => expect(runGitOperation).toHaveBeenCalledWith('fetch'));
-    await vi.waitFor(() => expect(useWorkspaceStore.getState().gitOperation).toBeNull());
+    expect(screen.queryByRole('button', { name: /fetch|pull|push/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh detached HEAD status' }));
     await vi.waitFor(() => expect(getGitStatus).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(useUiStore.getState().toast).toMatchObject({
       title: 'Git status refreshed',
-      message: 'Detached HEAD status is current. Check out a branch before pulling or pushing.',
+      message: 'Detached HEAD status is current.',
     }));
   });
 
@@ -144,7 +131,7 @@ describe('workspace inspector panels', () => {
     expect(screen.getByRole('button', { name: '3 lines added. Open combined diff' })).toHaveTextContent('+3');
     expect(screen.getByRole('button', { name: '2 lines removed. Open combined diff' })).toHaveTextContent('−2');
     const worktree = screen.getByLabelText(`Change worktree. Current branch: ${branch}`);
-    expect(worktree).toHaveTextContent(`${branch.slice(0, 23)}…`);
+    expect(worktree).toHaveTextContent(branch);
     fireEvent.click(worktree);
     expect(await screen.findByText('Changing worktrees reopens Pi at that project root.')).toBeInTheDocument();
     render(<ChangeRow change={{ path: 'src/changed.ts', indexStatus: ' ', workTreeStatus: 'M', additions: 1, deletions: 0, binary: false }} selected={false} onSelect={vi.fn()} />);
@@ -177,8 +164,7 @@ describe('workspace inspector panels', () => {
     useWorkspaceStore.setState({ git: { repository: true, branch: 'main', upstream: 'origin/main', pushTarget: 'origin/main', ahead: 0, behind: 0, changes: [], additions: 0, deletions: 0, truncated: false } });
     expect(buildCommitGraphRows([commit])).toMatchObject([{ lane: 0, commit: { hash: commit.hash } }]);
     render(<div style={{ height: 700 }}><ChangesPanel /></div>);
-    fireEvent.click(screen.getByRole('button', { name: 'Change Git view' }));
-    fireEvent.click(await screen.findByRole('button', { name: /Graph view/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to branch history' }));
     const row = await screen.findByRole('button', { name: /Add galaxy CTA backdrop/ });
     fireEvent.pointerEnter(row);
     const card = await screen.findByLabelText('Commit details for Add galaxy CTA backdrop');
