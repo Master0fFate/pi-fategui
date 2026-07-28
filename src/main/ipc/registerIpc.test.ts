@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({
   app: { getPath: vi.fn(), getVersion: vi.fn(), isPackaged: false },
   BrowserWindow: { fromWebContents: vi.fn(), getAllWindows: vi.fn(() => []) },
+  clipboard: { writeText: vi.fn() },
   dialog: { showOpenDialog: vi.fn(), showSaveDialog: vi.fn() },
   ipcMain: { handle: vi.fn() },
   webContents: { fromId: vi.fn() },
@@ -53,11 +54,13 @@ function services() {
 }
 
 describe('transactional project activation', () => {
-  it('rejects streaming and session operations before activation', () => {
+  it('rejects any selected or background run and session operations before activation', () => {
     expect(() => assertProjectActivationIdle({ getState: () => state(previousProject, 'ready', { streaming: true }) } as never, 'changing projects'))
-      .toThrow('Stop the active Pi operation before changing projects.');
+      .toThrow('Stop all active Pi operations before changing projects.');
+    expect(() => assertProjectActivationIdle({ getState: () => state(previousProject, 'ready', { streaming: false, runningSessionCount: 2 }) } as never, 'changing projects'))
+      .toThrow('Stop all active Pi operations before changing projects.');
     expect(() => assertProjectActivationIdle({ getState: () => state(previousProject, 'ready', { sessionOperation: true }) } as never, 'changing projects'))
-      .toThrow('Stop the active Pi operation before changing projects.');
+      .toThrow('Stop all active Pi operations before changing projects.');
   });
 
   it('serializes preparation and activation so an older rollback cannot overwrite a newer request', async () => {
@@ -78,6 +81,27 @@ describe('transactional project activation', () => {
     await Promise.all([first, second]);
     expect(order).toEqual(['first-start', 'first-end', 'second']);
     await expect(queue.runRuntimeMutation('sending a prompt', async () => undefined)).resolves.toBeUndefined();
+  });
+
+  it('serializes runtime mutations in request order', async () => {
+    const queue = createProjectActivationQueue();
+    const order: string[] = [];
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    let releaseFirst: (() => void) | undefined;
+    const first = queue.runRuntimeMutation('sending a prompt', async () => {
+      order.push('first-start');
+      markStarted?.();
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      order.push('first-end');
+    });
+    const second = queue.runRuntimeMutation('changing the model', async () => { order.push('second'); });
+
+    await started;
+    expect(order).toEqual(['first-start']);
+    releaseFirst?.();
+    await Promise.all([first, second]);
+    expect(order).toEqual(['first-start', 'first-end', 'second']);
   });
 
   it('waits for an already-running runtime mutation before activating a project', async () => {
@@ -145,7 +169,7 @@ describe('transactional project activation', () => {
       return { thinkingLevel: 'medium', defaultModel: null };
     });
 
-    await expect(activatePreparedProject(candidate, deps, 'changing projects')).rejects.toThrow('Stop the active Pi operation');
+    await expect(activatePreparedProject(candidate, deps, 'changing projects')).rejects.toThrow('Stop all active Pi operations');
     expect(deps.files.setRoot).not.toHaveBeenCalled();
     expect(deps.runtime.openProject).not.toHaveBeenCalled();
     expect(candidate.commit).not.toHaveBeenCalled();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appInfoSchema, appSettingsSchema, emptyInputSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, piEventBatchSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, sessionRenameInputSchema, setPermissionInputSchema, speechModelInputSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, windowStateSchema } from './ipc';
+import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, piEventBatchSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, windowStateSchema } from './ipc';
 
 describe('IPC contracts', () => {
   it('accepts only an empty object for system info input', () => {
@@ -27,6 +27,7 @@ describe('IPC contracts', () => {
     expect(ipcChannels.runtimePrompt).toBe('runtime:prompt');
     expect(ipcChannels.projectReveal).toBe('project:reveal');
     expect(ipcChannels.imageSaveAs).toBe('image:save-as');
+    expect(ipcChannels.clipboardWriteText).toBe('clipboard:write-text');
     expect(ipcChannels.speechEnsureModel).toBe('speech:ensure-model');
     expect(new Set(Object.values(ipcChannels)).size).toBe(Object.values(ipcChannels).length);
   });
@@ -50,6 +51,20 @@ describe('IPC contracts', () => {
     expect(imageSaveResultSchema.parse({ saved: false })).toEqual({ saved: false });
     expect(imageSaveResultSchema.parse({ saved: true, path: 'C:/Pictures/fox.png' })).toMatchObject({ saved: true });
     expect(() => imageSaveInputSchema.parse({ data: '<svg/>', mimeType: 'image/png', suggestedName: 'fox' })).toThrow();
+  });
+
+  it('bounds clipboard writes to plain text from the trusted renderer', () => {
+    expect(clipboardTextInputSchema.parse({ text: 'Copy me' })).toEqual({ text: 'Copy me' });
+    expect(clipboardWriteResultSchema.parse({ written: true })).toEqual({ written: true });
+    expect(() => clipboardTextInputSchema.parse({ text: 'x'.repeat(200_001) })).toThrow();
+    expect(() => clipboardTextInputSchema.parse({ text: 'Copy me', html: '<b>Copy me</b>' })).toThrow();
+  });
+
+  it('distinguishes a bounded post-compaction estimate from measured context usage', () => {
+    expect(contextUsageSchema.parse({ tokens: 21_000, contextWindow: 100_000, percent: 21, estimated: true })).toEqual({
+      tokens: 21_000, contextWindow: 100_000, percent: 21, estimated: true,
+    });
+    expect(() => contextUsageSchema.parse({ tokens: -1, contextWindow: 100_000, percent: -1, estimated: true })).toThrow();
   });
 
   it('requires bounded data and supported MIME types for raster previews', () => {
@@ -90,6 +105,22 @@ describe('IPC contracts', () => {
     expect(queueMutationInputSchema.parse({ id: queued.id, action: 'steer' })).toEqual({ id: queued.id, action: 'steer' });
     expect(() => queueMutationInputSchema.parse({ id: 'not-a-uuid', action: 'cancel' })).toThrow();
     expect(() => queueMutationInputSchema.parse({ id: queued.id, action: 'send-now' })).toThrow();
+  });
+
+  it('bounds session attention and compact extension UI text state', () => {
+    const summary = {
+      id: 'one', title: 'One', firstMessage: 'Start', path: '/sessions/one.jsonl',
+      createdAt: '2026-01-01T00:00:00.000Z', modifiedAt: '2026-01-01T00:00:01.000Z', messageCount: 1,
+      active: false, attention: 'completed',
+    };
+    expect(sessionSummarySchema.parse(summary).attention).toBe('completed');
+    expect(() => sessionSummarySchema.parse({ ...summary, attention: 'purple' })).toThrow();
+    expect(extensionUiStateSchema.parse({
+      statuses: [{ key: 'build', text: 'Ready' }], widgets: [{ key: 'plan', lines: ['Step one'] }], working: null, title: 'Demo',
+    }).title).toBe('Demo');
+    expect(() => extensionUiStateSchema.parse({
+      statuses: Array.from({ length: 17 }, (_, index) => ({ key: `k${index}`, text: 'x' })), widgets: [], working: null, title: null,
+    })).toThrow();
   });
 
   it('validates bounded opaque music queues and HTTPS stream results', () => {

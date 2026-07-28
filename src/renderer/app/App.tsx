@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { AppCommand, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
 import { AppToast } from '../components/AppToast';
 import { CommandPalette } from '../features/commands/CommandPalette';
@@ -86,6 +86,7 @@ export function App() {
   const musicPlayerEnabled = useUiStore((state) => state.musicPlayerEnabled);
   const [hydrationAttempt, setHydrationAttempt] = useState(0);
   const [hydrationError, setHydrationError] = useState<string | null>(null);
+  const sessionReplacementBusy = useRef(false);
 
   useEffect(() => {
     const surface = inspectorCollapsed ? null : inspectorTab === 'files' ? 'files' : inspectorTab === 'changes' ? 'changes' : null;
@@ -192,11 +193,34 @@ export function App() {
 
   useEffect(() => {
     if (!('piDesktop' in window)) return;
+    let active = true;
+    const applyReplacement = (origin: RuntimeState, state: RuntimeState) => {
+      if (!active) return;
+      const current = useRuntimeStore.getState().runtime;
+      const selectionMoved = current.sessionId !== origin.sessionId || current.project?.path !== origin.project?.path;
+      const resultIsCurrent = current.sessionId === state.sessionId && current.project?.path === state.project?.path;
+      if (!selectionMoved || resultIsCurrent) setRuntime(state);
+    };
     const run = (command: AppCommand) => {
       const ui = useUiStore.getState();
       const runtime = useRuntimeStore.getState().runtime;
-      if (command === 'open-project') void window.piDesktop.selectProject().then(setRuntime);
-      else if (command === 'new-session' && runtime.project && !runtime.streaming) void window.piDesktop.newSession().then(setRuntime);
+      if (command === 'open-project') {
+        void window.piDesktop.selectProject().then((state) => {
+          if (!active) return;
+          setRuntime(state);
+          if (state.project) ui.setSidebarCollapsed(false);
+        });
+      }
+      else if (command === 'new-session' && runtime.project && !runtime.sessionOperation && !sessionReplacementBusy.current) {
+        sessionReplacementBusy.current = true;
+        let pending: Promise<RuntimeState>;
+        try {
+          pending = window.piDesktop.newSession();
+        } catch (error) {
+          pending = Promise.reject(error);
+        }
+        void pending.then((state) => applyReplacement(runtime, state)).catch(() => undefined).finally(() => { sessionReplacementBusy.current = false; });
+      }
       else if (command === 'focus-composer') document.querySelector<HTMLTextAreaElement>('#pi-composer')?.focus();
       else if (command === 'stop-generation' && runtime.streaming && !ui.settingsOpen && !ui.paletteOpen) void window.piDesktop.abort();
       else if (command === 'toggle-sidebar') ui.toggleSidebar();
@@ -228,7 +252,12 @@ export function App() {
       if (command) { event.preventDefault(); run(command); }
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => { unsubscribe(); window.removeEventListener('keydown', onKeyDown); };
+    return () => {
+      active = false;
+      sessionReplacementBusy.current = false;
+      unsubscribe();
+      window.removeEventListener('keydown', onKeyDown);
+    };
   }, [setRuntime]);
 
   return (

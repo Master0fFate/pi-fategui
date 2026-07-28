@@ -3,6 +3,7 @@ import { lazy, Suspense, useState } from 'react';
 import { IconButton } from '../../components/IconButton';
 import { Composer } from '../chat/Composer';
 import { ConversationTimeline } from '../chat/ConversationTimeline';
+import { ExtensionStatusRail } from '../chat/ExtensionStatusRail';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 
@@ -21,6 +22,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
   const activeSession = runtime.sessions?.find((session) => session.active);
   const terminalOpen = useUiStore((state) => state.terminalOpen);
   const toggleTerminal = useUiStore((state) => state.toggleTerminal);
+  const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed);
   const [revealError, setRevealError] = useState<string | null>(null);
   const [projectPending, setProjectPending] = useState(false);
   const [projectError, setProjectError] = useState<string | null>(null);
@@ -28,7 +30,10 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
   const openProject = () => {
     if (!('piDesktop' in window) || projectPending) return;
     setProjectPending(true); setProjectError(null);
-    void window.piDesktop.selectProject().then(setRuntime).catch((error: unknown) => {
+    void window.piDesktop.selectProject().then((state) => {
+      setRuntime(state);
+      if (state.project) setSidebarCollapsed(false);
+    }).catch((error: unknown) => {
       setProjectError(error instanceof Error ? error.message : 'The project could not be opened.');
     }).finally(() => setProjectPending(false));
   };
@@ -60,6 +65,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
           {inspectorCollapsed && <IconButton label="Open inspector" onClick={onToggleInspector}><PanelRightOpen size={17} /></IconButton>}
         </div>
       </header>
+      <ExtensionStatusRail />
       {revealError && <div className="project-reveal-error" role="alert">{revealError}</div>}
       {projectError && <div className="project-reveal-error" role="alert">{projectError}</div>}
 

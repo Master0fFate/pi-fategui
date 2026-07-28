@@ -21,12 +21,17 @@ export function ContextWheel({ usage, fallbackWindow }: {
     : usage.tokens / contextWindow * 100);
   const percent = rawPercent === null ? null : Math.max(0, Math.min(100, rawPercent));
   const level = percent === null ? 'unknown' : percent >= 95 ? 'critical' : percent >= 80 ? 'warning' : 'normal';
+  const estimated = usage?.estimated === true && usage.tokens !== null;
   const usageText = usage?.tokens === null || usage?.tokens === undefined
-    ? `Context recalculating · ? / ${compactTokens(contextWindow)}`
-    : `Context ${compactTokens(usage.tokens)} / ${compactTokens(contextWindow)} · ${Math.round(rawPercent ?? 0)}%`;
+    ? `Context updates after the next response · ? / ${compactTokens(contextWindow)}`
+    : estimated
+      ? `Estimated context ~${compactTokens(usage.tokens)} / ${compactTokens(contextWindow)} · ~${Math.round(rawPercent ?? 0)}%`
+      : `Context ${compactTokens(usage.tokens)} / ${compactTokens(contextWindow)} · ${Math.round(rawPercent ?? 0)}%`;
   const accessibleText = percent === null
-    ? `Context usage is recalculating for a ${compactTokens(contextWindow)} token window`
-    : `Context usage: ${Math.round(rawPercent ?? 0)}% of ${compactTokens(contextWindow)} tokens`;
+    ? `Context usage will update after the next response for a ${compactTokens(contextWindow)} token window`
+    : estimated
+      ? `Estimated context usage: ${Math.round(rawPercent ?? 0)}% of ${compactTokens(contextWindow)} tokens`
+      : `Context usage: ${Math.round(rawPercent ?? 0)}% of ${compactTokens(contextWindow)} tokens`;
 
   return (
     <AppTooltip content={usageText} delayDuration={300}>

@@ -19,15 +19,34 @@ const model = { provider: 'test', id: 'model', name: 'Test Model', reasoning: tr
 function fixture(availableModels: typeof model[] = [model]) {
   let settleRun: (() => void) | undefined;
   let streaming = false;
+  let sessionName: string | undefined;
   let activeTools = ['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen'];
   let steeringMessages: string[] = [];
   let followUpMessages: string[] = [];
+  const sessionListeners = new Set<(event: unknown) => void>();
+  const agentListeners = new Set<(event: { type: string; message?: { role?: string; content?: unknown } }) => void | Promise<void>>();
+  const agent = {
+    state: { model, thinkingLevel: 'medium', messages: [] as unknown[], tools: [] as unknown[] },
+    streamFunction: vi.fn(),
+    subscribe: vi.fn((listener: (event: { type: string; message?: { role?: string; content?: unknown } }) => void | Promise<void>) => {
+      agentListeners.add(listener);
+      return () => { agentListeners.delete(listener); };
+    }),
+  };
   const session = {
-    sessionId: 'session-1', sessionFile: undefined, model, thinkingLevel: 'medium', messages: [] as unknown[],
-    sessionManager: { getLeafId: vi.fn(() => 'leaf-1') },
+    sessionId: 'session-1', sessionFile: undefined as string | undefined, model, thinkingLevel: 'medium', messages: [] as unknown[], agent,
+    get sessionName() { return sessionName; },
+    sessionManager: {
+      getLeafId: vi.fn(() => 'leaf-1'),
+      getSessionName: vi.fn(() => sessionName),
+      appendSessionInfo: vi.fn((name: string) => { sessionName = name; return 'name-entry'; }),
+    },
     get isStreaming() { return streaming; },
     bindExtensions: vi.fn(async () => undefined),
-    subscribe: vi.fn(() => vi.fn()),
+    subscribe: vi.fn((listener: (event: unknown) => void) => {
+      sessionListeners.add(listener);
+      return vi.fn(() => { sessionListeners.delete(listener); });
+    }),
     prompt: vi.fn((_text: string, options: { preflightResult: (accepted: boolean) => void; streamingBehavior?: 'steer' | 'followUp' }) => {
       if (options.streamingBehavior === 'steer') steeringMessages.push(_text);
       if (options.streamingBehavior === 'followUp') followUpMessages.push(_text);
@@ -47,10 +66,16 @@ function fixture(availableModels: typeof model[] = [model]) {
     getSteeringMessages: vi.fn(() => [...steeringMessages]),
     getFollowUpMessages: vi.fn(() => [...followUpMessages]),
     abort: vi.fn(async () => { streaming = false; settleRun?.(); }),
-    setModel: vi.fn(async () => undefined), setThinkingLevel: vi.fn(),
+    setModel: vi.fn(async (nextModel: typeof model) => {
+      session.model = nextModel;
+      agent.state.model = nextModel;
+    }), setThinkingLevel: vi.fn((level: string) => {
+      session.thinkingLevel = level;
+      agent.state.thinkingLevel = level;
+    }),
     getActiveToolNames: vi.fn(() => [...activeTools]),
     setActiveToolsByName: vi.fn((names: string[]) => { activeTools = [...names]; }),
-    setSessionName: vi.fn(),
+    setSessionName: vi.fn((name: string) => { sessionName = name; }),
     getUserMessagesForForking: vi.fn(() => [{ entryId: 'entry-1', text: 'original prompt' }]),
     compact: vi.fn(async () => undefined),
   };
@@ -63,7 +88,7 @@ function fixture(availableModels: typeof model[] = [model]) {
     dispose: vi.fn(async () => undefined),
   };
   const modelRuntime = {
-    getAvailable: vi.fn(async () => availableModels), getModel: vi.fn(() => model),
+    getAvailable: vi.fn(async () => availableModels), getModel: vi.fn((_provider: string, _id: string) => model),
   };
   const adapter: PiSdkAdapter = {
     supportsClone: true,
@@ -71,8 +96,13 @@ function fixture(availableModels: typeof model[] = [model]) {
     createRuntime: vi.fn(async () => runtime as unknown as AgentSessionRuntime),
   };
   return {
-    adapter, modelRuntime, runtime, session,
+    adapter, modelRuntime, runtime, session, agent,
     settle: () => settleRun?.(),
+    setStreaming: (value: boolean) => { streaming = value; },
+    emitSession: (event: unknown) => { for (const listener of sessionListeners) listener(event); },
+    emitAgent: async (event: { type: string; message?: { role?: string; content?: unknown } }) => {
+      for (const listener of agentListeners) await listener(event);
+    },
     setQueue: (steering: string[], followUp: string[]) => {
       steeringMessages = [...steering];
       followUpMessages = [...followUp];
@@ -199,17 +229,9 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
-  it('generates a first-turn title in the background without delaying prompt acceptance', async () => {
+  it('makes a first prompt visible and titles its live session even when repository listing is stale', async () => {
     const fake = fixture();
-    let name: string | undefined;
-    const source = {
-      list: vi.fn(async () => [{
-        path: '/sessions/one.jsonl', id: 'session-1', cwd: '/project', ...(name === undefined ? {} : { name }),
-        created: new Date('2026-01-01T00:00:00.000Z'), modified: new Date('2026-01-01T00:00:00.000Z'),
-        messageCount: 0, firstMessage: '(no messages)', allMessagesText: '',
-      }]),
-      rename: vi.fn((_path: string, nextName: string) => { name = nextName; }),
-    };
+    const source = { list: vi.fn(async () => []), rename: vi.fn() };
     let finishTitle: ((title: string) => void) | undefined;
     const titleGenerator: SessionTitleGenerator = {
       generate: vi.fn(() => new Promise<string>((resolve) => { finishTitle = resolve; })),
@@ -223,10 +245,35 @@ describe('PiRuntimeService', () => {
     await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     await expect(service.prompt({ text: 'Repair the Git workflow', behavior: 'prompt' })).resolves.toMatchObject({ accepted: true });
-    expect(source.rename).not.toHaveBeenCalled();
+    expect(service.getState(false).sessions).toEqual([
+      expect.objectContaining({ id: 'session-1', title: 'Repair the Git workflow', active: true }),
+    ]);
+    expect(source.list).toHaveBeenCalledOnce();
     finishTitle?.('Repair Git workflow');
-    await vi.waitFor(() => expect(source.rename).toHaveBeenCalledWith('/sessions/one.jsonl', 'Repair Git workflow'));
+    await vi.waitFor(() => expect(fake.session.sessionManager.appendSessionInfo).toHaveBeenCalledWith('Repair Git workflow'));
+    expect(source.rename).not.toHaveBeenCalled();
     expect(service.getState(false).sessions?.[0]?.title).toBe('Repair Git workflow');
+    fake.settle();
+    await service.dispose();
+  });
+
+  it('never overwrites a manual rename that wins the first-title race', async () => {
+    const fake = fixture();
+    let finishTitle: ((title: string) => void) | undefined;
+    const titleGenerator: SessionTitleGenerator = {
+      generate: vi.fn(() => new Promise<string>((resolve) => { finishTitle = resolve; })),
+    };
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, titleGenerator);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'Investigate the race', behavior: 'prompt' });
+    await service.renameSession('session-1', 'Manual title');
+    finishTitle?.('Generated title');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fake.session.setSessionName).toHaveBeenCalledWith('Manual title');
+    expect(fake.session.sessionManager.appendSessionInfo).not.toHaveBeenCalled();
+    expect(service.getState(false).sessions?.find((session) => session.id === 'session-1')?.title).toBe('Manual title');
     fake.settle();
     await service.dispose();
   });
@@ -405,13 +452,133 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
-  it('rejects settings, compaction, and new prompts that race an active operation', async () => {
+  it('applies a staged idle model immediately before the next direct user prompt', async () => {
+    const alternate = { ...model, id: 'fast', name: 'Fast Model' };
+    const fake = fixture([model, alternate]);
+    fake.modelRuntime.getModel.mockImplementation((_provider: string, id: string) => id === 'fast' ? alternate : model);
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    const staged = await service.setModel('test', 'fast');
+    expect(staged.model?.id).toBe('model');
+    expect(staged.pendingModel?.id).toBe('fast');
+    expect(fake.session.setModel).not.toHaveBeenCalled();
+
+    await service.prompt({ text: 'use the fast model', behavior: 'prompt' });
+    expect(fake.session.setModel).toHaveBeenCalledWith(alternate);
+    expect(fake.session.setModel.mock.invocationCallOrder[0]).toBeLessThan(fake.session.prompt.mock.invocationCallOrder[0]!);
+    expect(service.getState(false)).toMatchObject({ model: { id: 'fast' }, pendingModel: null });
+    fake.settle();
+    await service.dispose();
+  });
+
+  it('restores a staged model when direct prompt preflight rejects the message', async () => {
+    const alternate = { ...model, id: 'fast', name: 'Fast Model' };
+    const fake = fixture([model, alternate]);
+    fake.modelRuntime.getModel.mockImplementation((_provider: string, id: string) => id === 'fast' ? alternate : model);
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.setModel('test', 'fast');
+    fake.session.prompt.mockImplementationOnce((_text, options) => {
+      options.preflightResult(false);
+      return Promise.reject(new Error('rejected by input gate'));
+    });
+
+    await expect(service.prompt({ text: 'blocked', behavior: 'prompt' })).resolves.toMatchObject({ accepted: false });
+    expect(service.getState(false)).toMatchObject({ pendingModel: { id: 'fast' } });
+    expect(service.getState(false).objective).toBeUndefined();
+    await service.dispose();
+  });
+
+  it('does not reserve a queue item or consume its model when a streaming extension command runs immediately', async () => {
+    const alternate = { ...model, id: 'fast', name: 'Fast Model' };
+    const fake = fixture([model, alternate]);
+    fake.modelRuntime.getModel.mockImplementation((_provider: string, id: string) => id === 'fast' ? alternate : model);
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'current work', behavior: 'prompt' });
+    await service.setModel('test', 'fast');
+    fake.session.prompt.mockImplementationOnce((_text, options) => {
+      options.preflightResult(true);
+      return Promise.resolve();
+    });
+
+    await expect(service.prompt({ text: '/extension-command', behavior: 'followUp' })).resolves.toMatchObject({ accepted: true });
+    expect(service.getState(false).queue?.items).toEqual([]);
+    expect(service.getState(false).pendingModel?.id).toBe('fast');
+    fake.settle();
+    await service.dispose();
+  });
+
+  it('does not mutate the executing model until a bound queued user message is consumed', async () => {
+    const alternate = { ...model, id: 'fast', name: 'Fast Model' };
+    const fake = fixture([model, alternate]);
+    const originalStreamFunction = fake.agent.streamFunction;
+    const context = { systemPrompt: '', messages: [], tools: [] };
+    fake.modelRuntime.getModel.mockImplementation((_provider: string, id: string) => id === 'fast' ? alternate : model);
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'current work', behavior: 'prompt' });
+
+    await service.setModel('test', 'fast');
+    expect(fake.session.setModel).not.toHaveBeenCalled();
+    await fake.emitAgent({ type: 'message_start', message: { role: 'toolResult', content: 'current continuation' } });
+    fake.agent.streamFunction(model, context, { apiKey: 'current-key', reasoning: 'low' });
+    expect(originalStreamFunction).toHaveBeenLastCalledWith(model, context, { apiKey: 'current-key', reasoning: 'low' });
+    expect(fake.session.setModel).not.toHaveBeenCalled();
+
+    await service.prompt({ text: 'next direction', behavior: 'followUp' });
+    expect(service.getState(false).pendingModel).toBeNull();
+    expect(fake.session.setModel).not.toHaveBeenCalled();
+    fake.setQueue([], []);
+    fake.emitSession({ type: 'queue_update', steering: [], followUp: [] });
+    await fake.emitAgent({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'next direction' }] } });
+    expect(fake.session.setModel).toHaveBeenCalledTimes(1);
+    expect(fake.session.setModel).toHaveBeenCalledWith(alternate);
+    fake.agent.streamFunction(model, context, { apiKey: 'captured-key', reasoning: 'low' });
+    expect(originalStreamFunction).toHaveBeenLastCalledWith(alternate, context, { reasoning: 'medium' });
+    fake.settle();
+    await service.dispose();
+  });
+
+  it('discards a cancelled queued model binding and preserves one restored for editing', async () => {
+    const alternate = { ...model, id: 'fast', name: 'Fast Model' };
+    const fake = fixture([model, alternate]);
+    fake.modelRuntime.getModel.mockImplementation((_provider: string, id: string) => id === 'fast' ? alternate : model);
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'current work', behavior: 'prompt' });
+
+    await service.setModel('test', 'fast');
+    await service.prompt({ text: 'cancel me', behavior: 'followUp' });
+    const cancelledTarget = service.getState(false).queue?.items?.[0];
+    await service.mutateQueuedMessage({ id: cancelledTarget!.id, action: 'cancel' });
+    expect(service.getState(false).pendingModel).toBeNull();
+    fake.settle();
+    await Promise.resolve();
+    fake.session.setModel.mockClear();
+    await service.prompt({ text: 'ordinary next prompt', behavior: 'prompt' });
+    expect(fake.session.setModel).not.toHaveBeenCalled();
+    fake.settle();
+
+    await service.prompt({ text: 'work again', behavior: 'prompt' });
+    await service.setModel('test', 'fast');
+    await service.prompt({ text: 'edit me', behavior: 'followUp' });
+    const editedTarget = service.getState(false).queue?.items?.[0];
+    await service.mutateQueuedMessage({ id: editedTarget!.id, action: 'edit' });
+    expect(service.getState(false).pendingModel?.id).toBe('fast');
+    fake.settle();
+    await service.dispose();
+  });
+
+  it('stages models but rejects reasoning, compaction, and prompts that race an active operation', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
     await service.prompt({ text: 'work', behavior: 'prompt' });
 
-    await expect(service.setModel('test', 'model')).rejects.toThrow('active Pi operation');
+    await expect(service.setModel('test', 'model')).resolves.toMatchObject({ pendingModel: { provider: 'test', id: 'model' } });
+    expect(fake.session.setModel).not.toHaveBeenCalled();
     expect(() => service.setThinkingLevel('high')).toThrow('active Pi operation');
     await expect(service.compact()).rejects.toThrow('active Pi operation');
     fake.settle();
@@ -422,38 +589,39 @@ describe('PiRuntimeService', () => {
     (runtime.newSession as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<void>((resolve) => { finishReplacement = resolve; }));
     const replacement = service.newSession();
     await vi.waitFor(() => expect(service.getState().sessionOperation).toBe(true));
-    expect(() => service.prompt({ text: 'too soon', behavior: 'prompt' })).toThrow('session change');
+    await expect(service.prompt({ text: 'too soon', behavior: 'prompt' })).rejects.toThrow('session change');
     finishReplacement?.();
     await replacement;
     await service.dispose();
   });
 
-  it('applies saved model and thinking defaults before a new session becomes ready', async () => {
+  it('keeps the active model and reasoning level when creating a new session', async () => {
     const alternate = { ...model, id: 'fast', name: 'Fast Model' };
     const fake = fixture([model, alternate]);
-    fake.modelRuntime.getModel.mockReturnValue(alternate);
     const service = new PiRuntimeService(fake.adapter);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.session.thinkingLevel = 'high';
     fake.session.setThinkingLevel.mockClear();
     fake.session.setModel.mockImplementationOnce(async () => {
       expect(service.getState().sessionOperation).toBe(true);
     });
 
-    const state = await service.newSession({ thinkingLevel: 'high', defaultModel: 'test/fast' });
+    const state = await service.newSession({ thinkingLevel: 'medium', defaultModel: 'test/fast' });
+    expect(fake.modelRuntime.getModel).toHaveBeenCalledWith('test', 'model');
     expect(fake.session.setThinkingLevel).toHaveBeenCalledWith('high');
-    expect(fake.session.setModel).toHaveBeenCalledWith(alternate);
+    expect(fake.session.setModel).toHaveBeenCalledWith(model);
     expect(fake.session.setModel.mock.invocationCallOrder[0]).toBeLessThan(fake.session.setThinkingLevel.mock.invocationCallOrder[0]!);
     expect(state.sessionOperation).toBe(false);
     await service.dispose();
   });
 
-  it('switches between read-only, project edit, and explicit full-access tool sets', async () => {
+  it('switches between default full access, read-only, and project edit tool sets', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
     const initial = await service.openProject({ path: '/project', name: 'project', trusted: true });
 
-    expect(initial.permissionLevel).toBe('edit');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'edit', 'write', 'generate_image', 'imagegen']);
+    expect(initial.permissionLevel).toBe('full-access');
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen']);
 
     const readOnly = await service.setPermissionLevel('read-only');
     expect(readOnly.permissionLevel).toBe('read-only');
@@ -469,11 +637,11 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
-  it('restores host-owned permissions per session and defaults unseen sessions to Edit files', async () => {
+  it('restores host-owned permissions per session and defaults unseen sessions to Full access', async () => {
     const fake = fixture();
     const permissions = new InMemorySessionPermissionStore();
-    await permissions.set('/project', 'session-1', 'full-access');
     await permissions.set('/project', 'session-2', 'read-only');
+    await permissions.set('/project', 'session-3', 'edit');
     const service = new PiRuntimeService(fake.adapter, undefined, permissions);
 
     const initial = await service.openProject({ path: '/project', name: 'project', trusted: true });
@@ -486,10 +654,15 @@ describe('PiRuntimeService', () => {
     await rebind?.(secondSession);
     expect(service.getState(false).permissionLevel).toBe('read-only');
 
+    const thirdSession = { ...fake.session, sessionId: 'session-3' };
+    fake.runtime.session = thirdSession;
+    await rebind?.(thirdSession);
+    expect(service.getState(false).permissionLevel).toBe('edit');
+
     const newSession = { ...fake.session, sessionId: 'session-new' };
     fake.runtime.session = newSession;
     await rebind?.(newSession);
-    expect(service.getState(false).permissionLevel).toBe('edit');
+    expect(service.getState(false).permissionLevel).toBe('full-access');
 
     fake.runtime.session = fake.session;
     await rebind?.(fake.session);
@@ -506,7 +679,7 @@ describe('PiRuntimeService', () => {
     fake.session.setActiveToolsByName.mockImplementationOnce(() => { throw new Error('bash unavailable'); });
 
     await expect(service.setPermissionLevel('full-access')).rejects.toThrow('bash unavailable');
-    expect(service.getState().permissionLevel).toBe('edit');
+    expect(service.getState().permissionLevel).toBe('full-access');
     await service.dispose();
   });
 
@@ -607,7 +780,7 @@ describe('PiRuntimeService', () => {
     } as unknown as PiSessionRepository;
     const service = new PiRuntimeService(fake.adapter, repository);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
-    expect(await service.listSessions('saved')).toEqual([saved]);
+    expect(await service.listSessions('saved')).toEqual([{ ...saved, attention: null }]);
     await service.newSession();
     expect((await fake.adapter.createRuntime('/project', {} as ModelRuntime)).newSession).toHaveBeenCalledOnce();
     await service.switchSession('saved');
@@ -616,6 +789,157 @@ describe('PiRuntimeService', () => {
     expect(repository.resolve).toHaveBeenCalledWith('/project', 'saved');
     await service.deleteSession('saved');
     expect(repository.delete).toHaveBeenCalledWith('/project', 'saved');
+    await service.dispose();
+  });
+
+  it('promotes exact live slots while other sessions keep running and isolates their extension state', async () => {
+    const first = fixture();
+    const second = fixture();
+    const third = fixture();
+    second.session.sessionId = 'session-2';
+    second.session.sessionFile = '/sessions/two.jsonl';
+    third.session.sessionId = 'session-3';
+    third.session.sessionFile = '/sessions/three.jsonl';
+    const createRuntime = vi.fn()
+      .mockResolvedValueOnce(first.runtime as unknown as AgentSessionRuntime)
+      .mockResolvedValueOnce(second.runtime as unknown as AgentSessionRuntime)
+      .mockResolvedValueOnce(third.runtime as unknown as AgentSessionRuntime);
+    const adapter: PiSdkAdapter = { ...first.adapter, createRuntime };
+    const service = new PiRuntimeService(adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'long first task', behavior: 'prompt' });
+
+    const secondState = await service.newSession();
+    expect(secondState).toMatchObject({ sessionId: 'session-2', streaming: false, runningSessionCount: 1 });
+    expect(first.session.abort).not.toHaveBeenCalled();
+    expect(secondState.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'session-1', attention: 'running', active: false }),
+    ]));
+
+    const promoted = await service.switchSession('session-1');
+    expect(promoted).toMatchObject({ sessionId: 'session-1', streaming: true });
+    expect(second.runtime.dispose).toHaveBeenCalledOnce();
+    expect(promoted.sessions?.find((session) => session.id === 'session-1')?.attention).toBeNull();
+
+    await service.newSession();
+    const firstUi = (first.session.bindExtensions.mock.calls as unknown as Array<[{ uiContext: { setStatus: (key: string, text?: string) => void } }]>)[0]![0].uiContext;
+    firstUi.setStatus('background', 'must stay isolated');
+    expect(service.getState(false).extensionUi?.statuses).toEqual([]);
+
+    first.settle();
+    await Promise.resolve();
+    first.emitSession({ type: 'agent_settled' });
+    await vi.waitFor(() => expect(first.runtime.dispose).toHaveBeenCalledOnce());
+    expect(service.getState(false)).toMatchObject({ sessionId: 'session-3', runningSessionCount: 0 });
+    expect(service.getState(false).sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'session-1', attention: 'completed', active: false }),
+    ]));
+    await service.dispose();
+  });
+
+  it('keeps the selected run intact when creating the next slot fails', async () => {
+    const first = fixture();
+    const candidate = fixture();
+    candidate.session.sessionId = 'candidate';
+    candidate.session.bindExtensions.mockRejectedValueOnce(new Error('candidate extension failed'));
+    const adapter: PiSdkAdapter = {
+      ...first.adapter,
+      createRuntime: vi.fn()
+        .mockResolvedValueOnce(first.runtime as unknown as AgentSessionRuntime)
+        .mockResolvedValueOnce(candidate.runtime as unknown as AgentSessionRuntime),
+    };
+    const service = new PiRuntimeService(adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'keep running', behavior: 'prompt' });
+
+    await expect(service.newSession()).rejects.toThrow('candidate extension failed');
+    expect(service.getState(false)).toMatchObject({ sessionId: 'session-1', streaming: true, runningSessionCount: 1 });
+    expect(first.runtime.dispose).not.toHaveBeenCalled();
+    expect(first.session.abort).not.toHaveBeenCalled();
+    expect(candidate.runtime.dispose).toHaveBeenCalledOnce();
+    first.settle();
+    await service.dispose();
+  });
+
+  it('disposes a settled background slot before a slow repository refresh and never resurrects acknowledged attention', async () => {
+    const first = fixture();
+    const second = fixture();
+    const reopened = fixture();
+    first.session.sessionFile = '/sessions/one.jsonl';
+    second.session.sessionId = 'session-2';
+    second.session.sessionFile = '/sessions/two.jsonl';
+    reopened.session.sessionId = 'session-1';
+    reopened.session.sessionFile = '/sessions/one.jsonl';
+    const adapter: PiSdkAdapter = {
+      ...first.adapter,
+      createRuntime: vi.fn()
+        .mockResolvedValueOnce(first.runtime as unknown as AgentSessionRuntime)
+        .mockResolvedValueOnce(second.runtime as unknown as AgentSessionRuntime)
+        .mockResolvedValueOnce(reopened.runtime as unknown as AgentSessionRuntime),
+    };
+    let markRefreshStarted: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => { markRefreshStarted = resolve; });
+    let rejectRefresh: ((error: Error) => void) | undefined;
+    const delayedRefresh = new Promise<never>((_resolve, reject) => { rejectRefresh = reject; });
+    let listCalls = 0;
+    const saved = {
+      id: 'session-1', title: 'First', firstMessage: 'keep running', path: '/sessions/one.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-01T00:00:01.000Z', messageCount: 2, active: false,
+    };
+    const repository = {
+      invalidate: vi.fn(),
+      list: vi.fn(() => {
+        listCalls += 1;
+        if (listCalls === 3) {
+          markRefreshStarted?.();
+          return delayedRefresh;
+        }
+        return Promise.resolve([]);
+      }),
+      resolve: vi.fn(async () => saved),
+      branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(adapter, repository);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'keep running', behavior: 'prompt' });
+    await service.newSession();
+    await service.prompt({ text: 'second run', behavior: 'prompt' });
+
+    first.emitSession({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error' } });
+    first.settle();
+    first.emitSession({ type: 'agent_settled' });
+    await refreshStarted;
+    expect(first.runtime.dispose).toHaveBeenCalledOnce();
+    expect(service.getState(false).sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'session-1', attention: 'error' }),
+    ]));
+
+    await expect(service.switchSession('session-1')).resolves.toMatchObject({ sessionId: 'session-1' });
+    rejectRefresh?.(new Error('stale repository failure'));
+    await delayedRefresh.catch(() => undefined);
+    await Promise.resolve();
+    expect(service.getState(false).sessions?.find((session) => session.id === 'session-1')?.attention).toBeNull();
+    second.settle();
+    await service.dispose();
+  });
+
+  it('refuses a fifth live runtime without aborting or evicting four running sessions', async () => {
+    const fakes = Array.from({ length: 5 }, () => fixture());
+    fakes.forEach((fake, index) => { fake.session.sessionId = `session-${index + 1}`; });
+    const createRuntime = vi.fn();
+    for (const fake of fakes) createRuntime.mockResolvedValueOnce(fake.runtime as unknown as AgentSessionRuntime);
+    const adapter: PiSdkAdapter = { ...fakes[0]!.adapter, createRuntime };
+    const service = new PiRuntimeService(adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    for (let index = 0; index < 4; index += 1) {
+      await service.prompt({ text: `task ${index}`, behavior: 'prompt' });
+      if (index < 3) await service.newSession();
+    }
+    expect(service.getState(false).runningSessionCount).toBe(4);
+    await expect(service.newSession()).rejects.toThrow('Up to 4 Pi sessions');
+    expect(createRuntime).toHaveBeenCalledTimes(4);
+    expect(fakes.slice(0, 4).every((fake) => fake.session.abort.mock.calls.length === 0)).toBe(true);
     await service.dispose();
   });
 
@@ -640,6 +964,39 @@ describe('PiRuntimeService', () => {
     const result = await service.forkSession('entry-1');
     expect(result.selectedText).toBe('original prompt');
     expect(result.state.sessionId).toBe('session-1');
+    await service.dispose();
+  });
+
+  it('publishes Pi’s post-compaction estimate, then replaces it with measured usage', async () => {
+    const fake = fixture();
+    let usage: { tokens: number | null; contextWindow: number; percent: number | null } = {
+      tokens: null,
+      contextWindow: 1_000,
+      percent: null,
+    };
+    Object.assign(fake.session, { getContextUsage: vi.fn(() => usage) });
+    fake.session.compact.mockImplementationOnce(async () => {
+      fake.emitSession({
+        type: 'compaction_end',
+        reason: 'manual',
+        result: { estimatedTokensAfter: 240 },
+        aborted: false,
+        willRetry: false,
+      });
+    });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    const compacted = await service.compact();
+    expect(compacted.contextUsage).toEqual({
+      tokens: 240,
+      contextWindow: 1_000,
+      percent: 24,
+      estimated: true,
+    });
+
+    usage = { tokens: 310, contextWindow: 1_000, percent: 31 };
+    expect(service.getState(false).contextUsage).toEqual(usage);
     await service.dispose();
   });
 
@@ -801,6 +1158,33 @@ describe('PiRuntimeService', () => {
     await callback?.(fake.session);
     expect(fake.session.subscribe).toHaveBeenCalledTimes(2);
     await service.dispose();
+  });
+
+  it('coalesces concurrent rebinds so model hooks are installed and removed exactly once', async () => {
+    const fake = fixture();
+    const originalStreamFunction = fake.agent.streamFunction;
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const callback = fake.runtime.setRebindSession.mock.calls[0]?.[0] as ((session: typeof fake.session) => Promise<void>) | undefined;
+    let markBindingStarted: (() => void) | undefined;
+    const bindingStarted = new Promise<void>((resolve) => { markBindingStarted = resolve; });
+    let releaseBinding: (() => void) | undefined;
+    fake.session.bindExtensions.mockImplementationOnce(() => {
+      markBindingStarted?.();
+      return new Promise<undefined>((resolve) => { releaseBinding = () => resolve(undefined); });
+    });
+
+    const first = callback?.(fake.session);
+    const second = callback?.(fake.session);
+    await bindingStarted;
+    expect(fake.session.bindExtensions).toHaveBeenCalledTimes(2);
+    releaseBinding?.();
+    await Promise.all([first, second]);
+    expect(fake.session.subscribe).toHaveBeenCalledTimes(2);
+    expect(fake.agent.subscribe).toHaveBeenCalledTimes(2);
+
+    await service.dispose();
+    expect(fake.agent.streamFunction).toBe(originalStreamFunction);
   });
 
   it('synchronously detaches and ignores queued or late events from an old session generation', async () => {

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
@@ -10,7 +10,7 @@ describe('first-launch shell', () => {
   beforeEach(() => {
     localStorage.clear();
     delete document.documentElement.dataset.platform;
-    useUiStore.setState({ sidebarCollapsed: false, inspectorCollapsed: false, leftWidth: 264, rightWidth: 332, musicPlayerEnabled: false, musicPlaying: false, sendMessageWithModifier: false, toast: null, composerDraftRequest: null });
+    useUiStore.setState({ sidebarCollapsed: false, inspectorCollapsed: false, leftWidth: 264, rightWidth: 332, musicPlayerEnabled: false, musicPlaying: false, sendMessageWithModifier: false, paletteOpen: false, settingsOpen: false, toast: null, composerDraftRequest: null });
     useRuntimeStore.getState().setRuntime({
       status: 'disconnected', project: null, sessionId: null, sessionFile: null, streaming: false,
       model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
@@ -55,6 +55,72 @@ describe('first-launch shell', () => {
     }
     expect(container.querySelector('.brand-mark')).toHaveTextContent('ƒ');
     expect(container.querySelector('.welcome-symbol')).toHaveTextContent('ƒ');
+  });
+
+  it('opens the session list immediately after project selection', async () => {
+    const initial = useRuntimeStore.getState().runtime;
+    const selected: RuntimeState = {
+      status: 'ready', project: { path: 'C:/selected-project', name: 'selected-project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], sessions: [], error: null,
+    };
+    const selectProject = vi.fn(async () => selected);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => initial),
+        onEvents: vi.fn(() => () => undefined),
+        selectProject,
+      } as unknown as PiDesktopApi,
+    });
+    useUiStore.getState().setSidebarCollapsed(true);
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument();
+    await user.click(container.querySelector<HTMLButtonElement>('.action-card--primary')!);
+
+    await waitFor(() => expect(selectProject).toHaveBeenCalledOnce());
+    await waitFor(() => expect(useUiStore.getState().sidebarCollapsed).toBe(false));
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument();
+  });
+
+  it('keeps app and command-palette new/model actions available while streaming', async () => {
+    const current = { provider: 'test', id: 'current', name: 'Current Model', reasoning: true, contextWindow: 100_000 };
+    const alternate = { provider: 'test', id: 'fast', name: 'Fast Model', reasoning: false, contextWindow: 200_000 };
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: true, runningSessionCount: 1, model: current, pendingModel: null, models: [current, alternate], thinkingLevel: 'medium',
+      messages: [], commands: [], sessions: [], sessionOperation: false, error: null,
+    };
+    useRuntimeStore.getState().setRuntime(runtime);
+    const newSession = vi.fn(async () => runtime);
+    const setModel = vi.fn(async () => ({ ...runtime, pendingModel: alternate }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => runtime),
+        onEvents: vi.fn(() => () => undefined),
+        newSession,
+        setModel,
+      } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true });
+    await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+
+    act(() => useUiStore.getState().setPaletteOpen(true));
+    const modelCommand = screen.getByRole('option', { name: /Use model: Fast Model/u });
+    expect(modelCommand).toBeEnabled();
+    await user.click(modelCommand);
+    await waitFor(() => expect(setModel).toHaveBeenCalledWith('test', 'fast'));
+
+    act(() => useUiStore.getState().setPaletteOpen(true));
+    const newCommand = screen.getByRole('option', { name: /New session/u });
+    expect(newCommand).toBeEnabled();
+    await user.click(newCommand);
+    await waitFor(() => expect(newSession).toHaveBeenCalledTimes(2));
   });
 
   it('shows playback activity beside the title only while the sidebar is expanded', async () => {
@@ -301,6 +367,18 @@ describe('first-launch shell', () => {
     expect(screen.queryByRole('button', { name: /Inspect codebase/ })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Message Pi')).toBeInTheDocument();
     expect(container.querySelector('.welcome')).not.toHaveAttribute('aria-labelledby');
+  });
+
+  it('floats extension status at workspace level instead of adding composer weight', () => {
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+      extensionUi: { statuses: [{ key: 'mcp', text: 'MCP: 0/13 servers' }], widgets: [], working: null, title: null },
+    });
+    const { container } = render(<App />);
+
+    expect(container.querySelector('.workspace > .extension-status-rail')).toHaveTextContent('MCP: 0/13 servers');
+    expect(container.querySelector('.composer .extension-status-rail')).toBeNull();
   });
 
   it('reports reveal-project failures without reintroducing titlebar connection chrome', async () => {

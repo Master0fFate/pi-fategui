@@ -40,6 +40,13 @@ describe('ProjectPathPolicy', () => {
     expect(parent).toBeTruthy();
   });
 
+  it('registers Bash so explicit Full access can activate command execution', async () => {
+    const { project } = await fixture();
+    const tools = await createProjectConfinedTools(project);
+
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['bash', 'read', 'write', 'edit', 'generate_image']));
+  });
+
   it('refuses project-confined writes through multiply-linked files before truncation', async () => {
     const { project, outside } = await fixture();
     const outsideFile = path.join(outside, 'secret.txt');

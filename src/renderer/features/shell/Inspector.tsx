@@ -61,7 +61,7 @@ export function Inspector({ onCollapse }: InspectorProps) {
         <Tabs.List aria-label="Inspector views" className="tab-list">
           {tabs.map(({ value, label, icon: Icon }) => (
             <Tabs.Trigger value={value} key={value} className="tab-trigger">
-              <Icon size={15} /><span>{label}</span>
+              <Icon size={15} /><span className="icon-label">{label}</span>
             </Tabs.Trigger>
           ))}
         </Tabs.List>
@@ -75,7 +75,7 @@ export function Inspector({ onCollapse }: InspectorProps) {
             <div><span>Agent</span><strong>{runtime.status}</strong></div>
             <div><span>Model</span><strong>{runtime.model?.name ?? '—'}</strong></div>
             <div><span>Thinking</span><strong>{runtime.thinkingLevel}</strong></div>
-            <div><span>Context</span><strong>{runtime.contextUsage?.percent == null ? '—' : `${runtime.contextUsage.percent.toFixed(1)}%`}</strong></div>
+            <div><span>Context</span><strong>{runtime.contextUsage?.percent == null ? '—' : `${runtime.contextUsage.estimated ? '~' : ''}${runtime.contextUsage.percent.toFixed(1)}%`}</strong></div>
             <div><span>Objective</span><strong>{runtime.objective || 'No active objective'}</strong></div>
             <div className="trust-row"><ShieldCheck size={16} /><span>{runtime.project?.trusted ? `Trusted · ${runtime.project.path}` : 'Project trust starts after selection'}</span></div>
           </div>

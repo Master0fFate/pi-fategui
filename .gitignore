@@ -1,6 +1,7 @@
 node_modules/
 dist/
 release/
+build/vendor/yt-dlp/
 *.log
 .DS_Store
 .env

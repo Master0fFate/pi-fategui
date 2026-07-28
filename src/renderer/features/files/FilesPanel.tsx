@@ -25,8 +25,8 @@ function FileRow({ entry, selected, expanded, loading, onActivate }: {
       >
         {entry.kind === 'directory' ? (expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : <span className="file-row-spacer" />}
         <Icon size={14} className={loading ? 'file-row-loading' : ''} />
-        <span>{entry.name}</span>
-        {entry.symlink && <em>link</em>}
+        <span className="icon-label">{entry.name}</span>
+        {entry.symlink && <em className="icon-label">link</em>}
       </button>
     </AppTooltip>
   );
@@ -37,13 +37,13 @@ function PreviewState() {
   const loading = useWorkspaceStore((state) => state.previewLoading);
   const selected = useWorkspaceStore((state) => state.selectedFile);
   const open = useWorkspaceStore((state) => state.openSelectedFile);
-  if (loading) return <div className="preview-loading"><span className="preview-spinner" />Reading {selected}…</div>;
+  if (loading) return <div className="preview-loading"><span className="preview-spinner" /><span className="icon-label">Reading {selected}…</span></div>;
   if (!preview) return <div className="preview-placeholder"><File size={22} /><span>Select a file to preview</span></div>;
   return (
     <div className="file-preview">
       <div className="preview-heading">
         <AppTooltip content={preview.path}><span>{preview.path}</span></AppTooltip>
-        {preview.state === 'text' && preview.openable && <AppTooltip content="Open in the system editor"><button type="button" onClick={() => void open()}><ExternalLink size={13} />Open</button></AppTooltip>}
+        {preview.state === 'text' && preview.openable && <AppTooltip content="Open in the system editor"><button type="button" onClick={() => void open()}><ExternalLink size={13} /><span className="icon-label">Open</span></button></AppTooltip>}
       </div>
       <div className="preview-body">
         {preview.state === 'text' && <LazyFileViewer value={preview.content ?? ''} language={preview.language} path={preview.path} />}
@@ -89,7 +89,7 @@ export function FilesPanel() {
   if (!project) return <div className="inspector-empty"><Folder size={24} /><strong>No project files</strong><p>Open a project to browse its file tree.</p></div>;
   return (
     <div className="files-panel">
-      <label className="file-search"><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search project files" aria-label="Search project files" />{searching && <span className="preview-spinner" />}</label>
+      <label className="file-search"><Search size={13} /><input className="icon-label" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search project files" aria-label="Search project files" />{searching && <span className="preview-spinner" />}</label>
       {error && <div className="workspace-error" role="alert">{error}</div>}
       <div className="file-tree" aria-label="Project file tree">
         {visible.length > 0 ? (

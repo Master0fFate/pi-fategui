@@ -6,7 +6,7 @@ export class FakePiRuntimeService {
   private project: ProjectState | null = null;
   private activeSession = 'e2e-session-1';
   private streaming = false;
-  private permissionLevel: PermissionLevel = 'edit';
+  private permissionLevel: PermissionLevel = 'full-access';
   private queuedMessages: QueuedMessage[] = [];
   private queueSequence = 0;
   private readonly sessionPermissions = new Map<string, PermissionLevel>();
@@ -99,9 +99,9 @@ export class FakePiRuntimeService {
       ...(input.action === 'edit' ? { restored: { text: target.text, ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}) } } : {}),
     };
   }
-  async newSession(): Promise<RuntimeState> { this.activeSession = 'e2e-session-1'; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(this.activeSession) ?? 'edit'; this.emitState(); return this.getState(); }
+  async newSession(): Promise<RuntimeState> { this.activeSession = 'e2e-session-1'; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(this.activeSession) ?? 'full-access'; this.emitState(); return this.getState(); }
   async listSessions(query = ''): Promise<SessionSummary[]> { return this.getState().sessions!.filter((session) => session.title.toLowerCase().includes(query.toLowerCase())); }
-  async switchSession(sessionId: string): Promise<RuntimeState> { this.activeSession = sessionId; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(sessionId) ?? 'edit'; this.emitState(true); return this.getState(); }
+  async switchSession(sessionId: string): Promise<RuntimeState> { this.activeSession = sessionId; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(sessionId) ?? 'full-access'; this.emitState(true); return this.getState(); }
   async renameSession(): Promise<RuntimeState> { return this.getState(); }
   async deleteSession(sessionId: string): Promise<RuntimeState> {
     const index = this.sessions.findIndex((session) => session.id === sessionId);

@@ -1,25 +1,146 @@
-import { Brain, CircleAlert, PackageCheck, PackageOpen, Plug } from 'lucide-react';
+import { Brain, Check, CircleAlert, Copy, GitFork, PackageCheck, PackageOpen, Plug, RotateCcw } from 'lucide-react';
 import { memo, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { AppTooltip } from '../../components/AppTooltip';
+import { writeClipboardText } from '../../lib/clipboard';
 import { useRuntimeStore } from '../../stores/runtimeStore';
+import { useUiStore } from '../../stores/uiStore';
 import { AssistantMarkdown } from './RichMessageContent';
 import { ToolCard } from './ToolCard';
 
 export { AssistantMarkdown } from './RichMessageContent';
 
+function formatMessageTimestamp(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 'Time unavailable';
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp);
+}
+
+const MAX_FORK_POINT_TEXT = 2_000;
+const forkTextMatches = (messageText: string, pointText: string) => messageText.slice(0, MAX_FORK_POINT_TEXT) === pointText;
+
+export function forkEntryForMessage(messageId: string, messageOrder: readonly string[], messagesById: Record<string, { role: string; text: string }>, forkPoints: readonly { entryId: string; text: string }[] | undefined): string | null {
+  if (!forkPoints?.length) return null;
+  const messageIndex = messageOrder.indexOf(messageId);
+  let userMessageIndex = -1;
+  for (let index = messageIndex; index >= 0; index -= 1) {
+    if (messagesById[messageOrder[index] ?? '']?.role === 'user') {
+      userMessageIndex = index;
+      break;
+    }
+  }
+  const userMessage = messagesById[messageOrder[userMessageIndex] ?? ''];
+  if (!userMessage) return null;
+
+  // Both collections preserve active-branch order. Resolve from the end so a
+  // bounded renderer history still aligns with Pi's bounded fork-point list.
+  let userOffsetFromEnd = 0;
+  for (let index = userMessageIndex; index < messageOrder.length; index += 1) {
+    if (messagesById[messageOrder[index] ?? '']?.role === 'user') userOffsetFromEnd += 1;
+  }
+  const ordinalPoint = forkPoints.at(-userOffsetFromEnd);
+  if (ordinalPoint && forkTextMatches(userMessage.text, ordinalPoint.text)) return ordinalPoint.entryId;
+
+  // Defensive fallback for adapters that omit a subset of user messages. Pi's
+  // IPC intentionally bounds fork-point text, so compare the same prefix.
+  let occurrenceFromEnd = 0;
+  for (let index = userMessageIndex; index < messageOrder.length; index += 1) {
+    const candidate = messagesById[messageOrder[index] ?? ''];
+    if (candidate?.role === 'user' && candidate.text === userMessage.text) occurrenceFromEnd += 1;
+  }
+  for (let pointIndex = forkPoints.length - 1; pointIndex >= 0; pointIndex -= 1) {
+    const point = forkPoints[pointIndex];
+    if (!point || !forkTextMatches(userMessage.text, point.text)) continue;
+    occurrenceFromEnd -= 1;
+    if (occurrenceFromEnd === 0) return point.entryId;
+  }
+  return null;
+}
+
 export const MessageRow = memo(function MessageRow({ messageId }: { messageId: string }) {
   const message = useRuntimeStore((state) => state.messagesById[messageId]);
-  const modelName = useRuntimeStore((state) => state.runtime.model?.name ?? 'Assistant');
-  const streamingThisMessage = useRuntimeStore((state) => state.runtime.streaming && state.messageOrder.at(-1) === messageId);
+  const runtime = useRuntimeStore((state) => state.runtime);
+  const messageOrder = useRuntimeStore((state) => state.messageOrder);
+  const messagesById = useRuntimeStore((state) => state.messagesById);
+  const [copied, setCopied] = useState(false);
+  const [copying, setCopying] = useState(false);
+  const [forking, setForking] = useState(false);
   if (!message || (message.role === 'assistant' && !message.text && !message.images?.length)) return null;
+  const streamingThisMessage = runtime.streaming && messageOrder.at(-1) === messageId;
   const richContent = message.role === 'assistant' || message.role === 'system' || Boolean(message.images?.length);
+  const modelName = runtime.model?.name ?? 'Assistant';
+  const forkEntryId = forkEntryForMessage(messageId, messageOrder, messagesById, runtime.forkPoints);
+  const canFork = Boolean(forkEntryId && runtime.sessionCapabilities?.fork && !runtime.streaming && !runtime.sessionOperation);
+  const label = message.role === 'user' ? 'You' : message.role === 'assistant' ? modelName : message.role === 'system' ? 'System' : 'Tool result';
+  const forkUnavailable = forking
+    ? 'Creating the new session…'
+    : runtime.streaming
+      ? 'Available when Pi finishes the current response'
+      : runtime.sessionOperation
+        ? 'Available when the current session operation finishes'
+        : !runtime.sessionCapabilities?.fork
+          ? 'Session branching is unavailable'
+          : !forkEntryId
+            ? 'The branch point for this message is unavailable'
+            : null;
+
+  const copyMessage = async () => {
+    if (!message.text || copying) return;
+    setCopying(true);
+    try {
+      await writeClipboardText(message.text);
+      setCopied(true);
+      useUiStore.getState().showToast({ kind: 'success', title: 'Message copied', message: 'The message is on your clipboard.' });
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      useUiStore.getState().showToast({ kind: 'error', title: 'Copy failed', message: 'The system clipboard is unavailable.' });
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  const forkMessage = async (retry = false) => {
+    if (!forkEntryId || !canFork || forking) return;
+    if (!('piDesktop' in window) || typeof window.piDesktop.forkSession !== 'function') {
+      useUiStore.getState().showToast({ kind: 'error', title: retry ? 'Could not try again' : 'Could not fork', message: 'The desktop session bridge is unavailable.' });
+      return;
+    }
+    setForking(true);
+    try {
+      const result = await window.piDesktop.forkSession(forkEntryId);
+      useRuntimeStore.getState().setRuntime(result.state);
+      const promptText = result.selectedText ?? runtime.forkPoints?.find((point) => point.entryId === forkEntryId)?.text ?? '';
+      if (retry) {
+        if (!promptText) throw new Error('The prompt for this response is unavailable.');
+        if (typeof window.piDesktop.prompt !== 'function') throw new Error('The desktop prompt bridge is unavailable.');
+        await window.piDesktop.prompt({ text: promptText, behavior: 'prompt' });
+        useUiStore.getState().showToast({ kind: 'success', title: 'Trying again', message: 'Pi is generating a fresh response.' });
+      } else {
+        useUiStore.getState().requestComposerDraft(message.text, true, 'This is a new session branched from this message. Edit the selected message, then send it to continue.');
+        useUiStore.getState().showToast({ kind: 'success', title: 'Fork ready', message: 'A new session is ready from this point.' });
+      }
+    } catch (error) {
+      useUiStore.getState().showToast({ kind: 'error', title: retry ? 'Could not try again' : 'Could not fork', message: error instanceof Error ? error.message : 'The conversation action failed.' });
+    } finally {
+      setForking(false);
+    }
+  };
+
   return (
-    <article className={`chat-message chat-message--${message.role}${message.error ? ' chat-message--error' : ''}`}>
-      <span>{message.role === 'user' ? 'You' : message.role === 'assistant' ? modelName : message.role === 'system' ? <><Plug size={11} aria-hidden="true" /> System</> : 'Tool result'}</span>
-      {richContent && !(message.role === 'assistant' && streamingThisMessage && !message.images?.length)
-        ? <AssistantMarkdown text={message.text} images={message.images} />
-        : <p className="message-plain">{message.text}</p>}
-    </article>
+    <div className={`chat-message-row chat-message-row--${message.role}`}>
+      <article className={`chat-message chat-message--${message.role}${message.error ? ' chat-message--error' : ''}`}>
+        {richContent && !(message.role === 'assistant' && streamingThisMessage && !message.images?.length)
+          ? <AssistantMarkdown text={message.text} images={message.images} />
+          : <p className="message-plain">{message.text}</p>}
+      </article>
+      <footer className="message-footer">
+        <span className="message-footer-meta">{message.role === 'system' ? <><Plug size={11} aria-hidden="true" /><span className="icon-label">{label} <span aria-hidden="true">·</span> {formatMessageTimestamp(message.timestamp)}</span></> : <>{label} <span aria-hidden="true">·</span> {formatMessageTimestamp(message.timestamp)}</>}</span>
+        <span className="message-footer-actions">
+          <AppTooltip content={copied ? 'Copied' : message.text ? 'Copy message' : 'This message has no text to copy'} wrapTrigger><button className="message-action" type="button" aria-label={copied ? 'Message copied' : 'Copy message'} disabled={!message.text || copying} onClick={() => { void copyMessage(); }}>{copied ? <Check size={14} /> : <Copy size={14} />}</button></AppTooltip>
+          {message.role !== 'system' && <AppTooltip content={forkUnavailable ?? 'Fork from this message'} wrapTrigger><button className="message-action" type="button" aria-label="Fork from this message" disabled={!canFork || forking} onClick={() => { void forkMessage(); }}><GitFork size={14} /></button></AppTooltip>}
+          {message.role === 'assistant' && <AppTooltip content={forkUnavailable ?? 'Try again from this prompt'} wrapTrigger><button className="message-action" type="button" aria-label="Try again" disabled={!canFork || forking} onClick={() => { void forkMessage(true); }}><RotateCcw size={14} /></button></AppTooltip>}
+        </span>
+      </footer>
+    </div>
   );
 });
 
@@ -28,7 +149,7 @@ const ReasoningRow = memo(function ReasoningRow({ messageId }: { messageId: stri
   if (!reasoning) return null;
   return (
     <details className="reasoning-row">
-      <summary><Brain size={13} /> Reasoning</summary>
+      <summary><Brain size={13} /><span className="icon-label">Reasoning</span></summary>
       <pre>{reasoning}</pre>
     </details>
   );
@@ -67,6 +188,10 @@ export function getConversationScrollbarMetrics(
 
 const ConversationFooter = () => <div className="conversation-composer-spacer" aria-hidden="true" />;
 
+export function followsMessage(previousEntry: { kind: string } | undefined): boolean {
+  return previousEntry?.kind === 'message';
+}
+
 const scrollerIsAtBottom = (scroller: HTMLElement) =>
   scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= BOTTOM_THRESHOLD_PX;
 
@@ -95,6 +220,7 @@ const TimelineRow = memo(function TimelineRow({ id }: { id: string }) {
 export function ConversationTimeline() {
   const order = useRuntimeStore((state) => state.timelineOrder);
   const visibleOrder = useRuntimeStore((state) => state.visibleTimelineOrder);
+  const timelineById = useRuntimeStore((state) => state.timelineById);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const scrollerRef = useRef<HTMLElement | null>(null);
   const scrollbarTrackRef = useRef<HTMLDivElement>(null);
@@ -284,7 +410,10 @@ export function ConversationTimeline() {
         className="conversation-virtuoso"
         data={visibleOrder}
         computeItemKey={(_index, id) => id}
-        itemContent={(_index, id) => <div className="timeline-row"><TimelineRow id={id} /></div>}
+        itemContent={(index, id) => {
+          const previousEntry = index > 0 ? timelineById[visibleOrder[index - 1] ?? ''] : undefined;
+          return <div className="timeline-row" data-entry-kind={timelineById[id]?.kind} data-follows-message={followsMessage(previousEntry) || undefined}><TimelineRow id={id} /></div>;
+        }}
         components={{ Footer: ConversationFooter }}
         scrollerRef={bindScroller}
         atBottomStateChange={handleAtBottomStateChange}

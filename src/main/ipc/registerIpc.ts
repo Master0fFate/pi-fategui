@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, webContents } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, webContents } from 'electron';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import packageManifest from '../../../package.json';
 import { promises as fs } from 'node:fs';
@@ -8,6 +8,8 @@ import {
   appInfoSchema,
   appSettingsSchema,
   compactInputSchema,
+  clipboardTextInputSchema,
+  clipboardWriteResultSchema,
   emptyInputSchema,
   fileListInputSchema,
   fileListSchema,
@@ -145,8 +147,8 @@ function activationError(primary: unknown, rollbackFailures: readonly { label: s
 
 export function assertProjectActivationIdle(runtime: Pick<PiRuntimeService, 'getState'>, action: string): void {
   const state = runtime.getState(false);
-  if (state.streaming || state.sessionOperation) {
-    throw new PiDesktopError({ code: 'RUN_ACTIVE', message: `Stop the active Pi operation before ${action}.`, retryable: true });
+  if ((state.runningSessionCount ?? (state.streaming ? 1 : 0)) > 0 || state.sessionOperation) {
+    throw new PiDesktopError({ code: 'RUN_ACTIVE', message: `Stop all active Pi operations before ${action}.`, retryable: true });
   }
 }
 
@@ -162,28 +164,9 @@ export async function discardCreatedWorktreeAfterFailure(primary: unknown, disca
 export function createProjectActivationQueue() {
   let queue: Promise<void> = Promise.resolve();
   let pendingActivations = 0;
-  let activeMutations = 0;
-  let mutationsSettled: Promise<void> = Promise.resolve();
-  let settleMutations: (() => void) | null = null;
-  const trackMutation = async <T>(operation: () => T | Promise<T>): Promise<T> => {
-    if (activeMutations === 0) {
-      mutationsSettled = new Promise<void>((resolve) => { settleMutations = resolve; });
-    }
-    activeMutations += 1;
-    try {
-      return await operation();
-    } finally {
-      activeMutations -= 1;
-      if (activeMutations === 0) {
-        settleMutations?.();
-        settleMutations = null;
-      }
-    }
-  };
   const enqueue = <T>(operation: () => Promise<T>, activation: boolean): Promise<T> => {
     if (activation) pendingActivations += 1;
     const execute = async () => {
-      if (activation) await mutationsSettled;
       try { return await operation(); } finally {
         if (activation) pendingActivations -= 1;
       }
@@ -197,13 +180,13 @@ export function createProjectActivationQueue() {
       return enqueue(operation, true);
     },
     runSerializedMutation<T>(operation: () => T | Promise<T>): Promise<T> {
-      return enqueue(() => trackMutation(operation), false);
+      return enqueue(async (): Promise<T> => operation(), false);
     },
-    async runRuntimeMutation<T>(action: string, operation: () => T | Promise<T>): Promise<T> {
+    runRuntimeMutation<T>(action: string, operation: () => T | Promise<T>): Promise<T> {
       if (pendingActivations > 0) {
-        throw new PiDesktopError({ code: 'RUN_ACTIVE', message: `Wait for the project change to finish before ${action}.`, retryable: true });
+        return Promise.reject(new PiDesktopError({ code: 'RUN_ACTIVE', message: `Wait for the project change to finish before ${action}.`, retryable: true }));
       }
-      return trackMutation(operation);
+      return enqueue(async (): Promise<T> => operation(), false);
     },
   };
 }
@@ -375,6 +358,11 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     if (result.canceled || !result.filePath) return imageSaveResultSchema.parse({ saved: false });
     await fs.writeFile(result.filePath, image);
     return imageSaveResultSchema.parse({ saved: true, path: result.filePath });
+  });
+  handle(ipcChannels.clipboardWriteText, (_event, input) => {
+    const { text } = clipboardTextInputSchema.parse(input);
+    clipboard.writeText(text);
+    return clipboardWriteResultSchema.parse({ written: true });
   });
   handle(ipcChannels.runtimeGetState, (_event, input) => {
     emptyInputSchema.parse(input);

@@ -58,6 +58,7 @@ const exitCode = await new Promise((resolve, reject) => {
 });
 clearTimeout(timeout);
 if (!output.includes('PI_DESKTOP_SPEECH_OK')) throw new Error(`Packaged speech runtime did not initialize (exit ${exitCode}).`);
+if (!output.includes('PI_DESKTOP_YT_DLP_OK')) throw new Error(`Packaged yt-dlp runtime did not initialize (exit ${exitCode}).`);
 if (!output.includes('PI_DESKTOP_SMOKE_OK')) throw new Error(`Packaged smoke marker was not observed (exit ${exitCode}).`);
 if (exitCode !== 0) throw new Error(`Packaged application exited with code ${exitCode}.`);
 console.log('PI_DESKTOP_PACKAGED_SMOKE_OK');

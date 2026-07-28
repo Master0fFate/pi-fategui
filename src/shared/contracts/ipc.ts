@@ -10,6 +10,7 @@ export const ipcChannels = {
   projectSelectFile: 'project:select-file',
   projectReveal: 'project:reveal',
   imageSaveAs: 'image:save-as',
+  clipboardWriteText: 'clipboard:write-text',
   runtimeGetState: 'runtime:get-state',
   runtimePrompt: 'runtime:prompt',
   runtimeAbort: 'runtime:abort',
@@ -264,6 +265,8 @@ export const imageSaveResultSchema = z.discriminatedUnion('saved', [
   z.object({ saved: z.literal(false) }).strict(),
   z.object({ saved: z.literal(true), path: z.string().min(1).max(32_768) }).strict(),
 ]);
+export const clipboardTextInputSchema = z.object({ text: z.string().max(200_000) }).strict();
+export const clipboardWriteResultSchema = z.object({ written: z.literal(true) }).strict();
 
 export const runtimeMessageSchema = z.object({
   id: z.string().min(1),
@@ -297,8 +300,14 @@ export const slashCommandSchema = z.object({
   source: z.enum(['extension', 'prompt', 'skill']).optional(),
 });
 export const skillInfoSchema = z.object({ name: z.string().min(1).max(500), description: z.string().max(2_000) });
-export const contextUsageSchema = z.object({ tokens: z.number().int().nonnegative().nullable(), contextWindow: z.number().int().positive(), percent: z.number().nonnegative().nullable() });
+export const contextUsageSchema = z.object({
+  tokens: z.number().int().nonnegative().nullable(),
+  contextWindow: z.number().int().positive(),
+  percent: z.number().nonnegative().nullable(),
+  estimated: z.boolean().optional(),
+});
 
+export const sessionAttentionSchema = z.enum(['running', 'completed', 'error']);
 export const sessionSummarySchema = z.object({
   id: z.string().min(1).max(500),
   title: z.string().min(1).max(200),
@@ -309,6 +318,7 @@ export const sessionSummarySchema = z.object({
   messageCount: z.number().int().nonnegative(),
   parentSessionPath: z.string().max(32_768).optional(),
   active: z.boolean(),
+  attention: sessionAttentionSchema.nullable().optional(),
 });
 
 export const sessionBranchSchema = z.object({
@@ -353,13 +363,28 @@ export const runtimeQueueSchema = z.object({
   items: z.array(queuedMessageSchema).max(100).optional(),
 });
 
+export const extensionUiStateSchema = z.object({
+  statuses: z.array(z.object({
+    key: z.string().min(1).max(100),
+    text: z.string().min(1).max(500),
+  }).strict()).max(16),
+  widgets: z.array(z.object({
+    key: z.string().min(1).max(100),
+    lines: z.array(z.string().min(1).max(500)).max(32),
+  }).strict()).max(8),
+  working: z.string().min(1).max(300).nullable(),
+  title: z.string().min(1).max(300).nullable(),
+}).strict();
+
 export const runtimeStateSchema = z.object({
   status: z.enum(['disconnected', 'initializing', 'ready', 'auth-required', 'error']),
   project: projectStateSchema.nullable(),
   sessionId: z.string().min(1).nullable(),
   sessionFile: z.string().nullable(),
   streaming: z.boolean(),
+  runningSessionCount: z.number().int().nonnegative().max(4).optional(),
   model: modelInfoSchema.nullable(),
+  pendingModel: modelInfoSchema.nullable().optional(),
   models: z.array(modelInfoSchema).max(2_000),
   thinkingLevel: thinkingLevelSchema,
   permissionLevel: permissionLevelSchema.optional(),
@@ -370,6 +395,7 @@ export const runtimeStateSchema = z.object({
   objective: z.string().optional(),
   contextUsage: contextUsageSchema.optional(),
   queue: runtimeQueueSchema.optional(),
+  extensionUi: extensionUiStateSchema.optional(),
   sessions: z.array(sessionSummarySchema).max(1_000).optional(),
   branches: z.array(sessionBranchSchema).max(5_000).optional(),
   forkPoints: z.array(forkPointSchema).max(2_000).optional(),
@@ -561,6 +587,8 @@ export type ImageSaveResult = z.infer<typeof imageSaveResultSchema>;
 export type RuntimeMessage = z.infer<typeof runtimeMessageSchema>;
 export type RuntimeTool = z.infer<typeof runtimeToolSchema>;
 export type RuntimeState = z.infer<typeof runtimeStateSchema>;
+export type ExtensionUiState = z.infer<typeof extensionUiStateSchema>;
+export type SessionAttention = z.infer<typeof sessionAttentionSchema>;
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
 export type SessionBranch = z.infer<typeof sessionBranchSchema>;
 export type PiEvent = z.infer<typeof piEventSchema>;
@@ -605,6 +633,7 @@ export interface PiDesktopApi {
   selectProjectFile: () => Promise<string | null>;
   revealProject: () => Promise<z.infer<typeof revealProjectResultSchema>>;
   saveImageAs: (input: ImageSaveInput) => Promise<ImageSaveResult>;
+  writeClipboardText: (text: string) => Promise<void>;
   getRuntimeState: () => Promise<RuntimeState>;
   prompt: (input: PromptInput) => Promise<PromptAcceptance>;
   abort: () => Promise<{ aborted: boolean }>;

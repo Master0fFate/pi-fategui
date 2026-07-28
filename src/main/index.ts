@@ -140,12 +140,14 @@ function createWindow(): BrowserWindow {
 
   if (process.env.PI_DESKTOP_SMOKE === '1') {
     window.webContents.once('did-finish-load', () => {
-      void speech.getStatus().then((status) => {
-        console.log(`PI_DESKTOP_SPEECH_OK ${status.backend}`);
+      void Promise.all([speech.getStatus(), music.getStatus()]).then(([speechStatus, musicStatus]) => {
+        if (!musicStatus.available) throw new Error(musicStatus.message ?? 'Bundled yt-dlp is unavailable.');
+        console.log(`PI_DESKTOP_SPEECH_OK ${speechStatus.backend}`);
+        console.log(`PI_DESKTOP_YT_DLP_OK ${musicStatus.version}`);
         console.log('PI_DESKTOP_SMOKE_OK');
         setTimeout(() => app.quit(), 100);
       }).catch((error: unknown) => {
-        console.error(`PI_DESKTOP_SPEECH_FAILED ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`PI_DESKTOP_RUNTIME_SMOKE_FAILED ${error instanceof Error ? error.message : String(error)}`);
         app.exit(1);
       });
     });

@@ -21,6 +21,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type {
   AppError,
+  ExtensionUiState,
   ModelInfo,
   PermissionLevel,
   PiEvent,
@@ -33,15 +34,16 @@ import type {
   RuntimeMessage,
   RuntimeState,
   RuntimeTool,
+  SessionAttention,
   SessionSummary,
   ThinkingLevel,
 } from '../../shared/contracts/ipc';
 import { PiEventBatcher } from './PiEventBatcher';
 import { PiEventNormalizer, messageImages, messageText, safeText } from './PiEventNormalizer';
 import { promoteInlineResourceCommand } from './PiInlineCommands';
-import { createPiExtensionUi, type ExtensionNoticeLevel } from './PiExtensionUi';
+import { createPiExtensionUiBridge, emptyExtensionUiState, type ExtensionNoticeLevel, type PiExtensionUiBridge } from './PiExtensionUi';
 import { PiDesktopError, authRequiredError, normalizeError } from './errors';
-import { PiSessionRepository } from './PiSessionRepository';
+import { PiSessionRepository, sessionDisplayTitle } from './PiSessionRepository';
 import { PiSessionTitleGenerator, type SessionTitleGenerator } from './PiSessionTitleGenerator';
 import { createProjectConfinedTools, type ProjectToolAccess } from './PiToolPolicy';
 import { validatePromptImages } from './PiPromptImages';
@@ -65,8 +67,60 @@ const MAX_HYDRATED_IMAGE_CHARACTERS = 20_000_000;
 const MAX_CONTEXT_FILE_BYTES = 256 * 1024;
 const MAX_MESSAGE_CONTENT_BLOCKS = 1_000;
 const MAX_QUEUED_MESSAGES = 100;
+const MAX_LIVE_RUNTIME_SLOTS = 4;
+const MAX_SESSION_ATTENTION_ENTRIES = 1_000;
+const MAX_MANUAL_SESSION_NAME_CLAIMS = 5_000;
+const MAX_COLD_PENDING_MODELS = 1_000;
 
-type QueuedMessageRecord = QueuedMessage & { transportText: string };
+type SessionModel = NonNullable<AgentSession['model']>;
+interface StagedModel {
+  token: string;
+  model: SessionModel;
+  info: ModelInfo;
+}
+type QueuedMessageRecord = QueuedMessage & {
+  transportText: string;
+  boundModel?: StagedModel;
+};
+
+interface SessionAttentionRecord {
+  value: SessionAttention | null;
+  revision: number;
+}
+
+interface RuntimeSlot {
+  runtime: AgentSessionRuntime;
+  projectGeneration: number;
+  sessionGeneration: number;
+  sessionInvalidated: boolean;
+  boundSession: AgentSession | null;
+  bindingSession: AgentSession | null;
+  bindingPromise: Promise<void> | null;
+  unsubscribeSession: (() => void) | null;
+  disposeModelBoundary: (() => void) | null;
+  normalizer: PiEventNormalizer;
+  activeRunId: string | null;
+  objective: string;
+  queuedMessages: QueuedMessageRecord[];
+  recentlyDequeued: QueuedMessageRecord[];
+  queueMutationActive: boolean;
+  queueMutationQueue: Promise<void>;
+  permissionLevel: PermissionLevel;
+  stateError: AppError | null;
+  contextUsageEstimate: number | null;
+  pendingModel: StagedModel | null;
+  boundaryModelOverride: StagedModel | null;
+  extensionUi: PiExtensionUiBridge | null;
+  extensionUiState: ExtensionUiState;
+  attention: SessionAttention | null;
+  runFailed: boolean;
+  firstPromptText: string;
+  firstTitleStarted: boolean;
+  createdAt: string;
+  modifiedAt: string;
+  disposed: boolean;
+  disposePromise: Promise<void> | null;
+}
 
 const toolsByPermissionLevel: Record<PermissionLevel, readonly string[]> = {
   'read-only': ['read', 'generate_image'],
@@ -431,29 +485,40 @@ function boundedSessionHistory(messages: readonly unknown[]): readonly unknown[]
 
 export class PiRuntimeService {
   private project: ProjectState | null = null;
-  private runtime: AgentSessionRuntime | null = null;
+  private selectedSlot: RuntimeSlot | null = null;
+  private readonly liveSlots = new Set<RuntimeSlot>();
+  private readonly pendingDisposals = new Set<Promise<void>>();
+  private readonly sessionAttention = new Map<string, SessionAttentionRecord>();
+  private readonly manualSessionNames = new Set<string>();
+  private readonly coldPendingModels = new Map<string, ModelInfo>();
   private modelRuntime: ModelRuntime | null = null;
   private models: ModelInfo[] = [];
-  private permissionLevel: PermissionLevel = 'edit';
+  private fallbackPermissionLevel: PermissionLevel = 'full-access';
   private status: RuntimeState['status'] = 'disconnected';
-  private stateError: AppError | null = null;
-  private unsubscribeSession: (() => void) | null = null;
-  private activeRunId: string | null = null;
+  private fallbackStateError: AppError | null = null;
   private eventSink: (events: PiEvent[]) => void = () => undefined;
   private readonly batcher: PiEventBatcher;
-  private readonly normalizer = new PiEventNormalizer(() => this.activeRunId);
+  private readonly disconnectedNormalizer = new PiEventNormalizer(() => null);
   private initialization = 0;
-  private sessionGeneration = 0;
-  private sessionInvalidated = false;
   private sessions: SessionSummary[] = [];
   private replacementQueue: Promise<void> = Promise.resolve();
   private replacementActive = false;
   private replacementGeneration = 0;
+  private sessionRefreshGeneration = 0;
+  private sessionRefreshLoad: { projectPath: string; forced: boolean; promise: Promise<SessionSummary[]> } | null = null;
+  private attentionRevision = 0;
   private eventCursor = 0;
-  private objective = '';
-  private queuedMessages: QueuedMessageRecord[] = [];
-  private queueMutationActive = false;
-  private queueMutationQueue: Promise<void> = Promise.resolve();
+
+  private get runtime(): AgentSessionRuntime | null { return this.selectedSlot?.runtime ?? null; }
+  private get permissionLevel(): PermissionLevel { return this.selectedSlot?.permissionLevel ?? this.fallbackPermissionLevel; }
+  private get stateError(): AppError | null { return this.selectedSlot?.stateError ?? this.fallbackStateError; }
+  private set stateError(error: AppError | null) {
+    if (this.selectedSlot) this.selectedSlot.stateError = error;
+    else this.fallbackStateError = error;
+  }
+  private get normalizer(): PiEventNormalizer { return this.selectedSlot?.normalizer ?? this.disconnectedNormalizer; }
+  private get objective(): string { return this.selectedSlot?.objective ?? ''; }
+  private set objective(objective: string) { if (this.selectedSlot) this.selectedSlot.objective = objective; }
 
   constructor(
     private readonly adapter: PiSdkAdapter = realPiSdkAdapter,
@@ -492,11 +557,29 @@ export class PiRuntimeService {
       }
       this.objective = objective;
     }
-    const contextUsage = session?.getContextUsage?.();
+    const reportedContextUsage = session?.getContextUsage?.();
+    const contextUsageEstimate = this.selectedSlot?.contextUsageEstimate;
+    const contextWindow = reportedContextUsage?.contextWindow ?? session?.model?.contextWindow;
+    let contextUsage: RuntimeState['contextUsage'] = reportedContextUsage;
+    if (
+      contextUsageEstimate !== null
+      && contextUsageEstimate !== undefined
+      && (!reportedContextUsage || reportedContextUsage.tokens === null)
+      && contextWindow
+    ) {
+      contextUsage = {
+        tokens: contextUsageEstimate,
+        contextWindow,
+        percent: contextUsageEstimate / contextWindow * 100,
+        estimated: true,
+      };
+    } else if (reportedContextUsage?.tokens !== null && reportedContextUsage?.tokens !== undefined && this.selectedSlot) {
+      this.selectedSlot.contextUsageEstimate = null;
+    }
     const queue = {
       steering: session?.getSteeringMessages?.().length ?? 0,
       followUp: session?.getFollowUpMessages?.().length ?? 0,
-      items: this.queuedMessages.slice(0, MAX_QUEUED_MESSAGES).map(({ transportText: _transportText, ...item }) => item),
+      items: (this.selectedSlot?.queuedMessages ?? []).slice(0, MAX_QUEUED_MESSAGES).map(({ transportText: _transportText, boundModel: _boundModel, ...item }) => item),
     };
     const skills = this.runtime?.services?.resourceLoader?.getSkills?.().skills.slice(0, 5_000).map((skill) => ({ name: skill.name.slice(0, 500), description: skill.description.slice(0, 2_000) }));
     return {
@@ -505,7 +588,9 @@ export class PiRuntimeService {
       sessionId: session?.sessionId ?? null,
       sessionFile: session?.sessionFile ?? null,
       streaming: session?.isStreaming ?? false,
+      runningSessionCount: this.runningSessionCount(),
       model: session?.model ? toModelInfo(session.model) : null,
+      pendingModel: this.selectedSlot?.pendingModel?.info ?? null,
       models: this.models,
       thinkingLevel: session?.thinkingLevel ?? 'medium',
       permissionLevel: this.permissionLevel,
@@ -516,9 +601,10 @@ export class PiRuntimeService {
       ...(objective ? { objective } : {}),
       ...(contextUsage ? { contextUsage } : {}),
       queue,
+      extensionUi: this.selectedSlot?.extensionUiState ?? emptyExtensionUiState(),
       sessions: this.sessions,
       ...(includeMessages && session ? { branches: this.sessionRepository.branches(session) } : {}),
-      ...(includeMessages && session && typeof session.getUserMessagesForForking === 'function'
+      ...(session && typeof session.getUserMessagesForForking === 'function'
         ? { forkPoints: session.getUserMessagesForForking().slice(-2_000).filter((point) => point.entryId.length <= 500).map((point) => ({ ...point, text: point.text.slice(0, 2_000) })) }
         : {}),
       sessionCapabilities: {
@@ -552,12 +638,14 @@ export class PiRuntimeService {
     if (generation !== this.initialization) return this.getState();
     this.project = null;
     this.modelRuntime = null;
-    this.permissionLevel = 'edit';
+    this.fallbackPermissionLevel = 'full-access';
     this.models = [];
     this.sessions = [];
-    this.objective = '';
+    this.sessionAttention.clear();
+    this.manualSessionNames.clear();
+    this.coldPendingModels.clear();
     this.status = 'disconnected';
-    this.stateError = null;
+    this.fallbackStateError = null;
     return this.emitState();
   }
 
@@ -569,11 +657,13 @@ export class PiRuntimeService {
     await this.disposeRuntime();
     if (generation !== this.initialization) return this.getState();
     this.project = project;
-    this.permissionLevel = 'edit';
+    this.fallbackPermissionLevel = 'full-access';
     this.models = [];
     this.sessions = [];
-    this.objective = '';
-    this.stateError = null;
+    this.sessionAttention.clear();
+    this.manualSessionNames.clear();
+    this.coldPendingModels.clear();
+    this.fallbackStateError = null;
     if (!project.trusted) {
       this.status = 'disconnected';
       this.stateError = {
@@ -604,30 +694,19 @@ export class PiRuntimeService {
         await runtime.dispose();
         return this.getState();
       }
-      this.runtime = runtime;
-      runtime.setBeforeSessionInvalidate?.(() => {
-        if (generation === this.initialization && this.runtime === runtime) this.invalidateSession();
-      });
-      runtime.setRebindSession(async (session) => {
-        if (generation !== this.initialization || this.runtime !== runtime || runtime.session !== session) return;
-        await this.replaceSession(session);
-        if (generation !== this.initialization || this.runtime !== runtime || runtime.session !== session) return;
-        // A direct extension replacement owns refresh and its final snapshot.
-        // UI replacements refresh once after defaults are applied atomically.
-        if (!this.replacementActive) {
-          await this.refreshSessions(true);
-          if (generation === this.initialization && this.runtime === runtime && runtime.session === session) this.emitState(true);
-        }
-      });
-      await this.replaceSession(runtime.session);
-      if (generation !== this.initialization || this.runtime !== runtime) return this.getState();
+      const slot = this.createSlot(runtime, generation);
+      this.liveSlots.add(slot);
+      this.selectedSlot = slot;
+      this.configureRuntimeSlot(slot);
+      await this.replaceSession(slot, runtime.session);
+      if (generation !== this.initialization || this.selectedSlot !== slot) return this.getState();
       await this.refreshSessions();
-      if (generation !== this.initialization || this.runtime !== runtime) return this.getState();
+      if (generation !== this.initialization || this.selectedSlot !== slot) return this.getState();
       const available = await modelRuntime.getAvailable();
-      if (generation !== this.initialization || this.runtime !== runtime) return this.getState();
+      if (generation !== this.initialization || this.selectedSlot !== slot) return this.getState();
       this.models = available.slice(0, 2_000).map(toModelInfo);
       await this.applySessionDefaults(runtime.session, defaults);
-      if (generation !== this.initialization || this.runtime !== runtime) return this.getState();
+      if (generation !== this.initialization || this.selectedSlot !== slot) return this.getState();
       this.status = available.length > 0 ? 'ready' : 'auth-required';
       this.stateError = available.length > 0 ? null : authRequiredError();
       const diagnostic = runtime.diagnostics.find((item) => item.type === 'error');
@@ -655,70 +734,147 @@ export class PiRuntimeService {
     }
   }
 
-  prompt(input: PromptInput): Promise<PromptAcceptance> {
+  async prompt(input: PromptInput): Promise<PromptAcceptance> {
     const session = this.requireSession();
+    const slot = this.selectedSlot!;
     if (this.replacementActive) {
       throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for the session change to finish before sending a prompt.', retryable: true });
     }
-    const runtimeOwner = this.runtime;
     const initialization = this.initialization;
     const runId = randomUUID();
     const promptText = promoteInlineResourceCommand(input.text, this.getCommands(session));
     validatePromptImages(input.images);
     const images = input.images?.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType }));
-    if (images?.length && !session.model?.input.includes('image')) {
-      throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The active model does not support image input.', retryable: true });
-    }
     const queuedBehavior = session.isStreaming && input.behavior !== 'prompt' ? input.behavior : null;
-    if (queuedBehavior && this.queuedMessages.length >= MAX_QUEUED_MESSAGES) {
+    if (queuedBehavior && slot.queuedMessages.length >= MAX_QUEUED_MESSAGES) {
       throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The message queue is full. Cancel or wait for a queued message before adding another.', retryable: true });
     }
+    if (session.isStreaming && input.behavior === 'prompt' && !promptText.trimStart().startsWith('/')) {
+      throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Pi is already working. Steer it or queue a follow-up instead.', retryable: true });
+    }
+
+    const stagedModel = slot.pendingModel;
+    const effectiveModel = stagedModel?.model ?? session.model;
+    if (images?.length && !effectiveModel?.input.includes('image')) {
+      throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The model selected for this message does not support image input.', retryable: true });
+    }
+    const startsRun = !session.isStreaming;
+    const ownsSlot = () => initialization === this.initialization
+      && !slot.disposed
+      && this.liveSlots.has(slot)
+      && slot.runtime.session === session;
+    const restoreStagedModel = (staged: StagedModel): void => {
+      if (initialization !== this.initialization) return;
+      if (slot.disposed || slot.runtime.session !== session) {
+        this.rememberColdPendingModel(session.sessionId, staged.info);
+      } else if (!slot.pendingModel) {
+        slot.pendingModel = staged;
+      }
+    };
+    const clearRunReservation = (): void => {
+      if (!startsRun || slot.activeRunId !== runId) return;
+      slot.activeRunId = null;
+      slot.objective = '';
+    };
+    const isFirstUserPrompt = startsRun && !slot.firstTitleStarted && !sessionHistory(session).some((message) => (
+      Boolean(message) && typeof message === 'object' && (message as { role?: unknown }).role === 'user'
+    ));
+    if (startsRun) {
+      slot.activeRunId = runId;
+      slot.objective = promptText.trim().slice(0, 500);
+      if (stagedModel) {
+        slot.pendingModel = null;
+        this.coldPendingModels.delete(session.sessionId);
+        try {
+          await session.setModel(stagedModel.model);
+        } catch (error) {
+          restoreStagedModel(stagedModel);
+          clearRunReservation();
+          throw error;
+        }
+      }
+    }
+    if (!ownsSlot() || this.selectedSlot !== slot) {
+      if (startsRun && stagedModel) restoreStagedModel(stagedModel);
+      clearRunReservation();
+      throw this.replacementSuperseded();
+    }
+
     const queuedCountBefore = queuedBehavior === 'steer'
       ? session.getSteeringMessages?.().length ?? 0
       : queuedBehavior === 'followUp'
         ? session.getFollowUpMessages?.().length ?? 0
         : 0;
-    if (session.isStreaming && input.behavior === 'prompt' && !promptText.trimStart().startsWith('/')) {
-      throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Pi is already working. Steer it or queue a follow-up instead.', retryable: true });
+    const queuedRecord: QueuedMessageRecord | null = queuedBehavior
+      ? {
+          id: randomUUID(),
+          behavior: queuedBehavior,
+          text: input.text,
+          transportText: promptText,
+          ...(stagedModel ? { boundModel: stagedModel } : {}),
+          ...(input.images?.length ? { images: input.images.map((image) => ({ ...image })) } : {}),
+          createdAt: Date.now(),
+        }
+      : null;
+    let queuedReservationActive = queuedRecord !== null;
+    if (queuedRecord) {
+      slot.queuedMessages.push(queuedRecord);
+      if (stagedModel && slot.pendingModel?.token === stagedModel.token) {
+        slot.pendingModel = null;
+        this.coldPendingModels.delete(session.sessionId);
+      }
     }
 
-    const ownsActiveRun = input.behavior === 'prompt' && !session.isStreaming;
-    const isFirstUserPrompt = ownsActiveRun && !sessionHistory(session).some((message) => (
-      Boolean(message) && typeof message === 'object' && (message as { role?: unknown }).role === 'user'
-    ));
-    if (ownsActiveRun) {
-      this.activeRunId = runId;
-      this.objective = promptText.trim().slice(0, 500);
-    }
-    this.stateError = null;
+    slot.stateError = null;
     let settled = false;
     return new Promise<PromptAcceptance>((resolve) => {
+      const releaseQueuedReservation = (restoreModel: boolean): void => {
+        if (!queuedRecord || !queuedReservationActive) return;
+        queuedReservationActive = false;
+        slot.queuedMessages = slot.queuedMessages.filter((item) => item.id !== queuedRecord.id);
+        if (restoreModel && queuedRecord.boundModel) restoreStagedModel(queuedRecord.boundModel);
+      };
+      const rejectReservation = (): void => {
+        releaseQueuedReservation(true);
+        if (startsRun && stagedModel) restoreStagedModel(stagedModel);
+        clearRunReservation();
+      };
       const accept = (accepted: boolean) => {
         if (settled) return;
         settled = true;
-        if (initialization !== this.initialization || this.runtime !== runtimeOwner) {
+        if (!ownsSlot()) {
+          rejectReservation();
           resolve({ accepted: false, runId });
           return;
         }
         if (accepted) {
-          this.enqueue({ type: 'run.accepted', runId, timestamp: Date.now() });
-          if (isFirstUserPrompt) void this.generateFirstPromptTitle(session, input.text, runtimeOwner, initialization);
-          if (queuedBehavior) {
+          if (queuedRecord && queuedBehavior) {
             const queuedTexts = queuedBehavior === 'steer' ? session.getSteeringMessages?.() ?? [] : session.getFollowUpMessages?.() ?? [];
-            const transportText = queuedTexts.length > queuedCountBefore ? queuedTexts.at(-1) : undefined;
-            if (transportText) {
-              this.queuedMessages.push({
-                id: randomUUID(),
-                behavior: queuedBehavior,
-                text: input.text,
-                transportText,
-                ...(input.images?.length ? { images: input.images.map((image) => ({ ...image })) } : {}),
-                createdAt: Date.now(),
-              });
-              this.emitState();
+            if (queuedTexts.length > queuedCountBefore) {
+              queuedRecord.transportText = queuedTexts.at(-1) ?? queuedRecord.transportText;
+              queuedReservationActive = false;
+            } else {
+              // Extension commands execute immediately even when a streaming
+              // behavior is supplied; they must not leave a phantom queue item
+              // or consume the model staged for the next actual user turn.
+              releaseQueuedReservation(true);
             }
           }
-        } else this.emitError({ code: 'INVALID_REQUEST', message: 'Pi rejected the prompt before starting.', retryable: true });
+          slot.modifiedAt = new Date().toISOString();
+          if (isFirstUserPrompt) {
+            slot.firstTitleStarted = true;
+            slot.firstPromptText = input.text;
+            this.mergeLiveSessionSummaries();
+            void this.generateFirstPromptTitle(slot, session, input.text, initialization);
+          }
+          if (this.selectedSlot === slot) {
+            this.enqueue({ type: 'run.accepted', runId, timestamp: Date.now() });
+            this.emitState();
+          }
+        } else {
+          rejectReservation();
+          if (this.selectedSlot === slot) this.emitError({ code: 'INVALID_REQUEST', message: 'Pi rejected the prompt before starting.', retryable: true });
+        }
         resolve({ accepted, runId });
       };
       void session.prompt(promptText, {
@@ -726,42 +882,53 @@ export class PiRuntimeService {
         ...(input.behavior === 'prompt' ? {} : { streamingBehavior: input.behavior }),
         preflightResult: accept,
       }).catch((error: unknown) => {
-        if (initialization !== this.initialization || this.runtime !== runtimeOwner) {
+        if (!ownsSlot()) {
           accept(false);
           return;
         }
         const normalized = normalizeError(error);
         if (!settled) accept(false);
-        this.emitError(normalized);
+        slot.stateError = normalized;
+        slot.runFailed = true;
+        if (this.selectedSlot === slot) this.emitError(normalized);
       }).finally(() => {
-        if (ownsActiveRun && this.activeRunId === runId) this.activeRunId = null;
-        if (initialization === this.initialization && this.runtime === runtimeOwner) this.emitState();
+        if (startsRun && slot.activeRunId === runId) slot.activeRunId = null;
+        if (ownsSlot() && this.selectedSlot === slot) this.emitState();
       });
     });
   }
 
   private async generateFirstPromptTitle(
+    slot: RuntimeSlot,
     session: AgentSession,
     prompt: string,
-    runtimeOwner: AgentSessionRuntime | null,
     initialization: number,
   ): Promise<void> {
     const projectPath = this.project?.path;
     const modelRuntime = this.modelRuntime;
     if (!projectPath || !modelRuntime) return;
-    const title = await this.sessionTitleGenerator.generate(prompt, modelRuntime, session);
-    if (
-      !title
-      || initialization !== this.initialization
-      || this.runtime !== runtimeOwner
-      || this.project?.path !== projectPath
-      || this.runtime?.session.sessionId !== session.sessionId
-    ) return;
     try {
-      const renamed = await this.sessionRepository.renameIfUnnamed(projectPath, session.sessionId, title);
-      if (!renamed || initialization !== this.initialization || this.runtime !== runtimeOwner) return;
+      const title = await this.sessionTitleGenerator.generate(prompt, modelRuntime, session);
+      const claimKey = this.sessionClaimKey(projectPath, session.sessionId);
+      if (
+        !title
+        || initialization !== this.initialization
+        || this.project?.path !== projectPath
+        || this.manualSessionNames.has(claimKey)
+        || session.sessionName?.trim()
+        || session.sessionManager?.getSessionName?.()?.trim()
+      ) return;
+      // The owning manager already knows the not-yet-listable JSONL path. Append
+      // directly instead of racing SessionManager.list() through the repository.
+      if (typeof session.sessionManager?.appendSessionInfo === 'function') session.sessionManager.appendSessionInfo(title);
+      else session.setSessionName(title);
+      slot.modifiedAt = new Date().toISOString();
+      const liveSummary = this.liveSessionSummary(slot, session, prompt);
+      const summaryIndex = this.sessions.findIndex((summary) => summary.id === session.sessionId);
+      if (summaryIndex >= 0) this.sessions[summaryIndex] = liveSummary;
+      else this.sessions = [liveSummary, ...this.sessions].slice(0, 1_000);
       await this.refreshSessions(true);
-      if (initialization === this.initialization && this.runtime === runtimeOwner) this.emitState();
+      if (initialization === this.initialization) this.emitState();
     } catch {
       // Title generation is a non-blocking enhancement; the bounded prompt fallback remains usable.
     }
@@ -782,12 +949,15 @@ export class PiRuntimeService {
   }
 
   async setModel(provider: string, id: string): Promise<RuntimeState> {
-    const session = this.requireIdleSession('changing the model');
+    this.requireSession();
+    const slot = this.selectedSlot!;
     const model = this.modelRuntime?.getModel(provider, id);
     if (!model || !this.models.some((candidate) => candidate.provider === provider && candidate.id === id)) {
       throw new PiDesktopError({ code: 'AUTH_REQUIRED', message: `Model ${provider}/${id} is unavailable or not authenticated.`, actionable: 'Authenticate its provider with the Pi CLI /login command.', retryable: true });
     }
-    await session.setModel(model);
+    slot.pendingModel = { token: randomUUID(), model, info: toModelInfo(model) };
+    this.coldPendingModels.delete(slot.runtime.session.sessionId);
+    slot.stateError = null;
     this.emitState();
     return this.getState(false);
   }
@@ -800,70 +970,144 @@ export class PiRuntimeService {
 
   async setPermissionLevel(level: PermissionLevel): Promise<RuntimeState> {
     const session = this.requireIdleSession('changing the permission level');
+    const slot = this.selectedSlot!;
+    const projectPath = this.project?.path;
+    if (!projectPath) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before changing permissions.', retryable: true });
+    const initialization = this.initialization;
+    const sessionGeneration = slot.sessionGeneration;
+    const ownsSession = () => initialization === this.initialization
+      && sessionGeneration === slot.sessionGeneration
+      && !slot.disposed
+      && this.selectedSlot === slot
+      && slot.runtime.session === session;
     const access = toolAccessBySession.get(session);
     // Keep the filesystem boundary fail-closed if the SDK rejects a tool set,
     // while preserving active tools owned by trusted global extensions.
     session.setActiveToolsByName(activeToolsForPermission(session.getActiveToolNames(), level));
     if (access) access.fullAccess = level === 'full-access';
-    this.permissionLevel = level;
+    slot.permissionLevel = level;
     try {
-      await this.sessionPermissions.set(this.project!.path, session.sessionId, level);
+      await this.sessionPermissions.set(projectPath, session.sessionId, level);
     } catch (error) {
-      this.emitSystemMessage(`The session permission changed but could not be saved: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+      if (ownsSession()) this.emitSystemMessage(`The session permission changed but could not be saved: ${error instanceof Error ? error.message : String(error)}`, 'warning');
     }
+    if (!ownsSession()) throw this.replacementSuperseded();
     this.emitState();
     return this.getState(false);
   }
 
   mutateQueuedMessage(input: QueueMutationInput): Promise<QueueMutationResult> {
-    const operation = this.queueMutationQueue.then(() => this.applyQueueMutation(input));
-    this.queueMutationQueue = operation.then(() => undefined, () => undefined);
+    this.requireSession();
+    const slot = this.selectedSlot!;
+    const operation = slot.queueMutationQueue.then(() => this.applyQueueMutation(input, slot));
+    slot.queueMutationQueue = operation.then(() => undefined, () => undefined);
     return operation;
   }
 
   newSession(defaults?: SessionDefaults): Promise<RuntimeState> {
-    return this.runReplacement(async (runtime) => {
+    const activeSession = this.runtime?.session;
+    const activeModel = activeSession?.model;
+    const nextDefaults = activeSession
+      ? {
+          thinkingLevel: activeSession.thinkingLevel,
+          defaultModel: activeModel ? `${activeModel.provider}/${activeModel.id}` : defaults?.defaultModel ?? null,
+        }
+      : defaults;
+    return this.runReplacement(async (runtime, slot) => {
+      if (!slot.runtime.session.isStreaming && this.sessionHasNonStreamingWork(slot.runtime.session)) throw this.activeOperationError('creating a session');
+      if (slot.runtime.session.isStreaming) {
+        const created = await this.createAdditionalSlot();
+        await this.applySessionDefaults(created.runtime.session, nextDefaults, created);
+        await this.selectRuntimeSlot(created);
+        return;
+      }
       if ((await runtime.newSession())?.cancelled) throw this.replacementCancelled('New session');
-      await this.applySessionDefaults(runtime.session, defaults);
+      await this.applySessionDefaults(runtime.session, nextDefaults, slot);
     });
   }
 
   async listSessions(query = ''): Promise<SessionSummary[]> {
-    if (!this.project || !this.runtime) return [];
-    return (await this.sessionRepository.list(this.project.path, this.runtime.session.sessionId, query)).slice(0, 1_000);
+    const project = this.project;
+    const slot = this.selectedSlot;
+    if (!project || !slot) return [];
+    const generation = this.initialization;
+    const persisted = await this.sessionRepository.list(project.path, slot.runtime.session.sessionId, query);
+    if (
+      generation !== this.initialization
+      || this.project?.path !== project.path
+      || !this.selectedSlot
+    ) return [];
+    return this.mergeSessionSummaries(persisted, query).slice(0, 1_000);
   }
 
   switchSession(sessionId: string): Promise<RuntimeState> {
-    return this.runReplacement(async (runtime) => {
-      const session = await this.sessionRepository.resolve(this.project!.path, sessionId);
-      if (!session) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The selected session no longer exists.', retryable: true });
-      if (!session.active && (await runtime.switchSession(session.path, { cwdOverride: this.project!.path }))?.cancelled) throw this.replacementCancelled('Session switch');
+    const projectPath = this.project?.path;
+    if (!projectPath) return Promise.reject(new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before switching sessions.', retryable: true }));
+    return this.runReplacement(async (runtime, slot) => {
+      if (!slot.runtime.session.isStreaming && this.sessionHasNonStreamingWork(slot.runtime.session)) throw this.activeOperationError('switching sessions');
+      if (runtime.session.sessionId === sessionId) {
+        this.acknowledgeSession(sessionId);
+        return;
+      }
+      const live = this.findLiveSlot(sessionId);
+      if (live) {
+        await this.selectRuntimeSlot(live);
+        return;
+      }
+      const session = await this.sessionRepository.resolve(projectPath, sessionId) ?? this.summaryForSessionId(sessionId);
+      if (this.project?.path !== projectPath || slot.disposed || this.selectedSlot !== slot) throw this.replacementSuperseded();
+      if (!session || session.path.startsWith('live:')) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The selected session no longer exists.', retryable: true });
+      if (slot.runtime.session.isStreaming) {
+        const opened = await this.createAdditionalSlot(session.path);
+        await this.selectRuntimeSlot(opened);
+        return;
+      }
+      if ((await runtime.switchSession(session.path, { cwdOverride: projectPath }))?.cancelled) throw this.replacementCancelled('Session switch');
     });
   }
 
   async renameSession(sessionId: string, name: string): Promise<RuntimeState> {
-    const session = this.requireRuntimeSession();
-    if (!this.project) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before renaming a session.', retryable: true });
-    if (session.isStreaming || this.replacementActive) throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for the active session operation to finish before renaming.', retryable: true });
+    this.requireRuntimeSession();
+    const projectPath = this.project?.path;
+    if (!projectPath) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before renaming a session.', retryable: true });
+    if (this.replacementActive) throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for the active session operation to finish before renaming.', retryable: true });
+    const initialization = this.initialization;
     const normalizedName = name.trim();
-    if (session.sessionId === sessionId) session.setSessionName(normalizedName);
-    else await this.sessionRepository.rename(this.project.path, sessionId, normalizedName);
-    await this.refreshSessions();
+    const live = this.findLiveSlot(sessionId);
+    if (live) live.runtime.session.setSessionName(normalizedName);
+    else await this.sessionRepository.rename(projectPath, sessionId, normalizedName);
+    if (initialization !== this.initialization || this.project?.path !== projectPath) throw this.replacementSuperseded();
+    this.manualSessionNames.add(this.sessionClaimKey(projectPath, sessionId));
+    while (this.manualSessionNames.size > MAX_MANUAL_SESSION_NAME_CLAIMS) this.manualSessionNames.delete(this.manualSessionNames.values().next().value!);
+    await this.refreshSessions(true);
+    if (initialization !== this.initialization || this.project?.path !== projectPath) throw this.replacementSuperseded();
     this.emitState();
     return this.getState(false);
   }
 
   async deleteSession(sessionId: string): Promise<RuntimeState> {
-    const session = this.requireRuntimeIdleSession('deleting a session');
-    if (!this.project) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before deleting a session.', retryable: true });
+    const session = this.requireRuntimeSession();
+    const projectPath = this.project?.path;
+    if (!projectPath) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before deleting a session.', retryable: true });
     if (session.sessionId === sessionId) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Switch to another session before deleting this one.', retryable: true });
-    await this.sessionRepository.delete(this.project.path, sessionId);
+    if (this.findLiveSlot(sessionId)) throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for that session to finish before deleting it.', retryable: true });
+    const initialization = this.initialization;
+    await this.sessionRepository.delete(projectPath, sessionId);
+    if (initialization !== this.initialization || this.project?.path !== projectPath) throw this.replacementSuperseded();
+    this.manualSessionNames.add(this.sessionClaimKey(projectPath, sessionId));
+    while (this.manualSessionNames.size > MAX_MANUAL_SESSION_NAME_CLAIMS) this.manualSessionNames.delete(this.manualSessionNames.values().next().value!);
     try {
-      await this.sessionPermissions.delete(this.project.path, sessionId);
+      await this.sessionPermissions.delete(projectPath, sessionId);
     } catch (error) {
-      this.emitSystemMessage(`Deleted session permission metadata could not be removed: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+      if (initialization === this.initialization && this.project?.path === projectPath) {
+        this.emitSystemMessage(`Deleted session permission metadata could not be removed: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+      }
     }
+    if (initialization !== this.initialization || this.project?.path !== projectPath) throw this.replacementSuperseded();
+    this.sessionAttention.delete(sessionId);
+    this.coldPendingModels.delete(sessionId);
     await this.refreshSessions();
+    if (initialization !== this.initialization || this.project?.path !== projectPath) throw this.replacementSuperseded();
     this.emitState();
     return this.getState(false);
   }
@@ -871,6 +1115,7 @@ export class PiRuntimeService {
   async forkSession(entryId: string): Promise<{ state: RuntimeState; selectedText?: string }> {
     let selectedText: string | undefined;
     const state = await this.runReplacement(async (runtime) => {
+      if (this.sessionHasActiveWork(runtime.session)) throw this.activeOperationError('forking this session');
       if (typeof runtime.fork !== 'function') throw this.unsupported('Session branching');
       const points = runtime.session.getUserMessagesForForking?.() ?? [];
       if (!points.some((point) => point.entryId === entryId)) {
@@ -885,6 +1130,7 @@ export class PiRuntimeService {
 
   cloneSession(): Promise<RuntimeState> {
     return this.runReplacement(async (runtime) => {
+      if (this.sessionHasActiveWork(runtime.session)) throw this.activeOperationError('cloning this session');
       if (this.adapter.supportsClone !== true || typeof runtime.fork !== 'function') throw this.unsupported('Session cloning');
       const leafId = runtime.session.sessionManager?.getLeafId?.();
       if (!leafId) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The current session has no conversation to clone.', retryable: true });
@@ -894,6 +1140,7 @@ export class PiRuntimeService {
 
   importSession(filePath: string): Promise<RuntimeState> {
     return this.runReplacement(async (runtime) => {
+      if (this.sessionHasActiveWork(runtime.session)) throw this.activeOperationError('importing a session');
       if (typeof runtime.importFromJsonl !== 'function') throw this.unsupported('Session import');
       if ((await runtime.importFromJsonl(filePath, this.project!.path))?.cancelled) throw this.replacementCancelled('Session import');
     });
@@ -901,19 +1148,29 @@ export class PiRuntimeService {
 
   async compact(instructions?: string): Promise<RuntimeState> {
     const session = this.requireIdleSession('compacting context');
+    const slot = this.selectedSlot!;
+    const initialization = this.initialization;
+    const sessionGeneration = slot.sessionGeneration;
+    const ownsSession = () => initialization === this.initialization
+      && sessionGeneration === slot.sessionGeneration
+      && !slot.disposed
+      && this.selectedSlot === slot
+      && slot.runtime.session === session;
     if (typeof session.compact !== 'function') throw this.unsupported('Context compaction');
     try {
       await session.compact(instructions);
-      this.stateError = null;
-      await this.refreshSessions();
-      this.emitState();
-      return this.getState(false);
     } catch (error) {
       const normalized = normalizeError(error);
-      this.stateError = normalized;
-      this.emitState();
+      slot.stateError = normalized;
+      if (ownsSession()) this.emitState();
       throw new PiDesktopError(normalized);
     }
+    if (!ownsSession()) throw this.replacementSuperseded();
+    slot.stateError = null;
+    await this.refreshSessions();
+    if (!ownsSession()) throw this.replacementSuperseded();
+    this.emitState();
+    return this.getState(false);
   }
 
   async dispose(): Promise<void> {
@@ -921,101 +1178,392 @@ export class PiRuntimeService {
     this.replacementGeneration += 1;
     this.replacementQueue = Promise.resolve();
     this.replacementActive = false;
-    await this.disposeRuntime();
+    const failures: unknown[] = [];
+    try {
+      await this.disposeRuntime();
+    } catch (error) {
+      failures.push(error);
+    }
+    const pending = await Promise.allSettled([...this.pendingDisposals]);
+    failures.push(...pending.flatMap((result) => result.status === 'rejected' ? [result.reason] : []));
     this.batcher.dispose();
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Pi runtime shutdown was incomplete.');
   }
 
-  private invalidateSession(): void {
-    this.unsubscribeSession?.();
-    this.unsubscribeSession = null;
-    ++this.sessionGeneration;
-    this.sessionInvalidated = true;
-    this.activeRunId = null;
-    this.objective = '';
-    this.queuedMessages = [];
-    this.queueMutationActive = false;
-    this.queueMutationQueue = Promise.resolve();
-    this.normalizer.resetSession();
-    this.batcher.clear();
+  private createSlot(runtime: AgentSessionRuntime, projectGeneration: number): RuntimeSlot {
+    const owner: { slot: RuntimeSlot | null } = { slot: null };
+    const now = new Date().toISOString();
+    const slot: RuntimeSlot = {
+      runtime,
+      projectGeneration,
+      sessionGeneration: 0,
+      sessionInvalidated: false,
+      boundSession: null,
+      bindingSession: null,
+      bindingPromise: null,
+      unsubscribeSession: null,
+      disposeModelBoundary: null,
+      normalizer: new PiEventNormalizer(() => owner.slot?.activeRunId ?? null),
+      activeRunId: null,
+      objective: '',
+      queuedMessages: [],
+      recentlyDequeued: [],
+      queueMutationActive: false,
+      queueMutationQueue: Promise.resolve(),
+      permissionLevel: 'full-access',
+      stateError: null,
+      contextUsageEstimate: null,
+      pendingModel: null,
+      boundaryModelOverride: null,
+      extensionUi: null,
+      extensionUiState: emptyExtensionUiState(),
+      attention: null,
+      runFailed: false,
+      firstPromptText: '',
+      firstTitleStarted: false,
+      createdAt: now,
+      modifiedAt: now,
+      disposed: false,
+      disposePromise: null,
+    };
+    owner.slot = slot;
+    return slot;
   }
 
-  private async replaceSession(session: AgentSession): Promise<void> {
-    if (this.runtime?.session !== session) return;
-    // Real AgentSessionRuntime calls beforeSessionInvalidate synchronously. The
-    // fallback keeps custom/test adapters equally safe if they only rebind.
-    if (!this.sessionInvalidated) this.invalidateSession();
-    const generation = this.sessionGeneration;
-    const runtime = this.runtime;
+  private configureRuntimeSlot(slot: RuntimeSlot): void {
+    const { runtime, projectGeneration } = slot;
+    runtime.setBeforeSessionInvalidate?.(() => {
+      if (this.initialization === projectGeneration && !slot.disposed && slot.runtime === runtime) this.invalidateSession(slot);
+    });
+    runtime.setRebindSession(async (session) => {
+      if (this.initialization !== projectGeneration || slot.disposed || runtime.session !== session) return;
+      await this.replaceSession(slot, session);
+      if (this.initialization !== projectGeneration || slot.disposed || runtime.session !== session) return;
+      if (!this.replacementActive) {
+        await this.refreshSessions(true, true);
+        if (this.initialization === projectGeneration && !slot.disposed) this.emitState(this.selectedSlot === slot);
+      }
+    });
+  }
+
+  private invalidateSession(slot: RuntimeSlot | null = this.selectedSlot): void {
+    if (!slot) return;
+    const invalidatedSession = slot.boundSession ?? slot.runtime.session;
+    slot.sessionGeneration += 1;
+    if (slot.pendingModel) this.rememberColdPendingModel(invalidatedSession.sessionId, slot.pendingModel.info);
+    slot.unsubscribeSession?.();
+    slot.unsubscribeSession = null;
+    slot.disposeModelBoundary?.();
+    slot.disposeModelBoundary = null;
+    slot.extensionUi?.clear();
+    slot.extensionUi = null;
+    slot.extensionUiState = emptyExtensionUiState();
+    slot.boundSession = null;
+    slot.bindingSession = null;
+    slot.sessionInvalidated = true;
+    slot.activeRunId = null;
+    slot.objective = '';
+    slot.queuedMessages = [];
+    slot.recentlyDequeued = [];
+    slot.queueMutationActive = false;
+    slot.queueMutationQueue = Promise.resolve();
+    slot.permissionLevel = 'full-access';
+    slot.stateError = null;
+    slot.contextUsageEstimate = null;
+    slot.pendingModel = null;
+    slot.boundaryModelOverride = null;
+    slot.attention = null;
+    slot.runFailed = false;
+    slot.firstPromptText = '';
+    slot.firstTitleStarted = false;
+    slot.createdAt = new Date().toISOString();
+    slot.modifiedAt = slot.createdAt;
+    slot.normalizer.resetSession();
+    if (this.selectedSlot === slot) this.batcher.clear();
+  }
+
+  private replaceSession(slot: RuntimeSlot, session: AgentSession): Promise<void> {
+    if (slot.disposed || slot.runtime.session !== session) return Promise.resolve();
+    if (slot.bindingSession === session && slot.bindingPromise) return slot.bindingPromise;
+    // Real AgentSessionRuntime invalidates synchronously. This fallback keeps
+    // custom adapters safe when they only invoke the rebind callback.
+    if (!slot.sessionInvalidated) this.invalidateSession(slot);
+    const binding = Promise.resolve().then(() => this.bindSession(slot, session));
+    let tracked: Promise<void>;
+    tracked = binding.finally(() => {
+      if (slot.bindingPromise !== tracked) return;
+      slot.bindingPromise = null;
+      slot.bindingSession = null;
+    });
+    slot.bindingSession = session;
+    slot.bindingPromise = tracked;
+    return tracked;
+  }
+
+  private async bindSession(slot: RuntimeSlot, session: AgentSession): Promise<void> {
+    if (slot.disposed || slot.runtime.session !== session) return;
+    const generation = slot.sessionGeneration;
+    const runtime = slot.runtime;
     const runtimeCwd = (runtime as AgentSessionRuntime & { cwd?: unknown }).cwd;
     if (this.project && typeof runtimeCwd === 'string' && path.resolve(runtimeCwd) !== path.resolve(this.project.path)) {
       throw new PiDesktopError({ code: 'INVALID_PROJECT', message: 'Pi refused a session whose working directory differs from the active project.', retryable: false });
     }
-    const ownsSession = () => generation === this.sessionGeneration && this.runtime === runtime && runtime?.session === session;
+    const ownsSession = () => this.initialization === slot.projectGeneration
+      && !slot.disposed
+      && generation === slot.sessionGeneration
+      && slot.runtime === runtime
+      && runtime.session === session;
     const replaceFromExtension = async (
       feature: string,
       operation: () => Promise<{ cancelled?: boolean }>,
     ): Promise<{ cancelled: boolean }> => {
-      if (!ownsSession()) return { cancelled: true };
+      if (!ownsSession() || this.selectedSlot !== slot || this.sessionHasActiveWork(session)) return { cancelled: true };
       try {
-        await this.runReplacement(async (current) => {
-          if (current !== runtime || !ownsSession()) throw this.replacementSuperseded();
+        await this.runReplacement(async (current, currentSlot) => {
+          if (current !== runtime || currentSlot !== slot || !ownsSession()) throw this.replacementSuperseded();
           if ((await operation()).cancelled) throw this.replacementCancelled(feature);
         });
         return { cancelled: false };
       } catch (error) {
-        if (
-          !ownsSession()
-          || (error instanceof PiDesktopError && /cancelled|superseded/u.test(error.normalized.message))
-        ) return { cancelled: true };
+        if (!ownsSession() || (error instanceof PiDesktopError && /cancelled|superseded/u.test(error.normalized.message))) return { cancelled: true };
         throw error;
       }
     };
+
+    const extensionUi = createPiExtensionUiBridge({
+      notify: (message, level) => { if (ownsSession() && this.selectedSlot === slot) this.emitSystemMessage(message, level); },
+      onStateChange: (state) => {
+        if (!ownsSession()) return;
+        slot.extensionUiState = state;
+        if (this.selectedSlot === slot) this.emitState();
+      },
+    });
+    slot.extensionUi = extensionUi;
+    slot.extensionUiState = extensionUi.getState();
     await session.bindExtensions({
-      uiContext: createPiExtensionUi({
-        notify: (message, level) => { if (ownsSession()) this.emitSystemMessage(message, level); },
-      }),
+      uiContext: extensionUi.context,
       mode: 'rpc',
       commandContextActions: {
         waitForIdle: () => ownsSession() ? session.waitForIdle() : Promise.resolve(),
-        newSession: async (options) => replaceFromExtension('New session', async () => runtime?.newSession(options) ?? { cancelled: true }),
-        fork: async (entryId, options) => replaceFromExtension('Session fork', async () => runtime?.fork(entryId, options) ?? { cancelled: true }),
+        newSession: async (options) => replaceFromExtension('New session', async () => runtime.newSession(options)),
+        fork: async (entryId, options) => replaceFromExtension('Session fork', async () => runtime.fork(entryId, options)),
         navigateTree: async (targetId, options) => replaceFromExtension('Branch navigation', () => session.navigateTree(targetId, options)),
-        switchSession: async (sessionPath, options) => replaceFromExtension('Session switch', async () => runtime?.switchSession(sessionPath, { ...options, cwdOverride: this.project!.path }) ?? { cancelled: true }),
+        switchSession: async (sessionPath, options) => replaceFromExtension('Session switch', async () => runtime.switchSession(sessionPath, { ...options, cwdOverride: this.project!.path })),
         reload: async () => {
-          await replaceFromExtension('Session reload', async () => { await session.reload(); return { cancelled: false }; });
+          await replaceFromExtension('Session reload', async () => {
+            extensionUi.clear();
+            await session.reload();
+            return { cancelled: false };
+          });
         },
       },
-      shutdownHandler: () => { if (ownsSession()) this.emitSystemMessage('An extension requested shutdown. Close Fate UI when you are ready.', 'warning'); },
-      onError: (error) => { if (ownsSession()) this.emitSystemMessage(`Extension error: ${error.error}`, 'error'); },
+      shutdownHandler: () => { if (ownsSession() && this.selectedSlot === slot) this.emitSystemMessage('An extension requested shutdown. Close Fate UI when you are ready.', 'warning'); },
+      onError: (error) => { if (ownsSession() && this.selectedSlot === slot) this.emitSystemMessage(`Extension error: ${error.error}`, 'error'); },
     });
-    if (generation !== this.sessionGeneration || this.runtime?.session !== session) return;
+    if (!ownsSession()) return;
     const access = toolAccessBySession.get(session);
-    this.permissionLevel = await this.permissionForSession(session);
-    // Activate the requested controlled set before opening the host path boundary,
-    // without discarding tools enabled by trusted global extensions.
-    session.setActiveToolsByName(activeToolsForPermission(session.getActiveToolNames(), this.permissionLevel));
-    if (access) access.fullAccess = this.permissionLevel === 'full-access';
-    this.unsubscribeSession = session.subscribe((event: AgentSessionEvent) => {
-      if (generation !== this.sessionGeneration || this.runtime?.session !== session) return;
-      if (event.type === 'queue_update') {
-        if (this.queueMutationActive) return;
-        this.reconcileQueuedMessages(event.steering.length, event.followUp.length);
+    const coldPendingModel = this.coldPendingModels.get(session.sessionId);
+    if (coldPendingModel) {
+      const model = this.modelRuntime?.getModel(coldPendingModel.provider, coldPendingModel.id);
+      if (model && this.models.some((candidate) => candidate.provider === coldPendingModel.provider && candidate.id === coldPendingModel.id)) {
+        slot.pendingModel = { token: randomUUID(), model, info: toModelInfo(model) };
       }
-      const normalizedEvents = this.normalizer.normalize(event);
-      for (const normalizedEvent of normalizedEvents) {
-        if (normalizedEvent.type === 'error') this.stateError = normalizedEvent.error;
+      this.coldPendingModels.delete(session.sessionId);
+    }
+    slot.permissionLevel = await this.permissionForSession(session, slot);
+    if (!ownsSession()) return;
+    session.setActiveToolsByName(activeToolsForPermission(session.getActiveToolNames(), slot.permissionLevel));
+    if (access) access.fullAccess = slot.permissionLevel === 'full-access';
+    this.installModelBoundary(slot, session, ownsSession);
+    slot.unsubscribeSession = session.subscribe((event: AgentSessionEvent) => this.handleSessionEvent(slot, session, generation, event));
+    slot.boundSession = session;
+    slot.sessionInvalidated = false;
+    slot.createdAt = this.summaryForSessionId(session.sessionId)?.createdAt ?? slot.createdAt;
+    slot.modifiedAt = new Date().toISOString();
+  }
+
+  private installModelBoundary(slot: RuntimeSlot, session: AgentSession, ownsSession: () => boolean): void {
+    slot.disposeModelBoundary?.();
+    slot.disposeModelBoundary = null;
+    const agent = session.agent;
+    if (!agent || typeof agent.subscribe !== 'function' || typeof agent.streamFunction !== 'function') return;
+    const originalStreamFunction = agent.streamFunction;
+    const wrappedStreamFunction: typeof agent.streamFunction = (model, context, options) => {
+      const staged = slot.boundaryModelOverride;
+      slot.boundaryModelOverride = null;
+      if (!staged) return originalStreamFunction(model, context, options);
+      // The loop resolved auth for its captured (previous) model before invoking
+      // streamFunction. Drop that key so ModelRuntime resolves credentials for
+      // the staged provider rather than forwarding credentials across providers.
+      const { apiKey: _previousApiKey, reasoning: _previousReasoning, ...optionsWithoutCapturedModel } = options ?? {};
+      const nextOptions = staged.model.reasoning && session.thinkingLevel !== 'off'
+        ? { ...optionsWithoutCapturedModel, reasoning: session.thinkingLevel }
+        : optionsWithoutCapturedModel;
+      return originalStreamFunction(staged.model, context, nextOptions);
+    };
+    agent.streamFunction = wrappedStreamFunction;
+    const unsubscribe = agent.subscribe(async (event) => {
+      if (!ownsSession()) return;
+      if (event.type === 'agent_start' || event.type === 'agent_end') {
+        slot.boundaryModelOverride = null;
+        slot.recentlyDequeued = [];
+        return;
       }
-      this.enqueueMany(normalizedEvents);
-      if (event.type === 'agent_start' || event.type === 'agent_end' || event.type === 'thinking_level_changed') this.emitState();
-      if (event.type === 'agent_end' || event.type === 'session_info_changed') {
-        void this.refreshSessions(true).then(() => {
-          if (generation === this.sessionGeneration) this.emitState();
-        }).catch((error: unknown) => {
-          if (generation === this.sessionGeneration) this.emitError(normalizeError(error));
-        });
+      if (event.type !== 'message_start' || event.message.role !== 'user') {
+        if (event.type !== 'message_end' || event.message.role !== 'user') slot.recentlyDequeued = [];
+        return;
+      }
+      slot.boundaryModelOverride = null;
+      let queued = slot.recentlyDequeued.shift();
+      if (!queued) {
+        const text = messageText(event.message);
+        const index = slot.queuedMessages.findIndex((item) => item.transportText === text);
+        if (index >= 0) queued = slot.queuedMessages.splice(index, 1)[0];
+      }
+      if (!queued?.boundModel) return;
+      try {
+        await session.setModel(queued.boundModel.model);
+        if (!ownsSession()) return;
+        slot.boundaryModelOverride = queued.boundModel;
+        slot.stateError = null;
+        if (this.selectedSlot === slot) this.emitState();
+      } catch (error) {
+        const normalized = normalizeError(error);
+        slot.runFailed = true;
+        slot.stateError = normalized;
+        if (this.selectedSlot === slot) this.emitError(normalized);
+        throw error;
       }
     });
-    this.sessionInvalidated = false;
+    slot.disposeModelBoundary = () => {
+      unsubscribe();
+      if (agent.streamFunction === wrappedStreamFunction) agent.streamFunction = originalStreamFunction;
+    };
+  }
+
+  private handleSessionEvent(slot: RuntimeSlot, session: AgentSession, generation: number, event: AgentSessionEvent): void {
+    if (this.initialization !== slot.projectGeneration || slot.disposed || generation !== slot.sessionGeneration || slot.runtime.session !== session) return;
+    const selected = this.selectedSlot === slot;
+    if (event.type === 'message_end' || event.type === 'session_info_changed' || event.type === 'compaction_end') {
+      slot.modifiedAt = new Date().toISOString();
+    }
+    if (event.type === 'compaction_end' && !event.aborted && !event.errorMessage) {
+      const estimatedTokensAfter = event.result?.estimatedTokensAfter;
+      if (typeof estimatedTokensAfter === 'number' && Number.isFinite(estimatedTokensAfter) && estimatedTokensAfter >= 0) {
+        slot.contextUsageEstimate = Math.round(estimatedTokensAfter);
+      }
+    }
+    if (event.type === 'queue_update' && !slot.queueMutationActive) {
+      this.reconcileQueuedMessagesForSlot(slot, event.steering.length, event.followUp.length, true);
+    }
+    if (event.type === 'agent_start') {
+      slot.runFailed = false;
+      if (selected) this.acknowledgeSession(session.sessionId);
+      else this.setSessionAttention(slot, 'running');
+    }
+    if (event.type === 'message_end' && event.message.role === 'assistant') {
+      const message = event.message as typeof event.message & { isError?: unknown; stopReason?: unknown };
+      if (message.isError === true || message.stopReason === 'error') slot.runFailed = true;
+    }
+
+    if (selected) {
+      const normalizedEvents = slot.normalizer.normalize(event);
+      const visibleEvents = event.type === 'agent_end' && event.willRetry
+        ? normalizedEvents.filter((normalizedEvent) => normalizedEvent.type !== 'run.completed')
+        : normalizedEvents;
+      for (const normalizedEvent of visibleEvents) {
+        if (normalizedEvent.type === 'error') {
+          slot.stateError = normalizedEvent.error;
+          slot.runFailed = true;
+        }
+      }
+      this.enqueueMany(visibleEvents);
+    }
+
+    if (event.type === 'agent_start') {
+      this.mergeLiveSessionSummaries();
+      this.emitState();
+      return;
+    }
+    if (event.type === 'compaction_end' && selected && !event.errorMessage) {
+      this.emitState();
+      return;
+    }
+    if (event.type === 'agent_settled') {
+      // An agent_settled extension handler may synchronously start another run.
+      // Keep that slot live and yellow instead of disposing the successor run.
+      if (this.sessionHasActiveWork(session)) {
+        if (!selected) this.setSessionAttention(slot, 'running');
+        this.mergeLiveSessionSummaries();
+        this.emitState();
+      } else if (selected) {
+        this.mergeLiveSessionSummaries();
+        this.emitState();
+        this.refreshSettledSlot(slot, session, generation);
+      } else {
+        this.settleInactiveSlot(slot);
+      }
+      return;
+    }
+    if (event.type === 'thinking_level_changed' && selected) {
+      this.emitState();
+      return;
+    }
+    if (event.type === 'session_info_changed') {
+      this.mergeLiveSessionSummaries();
+      this.emitState();
+    }
+  }
+
+  private refreshSettledSlot(slot: RuntimeSlot, session: AgentSession, generation: number): void {
+    const initialization = this.initialization;
+    void this.refreshSessions(true, true).then(() => {
+      if (
+        initialization === this.initialization
+        && !slot.disposed
+        && generation === slot.sessionGeneration
+        && slot.runtime.session === session
+      ) this.emitState();
+    }).catch((error: unknown) => {
+      if (
+        initialization !== this.initialization
+        || slot.disposed
+        || generation !== slot.sessionGeneration
+        || slot.runtime.session !== session
+        || this.selectedSlot !== slot
+      ) return;
+      this.emitSystemMessage(`The session list could not be refreshed: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+    });
+  }
+
+  private settleInactiveSlot(slot: RuntimeSlot): void {
+    if (slot.disposed || this.selectedSlot === slot || this.sessionHasActiveWork(slot.runtime.session)) return;
+    const initialization = this.initialization;
+    const sessionId = slot.runtime.session.sessionId;
+    const attentionRevision = this.setSessionAttention(slot, slot.runFailed ? 'error' : 'completed');
+    this.mergeLiveSessionSummaries();
+    this.emitState();
+
+    void this.disposeSlot(slot, false).then(() => {
+      if (initialization !== this.initialization) return;
+      void this.refreshSessions(true, true).then(() => {
+        if (initialization === this.initialization) this.emitState();
+      }).catch(() => undefined);
+    }, (error: unknown) => {
+      if (
+        initialization !== this.initialization
+        || this.sessionAttentionRevision(sessionId) !== attentionRevision
+      ) return;
+      if (this.selectedSlot?.runtime.session.sessionId === sessionId) {
+        this.acknowledgeSession(sessionId);
+        this.emitSystemMessage(`The previous live session could not be fully released: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+      } else {
+        this.setSessionAttention(slot, 'error');
+      }
+      this.mergeLiveSessionSummaries();
+      this.emitState();
+    });
   }
 
   private requireRuntimeSession(): AgentSession {
@@ -1027,7 +1575,7 @@ export class PiRuntimeService {
 
   private requireRuntimeIdleSession(action: string): AgentSession {
     const session = this.requireRuntimeSession();
-    if (this.replacementActive || session.isStreaming) {
+    if (this.replacementActive || this.sessionHasActiveWork(session)) {
       throw new PiDesktopError({ code: 'RUN_ACTIVE', message: `Wait for the active Pi operation to finish before ${action}.`, retryable: true });
     }
     return session;
@@ -1040,63 +1588,60 @@ export class PiRuntimeService {
 
   private requireIdleSession(action: string): AgentSession {
     const session = this.requireSession();
-    if (this.replacementActive || session.isStreaming) {
+    if (this.replacementActive || this.sessionHasActiveWork(session)) {
       throw new PiDesktopError({ code: 'RUN_ACTIVE', message: `Wait for the active Pi operation to finish before ${action}.`, retryable: true });
     }
     return session;
   }
 
-  private requireRuntimeForReplacement(): AgentSessionRuntime {
-    if (!this.runtime) this.requireSession();
-    if (this.runtime!.session.isStreaming) {
-      throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Stop the active run before replacing this session.', retryable: true });
-    }
-    return this.runtime!;
+  private sessionHasNonStreamingWork(session: AgentSession): boolean {
+    return session.isCompacting || session.isBashRunning;
   }
 
-  private runReplacement(operation: (runtime: AgentSessionRuntime) => Promise<void>): Promise<RuntimeState> {
-    const runtime = this.requireRuntimeForReplacement();
+  private sessionHasActiveWork(session: AgentSession): boolean {
+    return session.isStreaming || this.sessionHasNonStreamingWork(session);
+  }
+
+  private runReplacement(operation: (runtime: AgentSessionRuntime, slot: RuntimeSlot) => Promise<void>): Promise<RuntimeState> {
+    this.requireRuntimeSession();
     const replacementGeneration = this.replacementGeneration;
     const ownsGeneration = () => replacementGeneration === this.replacementGeneration;
-    const isCurrent = () => ownsGeneration() && this.runtime === runtime;
-    const disposeIfStale = async () => {
-      if (this.runtime !== runtime) await runtime.dispose().catch(() => undefined);
-    };
     const execute = async (): Promise<RuntimeState> => {
-      if (!isCurrent()) {
-        await disposeIfStale();
-        throw this.replacementSuperseded();
-      }
+      if (!ownsGeneration()) throw this.replacementSuperseded();
+      const slot = this.selectedSlot;
+      if (!slot || slot.disposed) throw this.replacementSuperseded();
+      const runtime = slot.runtime;
       this.replacementActive = true;
-      this.stateError = null;
+      slot.stateError = null;
       this.emitState();
       let failure: AppError | null = null;
       let includeHistory = false;
       let finalState: RuntimeState | null = null;
       try {
-        await operation(runtime);
-        if (!isCurrent()) throw this.replacementSuperseded();
-        await this.refreshSessions(true);
-        if (!isCurrent()) throw this.replacementSuperseded();
+        await operation(runtime, slot);
+        if (!ownsGeneration()) throw this.replacementSuperseded();
+        const currentSlot = this.selectedSlot;
+        if (!currentSlot || currentSlot.disposed) throw this.replacementSuperseded();
+        this.acknowledgeSession(currentSlot.runtime.session.sessionId);
+        try {
+          await this.refreshSessions(true);
+        } catch (error) {
+          if (!ownsGeneration()) throw this.replacementSuperseded();
+          this.emitSystemMessage(`The session list could not be refreshed: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+        }
+        if (!ownsGeneration()) throw this.replacementSuperseded();
         this.status = this.models.length > 0 ? 'ready' : 'auth-required';
         includeHistory = true;
       } catch (error) {
-        if (!isCurrent()) {
-          await disposeIfStale();
-          throw this.replacementSuperseded();
-        }
+        if (!ownsGeneration()) throw this.replacementSuperseded();
         failure = error instanceof PiDesktopError ? error.normalized : normalizeError(error);
-        const runtimeUnusable = !(error instanceof PiDesktopError) && this.sessionInvalidated;
+        const runtimeUnusable = !(error instanceof PiDesktopError) && slot.sessionInvalidated && this.selectedSlot === slot;
         if (runtimeUnusable) {
-          if (this.runtime === runtime) this.runtime = null;
-          await runtime.dispose().catch(() => undefined);
-          if (!ownsGeneration() || this.runtime !== null) throw this.replacementSuperseded();
-          this.sessions = [];
+          this.selectedSlot = null;
+          await this.disposeSlot(slot, true).catch(() => undefined);
+          if (!ownsGeneration()) throw this.replacementSuperseded();
           this.status = 'error';
-        } else if (error instanceof PiDesktopError) {
-          this.status = failure.code === 'INVALID_REQUEST' ? (this.models.length > 0 ? 'ready' : 'auth-required') : 'error';
         } else {
-          // Preflight/navigation/metadata failures leave the bound runtime usable.
           this.status = this.models.length > 0 ? 'ready' : 'auth-required';
         }
         this.emitError(failure);
@@ -1134,33 +1679,35 @@ export class PiRuntimeService {
     return [...extensionCommands, ...promptCommands, ...skillCommands].slice(0, 5_000);
   }
 
-  private async applyQueueMutation(input: QueueMutationInput): Promise<QueueMutationResult> {
-    const session = this.requireSession();
-    const runtimeOwner = this.runtime;
+  private async applyQueueMutation(input: QueueMutationInput, slot: RuntimeSlot): Promise<QueueMutationResult> {
+    if (this.selectedSlot !== slot || slot.disposed) throw this.replacementSuperseded();
+    if (this.status === 'auth-required') throw new PiDesktopError(this.stateError ?? authRequiredError());
+    const session = slot.runtime.session;
     const initialization = this.initialization;
-    const sessionGeneration = this.sessionGeneration;
+    const sessionGeneration = slot.sessionGeneration;
     const ownsSession = () => initialization === this.initialization
-      && sessionGeneration === this.sessionGeneration
-      && this.runtime === runtimeOwner
-      && runtimeOwner?.session === session;
+      && !slot.disposed
+      && sessionGeneration === slot.sessionGeneration
+      && this.selectedSlot === slot
+      && slot.runtime.session === session;
     if (this.replacementActive) {
       throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for the session change to finish before editing queued messages.', retryable: true });
     }
-    const target = this.queuedMessages.find((item) => item.id === input.id);
+    const target = slot.queuedMessages.find((item) => item.id === input.id);
     if (!target) {
       throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'That queued message is no longer waiting.', retryable: true });
     }
     const steeringCount = session.getSteeringMessages?.().length ?? 0;
     const followUpCount = session.getFollowUpMessages?.().length ?? 0;
-    const mirroredSteering = this.queuedMessages.filter((item) => item.behavior === 'steer').length;
-    const mirroredFollowUp = this.queuedMessages.filter((item) => item.behavior === 'followUp').length;
+    const mirroredSteering = slot.queuedMessages.filter((item) => item.behavior === 'steer').length;
+    const mirroredFollowUp = slot.queuedMessages.filter((item) => item.behavior === 'followUp').length;
     if (!session.isStreaming || steeringCount !== mirroredSteering || followUpCount !== mirroredFollowUp) {
-      this.reconcileQueuedMessages(steeringCount, followUpCount);
+      this.reconcileQueuedMessagesForSlot(slot, steeringCount, followUpCount, false);
       this.emitState();
       throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'That message is already being sent. The queue has been refreshed.', retryable: true });
     }
 
-    const next = this.queuedMessages.flatMap((item): QueuedMessageRecord[] => {
+    const next = slot.queuedMessages.flatMap((item): QueuedMessageRecord[] => {
       if (item.id !== input.id) return [item];
       if (input.action === 'cancel' || input.action === 'edit') return [];
       return [{ ...item, behavior: input.action }];
@@ -1169,14 +1716,14 @@ export class PiRuntimeService {
       ? { text: target.text, ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}) }
       : undefined;
 
-    this.queueMutationActive = true;
+    slot.queueMutationActive = true;
     try {
       session.clearQueue();
       if (!ownsSession()) throw this.replacementSuperseded();
       // From this point onward the SDK queue no longer matches the old mirror.
       // Track the intended survivors so partial requeue failures can still be
       // reconciled against Pi's authoritative public queue counts.
-      this.queuedMessages = next;
+      slot.queuedMessages = next;
       for (const item of next.filter((queued) => queued.behavior === 'steer')) {
         await session.steer(item.transportText, item.images?.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })));
         if (!ownsSession()) throw this.replacementSuperseded();
@@ -1185,42 +1732,241 @@ export class PiRuntimeService {
         await session.followUp(item.transportText, item.images?.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })));
         if (!ownsSession()) throw this.replacementSuperseded();
       }
-      this.reconcileQueuedMessages(session.getSteeringMessages?.().length ?? 0, session.getFollowUpMessages?.().length ?? 0);
-      this.stateError = null;
+      this.reconcileQueuedMessagesForSlot(slot, session.getSteeringMessages?.().length ?? 0, session.getFollowUpMessages?.().length ?? 0, false);
+      if (input.action === 'edit' && target.boundModel && !slot.pendingModel) slot.pendingModel = target.boundModel;
+      slot.stateError = null;
       this.emitState();
       return { state: this.getState(false), ...(restored ? { restored } : {}) };
     } catch (error) {
       if (ownsSession()) {
-        this.reconcileQueuedMessages(session.getSteeringMessages?.().length ?? 0, session.getFollowUpMessages?.().length ?? 0);
+        this.reconcileQueuedMessagesForSlot(slot, session.getSteeringMessages?.().length ?? 0, session.getFollowUpMessages?.().length ?? 0, false);
+        if (input.action === 'edit' && target.boundModel && !slot.pendingModel) slot.pendingModel = target.boundModel;
         this.emitState();
       }
       throw error;
     } finally {
-      this.queueMutationActive = false;
+      slot.queueMutationActive = false;
     }
   }
 
-  private reconcileQueuedMessages(steeringCount: number, followUpCount: number): void {
-    const steering = this.queuedMessages.filter((item) => item.behavior === 'steer');
-    const followUp = this.queuedMessages.filter((item) => item.behavior === 'followUp');
+  private reconcileQueuedMessagesForSlot(slot: RuntimeSlot, steeringCount: number, followUpCount: number, captureDequeued: boolean): void {
+    const steering = slot.queuedMessages.filter((item) => item.behavior === 'steer');
+    const followUp = slot.queuedMessages.filter((item) => item.behavior === 'followUp');
     const retained = new Set([
       ...(steeringCount === 0 ? [] : steering.slice(-steeringCount).map((item) => item.id)),
       ...(followUpCount === 0 ? [] : followUp.slice(-followUpCount).map((item) => item.id)),
     ]);
-    this.queuedMessages = this.queuedMessages.filter((item) => retained.has(item.id));
+    const removed = slot.queuedMessages.filter((item) => !retained.has(item.id));
+    slot.queuedMessages = slot.queuedMessages.filter((item) => retained.has(item.id));
+    if (captureDequeued && removed.length > 0) slot.recentlyDequeued = [...slot.recentlyDequeued, ...removed].slice(-MAX_QUEUED_MESSAGES);
   }
 
-  private async permissionForSession(session: AgentSession): Promise<PermissionLevel> {
-    if (!this.project) return 'edit';
+  private async createAdditionalSlot(sessionPath?: string): Promise<RuntimeSlot> {
+    if (!this.project || !this.modelRuntime) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open and trust a project before using Pi.', retryable: true });
+    for (const slot of [...this.liveSlots]) {
+      if (slot !== this.selectedSlot && !this.sessionHasActiveWork(slot.runtime.session)) await this.disposeSlot(slot, false);
+    }
+    if (this.liveSlots.size + this.pendingDisposals.size >= MAX_LIVE_RUNTIME_SLOTS) {
+      throw new PiDesktopError({
+        code: 'RUN_ACTIVE',
+        message: `Up to ${MAX_LIVE_RUNTIME_SLOTS} Pi sessions can be live at once. Wait for a background session to finish before starting another.`,
+        retryable: true,
+      });
+    }
+    const generation = this.initialization;
+    const runtime = await this.adapter.createRuntime(this.project.path, this.modelRuntime, this.project.trusted);
+    if (generation !== this.initialization) {
+      await runtime.dispose().catch(() => undefined);
+      throw this.replacementSuperseded();
+    }
+    const slot = this.createSlot(runtime, generation);
+    this.liveSlots.add(slot);
+    this.configureRuntimeSlot(slot);
     try {
-      return await this.sessionPermissions.get(this.project.path, session.sessionId) ?? 'edit';
+      if (sessionPath) {
+        const result = await runtime.switchSession(sessionPath, { cwdOverride: this.project.path });
+        if (result?.cancelled) throw this.replacementCancelled('Session switch');
+      }
+      if (slot.boundSession !== runtime.session) await this.replaceSession(slot, runtime.session);
+      if (generation !== this.initialization || slot.disposed) throw this.replacementSuperseded();
+      return slot;
     } catch (error) {
-      this.emitSystemMessage(`Saved session permission could not be restored; Edit files remains active: ${error instanceof Error ? error.message : String(error)}`, 'warning');
-      return 'edit';
+      await this.disposeSlot(slot, true).catch(() => undefined);
+      throw error;
     }
   }
 
-  private async applySessionDefaults(session: AgentSession, defaults: SessionDefaults | undefined): Promise<void> {
+  private async selectRuntimeSlot(slot: RuntimeSlot): Promise<void> {
+    if (slot.disposed || !this.liveSlots.has(slot)) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'That live session is no longer available.', retryable: true });
+    const previous = this.selectedSlot;
+    if (previous === slot) {
+      this.acknowledgeSession(slot.runtime.session.sessionId);
+      this.mergeLiveSessionSummaries();
+      return;
+    }
+    this.selectedSlot = slot;
+    this.acknowledgeSession(slot.runtime.session.sessionId);
+    slot.attention = null;
+    this.batcher.clear();
+    if (previous && !previous.disposed) {
+      if (this.sessionHasActiveWork(previous.runtime.session)) {
+        this.setSessionAttention(previous, 'running');
+      } else {
+        const initialization = this.initialization;
+        const promotedSession = slot.runtime.session;
+        const promotedGeneration = slot.sessionGeneration;
+        // disposeSlot detaches synchronously. Do not make promotion wait on
+        // extension shutdown or filesystem cleanup from the previous session.
+        void this.disposeSlot(previous, false).catch((error: unknown) => {
+          if (
+            initialization === this.initialization
+            && this.selectedSlot === slot
+            && !slot.disposed
+            && slot.sessionGeneration === promotedGeneration
+            && slot.runtime.session === promotedSession
+          ) {
+            this.emitSystemMessage(`The previous live session could not be fully released: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+          }
+        });
+      }
+    }
+    this.mergeLiveSessionSummaries();
+  }
+
+  private findLiveSlot(sessionId: string): RuntimeSlot | undefined {
+    for (const slot of this.liveSlots) {
+      if (!slot.disposed && slot.runtime.session.sessionId === sessionId) return slot;
+    }
+    return undefined;
+  }
+
+  private runningSessionCount(): number {
+    let count = 0;
+    for (const slot of this.liveSlots) if (!slot.disposed && this.sessionHasActiveWork(slot.runtime.session)) count += 1;
+    return count;
+  }
+
+  private sessionClaimKey(projectPath: string, sessionId: string): string {
+    return `${projectPath}\0${sessionId}`;
+  }
+
+  private rememberColdPendingModel(sessionId: string, model: ModelInfo): void {
+    this.coldPendingModels.delete(sessionId);
+    this.coldPendingModels.set(sessionId, model);
+    while (this.coldPendingModels.size > MAX_COLD_PENDING_MODELS) this.coldPendingModels.delete(this.coldPendingModels.keys().next().value!);
+  }
+
+  private recordSessionAttention(sessionId: string, value: SessionAttention | null): number {
+    const revision = ++this.attentionRevision;
+    this.sessionAttention.delete(sessionId);
+    this.sessionAttention.set(sessionId, { value, revision });
+    while (this.sessionAttention.size > MAX_SESSION_ATTENTION_ENTRIES) this.sessionAttention.delete(this.sessionAttention.keys().next().value!);
+    return revision;
+  }
+
+  private setSessionAttention(slot: RuntimeSlot, attention: SessionAttention): number {
+    const sessionId = slot.runtime.session.sessionId;
+    if (this.selectedSlot === slot) return this.acknowledgeSession(sessionId);
+    slot.attention = attention;
+    return this.recordSessionAttention(sessionId, attention);
+  }
+
+  private acknowledgeSession(sessionId: string): number {
+    const revision = this.recordSessionAttention(sessionId, null);
+    const slot = this.findLiveSlot(sessionId);
+    if (slot) slot.attention = null;
+    this.sessions = this.sessions.map((summary) => summary.id === sessionId ? { ...summary, attention: null } : summary);
+    return revision;
+  }
+
+  private sessionAttentionRevision(sessionId: string): number {
+    return this.sessionAttention.get(sessionId)?.revision ?? 0;
+  }
+
+  private sessionAttentionValue(sessionId: string, fallback: SessionAttention | null): SessionAttention | null {
+    const record = this.sessionAttention.get(sessionId);
+    return record ? record.value : fallback;
+  }
+
+  private liveSessionSummary(slot: RuntimeSlot, session = slot.runtime.session, promptOverride = slot.firstPromptText): SessionSummary {
+    const existing = this.summaryForSessionId(session.sessionId);
+    let firstMessage = promptOverride;
+    if (!firstMessage) {
+      const first = session.messages.find((message) => Boolean(message) && typeof message === 'object' && (message as { role?: unknown }).role === 'user');
+      if (first) firstMessage = messageText(first);
+    }
+    firstMessage = firstMessage.trim().slice(0, 2_000) || existing?.firstMessage || '(no messages)';
+    const explicitName = session.sessionName ?? session.sessionManager?.getSessionName?.();
+    const title = explicitName?.trim()
+      ? sessionDisplayTitle(explicitName, firstMessage)
+      : existing?.title && existing.title !== 'Untitled session'
+        ? sessionDisplayTitle(existing.title, firstMessage)
+        : sessionDisplayTitle(undefined, firstMessage);
+    const selected = this.selectedSlot === slot && slot.runtime.session === session;
+    return {
+      id: session.sessionId.slice(0, 500),
+      title,
+      firstMessage,
+      path: (session.sessionFile ?? existing?.path ?? `live:${session.sessionId}`).slice(0, 32_768),
+      createdAt: existing?.createdAt ?? slot.createdAt,
+      modifiedAt: slot.modifiedAt,
+      messageCount: Math.max(existing?.messageCount ?? 0, session.messages.length),
+      ...(existing?.parentSessionPath ? { parentSessionPath: existing.parentSessionPath } : {}),
+      active: selected,
+      attention: selected ? null : this.sessionAttentionValue(session.sessionId, slot.attention),
+    };
+  }
+
+  private summaryForSessionId(sessionId: string): SessionSummary | undefined {
+    return this.sessions.find((summary) => summary.id === sessionId);
+  }
+
+  private mergeSessionSummaries(persisted: readonly SessionSummary[], query = ''): SessionSummary[] {
+    const selectedId = this.selectedSlot?.runtime.session.sessionId ?? null;
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const summaries: SessionSummary[] = persisted.map((summary) => {
+      const attention = this.sessionAttention.get(summary.id);
+      return {
+        ...summary,
+        active: summary.id === selectedId,
+        attention: summary.id === selectedId ? null : attention ? attention.value : summary.attention ?? null,
+      };
+    });
+    const indexById = new Map(summaries.map((summary, index) => [summary.id, index]));
+    for (const [sessionId, attention] of this.sessionAttention) {
+      if (attention.value === null || indexById.has(sessionId)) continue;
+      const cached = this.summaryForSessionId(sessionId);
+      if (cached && (!normalizedQuery || `${cached.title}\n${cached.firstMessage}`.toLocaleLowerCase().includes(normalizedQuery))) {
+        indexById.set(sessionId, summaries.length);
+        summaries.push({ ...cached, active: false, attention: attention.value });
+      }
+    }
+    const missingLive: SessionSummary[] = [];
+    for (const slot of this.liveSlots) {
+      if (slot.disposed) continue;
+      const live = this.liveSessionSummary(slot);
+      const index = indexById.get(live.id);
+      if (index !== undefined) summaries[index] = { ...summaries[index]!, ...live };
+      else if (!normalizedQuery || `${live.title}\n${live.firstMessage}`.toLocaleLowerCase().includes(normalizedQuery)) missingLive.push(live);
+    }
+    return [...missingLive, ...summaries].slice(0, 1_000);
+  }
+
+  private mergeLiveSessionSummaries(): void {
+    this.sessions = this.mergeSessionSummaries(this.sessions);
+  }
+
+  private async permissionForSession(session: AgentSession, slot = this.selectedSlot): Promise<PermissionLevel> {
+    if (!this.project) return 'full-access';
+    try {
+      return await this.sessionPermissions.get(this.project.path, session.sessionId) ?? 'full-access';
+    } catch (error) {
+      if (slot && this.selectedSlot === slot) this.emitSystemMessage(`Saved session permission could not be restored; Full access remains active: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+      return 'full-access';
+    }
+  }
+
+  private async applySessionDefaults(session: AgentSession, defaults: SessionDefaults | undefined, slot = this.selectedSlot): Promise<void> {
     if (!defaults) return;
     try {
       if (defaults.defaultModel) {
@@ -1236,8 +1982,14 @@ export class PiRuntimeService {
       // the model the user actually selected.
       session.setThinkingLevel(defaults.thinkingLevel);
     } catch (error) {
-      this.emitSystemMessage(`Saved agent defaults could not be applied: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+      if (slot && !slot.disposed && this.selectedSlot === slot && slot.runtime.session === session) {
+        this.emitSystemMessage(`Saved agent defaults could not be applied: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+      }
     }
+  }
+
+  private activeOperationError(action: string): PiDesktopError {
+    return new PiDesktopError({ code: 'RUN_ACTIVE', message: `Wait for the active Pi operation to finish before ${action}.`, retryable: true });
   }
 
   private replacementSuperseded(): PiDesktopError {
@@ -1252,19 +2004,35 @@ export class PiRuntimeService {
     return new PiDesktopError({ code: 'INVALID_REQUEST', message: `${feature} is not supported by this Pi SDK version.`, retryable: false });
   }
 
-  private async refreshSessions(force = false): Promise<void> {
-    if (!this.project || !this.runtime) {
+  private async refreshSessions(force = false, coalesce = false): Promise<void> {
+    const refreshGeneration = ++this.sessionRefreshGeneration;
+    const selectedSlot = this.selectedSlot;
+    if (!this.project || !selectedSlot) {
       this.sessions = [];
       return;
     }
-    const generation = this.sessionGeneration;
-    const runtime = this.runtime;
+    const generation = this.initialization;
     const projectPath = this.project.path;
-    if (force) (this.sessionRepository as PiSessionRepository & { invalidate?: (cwd: string) => void }).invalidate?.(projectPath);
-    const sessions = await this.sessionRepository.list(projectPath, runtime.session.sessionId);
-    if (generation === this.sessionGeneration && this.runtime === runtime && this.project?.path === projectPath) {
-      this.sessions = sessions.slice(0, 1_000);
+    const activeSessionId = selectedSlot.runtime.session.sessionId;
+    let load = this.sessionRefreshLoad;
+    if (!load || load.projectPath !== projectPath || !coalesce || (force && !load.forced)) {
+      if (force) (this.sessionRepository as PiSessionRepository & { invalidate?: (cwd: string) => void }).invalidate?.(projectPath);
+      const promise = this.sessionRepository.list(projectPath, activeSessionId);
+      const createdLoad = { projectPath, forced: force, promise };
+      load = createdLoad;
+      this.sessionRefreshLoad = createdLoad;
+      void promise.then(
+        () => { if (this.sessionRefreshLoad === createdLoad) this.sessionRefreshLoad = null; },
+        () => { if (this.sessionRefreshLoad === createdLoad) this.sessionRefreshLoad = null; },
+      );
     }
+    const sessions = await load.promise;
+    if (
+      refreshGeneration === this.sessionRefreshGeneration
+      && generation === this.initialization
+      && this.project?.path === projectPath
+      && this.selectedSlot
+    ) this.sessions = this.mergeSessionSummaries(sessions);
   }
 
   private emitState(messagesIncluded = false): RuntimeState {
@@ -1281,7 +2049,7 @@ export class PiRuntimeService {
       type: 'message.completed',
       messageId: `system-${randomUUID()}`,
       role: 'system',
-      text: safeText(message),
+      text: safeText(message, 64_900),
       ...(level === 'error' ? { error: true } : {}),
       timestamp,
     });
@@ -1301,14 +2069,52 @@ export class PiRuntimeService {
     for (const event of events) this.enqueue(event);
   }
 
+  private async disposeSlot(slot: RuntimeSlot, abortRunning: boolean): Promise<void> {
+    if (slot.disposePromise) return slot.disposePromise;
+    const session = slot.runtime.session;
+    const sessionId = session.sessionId;
+    const pendingBinding = slot.bindingPromise;
+    slot.disposed = true;
+    this.liveSlots.delete(slot);
+    if (this.selectedSlot === slot) this.selectedSlot = null;
+    // Detach host-owned listeners and wrappers before the first cleanup await so
+    // no late event can observe or mutate a successor slot.
+    this.invalidateSession(slot);
+    slot.disposePromise = (async () => {
+      const failures: unknown[] = [];
+      if (abortRunning) {
+        if (session.isStreaming) {
+          try { await session.abort(); } catch (error) { failures.push(error); }
+        }
+        if (session.isCompacting) {
+          try { session.abortCompaction(); } catch (error) { failures.push(error); }
+        }
+        if (session.isBashRunning) {
+          try { session.abortBash(); } catch (error) { failures.push(error); }
+        }
+      }
+      // If extension binding was already in flight, let its startup callbacks
+      // unwind before runtime.dispose() sends the matching shutdown event.
+      await pendingBinding?.catch(() => undefined);
+      try { await slot.runtime.dispose(); } catch (error) { failures.push(error); }
+      if (failures.length > 0) throw new AggregateError(failures, `Pi session ${sessionId} could not be fully disposed.`);
+    })();
+    const disposal = slot.disposePromise;
+    this.pendingDisposals.add(disposal);
+    void disposal.then(
+      () => { this.pendingDisposals.delete(disposal); },
+      () => { this.pendingDisposals.delete(disposal); },
+    );
+    return disposal;
+  }
+
   private async disposeRuntime(): Promise<void> {
-    const runtime = this.runtime;
-    this.invalidateSession();
-    // Clear all old ownership before yielding. A late invalidation callback or
-    // disposal completion must never erase a successor installed by openProject.
-    if (this.runtime === runtime) this.runtime = null;
-    this.activeRunId = null;
+    const slots = [...this.liveSlots];
+    this.selectedSlot = null;
+    this.batcher.clear();
+    const results = await Promise.allSettled(slots.map((slot) => this.disposeSlot(slot, true)));
     this.sessions = [];
-    if (runtime) await runtime.dispose();
+    const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+    if (failures.length > 0) throw new AggregateError(failures, 'One or more Pi sessions could not be disposed.');
   }
 }

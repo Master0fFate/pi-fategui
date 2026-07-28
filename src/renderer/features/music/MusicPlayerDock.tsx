@@ -467,6 +467,7 @@ export function MusicPlayerDock() {
             autoComplete="off"
             spellCheck={false}
             value={source}
+            className="icon-label"
             placeholder="Paste media link here"
             disabled={busy}
             onChange={(event) => {

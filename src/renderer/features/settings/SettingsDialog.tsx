@@ -437,13 +437,13 @@ export function SettingsDialog() {
                             <span className="voice-model-copy"><strong>{model.model}</strong><small>{model.description}</small><AppTooltip content={model.detail}><em>{model.detail}</em></AppTooltip></span>
                           </button>
                           <div className="voice-model-action">
-                            {speechBusy === model.id ? <AppTooltip content="Cancel download" sideOffset={7}><button type="button" className="voice-download-cancel" aria-label={`Cancel ${model.name} voice model download`} onClick={() => void cancelSpeechDownload(model.id)}><LoaderCircle className="voice-download-spinner" size={15} /><X className="voice-download-x" size={15} /><span>{activeProgress?.state === 'verifying' ? 'Verifying' : `${percent}%`}</span></button></AppTooltip> : model.installed ? <AppTooltip content="Remove downloaded model"><button type="button" aria-label={`Remove ${model.name} voice model`} onClick={() => void removeSpeechModel(model.id)}><Trash2 size={14} /><span>Installed</span></button></AppTooltip> : <button type="button" aria-label={`Download ${model.name} voice model`} onClick={() => void downloadSpeechModel(model.id)}><Download size={14} /><span>Download</span></button>}
+                            {speechBusy === model.id ? <AppTooltip content="Cancel download" sideOffset={7}><button type="button" className="voice-download-cancel" aria-label={`Cancel ${model.name} voice model download`} onClick={() => void cancelSpeechDownload(model.id)}><LoaderCircle className="voice-download-spinner" size={15} /><X className="voice-download-x" size={15} /><span className="icon-label">{activeProgress?.state === 'verifying' ? 'Verifying' : `${percent}%`}</span></button></AppTooltip> : model.installed ? <AppTooltip content="Remove downloaded model"><button type="button" aria-label={`Remove ${model.name} voice model`} onClick={() => void removeSpeechModel(model.id)}><Trash2 size={14} /><span className="icon-label">Installed</span></button></AppTooltip> : <button type="button" aria-label={`Download ${model.name} voice model`} onClick={() => void downloadSpeechModel(model.id)}><Download size={14} /><span className="icon-label">Download</span></button>}
                           </div>
                           {activeProgress && speechBusy === model.id && <progress aria-label={`${model.name} model download`} max={activeProgress.totalBytes} value={activeProgress.downloadedBytes} />}
                         </div>
                       );
                     }) ?? (speechStatusError
-                      ? <div className="voice-model-error" role="alert"><CircleAlert size={15} /><span>{speechStatusError}</span></div>
+                      ? <div className="voice-model-error" role="alert"><CircleAlert size={15} /><span className="icon-label">{speechStatusError}</span></div>
                       : <div className="settings-skeleton"><span /><span /><span /></div>)}
                   </div>
                   <p className="voice-license-note">Models download from pinned Hugging Face releases, are SHA-256 verified before installation, and retain their upstream licenses. Supported hardware acceleration is used when stable; otherwise transcription uses CPU safety mode.</p>
@@ -490,7 +490,7 @@ export function SettingsDialog() {
             </div>
           )}
 
-          <footer><span aria-live="polite">{status ?? (settingsLoaded ? 'Changes apply after saving.' : 'Loading settings…')}</span><button type="button" className="primary-button" aria-busy={saving} disabled={!settingsLoaded || saving} onClick={() => void save()}><Save size={14} />Save changes</button></footer>
+          <footer><span aria-live="polite">{status ?? (settingsLoaded ? 'Changes apply after saving.' : 'Loading settings…')}</span><button type="button" className="primary-button" aria-busy={saving} disabled={!settingsLoaded || saving} onClick={() => void save()}><Save size={14} /><span className="icon-label">Save changes</span></button></footer>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

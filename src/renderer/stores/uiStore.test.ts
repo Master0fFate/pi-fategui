@@ -45,7 +45,11 @@ describe('UI store', () => {
     expect(useUiStore.getState().toast).toBeNull();
   });
 
-  it('toggles both collapsible panes independently', () => {
+  it('sets and toggles both collapsible panes independently', () => {
+    useUiStore.getState().setSidebarCollapsed(true);
+    expect(useUiStore.getState().sidebarCollapsed).toBe(true);
+    useUiStore.getState().setSidebarCollapsed(false);
+
     useUiStore.getState().toggleSidebar();
     expect(useUiStore.getState().sidebarCollapsed).toBe(true);
     expect(useUiStore.getState().inspectorCollapsed).toBe(false);

@@ -16,7 +16,8 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import type { SessionSummary } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
 import { IconButton } from '../../components/IconButton';
@@ -29,10 +30,26 @@ interface SidebarProps {
   onToggle: () => void;
 }
 
+const attentionLabels = {
+  running: 'Session running',
+  completed: 'Session completed — new activity',
+  error: 'Session error — needs attention',
+} as const;
+
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
-  const runtime = useRuntimeStore((state) => state.runtime);
+  const runtime = useRuntimeStore(useShallow((state) => ({
+    project: state.runtime.project,
+    status: state.runtime.status,
+    streaming: state.runtime.streaming,
+    runningSessionCount: state.runtime.runningSessionCount,
+    sessionOperation: state.runtime.sessionOperation,
+    sessionCapabilities: state.runtime.sessionCapabilities,
+    sessions: state.runtime.sessions,
+    branches: state.runtime.branches,
+  })));
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
   const openSettings = useUiStore((state) => state.setSettingsOpen);
+  const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed);
   const showToast = useUiStore((state) => state.showToast);
   const requestComposerDraft = useUiStore((state) => state.requestComposerDraft);
   const musicPlaying = useUiStore((state) => state.musicPlaying);
@@ -41,6 +58,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [manualOrder, setManualOrder] = useState<string[]>([]);
   const [draggingSessionId, setDraggingSessionId] = useState<string | null>(null);
   const [dragOverSessionId, setDragOverSessionId] = useState<string | null>(null);
+  const [navigationBusy, setNavigationBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
@@ -48,8 +66,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>(runtime.sessions ?? []);
   const [renderExpanded, setRenderExpanded] = useState(!collapsed);
   const [expandedVisible, setExpandedVisible] = useState(!collapsed);
+  const mounted = useRef(true);
+  const navigationBusyRef = useRef(false);
+  const actionBusyRef = useRef(false);
+  const sessionsProjectPath = useRef(runtime.project?.path ?? null);
   const capabilities = runtime.sessionCapabilities;
-  const sessionBusy = runtime.streaming || runtime.sessionOperation === true || actionBusy;
+  const anySessionRunning = runtime.streaming || (runtime.runningSessionCount ?? 0) > 0;
+  const replacementBusy = runtime.sessionOperation === true || navigationBusy || actionBusy;
+  const destructiveBusy = anySessionRunning || replacementBusy;
   const orderStorageKey = runtime.project ? `fate-ui:session-order:${runtime.project.path}` : null;
   const manualRanks = useMemo(() => new Map(manualOrder.map((id, index) => [id, index])), [manualOrder]);
   const sessionTitleByPath = useMemo(() => new Map(sessions.map((session) => [session.path, session.title])), [sessions]);
@@ -62,7 +86,32 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     return (sort === 'oldest' ? difference : -difference) || left.id.localeCompare(right.id);
   }), [manualRanks, sessions, sort]);
 
-  useEffect(() => { if (!query.trim()) setSessions(runtime.sessions ?? []); }, [query, runtime.sessions]);
+  useEffect(() => {
+    const projectPath = runtime.project?.path ?? null;
+    const latest = runtime.sessions ?? [];
+    if (sessionsProjectPath.current !== projectPath) {
+      sessionsProjectPath.current = projectPath;
+      setSessions(query.trim() ? [] : latest);
+      return;
+    }
+    if (!query.trim()) {
+      setSessions(latest);
+      return;
+    }
+    const latestById = new Map(latest.map((session) => [session.id, session]));
+    setSessions((current) => current.flatMap((session) => {
+      const refreshed = latestById.get(session.id);
+      return refreshed ? [refreshed] : [];
+    }));
+  }, [query, runtime.project?.path, runtime.sessions]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      navigationBusyRef.current = false;
+      actionBusyRef.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (!orderStorageKey) { setManualOrder([]); return; }
     try {
@@ -95,34 +144,79 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     return () => { if (timer) clearTimeout(timer); };
   }, [collapsed]);
   useEffect(() => {
-    if (collapsed || !query.trim() || !runtime.project || !('piDesktop' in window) || typeof window.piDesktop.listSessions !== 'function') return;
+    const projectPath = runtime.project?.path;
+    if (collapsed || !query.trim() || !projectPath || !('piDesktop' in window) || typeof window.piDesktop.listSessions !== 'function') return;
     let active = true;
     const timer = setTimeout(() => {
       void window.piDesktop.listSessions(query)
-        .then((items) => { if (active) setSessions(items); })
+        .then((items) => {
+          if (!active || !mounted.current) return;
+          const latestRuntime = useRuntimeStore.getState().runtime;
+          if (latestRuntime.project?.path !== projectPath) return;
+          const latest = latestRuntime.sessions;
+          if (!latest) {
+            setSessions(items);
+            return;
+          }
+          const latestById = new Map(latest.map((session) => [session.id, session]));
+          setSessions(items.flatMap((session) => {
+            const refreshed = latestById.get(session.id);
+            return refreshed ? [refreshed] : [];
+          }));
+        })
         .catch(() => {
-          if (active) showToast({ kind: 'error', title: 'Session search failed', message: 'Session search could not be refreshed.' });
+          if (active && mounted.current) showToast({ kind: 'error', title: 'Session search failed', message: 'Session search could not be refreshed.' });
         });
     }, 150);
     return () => { active = false; clearTimeout(timer); };
-  }, [collapsed, query, runtime.project, showToast]);
+  }, [collapsed, query, runtime.project?.path, runtime.sessions, showToast]);
 
+  const invokeState = (
+    label: string,
+    operation: () => Promise<ReturnType<typeof useRuntimeStore.getState>['runtime'] | null>,
+    kind: 'navigation' | 'action' = 'action',
+  ): boolean => {
+    const busyRef = kind === 'navigation' ? navigationBusyRef : actionBusyRef;
+    if (navigationBusyRef.current || actionBusyRef.current) return false;
+    const origin = useRuntimeStore.getState().runtime;
+    if (kind === 'action' && (origin.streaming || (origin.runningSessionCount ?? 0) > 0 || origin.sessionOperation)) return false;
+    busyRef.current = true;
+    const setBusy = kind === 'navigation' ? setNavigationBusy : setActionBusy;
+    setBusy(true);
+    let pending: ReturnType<typeof operation>;
+    try {
+      pending = operation();
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    void pending
+      .then((state) => {
+        if (!state || !mounted.current) return;
+        const current = useRuntimeStore.getState().runtime;
+        const selectionMoved = current.sessionId !== origin.sessionId || current.project?.path !== origin.project?.path;
+        const resultIsCurrent = current.sessionId === state.sessionId && current.project?.path === state.project?.path;
+        if (!selectionMoved || resultIsCurrent) setRuntime(state);
+      })
+      .catch((error: unknown) => {
+        if (mounted.current) showToast({
+          kind: 'error',
+          title: `${label} failed`,
+          message: error instanceof Error ? error.message : 'The session action could not be completed.',
+        });
+      })
+      .finally(() => {
+        busyRef.current = false;
+        if (mounted.current) setBusy(false);
+      });
+    return true;
+  };
   const selectProject = () => {
     if (!('piDesktop' in window) || typeof window.piDesktop.selectProject !== 'function') return;
-    void window.piDesktop.selectProject().then(setRuntime).catch((error: unknown) => {
-      showToast({ kind: 'error', title: 'Project selection failed', message: error instanceof Error ? error.message : 'The project could not be selected.' });
-    });
-  };
-  const invokeState = (label: string, operation: Promise<ReturnType<typeof useRuntimeStore.getState>['runtime'] | null>) => {
-    setActionBusy(true);
-    void operation
-      .then((state) => { if (state) setRuntime(state); })
-      .catch((error: unknown) => showToast({
-        kind: 'error',
-        title: `${label} failed`,
-        message: error instanceof Error ? error.message : 'The session action could not be completed.',
-      }))
-      .finally(() => setActionBusy(false));
+    invokeState('Project selection', async () => {
+      const state = await window.piDesktop.selectProject();
+      if (state.project) setSidebarCollapsed(false);
+      return state;
+    }, 'navigation');
   };
   const beginRename = (session: SessionSummary) => {
     setEditingSessionId(session.id);
@@ -134,33 +228,47 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     const name = sessionName.trim().slice(0, 120);
     if (!editingSessionId || !name || !('piDesktop' in window)) return;
     const id = editingSessionId;
-    setEditingSessionId(null);
-    invokeState('Renaming session', window.piDesktop.renameSession(id, name));
+    if (invokeState('Renaming session', () => window.piDesktop.renameSession(id, name))) setEditingSessionId(null);
   };
   const deleteSession = (sessionId: string) => {
     if (!('piDesktop' in window)) return;
-    setConfirmingDeleteId(null);
-    invokeState('Deleting session', window.piDesktop.deleteSession(sessionId));
+    if (invokeState('Deleting session', () => window.piDesktop.deleteSession(sessionId))) setConfirmingDeleteId(null);
   };
   const runSessionAction = async (session: SessionSummary, action: 'fork' | 'worktree' | 'clone' | 'compact') => {
-    if (!('piDesktop' in window) || sessionBusy) return;
+    if (!('piDesktop' in window) || actionBusyRef.current || navigationBusyRef.current) return;
+    const live = useRuntimeStore.getState().runtime;
+    if (live.streaming || (live.runningSessionCount ?? 0) > 0 || live.sessionOperation) return;
+    actionBusyRef.current = true;
     setActionBusy(true);
+    let expectedProjectPath = live.project?.path;
+    let expectedSessionId = live.sessionId;
+    const applyState = (state: typeof live) => {
+      if (!mounted.current) return false;
+      const current = useRuntimeStore.getState().runtime;
+      const selectionIsExpected = current.project?.path === expectedProjectPath && current.sessionId === expectedSessionId;
+      const resultIsCurrent = current.project?.path === state.project?.path && current.sessionId === state.sessionId;
+      if (!selectionIsExpected && !resultIsCurrent) return false;
+      setRuntime(state);
+      expectedProjectPath = state.project?.path;
+      expectedSessionId = state.sessionId;
+      return true;
+    };
     try {
-      let state = runtime;
-      if (!session.active) {
+      let state = live;
+      if (state.sessionId !== session.id) {
         state = await window.piDesktop.switchSession(session.id);
-        setRuntime(state);
+        if (!applyState(state)) return;
       }
       if (action === 'clone') {
-        setRuntime(await window.piDesktop.cloneSession());
+        applyState(await window.piDesktop.cloneSession());
       } else if (action === 'compact') {
-        setRuntime(await window.piDesktop.compact());
+        applyState(await window.piDesktop.compact());
       } else {
         const forkPoint = state.forkPoints?.at(-1);
         if (!forkPoint) throw new Error('This session has no user message to fork from.');
         if (action === 'worktree') {
           const result = await window.piDesktop.createWorktreeSession(forkPoint.entryId);
-          setRuntime(result.state);
+          if (!applyState(result.state)) return;
           requestComposerDraft(
             result.selectedText,
             true,
@@ -173,7 +281,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           });
         } else {
           const result = await window.piDesktop.forkSession(forkPoint.entryId);
-          setRuntime(result.state);
+          if (!applyState(result.state)) return;
           requestComposerDraft(
             result.selectedText ?? forkPoint.text,
             true,
@@ -183,13 +291,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         }
       }
     } catch (error) {
+      if (!mounted.current) return;
       showToast({
         kind: 'error',
         title: `${action === 'fork' ? 'Forking' : action === 'worktree' ? 'Creating isolated' : action === 'clone' ? 'Cloning' : 'Compacting'} session failed`,
         message: error instanceof Error ? error.message : 'The session action could not be completed.',
       });
     } finally {
-      setActionBusy(false);
+      actionBusyRef.current = false;
+      if (mounted.current) setActionBusy(false);
     }
   };
   const reorderSession = (targetId: string) => {
@@ -226,25 +336,25 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </div>
 
       {renderExpanded && (
-        <button className="primary-button sidebar-expanded-only" type="button" onClick={selectProject}>
-          <FolderOpen size={16} /> Open project
+        <button className="primary-button sidebar-expanded-only" type="button" disabled={replacementBusy} onClick={selectProject}>
+          <FolderOpen size={16} /><span className="icon-label">Open project</span>
         </button>
       )}
       <button
         className={`new-session ${collapsed ? 'icon-only' : ''}`}
         type="button"
-        disabled={!runtime.project || sessionBusy}
-        onClick={() => 'piDesktop' in window && invokeState('Creating session', window.piDesktop.newSession())}
+        disabled={!runtime.project || replacementBusy}
+        onClick={() => 'piDesktop' in window && invokeState('Creating session', () => window.piDesktop.newSession(), 'navigation')}
       >
         <MessageSquarePlus size={17} />
-        {renderExpanded && <span className="sidebar-expanded-only">New session</span>}
+        {renderExpanded && <span className="sidebar-expanded-only icon-label">New session</span>}
       </button>
 
       {renderExpanded && (
         <div className="sidebar-expanded-sections sidebar-expanded-only">
           <label className="session-search">
             <Search size={15} />
-            <input aria-label="Search sessions" placeholder="Search sessions" value={query} onChange={(event) => setQuery(event.target.value)} disabled={!runtime.project} />
+            <input className="icon-label" aria-label="Search sessions" placeholder="Search sessions" value={query} onChange={(event) => setQuery(event.target.value)} disabled={!runtime.project} />
           </label>
           <div className="session-sort-row">
             <span>Sessions</span>
@@ -294,18 +404,23 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   </form>
                 ) : (
                   <>
-                    <button className="session-open" type="button" disabled={session.active || sessionBusy} onClick={() => 'piDesktop' in window && invokeState('Switching session', window.piDesktop.switchSession(session.id))}>
-                      <AppTooltip content={session.firstMessage || session.title}><span>{session.parentSessionPath && <GitFork size={11} aria-label="Forked session" />}{session.title}</span></AppTooltip>
+                    <button className="session-open" type="button" disabled={session.active || replacementBusy} onClick={() => 'piDesktop' in window && invokeState('Switching session', () => window.piDesktop.switchSession(session.id), 'navigation')}>
+                      <AppTooltip content={session.firstMessage || session.title}><span>{session.parentSessionPath && <GitFork size={11} aria-label="Forked session" />}{session.parentSessionPath ? <span className="session-title-label icon-label">{session.title}</span> : session.title}</span></AppTooltip>
                       <small>{session.parentSessionPath ? `Fork of ${sessionTitleByPath.get(session.parentSessionPath) ?? 'another session'} · ` : ''}{session.messageCount} messages · {new Date(session.modifiedAt).toLocaleDateString()}</small>
                     </button>
+                    {!session.active && session.attention && (
+                      <AppTooltip content={attentionLabels[session.attention]} side="right" sideOffset={6}>
+                        <span className="session-attention-dot" data-attention={session.attention} role="img" aria-label={attentionLabels[session.attention]} />
+                      </AppTooltip>
+                    )}
                     <div className="session-row-actions">
                       {!query && <AppTooltip content="Drag session to reorder"><span className="session-drag-handle" aria-hidden="true"><GripVertical size={12} /></span></AppTooltip>}
-                      {capabilities?.fork && <AppTooltip content="Open a conversation fork with the latest prompt selected for editing" wrapTrigger><button type="button" aria-label={`Create new session from latest prompt in ${session.title}`} disabled={sessionBusy} onClick={() => void runSessionAction(session, 'fork')}><GitFork size={12} /></button></AppTooltip>}
-                      {capabilities?.fork && <IconButton className="session-worktree-button" label={`Create an isolated Git worktree session from ${session.title}`} disabled={sessionBusy} onClick={() => void runSessionAction(session, 'worktree')}><GitBranchPlus size={12} /></IconButton>}
-                      {capabilities?.clone && <button type="button" aria-label={`Clone ${session.title}`} disabled={sessionBusy} onClick={() => void runSessionAction(session, 'clone')}><Copy size={12} /></button>}
-                      {capabilities?.compact && <button type="button" aria-label={`Compact ${session.title}`} disabled={sessionBusy} onClick={() => void runSessionAction(session, 'compact')}><Archive size={12} /></button>}
-                      <button type="button" aria-label={`Rename ${session.title}`} disabled={sessionBusy} onClick={() => beginRename(session)}><Pencil size={12} /></button>
-                      {!session.active && <button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} disabled={sessionBusy} onClick={() => setConfirmingDeleteId(session.id)}><Trash2 size={12} /></button>}
+                      {capabilities?.fork && <AppTooltip content="Open a conversation fork with the latest prompt selected for editing" wrapTrigger><button type="button" aria-label={`Create new session from latest prompt in ${session.title}`} disabled={destructiveBusy} onClick={() => void runSessionAction(session, 'fork')}><GitFork size={12} /></button></AppTooltip>}
+                      {capabilities?.fork && <IconButton className="session-worktree-button" label={`Create an isolated Git worktree session from ${session.title}`} disabled={destructiveBusy} onClick={() => void runSessionAction(session, 'worktree')}><GitBranchPlus size={12} /></IconButton>}
+                      {capabilities?.clone && <button type="button" aria-label={`Clone ${session.title}`} disabled={destructiveBusy} onClick={() => void runSessionAction(session, 'clone')}><Copy size={12} /></button>}
+                      {capabilities?.compact && <button type="button" aria-label={`Compact ${session.title}`} disabled={destructiveBusy} onClick={() => void runSessionAction(session, 'compact')}><Archive size={12} /></button>}
+                      <button type="button" aria-label={`Rename ${session.title}`} disabled={destructiveBusy} onClick={() => beginRename(session)}><Pencil size={12} /></button>
+                      {!session.active && <button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} disabled={destructiveBusy} onClick={() => setConfirmingDeleteId(session.id)}><Trash2 size={12} /></button>}
                     </div>
                   </>
                 )}
@@ -319,7 +434,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               {runtime.branches!.slice(-20).map((branch) => (
                 <AppTooltip key={branch.id} content={branch.preview || branch.kind}>
                   <div className={branch.active ? 'active' : ''} style={{ paddingLeft: Math.min(branch.depth, 5) * 8 }}>
-                    <GitFork size={11} /> <span>{branch.label || branch.preview || branch.kind}</span>
+                    <GitFork size={11} /> <span className="icon-label">{branch.label || branch.preview || branch.kind}</span>
                   </div>
                 </AppTooltip>
               ))}
@@ -335,13 +450,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </div>
       )}
 
-      {collapsed && !renderExpanded && <nav className="nav-list"><AppTooltip content="Open project" wrapTrigger><button type="button" aria-label="Open project" onClick={selectProject}><FolderOpen size={18} /></button></AppTooltip></nav>}
+      {collapsed && !renderExpanded && <nav className="nav-list"><AppTooltip content="Open project" wrapTrigger><button type="button" aria-label="Open project" disabled={replacementBusy} onClick={selectProject}><FolderOpen size={18} /></button></AppTooltip></nav>}
 
       <div className="sidebar-footer">
         <AppTooltip content={collapsed ? 'Settings' : undefined} wrapTrigger={collapsed}>
           <button type="button" aria-label="Settings" onClick={() => openSettings(true)}>
             <Settings size={18} />
-            {renderExpanded && <span className="sidebar-expanded-only">Settings</span>}
+            {renderExpanded && <span className="sidebar-expanded-only icon-label">Settings</span>}
           </button>
         </AppTooltip>
       </div>

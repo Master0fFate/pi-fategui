@@ -36,6 +36,7 @@ interface UiState {
   inspectorTab: 'changes' | 'files' | 'tools' | 'resources' | 'context';
   setLeftWidth: (width: number) => void;
   setRightWidth: (width: number) => void;
+  setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
   toggleInspector: () => void;
   setPaletteOpen: (open: boolean) => void;
@@ -77,6 +78,7 @@ export const useUiStore = create<UiState>()(
       inspectorTab: 'changes',
       setLeftWidth: (leftWidth) => set({ leftWidth: clamp(leftWidth, LEFT_MIN, LEFT_MAX) }),
       setRightWidth: (rightWidth) => set({ rightWidth: clamp(rightWidth, RIGHT_MIN, RIGHT_MAX) }),
+      setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
       toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
       toggleInspector: () => set((state) => ({ inspectorCollapsed: !state.inspectorCollapsed })),
       setPaletteOpen: (paletteOpen) => set({ paletteOpen }),

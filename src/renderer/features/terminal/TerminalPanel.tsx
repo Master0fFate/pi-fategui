@@ -90,7 +90,7 @@ export function TerminalPanel() {
 
   return (
     <section className="terminal-panel" aria-label="Manual integrated terminal">
-      <header><span><TerminalSquare size={14} />Terminal</span><em>Separate from Pi tools</em><button type="button" aria-label="Close terminal" onClick={() => setOpen(false)}><X size={14} /></button></header>
+      <header><span><TerminalSquare size={14} /><span className="icon-label">Terminal</span></span><em>Separate from Pi tools</em><button type="button" aria-label="Close terminal" onClick={() => setOpen(false)}><X size={14} /></button></header>
       {error ? <div className="terminal-error" role="alert">{error}</div> : <div ref={host} className="terminal-host" />}
     </section>
   );

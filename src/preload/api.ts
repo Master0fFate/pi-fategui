@@ -5,6 +5,8 @@ import {
   appInfoSchema,
   appSettingsSchema,
   compactInputSchema,
+  clipboardTextInputSchema,
+  clipboardWriteResultSchema,
   emptyInputSchema,
   fileListInputSchema,
   fileListSchema,
@@ -120,6 +122,11 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     const parsed = imageSaveInputSchema.parse(input);
     const result: unknown = await ipcRenderer.invoke(ipcChannels.imageSaveAs, parsed);
     return imageSaveResultSchema.parse(result);
+  },
+  async writeClipboardText(text: string) {
+    const input = clipboardTextInputSchema.parse({ text });
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.clipboardWriteText, input);
+    clipboardWriteResultSchema.parse(result);
   },
   async getRuntimeState() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGetState, emptyInputSchema.parse({}));

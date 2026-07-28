@@ -16,8 +16,8 @@ function ResourceGroup({ id, title, kind, items }: { id: string; title: string; 
     <details className="resource-group" open aria-label={title}>
       <summary id={`${id}-title`}>
         <ChevronRight className="resource-group-chevron" size={13} aria-hidden="true" />
-        <span>{title}</span>
-        <em>{items.length}</em>
+        <span className="icon-label">{title}</span>
+        <em className="icon-label">{items.length}</em>
       </summary>
       <div className="resource-list" aria-labelledby={`${id}-title`}>
         {items.map((item) => (

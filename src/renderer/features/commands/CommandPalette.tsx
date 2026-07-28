@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { Bot, Brain, FolderOpen, PanelLeft, PanelRight, Search, Settings, Square, TerminalSquare, X, type LucideIcon } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { RuntimeState } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
@@ -16,21 +16,43 @@ export function CommandPalette() {
     toggleInspector: ui.toggleInspector,
     toggleTerminal: ui.toggleTerminal,
     setSettingsOpen: ui.setSettingsOpen,
+    setSidebarCollapsed: ui.setSidebarCollapsed,
   })));
   const runtime = useRuntimeStore(useShallow((state) => ({
     project: state.runtime.project,
     streaming: state.runtime.streaming,
+    sessionOperation: state.runtime.sessionOperation,
     models: state.runtime.models,
   })));
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const operationBusy = useRef(false);
 
   const commands = useMemo<Command[]>(() => {
-    const invoke = (operation: Promise<RuntimeState>) => { void operation.then(setRuntime).catch(() => undefined); };
+    const invoke = (operation: () => Promise<RuntimeState>, revealSessions = false) => {
+      if (operationBusy.current) return;
+      operationBusy.current = true;
+      const origin = useRuntimeStore.getState().runtime;
+      let pending: Promise<RuntimeState>;
+      try {
+        pending = operation();
+      } catch (error) {
+        pending = Promise.reject(error);
+      }
+      void pending.then((state) => {
+        const current = useRuntimeStore.getState().runtime;
+        const selectionMoved = current.sessionId !== origin.sessionId || current.project?.path !== origin.project?.path;
+        const resultIsCurrent = current.sessionId === state.sessionId && current.project?.path === state.project?.path;
+        if (!selectionMoved || resultIsCurrent) {
+          setRuntime(state);
+          if (revealSessions && state.project) actions.setSidebarCollapsed(false);
+        }
+      }).catch(() => undefined).finally(() => { operationBusy.current = false; });
+    };
     const base: Command[] = [
-      { id: 'open-project', label: 'Open project', hint: 'Ctrl/⌘ O', icon: FolderOpen, run: () => { if ('piDesktop' in window) invoke(window.piDesktop.selectProject()); } },
-      { id: 'new-session', label: 'New session', hint: 'Ctrl/⌘ N', icon: Bot, disabled: !runtime.project || runtime.streaming, run: () => { if ('piDesktop' in window) invoke(window.piDesktop.newSession()); } },
+      { id: 'open-project', label: 'Open project', hint: 'Ctrl/⌘ O', icon: FolderOpen, run: () => { if ('piDesktop' in window) invoke(() => window.piDesktop.selectProject(), true); } },
+      { id: 'new-session', label: 'New session', hint: 'Ctrl/⌘ N', icon: Bot, disabled: !runtime.project || runtime.sessionOperation === true, run: () => { if ('piDesktop' in window) invoke(() => window.piDesktop.newSession()); } },
       { id: 'focus-composer', label: 'Focus composer', icon: Search, run: () => document.querySelector<HTMLTextAreaElement>('#pi-composer')?.focus() },
       { id: 'stop', label: 'Stop generation', hint: 'Esc', icon: Square, disabled: !runtime.streaming, run: () => { if ('piDesktop' in window) void window.piDesktop.abort(); } },
       { id: 'sidebar', label: 'Toggle sidebar', hint: 'Ctrl/⌘ B', icon: PanelLeft, run: actions.toggleSidebar },
@@ -40,11 +62,11 @@ export function CommandPalette() {
     ];
     for (const model of runtime.models) base.push({
       id: `model:${model.provider}/${model.id}`, label: `Use model: ${model.name}`, icon: Bot,
-      disabled: runtime.streaming, run: () => { if ('piDesktop' in window) invoke(window.piDesktop.setModel(model.provider, model.id)); },
+      run: () => { if ('piDesktop' in window) invoke(() => window.piDesktop.setModel(model.provider, model.id)); },
     });
     for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const) base.push({
       id: `thinking:${level}`, label: `Thinking level: ${level}`, icon: Brain,
-      disabled: runtime.streaming, run: () => { if ('piDesktop' in window) invoke(window.piDesktop.setThinkingLevel(level)); },
+      disabled: runtime.streaming, run: () => { if ('piDesktop' in window) invoke(() => window.piDesktop.setThinkingLevel(level)); },
     });
     return base;
   }, [actions, runtime, setRuntime]);
@@ -84,6 +106,7 @@ export function CommandPalette() {
             <input
               autoFocus
               value={query}
+              className="icon-label"
               aria-label="Search commands"
               aria-controls="command-palette-results"
               aria-activedescendant={activeCommand ? `palette-option-${activeIndex}` : undefined}
@@ -119,7 +142,7 @@ export function CommandPalette() {
                   onMouseEnter={() => setSelectedIndex(index)}
                   onClick={() => runCommand(command)}
                 >
-                  <Icon size={15} /><span>{command.label}</span>{command.hint && <kbd>{command.hint}</kbd>}
+                  <Icon size={15} /><span className="icon-label">{command.label}</span>{command.hint && <kbd className="icon-label">{command.hint}</kbd>}
                 </button>
               );
             })}

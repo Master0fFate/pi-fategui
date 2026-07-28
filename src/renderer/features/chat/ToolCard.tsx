@@ -19,8 +19,8 @@ export const ToolCard = memo(function ToolCard({ toolCallId, compact = false }: 
     <article className={`tool-card tool-card--${tool.status}${tool.images?.length ? ' tool-card--with-images' : ''}${compact ? ' tool-card--compact' : ''}`} aria-label={`${tool.name} tool ${tool.status}`}>
       <button className="tool-card-header" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
         <Icon size={13} className={`tool-status-icon${tool.status === 'running' ? ' tool-spinner' : ''}`} aria-hidden="true" />
-        <span className="tool-heading"><strong>{tool.name}</strong><small>{summary}</small></span>
-        <span className="tool-meta">{tool.status === 'running' ? 'Running' : elapsed(tool.startedAt, tool.endedAt ?? tool.updatedAt)}</span>
+        <span className="tool-heading icon-label"><strong>{tool.name}</strong><small>{summary}</small></span>
+        <span className="tool-meta icon-label">{tool.status === 'running' ? 'Running' : elapsed(tool.startedAt, tool.endedAt ?? tool.updatedAt)}</span>
         {expanded ? <ChevronDown className="tool-disclosure-icon" size={13} /> : <ChevronRight className="tool-disclosure-icon" size={13} />}
       </button>
       {tool.images?.length ? <div className="tool-images"><MessageImages images={tool.images} /></div> : null}

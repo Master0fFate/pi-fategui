@@ -1,6 +1,7 @@
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
+  createBashToolDefinition,
   createEditToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
@@ -177,6 +178,7 @@ export async function createProjectConfinedTools(
     writeFile: secureWriteFile,
   };
   return [
+    createBashToolDefinition(cwd),
     createReadToolDefinition(cwd, { operations: readOperations }),
     createWriteToolDefinition(cwd, { operations: writeOperations }),
     createEditToolDefinition(cwd, { operations: { ...readOperations, writeFile: writeOperations.writeFile } }),

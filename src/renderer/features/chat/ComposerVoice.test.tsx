@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, RuntimeState } from '../../../shared/contracts/ipc';
@@ -61,8 +61,10 @@ describe('Composer voice input', () => {
     const textarea = screen.getByRole('textbox', { name: 'Message Pi' });
     fireEvent.change(textarea, { target: { value: 'Please' } });
     await user.click(screen.getByRole('button', { name: 'Start voice recording' }));
-    expect(await screen.findByRole('button', { name: 'Stop voice recording' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Stop voice recording' }));
+    const recordingButton = await screen.findByRole('button', { name: 'Stop voice recording' });
+    expect(recordingButton.querySelector('.lucide-mic')).toBeInTheDocument();
+    expect(recordingButton.querySelector('.lucide-square')).not.toBeInTheDocument();
+    await user.click(recordingButton);
 
     await waitFor(() => expect(textarea).toHaveValue('Please review the current changes'));
     expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
@@ -71,6 +73,44 @@ describe('Composer voice input', () => {
     });
     expect(window.piDesktop.ensureSpeechModel).toHaveBeenCalledWith('mini');
     expect(window.piDesktop.transcribeSpeech).toHaveBeenCalledWith('mini', expect.any(ArrayBuffer), undefined);
+  });
+
+  it('inserts at the initiation selection and restores its scroll viewport after asynchronous transcription', async () => {
+    let resolveTranscript: ((value: { text: string; language: string; backend: string; accelerated: boolean }) => void) | undefined;
+    const transcribeSpeech = vi.fn(() => new Promise<{ text: string; language: string; backend: string; accelerated: boolean }>((resolve) => { resolveTranscript = resolve; }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {
+      ensureSpeechModel: vi.fn(async () => undefined),
+      transcribeSpeech,
+      cancelSpeechTranscription: vi.fn(async () => false),
+    } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+    const textarea = screen.getByRole('textbox', { name: 'Message Pi' }) as HTMLTextAreaElement;
+    const original = `prefix TARGET remainder\n${Array.from({ length: 80 }, (_, index) => `long line ${index}`).join('\n')}`;
+    fireEvent.change(textarea, { target: { value: original } });
+    const start = original.indexOf('TARGET');
+    textarea.setSelectionRange(start, start + 'TARGET'.length);
+    textarea.scrollTop = 120;
+
+    await user.click(screen.getByRole('button', { name: 'Start voice recording' }));
+    expect(await screen.findByRole('button', { name: 'Stop voice recording' })).toBeInTheDocument();
+
+    const latest = `${original}\nmanual edit while recording`;
+    fireEvent.change(textarea, { target: { value: latest } });
+    textarea.setSelectionRange(latest.length, latest.length);
+    textarea.scrollTop = 640;
+    await user.click(screen.getByRole('button', { name: 'Stop voice recording' }));
+    await waitFor(() => expect(transcribeSpeech).toHaveBeenCalledOnce());
+    await act(async () => {
+      resolveTranscript?.({ text: 'spoken replacement', language: 'en', backend: 'Test GPU', accelerated: true });
+      await Promise.resolve();
+    });
+
+    const expected = latest.replace('TARGET', 'spoken replacement');
+    await waitFor(() => expect(textarea).toHaveValue(expected));
+    await waitFor(() => expect(textarea.scrollTop).toBe(120));
+    expect(textarea.selectionStart).toBe(start + 'spoken replacement'.length);
+    expect(transcribeSpeech).toHaveBeenCalledOnce();
   });
 
   it('falls back to the system microphone with a transient toast instead of persistent composer text', async () => {
@@ -90,6 +130,31 @@ describe('Composer voice input', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('this recording uses the system default');
     expect(container.querySelector('.composer-error')).toBeNull();
     expect(getUserMedia).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not open a microphone or transcribe when unmounted during async model preparation', async () => {
+    let finishPreparation: (() => void) | undefined;
+    const ensureSpeechModel = vi.fn(() => new Promise<void>((resolve) => { finishPreparation = resolve; }));
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [{ stop: vi.fn() }] }));
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {
+      ensureSpeechModel,
+      transcribeSpeech: vi.fn(),
+      cancelSpeechTranscription: vi.fn(async () => false),
+    } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    const view = render(<Composer onOpenProject={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Start voice recording' }));
+    await waitFor(() => expect(ensureSpeechModel).toHaveBeenCalledOnce());
+    view.unmount();
+    finishPreparation?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(window.piDesktop.transcribeSpeech).not.toHaveBeenCalled();
+    expect(window.piDesktop.cancelSpeechTranscription).toHaveBeenCalledOnce();
   });
 
   it('releases an active recording without decoding or transcribing after unmount', async () => {

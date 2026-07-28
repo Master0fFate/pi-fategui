@@ -121,7 +121,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     };
     await expect(contextMeter).toBeVisible();
     await expect(contextMeter).toHaveText('');
-    await page.getByRole('button', { name: 'Permission level: Edit files' }).click();
+    await page.getByRole('button', { name: 'Permission level: Full access' }).click();
     await page.getByRole('button', { name: 'Read only' }).click();
     await expect(page.getByRole('button', { name: 'Permission level: Read only' })).toBeVisible();
     await page.getByRole('button', { name: 'Permission level: Read only' }).click();
@@ -382,7 +382,13 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
 
     await page.getByLabel('Message Pi').fill('Inspect this project');
     await page.getByRole('button', { name: 'Send message' }).click();
-    await expect(page.getByRole('button', { name: 'Stop Pi' })).toBeVisible();
+    const streamingArrow = page.getByRole('button', { name: 'Queue follow-up message' });
+    await expect(streamingArrow).toBeVisible();
+    await expect(streamingArrow).toBeEnabled();
+    await expect(streamingArrow.locator('.lucide-arrow-up')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'New session' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Model and reasoning settings' })).toBeEnabled();
+    await expect(page.locator('.session-open').filter({ hasText: 'Second session' })).toBeEnabled();
     await page.getByLabel('Message Pi').fill('Use the smaller API');
     await page.getByLabel('Message Pi').press('Enter');
     const queuedMessages = page.getByRole('region', { name: 'Queued messages' });
@@ -526,12 +532,12 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(page.getByRole('button', { name: 'Permission level: Full access' })).toBeVisible();
 
     await page.locator('.session-open').filter({ hasText: 'Second session' }).click();
-    await expect(page.getByRole('button', { name: 'Permission level: Edit files' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Permission level: Full access' })).toBeVisible();
     await page.locator('.session-open').filter({ hasText: 'First session' }).click();
     await expect(page.getByRole('button', { name: 'Permission level: Full access' })).toBeVisible();
     await page.locator('.session-open').filter({ hasText: 'Second session' }).click();
     await expect(page.getByText('Second session').first()).toBeVisible();
-    await expect(page.locator('.chat-message--assistant > span')).toHaveText('Deterministic Test Model');
+    await expect(page.locator('.chat-message-row--assistant .message-footer-meta')).toContainText('Deterministic Test Model');
     await expect(page.locator('.markdown-content strong')).toHaveText('Second session');
     await expect(page.getByRole('article', { name: 'read tool succeeded' })).toBeVisible();
     await expect(page.getByText('historical output')).toHaveCount(0);

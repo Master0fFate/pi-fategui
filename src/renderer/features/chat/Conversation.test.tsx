@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, RuntimeState } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
-import { clampComposerInputHeight, Composer } from './Composer';
-import { AssistantMarkdown, ConversationTimeline, MessageRow } from './ConversationTimeline';
+import { clampComposerInputHeight, Composer, uniqueAttachmentName } from './Composer';
+import { ContextWheel } from './ContextWheel';
+import { AssistantMarkdown, ConversationTimeline, followsMessage, forkEntryForMessage, MessageRow } from './ConversationTimeline';
 import { isSafeMermaidSource } from './RichMessageContent';
 import { ToolCard } from './ToolCard';
 
@@ -27,7 +28,7 @@ const ready = (overrides: Partial<RuntimeState> = {}): RuntimeState => ({
 const reset = () => {
   useRuntimeStore.getState().setRuntime({ ...ready(), sessionId: null });
   useRuntimeStore.getState().setRuntime(ready());
-  useUiStore.setState({ sendMessageWithModifier: false });
+  useUiStore.setState({ sendMessageWithModifier: false, composerDraftRequest: null, toast: null });
 };
 
 describe('conversation components', () => {
@@ -44,6 +45,12 @@ describe('conversation components', () => {
     const { container } = render(<div style={{ height: 600 }}><ConversationTimeline /></div>);
     expect(screen.getByLabelText('Conversation timeline')).toHaveAttribute('data-entry-count', '5000');
     expect(container.querySelectorAll('.timeline-row').length).toBeLessThan(5_000);
+  });
+
+  it('reserves footer clearance only on entries that follow a message', () => {
+    expect(followsMessage({ kind: 'message' })).toBe(true);
+    expect(followsMessage({ kind: 'tool' })).toBe(false);
+    expect(followsMessage(undefined)).toBe(false);
   });
 
   it('defers full Markdown parsing until the active stream completes', () => {
@@ -67,6 +74,120 @@ describe('conversation components', () => {
     expect(screen.getByText('Ready').tagName).toBe('STRONG');
     expect(container.querySelector('.markdown-content code')).toHaveTextContent('code');
     expect(container.querySelectorAll('.markdown-content li')).toHaveLength(2);
+  });
+
+  it('places message metadata and icon actions below the bubble', () => {
+    useRuntimeStore.setState({ runtime: ready({
+      sessionCapabilities: { fork: true, clone: true, import: true, compact: true },
+      forkPoints: [{ entryId: 'prompt-1', text: 'Refine this component' }],
+    }) });
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.completed', messageId: 'user-1', role: 'user', text: 'Refine this component', timestamp: 1 },
+      { type: 'message.completed', messageId: 'assistant-1', role: 'assistant', text: 'Done.', timestamp: 2 },
+    ]);
+    const { container } = render(<MessageRow messageId="assistant-1" />);
+    const bubble = container.querySelector('.chat-message');
+    const footer = container.querySelector('.message-footer');
+    if (!bubble || !footer) throw new Error('Expected a message bubble and footer.');
+    expect(bubble.querySelector('.message-footer')).toBeNull();
+    expect(footer).toHaveTextContent('Model');
+    expect(screen.getByRole('button', { name: 'Copy message' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Fork from this message' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+  });
+
+  it('copies message text through the trusted desktop clipboard bridge', async () => {
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.completed', messageId: 'copy-me', role: 'assistant', text: 'Copy this exact response', timestamp: 1 },
+    ]);
+    const writeClipboardText = vi.fn(async () => undefined);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { writeClipboardText } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    const { container } = render(<MessageRow messageId="copy-me" />);
+
+    await user.hover(container.querySelector('.chat-message-row')!);
+    await user.click(screen.getByRole('button', { name: 'Copy message' }));
+
+    expect(writeClipboardText).toHaveBeenCalledWith('Copy this exact response');
+    expect(await screen.findByRole('button', { name: 'Message copied' })).toBeInTheDocument();
+    expect(useUiStore.getState().toast).toMatchObject({ kind: 'success', title: 'Message copied' });
+  });
+
+  it('maps long and duplicate prompts to Pi fork points by active-branch order', () => {
+    const longPrompt = `Keep this exact context: ${'x'.repeat(2_500)}`;
+    const messages = {
+      'user-1': { role: 'user', text: longPrompt },
+      'assistant-1': { role: 'assistant', text: 'First answer' },
+      'user-2': { role: 'user', text: longPrompt },
+      'assistant-2': { role: 'assistant', text: 'Second answer' },
+    };
+    const points = [
+      { entryId: 'entry-1', text: longPrompt.slice(0, 2_000) },
+      { entryId: 'entry-2', text: longPrompt.slice(0, 2_000) },
+    ];
+    const order = ['user-1', 'assistant-1', 'user-2', 'assistant-2'];
+
+    expect(forkEntryForMessage('assistant-1', order, messages, points)).toBe('entry-1');
+    expect(forkEntryForMessage('assistant-2', order, messages, points)).toBe('entry-2');
+  });
+
+  it('retries an assistant response by forking and resending its originating prompt', async () => {
+    const originalPrompt = `Retry this: ${'detail '.repeat(400)}`;
+    const state = ready({
+      sessionCapabilities: { fork: true, clone: true, import: true, compact: true },
+      forkPoints: [{ entryId: 'prompt-long', text: originalPrompt.slice(0, 2_000) }],
+    });
+    useRuntimeStore.setState({ runtime: state });
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.completed', messageId: 'user-long', role: 'user', text: originalPrompt, timestamp: 1 },
+      { type: 'message.completed', messageId: 'assistant-long', role: 'assistant', text: 'Previous answer', timestamp: 2 },
+    ]);
+    const forkSession = vi.fn(async () => ({ state, selectedText: originalPrompt }));
+    const prompt = vi.fn(async () => ({ accepted: true as const, runId: 'retry-run' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { forkSession, prompt } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<MessageRow messageId="assistant-long" />);
+
+    const retry = screen.getByRole('button', { name: 'Try again' });
+    expect(retry).toBeEnabled();
+    await user.click(retry);
+
+    expect(forkSession).toHaveBeenCalledWith('prompt-long');
+    expect(prompt).toHaveBeenCalledWith({ text: originalPrompt, behavior: 'prompt' });
+    expect(useUiStore.getState().toast).toMatchObject({ kind: 'success', title: 'Trying again' });
+  });
+
+  it('injects the clicked assistant response into the fork composer instead of its user prompt', async () => {
+    const state = ready({
+      sessionCapabilities: { fork: true, clone: true, import: true, compact: true },
+      forkPoints: [{ entryId: 'prompt-1', text: 'My original prompt' }],
+    });
+    useRuntimeStore.setState({ runtime: state });
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.completed', messageId: 'user-1', role: 'user', text: 'My original prompt', timestamp: 1 },
+      { type: 'message.completed', messageId: 'assistant-1', role: 'assistant', text: 'The assistant response to carry forward', timestamp: 2 },
+    ]);
+    const forkSession = vi.fn(async () => ({ state, selectedText: 'My original prompt' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { forkSession } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<MessageRow messageId="assistant-1" />);
+
+    await user.click(screen.getByRole('button', { name: 'Fork from this message' }));
+
+    expect(forkSession).toHaveBeenCalledWith('prompt-1');
+    expect(useUiStore.getState().composerDraftRequest).toMatchObject({
+      text: 'The assistant response to carry forward',
+      selectAll: true,
+    });
+  });
+
+  it('copies only the source inside a fenced code block', async () => {
+    const writeText = vi.fn(async () => undefined);
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    render(<AssistantMarkdown text={'```ts\nconst answer = 42;\n```'} />);
+    await user.click(screen.getByRole('button', { name: 'Copy code' }));
+    expect(writeText).toHaveBeenCalledWith('const answer = 42;');
   });
 
   it('renders Mermaid fences as diagrams instead of raw code', async () => {
@@ -188,6 +309,18 @@ describe('conversation components', () => {
     expect(meter).not.toHaveTextContent('42');
   });
 
+  it('shows a completed post-compaction estimate instead of an endless recalculating state', async () => {
+    const user = userEvent.setup();
+    const view = render(<ContextWheel usage={{ tokens: 24_000, contextWindow: 100_000, percent: 24, estimated: true }} />);
+    const estimated = screen.getByRole('meter', { name: 'Estimated context usage: 24% of 100k tokens' });
+    await user.hover(estimated);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Estimated context ~24k / 100k · ~24%');
+
+    view.rerender(<ContextWheel usage={{ tokens: null, contextWindow: 100_000, percent: null }} />);
+    expect(screen.getByRole('meter', { name: 'Context usage will update after the next response for a 100k token window' })).toBeInTheDocument();
+    expect(screen.queryByText(/recalculating/iu)).not.toBeInTheDocument();
+  });
+
   it('anchors the model beside context usage and shortens unusually long names', async () => {
     const fullName = 'A very long provider model name for production';
     useRuntimeStore.setState({ runtime: ready({ model: { ...ready().model!, name: fullName } }) });
@@ -198,7 +331,7 @@ describe('conversation components', () => {
     const modelContext = container.querySelector('.composer-model-context');
     expect(modelButton).not.toHaveAttribute('title');
     await user.hover(modelButton);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent(`Current model: ${fullName}`);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(`Current: ${fullName} Next: ${fullName}`);
     expect(modelButton.querySelector('strong')).toHaveTextContent(`${fullName.slice(0, 27).trimEnd()}…`);
     expect(modelContext).toContainElement(modelButton);
     expect(modelContext).toContainElement(screen.getByRole('meter'));
@@ -275,6 +408,37 @@ describe('conversation components', () => {
     expect(screen.getByLabelText('Message Pi')).toHaveValue('/review @"src/example file.ts"');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     expect(prompt).toHaveBeenCalledWith({ text: '/review @"src/example file.ts"', behavior: 'prompt' });
+  });
+
+  it('locks rapid submissions and preserves newer draft and attachment edits after delayed acceptance', async () => {
+    let acceptPrompt: ((value: { accepted: boolean; runId: string }) => void) | undefined;
+    const prompt = vi.fn(() => new Promise<{ accepted: boolean; runId: string }>((resolve) => { acceptPrompt = resolve; }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt } as unknown as PiDesktopApi });
+    useRuntimeStore.setState({ runtime: ready({ model: { ...ready().model!, supportsImages: true } }) });
+    render(<Composer onOpenProject={vi.fn()} />);
+    const input = screen.getByLabelText('Message Pi');
+    const firstImage = new File(['first'], 'first.png', { type: 'image/png' });
+    const newerImage = new File(['newer'], 'newer.png', { type: 'image/png' });
+    fireEvent.paste(input, { clipboardData: { files: [firstImage] } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove first.png' })).toBeInTheDocument());
+    fireEvent.change(input, { target: { value: 'Submitted draft' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    fireEvent.submit(input.closest('form')!);
+    expect(prompt).toHaveBeenCalledOnce();
+
+    fireEvent.change(input, { target: { value: 'Newer edit' } });
+    fireEvent.paste(input, { clipboardData: { files: [newerImage] } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove newer.png' })).toBeInTheDocument());
+    acceptPrompt?.({ accepted: true, runId: 'run-1' });
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove first.png' })).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Remove newer.png' })).toBeInTheDocument();
+    expect(input).toHaveValue('Newer edit');
+    expect(prompt).toHaveBeenCalledWith(expect.objectContaining({
+      text: 'Submitted draft',
+      images: [expect.objectContaining({ name: 'first.png' })],
+    }));
   });
 
   it('sends with Enter by default and keeps modifier-only sending as an opt-in', async () => {
@@ -361,7 +525,7 @@ describe('conversation components', () => {
       { type: 'message.completed', messageId: 'system-1', role: 'system', text: '**Parallax** active', timestamp: 1 },
     ]);
     const { container } = render(<MessageRow messageId="system-1" />);
-    expect(screen.getByText('System')).toBeInTheDocument();
+    expect(container.querySelector('.message-footer-meta')).toHaveTextContent('System');
     expect(screen.getByText('Parallax').tagName).toBe('STRONG');
     expect(container.querySelector('.chat-message--system')).toBeInTheDocument();
   });
@@ -374,6 +538,34 @@ describe('conversation components', () => {
     fireEvent.paste(screen.getByLabelText('Message Pi'), { clipboardData: { files: [image] } });
     await waitFor(() => expect(container.querySelector('.composer-attachments img')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Remove clipboard.png' })).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Expand image: clipboard.png' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('clipboard.png');
+  });
+
+  it('gives pasted images stable unique names and retains their captured data', async () => {
+    const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt } as unknown as PiDesktopApi });
+    useRuntimeStore.setState({ runtime: ready({ model: { ...ready().model!, supportsImages: true } }) });
+    render(<Composer onOpenProject={vi.fn()} />);
+    const imageOne = new File(['first image'], 'clipboard.png', { type: 'image/png' });
+    const imageTwo = new File(['second image'], 'clipboard.png', { type: 'image/png' });
+    fireEvent.paste(screen.getByLabelText('Message Pi'), { clipboardData: { files: [imageOne, imageTwo] } });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Remove clipboard.png' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Remove clipboard-1.png' })).toBeInTheDocument();
+    });
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Message Pi'), 'Inspect these');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(prompt).toHaveBeenCalledWith(expect.objectContaining({
+      images: [
+        { name: 'clipboard.png', mimeType: 'image/png', data: 'Zmlyc3QgaW1hZ2U=' },
+        { name: 'clipboard-1.png', mimeType: 'image/png', data: 'c2Vjb25kIGltYWdl' },
+      ],
+    }));
+    expect(uniqueAttachmentName('clipboard.png', ['clipboard.png', 'clipboard-1.png'])).toBe('clipboard-2.png');
+    expect(uniqueAttachmentName('wallpaper.png', ['cover.png'])).toBe('wallpaper.png');
   });
 
   it('queues Enter as a follow-up by default during an active Pi run', async () => {
@@ -388,9 +580,89 @@ describe('conversation components', () => {
     expect(input).toHaveAttribute('placeholder', 'Ask for follow-up changes…');
     await user.type(input, 'change direction{Enter}');
     expect(prompt).toHaveBeenCalledWith({ text: 'change direction', behavior: 'followUp' });
-    expect(screen.queryByRole('button', { name: /^Follow up/u })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Stop Pi' }));
-    expect(abort).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: 'Queue follow-up message' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Queue follow-up message' }).querySelector('.lucide-arrow-up')).toBeInTheDocument();
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('queues a streaming arrow short-click exactly once', () => {
+    vi.useFakeTimers();
+    try {
+      const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+      const abort = vi.fn(async () => ({ aborted: true }));
+      Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, abort } as unknown as PiDesktopApi });
+      useRuntimeStore.setState({ runtime: ready({ streaming: true }), queue: { steering: 0, followUp: 0, items: [] } });
+      render(<Composer onOpenProject={vi.fn()} />);
+      fireEvent.change(screen.getByLabelText('Message Pi'), { target: { value: 'Queue this change' } });
+      const send = screen.getByRole('button', { name: 'Queue follow-up message' });
+
+      fireEvent.pointerDown(send, { button: 0, pointerId: 7, isPrimary: true });
+      vi.advanceTimersByTime(1_250);
+      fireEvent.pointerUp(send, { button: 0, pointerId: 7, isPrimary: true });
+      fireEvent.click(send);
+
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(prompt).toHaveBeenCalledWith({ text: 'Queue this change', behavior: 'followUp' });
+      expect(abort).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts once after a two-second streaming arrow hold and suppresses queue submission', () => {
+    vi.useFakeTimers();
+    try {
+      const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+      const abort = vi.fn(async () => ({ aborted: true }));
+      Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, abort } as unknown as PiDesktopApi });
+      useRuntimeStore.setState({ runtime: ready({ streaming: true }), queue: { steering: 0, followUp: 0, items: [] } });
+      render(<Composer onOpenProject={vi.fn()} />);
+      const send = screen.getByRole('button', { name: 'Queue follow-up message' });
+
+      fireEvent.pointerDown(send, { button: 0, pointerId: 8, isPrimary: true });
+      vi.advanceTimersByTime(2_000);
+      vi.advanceTimersByTime(5_000);
+      fireEvent.pointerUp(send, { button: 0, pointerId: 8, isPrimary: true });
+      fireEvent.click(send);
+
+      expect(abort).toHaveBeenCalledOnce();
+      expect(prompt).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cleans streaming arrow holds on cancellation, lost capture, and unmount', () => {
+    vi.useFakeTimers();
+    try {
+      const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+      const abort = vi.fn(async () => ({ aborted: true }));
+      Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, abort } as unknown as PiDesktopApi });
+      useRuntimeStore.setState({ runtime: ready({ streaming: true }), queue: { steering: 0, followUp: 0, items: [] } });
+      const view = render(<Composer onOpenProject={vi.fn()} />);
+      fireEvent.change(screen.getByLabelText('Message Pi'), { target: { value: 'Still here' } });
+      const send = screen.getByRole('button', { name: 'Queue follow-up message' });
+
+      fireEvent.pointerDown(send, { button: 0, pointerId: 9, isPrimary: true });
+      vi.advanceTimersByTime(900);
+      fireEvent.pointerCancel(send, { pointerId: 9 });
+      vi.advanceTimersByTime(2_000);
+      fireEvent.click(send);
+      expect(prompt).not.toHaveBeenCalled();
+      expect(abort).not.toHaveBeenCalled();
+
+      fireEvent.pointerDown(send, { button: 0, pointerId: 10, isPrimary: true });
+      fireEvent.lostPointerCapture(send, { pointerId: 10 });
+      vi.advanceTimersByTime(2_000);
+      expect(abort).not.toHaveBeenCalled();
+
+      fireEvent.pointerDown(send, { button: 0, pointerId: 11, isPrimary: true });
+      view.unmount();
+      vi.advanceTimersByTime(2_000);
+      expect(abort).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('previews a queued follow-up and converts it to steering in place', async () => {
@@ -463,6 +735,35 @@ describe('conversation components', () => {
     expect(screen.getByLabelText('Message Pi')).toHaveValue('Original direction');
     expect(screen.getByLabelText('Message Pi')).toHaveFocus();
     expect(screen.getByText('Fork ready')).toBeInTheDocument();
+  });
+
+  it('keeps the model selector enabled while streaming and reports staged-next semantics honestly', async () => {
+    const current = ready().model!;
+    const alternate = { provider: 'test', id: 'fast', name: 'Fast Model', reasoning: false, contextWindow: 200_000, supportsImages: true };
+    const state = ready({ streaming: true, model: current, pendingModel: null, models: [current, alternate] });
+    const staged = { ...state, model: current, pendingModel: alternate };
+    useRuntimeStore.setState({ runtime: state });
+    const setModel = vi.fn(async () => staged);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { setModel } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    const modelButton = screen.getByRole('button', { name: 'Model and reasoning settings' });
+    expect(modelButton).toBeVisible();
+    expect(modelButton).toBeEnabled();
+    await user.click(modelButton);
+    expect(screen.getByLabelText('Current model: Model. Next model: Model.')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Model' })).toBeEnabled();
+    expect(screen.getByRole('combobox', { name: 'Reasoning level' })).toBeDisabled();
+
+    await user.click(screen.getByRole('combobox', { name: 'Model' }));
+    await user.click(screen.getByRole('option', { name: /Fast Model/u }));
+    await waitFor(() => expect(setModel).toHaveBeenCalledWith('test', 'fast'));
+    expect(useRuntimeStore.getState().runtime.model?.id).toBe('model');
+    expect(useRuntimeStore.getState().runtime.pendingModel?.id).toBe('fast');
+    expect(modelButton).toHaveTextContent('Fast Model');
+    expect(modelButton).toHaveTextContent('Next');
+    expect(screen.getByLabelText('Current model: Model. Next model: Fast Model.')).toBeInTheDocument();
   });
 
   it('keeps model and reasoning selection in a compact composer popover', async () => {

@@ -78,7 +78,7 @@ export class ProjectService {
         type: 'warning' as const,
         title: 'Trust this project?',
         message: `Do you trust “${path.basename(canonical)}”?`,
-        detail: `Pi starts with file access confined to:\n${canonical}\n\nTrusted project settings, skills, prompts, and configured packages may be loaded. Fate UI still blocks project-local extensions. Shell execution is disabled unless you later confirm Full access in the composer. Commands in the manual terminal remain under your control.`,
+        detail: `New Pi sessions start with Full access: they can read and modify host files outside this project and run shell commands with your user account. Trusted project settings, skills, prompts, and configured packages may be loaded. Fate UI still blocks project-local extensions. You can lower access per session in the composer. Commands in the manual terminal remain under your control.`,
         buttons: ['Trust and open', 'Open without Pi', 'Cancel'],
         defaultId: 2,
         cancelId: 2,

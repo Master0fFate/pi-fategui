@@ -1,10 +1,11 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import { Check, Download, Expand, Image as ImageIcon, ImageOff, X } from 'lucide-react';
-import { Children, isValidElement, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { Check, Copy, Download, Expand, Image as ImageIcon, ImageOff, X } from 'lucide-react';
+import { Children, isValidElement, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { RuntimeImage } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
+import { writeClipboardText } from '../../lib/clipboard';
 
 let mermaidQueue: Promise<void> = Promise.resolve();
 let pendingMermaidRenders = 0;
@@ -163,7 +164,7 @@ function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string |
     }
   };
   if (!src || failed) {
-    return <span className="chat-image-error"><ImageOff size={16} /> Image unavailable{alt ? `: ${alt}` : ''}</span>;
+    return <span className="chat-image-error"><ImageOff size={16} /><span className="icon-label">Image unavailable{alt ? `: ${alt}` : ''}</span></span>;
   }
   if (/^https:/i.test(src) && !remoteAllowed) {
     return (
@@ -179,7 +180,7 @@ function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string |
       <Dialog.Trigger asChild>
         <button className="chat-image-trigger" type="button" aria-label={`Expand image: ${label}`}>
           <img src={src} alt={label} loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
-          <span aria-hidden="true"><Expand size={14} /> View</span>
+          <span aria-hidden="true"><Expand size={14} /><span className="icon-label">View</span></span>
         </button>
       </Dialog.Trigger>
       <Dialog.Portal>
@@ -223,10 +224,37 @@ function safeMarkdownUrl(url: string): string {
   return '';
 }
 
+function CodeBlock({ child }: { child: ReactElement<{ className?: string; children?: ReactNode }> }) {
+  const [copied, setCopied] = useState(false);
+  const source = String(child.props.children ?? '').replace(/\n$/, '');
+  const copy = async () => {
+    try {
+      await writeClipboardText(source);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      // The code remains selectable if the host clipboard is unavailable.
+    }
+  };
+  return (
+    <pre className="code-block">
+      {child}
+      <AppTooltip content={copied ? 'Copied' : 'Copy code'}>
+        <button className="code-block-copy" type="button" aria-label={copied ? 'Code copied' : 'Copy code'} onClick={() => { void copy(); }}>
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+        </button>
+      </AppTooltip>
+    </pre>
+  );
+}
+
 function MermaidAwarePre({ children }: { children?: ReactNode }) {
   const child = Children.count(children) === 1 ? Children.only(children) : null;
-  if (isValidElement<{ className?: string; children?: ReactNode }>(child) && child.props.className?.split(' ').includes('language-mermaid')) {
-    return <MermaidDiagram source={String(child.props.children ?? '').replace(/\n$/, '')} />;
+  if (isValidElement<{ className?: string; children?: ReactNode }>(child)) {
+    if (child.props.className?.split(' ').includes('language-mermaid')) {
+      return <MermaidDiagram source={String(child.props.children ?? '').replace(/\n$/, '')} />;
+    }
+    return <CodeBlock child={child} />;
   }
   return <pre>{children}</pre>;
 }

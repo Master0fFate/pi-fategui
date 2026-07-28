@@ -17,6 +17,7 @@ describe('PiSessionRepository', () => {
     expect([...title].length).toBeLessThanOrEqual(58);
     expect(sessionDisplayTitle('  Hand-picked   title  ', longPrompt)).toBe('Hand-picked title');
     expect([...sessionDisplayTitle('x'.repeat(500), longPrompt)].length).toBeLessThanOrEqual(120);
+    expect(sessionDisplayTitle('😀'.repeat(500), longPrompt).length).toBeLessThanOrEqual(200);
     expect(sessionDisplayTitle(undefined, '(no messages)')).toBe('Untitled session');
   });
 

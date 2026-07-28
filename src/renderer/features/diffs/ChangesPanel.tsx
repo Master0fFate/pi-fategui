@@ -23,6 +23,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import type { GitChange, GitCommitDetails, GitCommitSummary } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
+import { writeClipboardText } from '../../lib/clipboard';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -122,7 +123,7 @@ export function ChangeRow({ change, selected, disabled = false, onSelect }: { ch
   return (
     <button className={`change-row${selected ? ' selected' : ''}`} type="button" onClick={onSelect} disabled={disabled}>
       <AppTooltip content={status.label}><span className={`change-kind change-kind--${status.className}`} aria-label={`${status.label} file`}><status.Icon size={13} aria-hidden="true" /></span></AppTooltip>
-      <AppTooltip content={change.path}><span className="change-path">{change.oldPath && <small>{change.oldPath} → </small>}{change.path}</span></AppTooltip>
+      <AppTooltip content={change.path}><span className="change-path icon-label">{change.oldPath && <small>{change.oldPath} → </small>}{change.path}</span></AppTooltip>
     </button>
   );
 }
@@ -131,7 +132,7 @@ function CommitCard({ commit, details, loading }: { commit: GitCommitSummary; de
   const [copied, setCopied] = useState(false);
   const copyHash = async () => {
     try {
-      await navigator.clipboard.writeText(commit.hash);
+      await writeClipboardText(commit.hash);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1_400);
     } catch { setCopied(false); }
@@ -141,11 +142,11 @@ function CommitCard({ commit, details, loading }: { commit: GitCommitSummary; de
     <div className="commit-card" aria-label={`Commit details for ${commit.subject}`}>
       <div className="commit-card-author">
         <span className="commit-avatar"><UserRound size={13} aria-hidden="true" /></span>
-        <strong>{commit.authorName}</strong>
-        <AppTooltip content={exactTime}><span>{relativeCommitTime(commit.authoredAt)} · {exactTime}</span></AppTooltip>
+        <strong className="icon-label">{commit.authorName}</strong>
+        <AppTooltip content={exactTime}><span className="icon-label">{relativeCommitTime(commit.authoredAt)} · {exactTime}</span></AppTooltip>
       </div>
       <p>{commit.subject || 'Commit without a subject'}</p>
-      {loading && !details ? <div className="commit-card-loading"><LoaderCircle className="tool-spinner" size={13} />Loading commit statistics…</div> : details && (
+      {loading && !details ? <div className="commit-card-loading"><LoaderCircle className="tool-spinner" size={13} /><span className="icon-label">Loading commit statistics…</span></div> : details && (
         <div className="commit-card-stats">
           <span>{details.filesChanged} file{details.filesChanged === 1 ? '' : 's'} changed</span>
           <b>{details.additions} insertion{details.additions === 1 ? '' : 's'}(+)</b>
@@ -154,8 +155,8 @@ function CommitCard({ commit, details, loading }: { commit: GitCommitSummary; de
       )}
       {(details?.refs ?? commit.refs).length > 0 && <div className="commit-ref-list">{(details?.refs ?? commit.refs).map((ref) => <span key={`${ref.kind}:${ref.name}`} data-kind={ref.kind}>{ref.name}</span>)}</div>}
       <div className="commit-card-actions">
-        <button type="button" aria-label={`Copy commit hash ${commit.hash.slice(0, 12)}`} onClick={() => void copyHash()}>{copied ? <Check size={12} /> : <Copy size={12} />}<span>{commit.hash.slice(0, 12)}</span></button>
-        {details?.githubUrl ? <button type="button" onClick={() => window.open(details.githubUrl!, '_blank', 'noopener,noreferrer')}><Github size={13} /><span>Open on GitHub</span></button> : <span className="commit-card-no-remote">No GitHub remote</span>}
+        <button type="button" aria-label={`Copy commit hash ${commit.hash.slice(0, 12)}`} onClick={() => void copyHash()}>{copied ? <Check size={12} /> : <Copy size={12} />}<span className="icon-label">{commit.hash.slice(0, 12)}</span></button>
+        {details?.githubUrl ? <button type="button" onClick={() => window.open(details.githubUrl!, '_blank', 'noopener,noreferrer')}><Github size={13} /><span className="icon-label">Open on GitHub</span></button> : <span className="commit-card-no-remote">No GitHub remote</span>}
       </div>
     </div>
   );
@@ -229,20 +230,20 @@ function DiffPreview() {
   const git = useWorkspaceStore((state) => state.git);
   const selectedStatus = git?.changes.find((change) => change.path === selected);
   const deleted = selectedStatus?.indexStatus === 'D' || selectedStatus?.workTreeStatus === 'D';
-  if (combinedLoading) return <div className="preview-loading"><span className="preview-spinner" />Building combined working-tree diff…</div>;
+  if (combinedLoading) return <div className="preview-loading"><span className="preview-spinner" /><span className="icon-label">Building combined working-tree diff…</span></div>;
   if (combined) return (
     <div className="file-preview">
       <div className="preview-heading"><AppTooltip content="Combined working-tree diff"><span>Working tree diff{combined.truncated ? ' · truncated' : ''}</span></AppTooltip></div>
       <div className="preview-body"><LazyFileViewer value={combined.patch || 'Working tree clean'} language="diff" path="working-tree.diff" /></div>
     </div>
   );
-  if (loading) return <div className="preview-loading"><span className="preview-spinner" />Building bounded diff…</div>;
+  if (loading) return <div className="preview-loading"><span className="preview-spinner" /><span className="icon-label">Building bounded diff…</span></div>;
   if (!diff) return <div className="preview-placeholder"><FileDiff size={22} /><span>Select a changed file or a header metric to inspect</span></div>;
   return (
     <div className="file-preview">
       <div className="preview-heading">
         <AppTooltip content={diff.path}><span>{diff.path}</span></AppTooltip>
-        {!deleted && diff.state === 'text' && diff.openable && <AppTooltip content="Open in the system editor"><button type="button" onClick={() => void openPath(diff.path)}><ExternalLink size={13} />Open</button></AppTooltip>}
+        {!deleted && diff.state === 'text' && diff.openable && <AppTooltip content="Open in the system editor"><button type="button" onClick={() => void openPath(diff.path)}><ExternalLink size={13} /><span className="icon-label">Open</span></button></AppTooltip>}
       </div>
       <div className="preview-body">
         {diff.state === 'text' && <LazyDiffViewer original={diff.original ?? ''} modified={diff.modified ?? ''} language={diff.language} path={diff.path} />}
@@ -315,7 +316,7 @@ export function ChangesPanel() {
     } finally { setWorktreeBusy(false); }
   };
   if (!project) return <div className="inspector-empty"><FileDiff size={24} /><strong>No changes</strong><p>Open a project to inspect Git changes.</p></div>;
-  if (loading && !git) return <div className="preview-loading"><span className="preview-spinner" />Reading Git status…</div>;
+  if (loading && !git) return <div className="preview-loading"><span className="preview-spinner" /><span className="icon-label">Reading Git status…</span></div>;
   if (git && !git.repository) return <div className="inspector-empty"><GitBranch size={24} /><strong>Not a Git repository</strong><p>File browsing is available, but there is no Git status for this project.</p></div>;
   const changes = git?.changes ?? [];
   const detached = git?.branch === '';
@@ -330,12 +331,12 @@ export function ChangesPanel() {
         <div className="changes-summary">
           <Popover.Root onOpenChange={(open) => { if (open) void loadWorktrees(); }}>
             <Popover.Trigger asChild>
-              <button className="changes-branch" type="button" aria-label={`Change worktree. Current branch: ${branch}`} disabled={controlsBusy}><GitBranch size={13} aria-hidden="true" /><span>{branch}</span></button>
+              <button className="changes-branch" type="button" aria-label={`Change worktree. Current branch: ${branch}`} disabled={controlsBusy}><GitBranch size={13} aria-hidden="true" /><span className="icon-label">{branch}</span></button>
             </Popover.Trigger>
             <Popover.Portal>
               <Popover.Content className="worktree-popover" side="bottom" align="start" sideOffset={7} collisionPadding={12}>
                 <div className="worktree-popover-heading"><strong>Worktrees</strong><span>Changing worktrees reopens Pi at that project root.</span></div>
-                {worktreesLoading ? <div className="worktree-loading"><LoaderCircle className="tool-spinner" size={13} />Reading worktrees…</div> : worktrees.map((worktree) => (
+                {worktreesLoading ? <div className="worktree-loading"><LoaderCircle className="tool-spinner" size={13} /><span className="icon-label">Reading worktrees…</span></div> : worktrees.map((worktree) => (
                   <Popover.Close asChild key={worktree.path}>
                     <button type="button" data-active={worktree.current} disabled={worktree.current || worktreeBusy || runtime.streaming || Boolean(runtime.sessionOperation)} onClick={() => void switchWorktree(worktree.path)}>
                       <GitBranch size={13} /><span><strong>{worktree.branch ?? 'Detached HEAD'}</strong><small>{worktree.path}</small></span>{worktree.current && <Check size={12} />}
@@ -348,9 +349,9 @@ export function ChangesPanel() {
           </Popover.Root>
           <span className="summary-counts">
             <AppTooltip content={`Switch to ${nextViewLabel}`}>
-              <button className="git-view-toggle" type="button" aria-label={`Switch to ${nextViewLabel}`} onClick={() => switchView(nextView)}><ViewIcon size={12} /><span>{viewLabel}</span></button>
+              <button className="git-view-toggle" type="button" aria-label={`Switch to ${nextViewLabel}`} onClick={() => switchView(nextView)}><ViewIcon size={12} /><span className="icon-label">{viewLabel}</span></button>
             </AppTooltip>
-            <MetricTooltip label={`${changes.length} changed file${changes.length === 1 ? '' : 's'}`}><button className="summary-metric summary-metric--files" type="button" aria-label={`${changes.length} changed files. Open combined diff`} onClick={() => void loadCombinedDiff()}><Files size={12} /><strong>{changes.length}</strong></button></MetricTooltip>
+            <MetricTooltip label={`${changes.length} changed file${changes.length === 1 ? '' : 's'}`}><button className="summary-metric summary-metric--files" type="button" aria-label={`${changes.length} changed files. Open combined diff`} onClick={() => void loadCombinedDiff()}><Files size={12} /><strong className="icon-label">{changes.length}</strong></button></MetricTooltip>
             <MetricTooltip label={`${git?.additions ?? 0} lines added`}><button className="summary-metric summary-metric--added" type="button" aria-label={`${git?.additions ?? 0} lines added. Open combined diff`} onClick={() => void loadCombinedDiff()}>+{git?.additions ?? 0}</button></MetricTooltip>
             <MetricTooltip label={`${git?.deletions ?? 0} lines removed`}><button className="summary-metric summary-metric--removed" type="button" aria-label={`${git?.deletions ?? 0} lines removed. Open combined diff`} onClick={() => void loadCombinedDiff()}>−{git?.deletions ?? 0}</button></MetricTooltip>
           </span>
@@ -366,7 +367,7 @@ export function ChangesPanel() {
           ) : <div className="mini-empty">Working tree clean</div>
         ) : (
           <div className="changes-list commit-graph-list" aria-label="Branch history">
-            {historyLoading && !history ? <div className="preview-loading"><span className="preview-spinner" />Loading commit graph…</div> : graph.length > 0 ? (
+            {historyLoading && !history ? <div className="preview-loading"><span className="preview-spinner" /><span className="icon-label">Loading commit graph…</span></div> : graph.length > 0 ? (
               <Virtuoso data={graph} initialItemCount={Math.min(graph.length, 24)} computeItemKey={(_index, row) => row.commit.hash} itemContent={(_index, row) => <CommitRow row={row} />} />
             ) : <div className="mini-empty"><GitCommit size={16} />No commits yet</div>}
             {history?.truncated && <div className="bounded-note">History limited to 500 commits</div>}

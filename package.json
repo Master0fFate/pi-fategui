@@ -18,6 +18,7 @@
     "build:renderer": "vite build --config vite.renderer.config.ts",
     "build": "pnpm clean && pnpm build:main && pnpm build:preload && pnpm build:renderer",
     "verify:speech-runtime": "node scripts/verify-speech-runtime.mjs",
+    "prepare:yt-dlp": "node scripts/prepare-yt-dlp.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -29,9 +30,9 @@
     "icons:generate": "python scripts/generate-icons.py",
     "deps:check": "node scripts/check-module-updates.mjs --force",
     "deps:update:speech": "pnpm update --latest transcribe-cpp && pnpm typecheck && pnpm test",
-    "package": "pnpm icons:generate && pnpm verify:speech-runtime && pnpm build && electron-builder --dir && pnpm smoke:packaged",
-    "dist:artifacts": "pnpm icons:generate && electron-builder",
-    "dist": "pnpm icons:generate && pnpm verify:speech-runtime && pnpm build && electron-builder"
+    "package": "pnpm icons:generate && pnpm verify:speech-runtime && pnpm prepare:yt-dlp && pnpm build && electron-builder --dir && pnpm smoke:packaged",
+    "dist:artifacts": "pnpm icons:generate && pnpm prepare:yt-dlp && electron-builder",
+    "dist": "pnpm icons:generate && pnpm verify:speech-runtime && pnpm prepare:yt-dlp && pnpm build && electron-builder"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.81.1",
@@ -96,9 +97,24 @@
     "productName": "Fate UI",
     "asar": true,
     "npmRebuild": false,
+    "afterPack": "./scripts/verify-packaged-native-deps.mjs",
+    "extraResources": [
+      {
+        "from": "build/vendor/yt-dlp",
+        "to": ".",
+        "filter": [
+          "yt-dlp",
+          "yt-dlp.exe",
+          "yt-dlp-LICENSE",
+          "yt-dlp-THIRD_PARTY_LICENSES.txt",
+          "yt-dlp-manifest.json"
+        ]
+      }
+    ],
     "asarUnpack": [
       "node_modules/node-pty/**/*",
       "node_modules/koffi/**/*",
+      "node_modules/@koromix/**/*",
       "node_modules/@transcribe-cpp/**/*"
     ],
     "electronDist": "node_modules/electron/dist",
@@ -110,7 +126,10 @@
       "dist/**/*",
       "node_modules/transcribe-cpp/**/*",
       "node_modules/koffi/**/*",
+      "node_modules/@koromix/**/*",
       "node_modules/@transcribe-cpp/**/*",
+      "node_modules/node-pty/**/*",
+      "node_modules/@earendil-works/pi-coding-agent/**/*",
       "package.json",
       "LICENSE",
       "FONT_LICENSES.md"

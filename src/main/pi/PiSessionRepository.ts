@@ -22,6 +22,7 @@ const sdkSource: SessionRepositorySource = {
 
 const FALLBACK_TITLE_LIMIT = 58;
 const EXPLICIT_TITLE_LIMIT = 120;
+const SERIALIZED_TITLE_LIMIT = 200;
 const MAX_PROJECTED_BRANCHES = 5_000;
 const MAX_BRANCH_NODES_VISITED = 50_000;
 const MAX_CACHED_SESSIONS = 5_000;
@@ -30,17 +31,30 @@ const MAX_SESSION_SEARCH_CACHE_CHARACTERS = 20_000_000;
 const SESSION_CACHE_TTL_MS = 2_000;
 const MAX_PROJECT_CACHE_ENTRIES = 4;
 
+function clipTitle(value: string, characterLimit: number, serializedLimit: number): { text: string; truncated: boolean } {
+  let text = '';
+  let characters = 0;
+  for (const character of value) {
+    if (characters >= characterLimit || text.length + character.length > serializedLimit) return { text, truncated: true };
+    text += character;
+    characters += 1;
+  }
+  return { text, truncated: false };
+}
+
 export function sessionDisplayTitle(name: string | undefined, firstMessage: string): string {
   const explicitName = name?.replace(/\s+/g, ' ').trim();
   if (explicitName) {
-    const characters = [...explicitName];
-    return characters.length <= EXPLICIT_TITLE_LIMIT ? explicitName : `${characters.slice(0, EXPLICIT_TITLE_LIMIT - 1).join('').trimEnd()}…`;
+    const bounded = clipTitle(explicitName, EXPLICIT_TITLE_LIMIT, SERIALIZED_TITLE_LIMIT);
+    if (!bounded.truncated) return bounded.text;
+    const clipped = clipTitle(explicitName, EXPLICIT_TITLE_LIMIT - 1, SERIALIZED_TITLE_LIMIT - 1).text;
+    return `${clipped.trimEnd()}…`;
   }
   const prompt = firstMessage.replace(/\s+/g, ' ').trim();
   if (!prompt || prompt === '(no messages)') return 'Untitled session';
-  const characters = [...prompt];
-  if (characters.length <= FALLBACK_TITLE_LIMIT) return prompt;
-  const clipped = characters.slice(0, FALLBACK_TITLE_LIMIT - 1).join('');
+  const bounded = clipTitle(prompt, FALLBACK_TITLE_LIMIT, SERIALIZED_TITLE_LIMIT);
+  if (!bounded.truncated) return bounded.text;
+  const clipped = clipTitle(prompt, FALLBACK_TITLE_LIMIT - 1, SERIALIZED_TITLE_LIMIT - 1).text;
   const wordBoundary = clipped.lastIndexOf(' ');
   const readable = wordBoundary >= Math.floor(FALLBACK_TITLE_LIMIT * 0.6)
     ? clipped.slice(0, wordBoundary)
@@ -111,13 +125,7 @@ export class PiSessionRepository {
         });
     }).then((sessions) => {
       const entry = this.cache.get(key);
-      if (entry?.value === value) {
-        entry.expiresAt = Date.now() + SESSION_CACHE_TTL_MS;
-        const expiration = setTimeout(() => {
-          if (this.cache.get(key)?.value === value) this.cache.delete(key);
-        }, SESSION_CACHE_TTL_MS);
-        expiration.unref();
-      }
+      if (entry?.value === value) entry.expiresAt = Date.now() + SESSION_CACHE_TTL_MS;
       return sessions;
     }).catch((error) => {
       if (this.cache.get(key)?.value === value) this.cache.delete(key);
@@ -143,6 +151,7 @@ export class PiSessionRepository {
         messageCount: session.messageCount,
         ...(session.parentSessionPath ? { parentSessionPath: session.parentSessionPath } : {}),
         active: session.id === activeSessionId,
+        attention: null,
       }));
   }
 
