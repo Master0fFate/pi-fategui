@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+volume=${3:-/}
+bin="$volume/usr/local/bin"
+link="$bin/fate"
+target='/Applications/Fate UI.app/Contents/Resources/cli/fate'
+
+mkdir -p "$bin"
+if [ -e "$link" ] && [ ! -L "$link" ]; then
+  echo "$link already exists and is not a symlink; Fate UI left it unchanged." >&2
+  exit 0
+fi
+if [ -L "$link" ]; then
+  current=$(readlink "$link")
+  if [ "$current" != "$target" ]; then
+    echo "$link is owned by another installation; Fate UI left it unchanged." >&2
+    exit 0
+  fi
+fi
+ln -sfn "$target" "$link"
+exit 0

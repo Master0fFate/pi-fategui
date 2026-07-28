@@ -1,0 +1,242 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import type { PiEvent } from '../../shared/contracts/ipc';
+import { MAX_LIVE_TIMELINE_ENTITIES, MAX_LIVE_TOOL_OUTPUT, useRuntimeStore } from './runtimeStore';
+
+const reset = () => useRuntimeStore.setState({
+  runtime: { status: 'disconnected', project: null, sessionId: null, sessionFile: null, streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null },
+  messagesById: {}, messageOrder: [], reasoningByMessageId: {}, toolsById: {}, toolOrder: [],
+  timelineById: {}, timelineOrder: [], visibleTimelineOrder: [], visibleTimelineIds: new Set(), queue: { steering: 0, followUp: 0, items: [] }, lastError: null,
+  sequence: 0, activeCompactionId: null,
+});
+
+describe('runtimeStore event reducer', () => {
+  beforeEach(reset);
+
+  it('updates only the streamed message entity across a batched delta', () => {
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.started', messageId: 'm1', role: 'assistant', timestamp: 1 },
+      { type: 'message.started', messageId: 'm2', role: 'user', timestamp: 1 },
+    ]);
+    const untouched = useRuntimeStore.getState().messagesById.m2;
+    const order = useRuntimeStore.getState().messageOrder;
+    const timelineOrder = useRuntimeStore.getState().timelineOrder;
+
+    useRuntimeStore.getState().applyEvents([
+      { type: 'assistant.text', messageId: 'm1', delta: 'hello ', timestamp: 2 },
+      { type: 'assistant.text', messageId: 'm1', delta: 'world', timestamp: 3 },
+      { type: 'assistant.reasoning', messageId: 'm1', delta: 'checked', timestamp: 3 },
+    ]);
+    expect(useRuntimeStore.getState().messagesById.m1?.text).toBe('hello world');
+    expect(useRuntimeStore.getState().messagesById.m2).toBe(untouched);
+    expect(useRuntimeStore.getState().messageOrder).toBe(order);
+    expect(useRuntimeStore.getState().reasoningByMessageId.m1).toBe('checked');
+    // Reasoning is inserted directly before its answer without rebuilding the
+    // pre-existing message entities.
+    expect(timelineOrder).toEqual(['message:m1', 'message:m2']);
+    expect(useRuntimeStore.getState().timelineOrder).toEqual(['reasoning:m1', 'message:m1', 'message:m2']);
+  });
+
+  it('keeps the visible timeline stable across subsequent deltas in a long session', () => {
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.started', messageId: 'stream', role: 'assistant', timestamp: 1 },
+      { type: 'assistant.text', messageId: 'stream', delta: 'a', timestamp: 2 },
+    ]);
+    const visibleOrder = useRuntimeStore.getState().visibleTimelineOrder;
+    const visibleIds = useRuntimeStore.getState().visibleTimelineIds;
+    useRuntimeStore.getState().applyEvents(Array.from({ length: 1_000 }, (_value, index) => ({
+      type: 'assistant.text' as const, messageId: 'stream', delta: 'x', timestamp: index + 3,
+    })));
+
+    expect(useRuntimeStore.getState().visibleTimelineOrder).toBe(visibleOrder);
+    expect(useRuntimeStore.getState().visibleTimelineIds).toBe(visibleIds);
+    expect(useRuntimeStore.getState().visibleTimelineOrder).toEqual(['message:stream']);
+  });
+
+  it('preserves streamed entities when a bounded lifecycle snapshot omits message history', () => {
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.started', messageId: 'm1', role: 'assistant', timestamp: 1 },
+      { type: 'assistant.text', messageId: 'm1', delta: 'answer', timestamp: 2 },
+      { type: 'assistant.reasoning', messageId: 'm1', delta: 'reason', timestamp: 2 },
+      {
+        type: 'state.changed',
+        timestamp: 3,
+        messagesIncluded: false,
+        state: { status: 'ready', project: null, sessionId: 's1', sessionFile: null, streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], error: null },
+      },
+    ]);
+    expect(useRuntimeStore.getState().messagesById.m1?.text).toBe('answer');
+    expect(useRuntimeStore.getState().reasoningByMessageId.m1).toBe('reason');
+  });
+
+  it('preserves objective and history fields across metadata-only same-session states', () => {
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', error: null,
+      objective: 'Keep this objective', messages: [{ id: 'user', role: 'user', text: 'Keep this objective', timestamp: 1 }],
+    });
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: true, model: null, models: [], thinkingLevel: 'high', error: null, messages: [],
+    });
+    expect(useRuntimeStore.getState().runtime.objective).toBe('Keep this objective');
+    expect(useRuntimeStore.getState().runtime.messages).toHaveLength(1);
+  });
+
+  it('authoritatively replaces same-session entities during hydration resynchronization', () => {
+    const initial = {
+      status: 'ready' as const, project: { path: '/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: true, model: null, models: [], thinkingLevel: 'medium' as const, error: null,
+      messages: [{ id: 'stale', role: 'assistant' as const, text: 'stale', timestamp: 1 }],
+    };
+    useRuntimeStore.getState().setRuntime(initial);
+    useRuntimeStore.getState().hydrateRuntime({
+      ...initial,
+      streaming: false,
+      messages: [{ id: 'fresh', role: 'assistant', text: 'fresh', timestamp: 2 }],
+    });
+    expect(useRuntimeStore.getState().messagesById.stale).toBeUndefined();
+    expect(useRuntimeStore.getState().messagesById.fresh?.text).toBe('fresh');
+  });
+
+  it('bounds direct hydration by timeline entities, not only message count', () => {
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: null, sessionId: 'large', sessionFile: null, streaming: false,
+      model: null, models: [], thinkingLevel: 'medium', error: null,
+      messages: Array.from({ length: 3_000 }, (_value, index) => ({
+        id: `h${index}`, role: 'assistant' as const, text: 'answer', reasoning: 'reason', timestamp: index,
+      })),
+    });
+    expect(useRuntimeStore.getState().timelineOrder).toHaveLength(MAX_LIVE_TIMELINE_ENTITIES);
+    expect(useRuntimeStore.getState().messagesById.h0).toBeUndefined();
+    expect(useRuntimeStore.getState().messagesById.h2999).toBeDefined();
+    expect(useRuntimeStore.getState().runtime.messages.length).toBeLessThanOrEqual(MAX_LIVE_TIMELINE_ENTITIES);
+    expect(Object.values(useRuntimeStore.getState().messagesById).some((message) => message.historyOmitted !== undefined)).toBe(true);
+  });
+
+  it('hydrates completed reasoning from an authoritative runtime state', () => {
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: null, sessionId: 's1', sessionFile: null, streaming: false,
+      model: null, models: [], thinkingLevel: 'medium', error: null,
+      messages: [{ id: 'stable', role: 'assistant', text: 'answer', reasoning: 'reason', timestamp: 1 }],
+    });
+    expect(useRuntimeStore.getState().reasoningByMessageId.stable).toBe('reason');
+    expect(useRuntimeStore.getState().timelineOrder).toEqual(['reasoning:stable', 'message:stable']);
+  });
+
+  it('hydrates persisted tool calls into their original timeline position', () => {
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: null, sessionId: 'history', sessionFile: null, streaming: false,
+      model: null, models: [], thinkingLevel: 'medium', error: null,
+      messages: [
+        { id: 'user', role: 'user', text: 'Inspect', timestamp: 1, timelinePosition: 0 },
+        { id: 'assistant', role: 'assistant', text: '', reasoning: 'Checking', timestamp: 2, timelinePosition: 1 },
+      ],
+      tools: [{
+        id: 'read-1', name: 'read', input: '{}', output: 'done', outputTruncated: false,
+        status: 'succeeded', startedAt: 2, updatedAt: 3, endedAt: 3, timelinePosition: 1.5,
+      }],
+    });
+    expect(useRuntimeStore.getState().toolsById['read-1']).toMatchObject({ output: 'done', status: 'succeeded' });
+    expect(useRuntimeStore.getState().timelineOrder).toEqual([
+      'message:user', 'reasoning:assistant', 'message:assistant', 'tool:read-1',
+    ]);
+  });
+
+  it('evicts oldest live image payloads at the aggregate hydration-sized budget', () => {
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.completed', messageId: 'older-image', role: 'assistant', text: '', images: [{ data: 'a'.repeat(20_000_000), mimeType: 'image/png' }], timestamp: 1 },
+      { type: 'message.completed', messageId: 'newer-image', role: 'assistant', text: '', images: [{ data: 'b', mimeType: 'image/png' }], timestamp: 2 },
+    ]);
+    expect(useRuntimeStore.getState().messagesById['older-image']?.images).toBeUndefined();
+    expect(useRuntimeStore.getState().messagesById['older-image']?.text).toMatch(/omitted/i);
+    expect(useRuntimeStore.getState().messagesById['newer-image']?.images).toHaveLength(1);
+  });
+
+  it('models structured tool transitions and bounds live output', () => {
+    useRuntimeStore.getState().applyEvents([
+      { type: 'tool.started', toolCallId: 't1', name: 'bash', input: '{"command":"test"}', timestamp: 10 },
+      { type: 'tool.updated', toolCallId: 't1', output: 'x'.repeat(MAX_LIVE_TOOL_OUTPUT + 100), timestamp: 11 },
+    ]);
+    expect(useRuntimeStore.getState().toolsById.t1?.status).toBe('running');
+    expect(useRuntimeStore.getState().toolsById.t1?.output.length).toBeLessThan(MAX_LIVE_TOOL_OUTPUT + 100);
+    expect(useRuntimeStore.getState().toolsById.t1?.outputTruncated).toBe(true);
+
+    useRuntimeStore.getState().applyEvents([
+      { type: 'tool.completed', toolCallId: 't1', name: 'bash', output: 'failed', error: true, timestamp: 20 },
+    ]);
+    expect(useRuntimeStore.getState().toolsById.t1).toMatchObject({ status: 'error', output: 'failed', startedAt: 10, endedAt: 20 });
+    expect(useRuntimeStore.getState().timelineOrder).toEqual(['tool:t1']);
+  });
+
+  it('preserves tool history when controls update the same runtime session', () => {
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 'same', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    });
+    useRuntimeStore.getState().applyEvents([
+      { type: 'tool.started', toolCallId: 't1', name: 'read', input: '{}', timestamp: 1 },
+      { type: 'tool.completed', toolCallId: 't1', name: 'read', output: 'ok', error: false, timestamp: 2 },
+    ]);
+    useRuntimeStore.getState().setRuntime({
+      ...useRuntimeStore.getState().runtime,
+      thinkingLevel: 'high',
+      messages: [],
+    });
+    expect(useRuntimeStore.getState().toolsById.t1?.status).toBe('succeeded');
+    expect(useRuntimeStore.getState().timelineOrder).toContain('tool:t1');
+  });
+
+  it('indexes 5,000 entries without replacing the ordered entity model', () => {
+    const events: PiEvent[] = Array.from({ length: 5_000 }, (_value, index) => ({
+      type: 'message.started', messageId: `m${index}`, role: index % 2 ? 'assistant' : 'user', timestamp: index,
+    }));
+    useRuntimeStore.getState().applyEvents(events);
+    expect(useRuntimeStore.getState().timelineOrder).toHaveLength(5_000);
+    expect(useRuntimeStore.getState().visibleTimelineOrder).toHaveLength(2_500);
+    expect(Object.keys(useRuntimeStore.getState().messagesById)).toHaveLength(5_000);
+
+    useRuntimeStore.getState().applyEvents([{ type: 'message.started', messageId: 'm5000', role: 'user', timestamp: 5_000 }]);
+    expect(useRuntimeStore.getState().timelineOrder).toHaveLength(MAX_LIVE_TIMELINE_ENTITIES);
+    expect(useRuntimeStore.getState().messagesById.m0).toBeUndefined();
+    expect(useRuntimeStore.getState().messagesById.m5000).toBeDefined();
+  });
+
+  it('hydrates queue counts and clears them on authoritative session replacement', () => {
+    const base = {
+      status: 'ready' as const, project: null, sessionId: 'queued', sessionFile: null, streaming: true,
+      model: null, models: [], thinkingLevel: 'medium' as const, messages: [], error: null,
+    };
+    useRuntimeStore.getState().hydrateRuntime({ ...base, queue: { steering: 2, followUp: 3 } });
+    expect(useRuntimeStore.getState().queue).toEqual({ steering: 2, followUp: 3 });
+    useRuntimeStore.getState().applyEvents([{
+      type: 'state.changed', messagesIncluded: true, timestamp: 2,
+      state: { ...base, sessionId: 'replacement', streaming: false },
+    }]);
+    expect(useRuntimeStore.getState().queue).toEqual({ steering: 0, followUp: 0, items: [] });
+  });
+
+  it('preserves queued previews across count events and drops the item Pi consumed first', () => {
+    const first = { id: '00000000-0000-4000-8000-000000000001', behavior: 'followUp' as const, text: 'first', createdAt: 1 };
+    const second = { id: '00000000-0000-4000-8000-000000000002', behavior: 'followUp' as const, text: 'second', createdAt: 2 };
+    useRuntimeStore.setState({ queue: { steering: 0, followUp: 2, items: [first, second] } });
+
+    useRuntimeStore.getState().applyEvents([{ type: 'queue.changed', steering: 0, followUp: 1, timestamp: 3 }]);
+
+    expect(useRuntimeStore.getState().queue).toEqual({ steering: 0, followUp: 1, items: [second] });
+  });
+
+  it('adds error and compaction entities and tracks queue state', () => {
+    useRuntimeStore.getState().applyEvents([
+      { type: 'context.compaction', phase: 'started', timestamp: 1 },
+      { type: 'context.compaction', phase: 'completed', aborted: false, timestamp: 2 },
+      { type: 'context.compaction', phase: 'started', timestamp: 2.1 },
+      { type: 'context.compaction', phase: 'failed', error: { code: 'INVALID_REQUEST', message: 'Too small', retryable: true }, timestamp: 2.2 },
+      { type: 'queue.changed', steering: 1, followUp: 2, timestamp: 3 },
+      { type: 'error', error: { code: 'UNKNOWN', message: 'Failed', retryable: true }, timestamp: 4 },
+    ]);
+    expect(useRuntimeStore.getState().timelineOrder).toHaveLength(3);
+    expect(useRuntimeStore.getState().queue).toEqual({ steering: 1, followUp: 2, items: [] });
+    expect(Object.values(useRuntimeStore.getState().timelineById).map((item) => item.kind)).toEqual(['compaction', 'compaction', 'error']);
+    expect(useRuntimeStore.getState().lastError?.message).toBe('Failed');
+  });
+});

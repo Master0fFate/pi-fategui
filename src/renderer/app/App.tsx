@@ -1,0 +1,273 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import type { AppCommand, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
+import { AppToast } from '../components/AppToast';
+import { CommandPalette } from '../features/commands/CommandPalette';
+import { SettingsDialog } from '../features/settings/SettingsDialog';
+import { applyVisualSettings } from '../appearance';
+import { useRuntimeStore } from '../stores/runtimeStore';
+import { useWorkspaceStore } from '../stores/workspaceStore';
+import { useUiStore } from '../stores/uiStore';
+import { fallbackThemes } from '../theme';
+
+const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 5_000, retry: 1 } } });
+const MAX_HYDRATION_BUFFER_EVENTS = 1_000;
+const MAX_HYDRATION_BUFFER_BYTES = 32 * 1024 * 1024;
+
+export function reconcileHydrationEvents(runtime: RuntimeState, events: readonly PiEvent[]): PiEvent[] {
+  const watermark = runtime.eventCursor;
+  if (watermark === undefined) return [...events];
+  const messages = new Map(runtime.messages.map((message) => [message.id, message]));
+  const tools = new Map((runtime.tools ?? []).map((tool) => [tool.id, tool]));
+  const representedDeltaIndexes = new Set<number>();
+  const completedMessageIds = new Set(events.flatMap((event) =>
+    event.type === 'message.completed'
+      && event.cursor !== undefined
+      && event.cursor <= watermark
+      && messages.has(event.messageId)
+      ? [event.messageId]
+      : [],
+  ));
+
+  for (const kind of ['assistant.text', 'assistant.reasoning'] as const) {
+    const groups = new Map<string, Array<{ event: Extract<PiEvent, { type: typeof kind }>; index: number }>>();
+    events.forEach((event, index) => {
+      if (event.type !== kind || event.cursor === undefined || event.cursor > watermark) return;
+      const group = groups.get(event.messageId) ?? [];
+      group.push({ event, index });
+      groups.set(event.messageId, group);
+    });
+    for (const [messageId, group] of groups) {
+      if (completedMessageIds.has(messageId)) {
+        for (const item of group) representedDeltaIndexes.add(item.index);
+        continue;
+      }
+      const message = messages.get(messageId);
+      const snapshot = kind === 'assistant.text' ? message?.text ?? '' : message?.reasoning ?? '';
+      let combined = '';
+      let representedCount = 0;
+      group.forEach(({ event }, index) => {
+        combined += event.delta;
+        if (snapshot.endsWith(combined)) representedCount = index + 1;
+      });
+      for (let index = 0; index < representedCount; index += 1) representedDeltaIndexes.add(group[index]!.index);
+    }
+  }
+
+  return events.filter((event, index) => {
+    if (event.cursor === undefined || event.cursor > watermark) return true;
+    if (representedDeltaIndexes.has(index)) return false;
+    if (event.type === 'assistant.text' || event.type === 'assistant.reasoning') return true;
+    if (event.type === 'message.started' || event.type === 'message.completed') return !messages.has(event.messageId);
+    if (event.type === 'tool.started') return !tools.has(event.toolCallId);
+    if (event.type === 'tool.updated') {
+      const tool = tools.get(event.toolCallId);
+      if (tool && tool.status !== 'running') return false;
+      return !tool || (!tool.output.endsWith(event.output) && tool.output !== event.output);
+    }
+    if (event.type === 'tool.completed') return tools.get(event.toolCallId)?.status === 'running' || !tools.has(event.toolCallId);
+    if (event.type === 'state.changed' || event.type === 'run.accepted' || event.type === 'run.started' || event.type === 'run.completed') return false;
+    // Queue, compaction, and error events own renderer-only presentation state
+    // that is not fully represented by RuntimeState.
+    return true;
+  });
+}
+const MusicPlayerDock = lazy(() => import('../features/music/MusicPlayerDock').then((module) => ({ default: module.MusicPlayerDock })));
+import { AppShell } from './AppShell';
+
+export function App() {
+  const setRuntime = useRuntimeStore((state) => state.setRuntime);
+  const hydrateRuntime = useRuntimeStore((state) => state.hydrateRuntime);
+  const applyEvents = useRuntimeStore((state) => state.applyEvents);
+  const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
+  const initializeWorkspace = useWorkspaceStore((state) => state.initialize);
+  const inspectorCollapsed = useUiStore((state) => state.inspectorCollapsed);
+  const inspectorTab = useUiStore((state) => state.inspectorTab);
+  const musicPlayerEnabled = useUiStore((state) => state.musicPlayerEnabled);
+  const [hydrationAttempt, setHydrationAttempt] = useState(0);
+  const [hydrationError, setHydrationError] = useState<string | null>(null);
+  const sessionReplacementBusy = useRef(false);
+
+  useEffect(() => {
+    const surface = inspectorCollapsed ? null : inspectorTab === 'files' ? 'files' : inspectorTab === 'changes' ? 'changes' : null;
+    void initializeWorkspace(projectPath, surface);
+  }, [initializeWorkspace, inspectorCollapsed, inspectorTab, projectPath]);
+
+  useEffect(() => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.getSettings !== 'function') return;
+    const themesPromise = typeof window.piDesktop.getThemes === 'function'
+      ? window.piDesktop.getThemes().catch(() => fallbackThemes)
+      : Promise.resolve(fallbackThemes);
+    void Promise.all([window.piDesktop.getSettings(), themesPromise]).then(([settings, themes]) => {
+      applyVisualSettings(settings, themes);
+      useUiStore.getState().setMusicPlayerEnabled(settings.musicPlayerEnabled);
+      useUiStore.getState().setSendMessageWithModifier(settings.sendMessageWithModifier);
+      useUiStore.getState().setSpeech(settings.speech ?? { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null });
+    }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.onSpeechDownload !== 'function') return undefined;
+    return window.piDesktop.onSpeechDownload((progress) => {
+      useUiStore.getState().setSpeechDownload(progress.state === 'downloading' || progress.state === 'verifying' ? progress : null);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.getAppInfo !== 'function') return;
+    void window.piDesktop.getAppInfo()
+      .then((info) => { document.documentElement.dataset.platform = info.platform; })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!('piDesktop' in window)) return;
+    let cancelled = false;
+    let hydrating = true;
+    const bufferedEvents: PiEvent[] = [];
+    const bufferedSizes: number[] = [];
+    let bufferedBytes = 0;
+    let bufferOverflowed = false;
+    const unsubscribe = window.piDesktop.onEvents((events) => {
+      if (!hydrating) {
+        applyEvents(events);
+        return;
+      }
+      for (const event of events) {
+        if (bufferOverflowed) continue;
+        const bytes = JSON.stringify(event).length;
+        if (bytes > MAX_HYDRATION_BUFFER_BYTES) {
+          bufferedEvents.length = 0;
+          bufferedSizes.length = 0;
+          bufferedBytes = 0;
+          bufferOverflowed = true;
+          continue;
+        }
+        bufferedEvents.push(event);
+        bufferedSizes.push(bytes);
+        bufferedBytes += bytes;
+        while (
+          bufferedEvents.length > 1
+          && (bufferedEvents.length > MAX_HYDRATION_BUFFER_EVENTS || bufferedBytes > MAX_HYDRATION_BUFFER_BYTES)
+        ) {
+          bufferedEvents.shift();
+          bufferedBytes -= bufferedSizes.shift() ?? 0;
+          bufferOverflowed = true;
+        }
+      }
+    });
+
+    void window.piDesktop.getRuntimeState().then((runtime) => {
+      if (cancelled) return;
+      if (bufferOverflowed) {
+        // Do not install a snapshot paired with an incomplete event tail. A new
+        // subscription and authoritative hydration replaces same-session data.
+        setHydrationError('Live state changed too quickly during startup. Resynchronizing…');
+        setHydrationAttempt((value) => value + 1);
+        return;
+      }
+      hydrateRuntime(runtime);
+      hydrating = false;
+      if (bufferedEvents.length > 0) {
+        const replay = reconcileHydrationEvents(runtime, bufferedEvents);
+        if (replay.length > 0) applyEvents(replay);
+        bufferedEvents.length = 0;
+        bufferedSizes.length = 0;
+        bufferedBytes = 0;
+      }
+      setHydrationError(null);
+    }).catch((error: unknown) => {
+      hydrating = false;
+      if (bufferedEvents.length > 0) applyEvents(bufferedEvents);
+      bufferedEvents.length = 0;
+      bufferedSizes.length = 0;
+      bufferedBytes = 0;
+      if (!cancelled) setHydrationError(error instanceof Error ? error.message : 'Fate UI could not load its runtime state.');
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [applyEvents, hydrateRuntime, hydrationAttempt]);
+
+  useEffect(() => {
+    if (!('piDesktop' in window)) return;
+    let active = true;
+    const applyReplacement = (origin: RuntimeState, state: RuntimeState) => {
+      if (!active) return;
+      const current = useRuntimeStore.getState().runtime;
+      const selectionMoved = current.sessionId !== origin.sessionId || current.project?.path !== origin.project?.path;
+      const resultIsCurrent = current.sessionId === state.sessionId && current.project?.path === state.project?.path;
+      if (!selectionMoved || resultIsCurrent) setRuntime(state);
+    };
+    const run = (command: AppCommand) => {
+      const ui = useUiStore.getState();
+      const runtime = useRuntimeStore.getState().runtime;
+      if (command === 'open-project') {
+        void window.piDesktop.selectProject().then((state) => {
+          if (!active) return;
+          setRuntime(state);
+          if (state.project) ui.setSidebarCollapsed(false);
+        });
+      }
+      else if (command === 'new-session' && runtime.project && !runtime.sessionOperation && !sessionReplacementBusy.current) {
+        sessionReplacementBusy.current = true;
+        let pending: Promise<RuntimeState>;
+        try {
+          pending = window.piDesktop.newSession();
+        } catch (error) {
+          pending = Promise.reject(error);
+        }
+        void pending.then((state) => applyReplacement(runtime, state)).catch(() => undefined).finally(() => { sessionReplacementBusy.current = false; });
+      }
+      else if (command === 'focus-composer') document.querySelector<HTMLTextAreaElement>('#pi-composer')?.focus();
+      else if (command === 'stop-generation' && runtime.streaming && !ui.settingsOpen && !ui.paletteOpen) void window.piDesktop.abort();
+      else if (command === 'toggle-sidebar') ui.toggleSidebar();
+      else if (command === 'toggle-inspector') ui.toggleInspector();
+      else if (command === 'open-settings') ui.setSettingsOpen(true);
+      else if (command === 'open-terminal') ui.toggleTerminal();
+      else if (command === 'open-palette') ui.setPaletteOpen(true);
+    };
+    const unsubscribe = typeof window.piDesktop.onAppCommand === 'function'
+      ? window.piDesktop.onAppCommand(run)
+      : () => undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const primary = event.metaKey || event.ctrlKey;
+      let command: AppCommand | null = null;
+      if (primary && event.key.toLocaleLowerCase() === 'k') command = 'open-palette';
+      else if (primary && event.key === '`') command = 'open-terminal';
+      else if (primary && event.key === ',') command = 'open-settings';
+      else if (primary && event.key.toLocaleLowerCase() === 'b' && event.shiftKey) command = 'toggle-inspector';
+      else if (primary && event.key.toLocaleLowerCase() === 'b') command = 'toggle-sidebar';
+      else if (primary && event.key.toLocaleLowerCase() === 'o') command = 'open-project';
+      else if (primary && event.key.toLocaleLowerCase() === 'n') command = 'new-session';
+      else if (
+        event.key === 'Escape'
+        && !useUiStore.getState().paletteOpen
+        && !useUiStore.getState().settingsOpen
+        && !document.querySelector('[role="dialog"], [role="listbox"], [data-radix-popper-content-wrapper], .music-dock[data-open="true"]')
+      ) command = 'stop-generation';
+      if (command) { event.preventDefault(); run(command); }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      active = false;
+      sessionReplacementBusy.current = false;
+      unsubscribe();
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [setRuntime]);
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      {hydrationError && <div className="hydration-error-banner" role="alert"><span>{hydrationError}</span><button type="button" onClick={() => setHydrationAttempt((value) => value + 1)}>Retry</button></div>}
+      <AppShell />
+      <AppToast />
+      {musicPlayerEnabled && <Suspense fallback={null}><MusicPlayerDock /></Suspense>}
+      <CommandPalette />
+      <SettingsDialog />
+    </QueryClientProvider>
+  );
+}

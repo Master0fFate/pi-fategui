@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="void" cx="35%" cy="24%" r="86%">
+      <stop offset="0" stop-color="#24213f"/>
+      <stop offset="0.58" stop-color="#111423"/>
+      <stop offset="1" stop-color="#080a12"/>
+    </radialGradient>
+    <linearGradient id="fate" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#f4f1ff"/>
+      <stop offset="0.48" stop-color="#c9c1ff"/>
+      <stop offset="1" stop-color="#8d7cff"/>
+    </linearGradient>
+    <filter id="glow"><feGaussianBlur stdDeviation="13"/></filter>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="236" fill="url(#void)"/>
+  <path d="M180 512c0-198 149-354 332-354 171 0 310 137 310 306 0 151-116 272-259 272-122 0-220-96-220-216 0-99 76-179 170-179 76 0 138 60 138 134" fill="none" stroke="#7764f4" stroke-width="21" stroke-linecap="round" opacity=".25" filter="url(#glow)"/>
+  <path d="M180 512c0-198 149-354 332-354 171 0 310 137 310 306 0 151-116 272-259 272-122 0-220-96-220-216 0-99 76-179 170-179 76 0 138 60 138 134" fill="none" stroke="#8f7dff" stroke-width="10" stroke-linecap="round" opacity=".72"/>
+  <path d="M368 772V263h315l-44 91H482v112h130l-40 86h-90v220z" fill="url(#fate)"/>
+  <path d="M482 552l-114 220h114z" fill="#7564e8" opacity=".72"/>
+  <g fill="#e9e4ff">
+    <circle cx="822" cy="307" r="13"/><circle cx="238" cy="307" r="9"/><circle cx="755" cy="758" r="8"/>
+  </g>
+  <g fill="#9b8cff">
+    <path d="M808 219l8 20 20 8-20 8-8 20-8-20-20-8 20-8z"/>
+    <path d="M272 693l6 15 15 6-15 6-6 15-6-15-15-6 15-6z"/>
+  </g>
+</svg>

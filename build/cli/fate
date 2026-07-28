@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case "$link" in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+contents=$(CDPATH= cd -- "$(dirname -- "$self")/../.." && pwd)
+project=${1:-$PWD}
+exec "$contents/MacOS/fate-ui" --project "$project"

@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+project=${1:-$PWD}
+exec '/opt/Fate UI/fate-ui' --project "$project"

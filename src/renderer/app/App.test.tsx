@@ -1,0 +1,412 @@
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PiDesktopApi, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
+import { useRuntimeStore } from '../stores/runtimeStore';
+import { useUiStore } from '../stores/uiStore';
+import { App, reconcileHydrationEvents } from './App';
+
+describe('first-launch shell', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    delete document.documentElement.dataset.platform;
+    useUiStore.setState({ sidebarCollapsed: false, inspectorCollapsed: false, leftWidth: 264, rightWidth: 332, musicPlayerEnabled: false, musicPlaying: false, sendMessageWithModifier: false, paletteOpen: false, settingsOpen: false, toast: null, composerDraftRequest: null });
+    useRuntimeStore.getState().setRuntime({
+      status: 'disconnected', project: null, sessionId: null, sessionFile: null, streaming: false,
+      model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    });
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'piDesktop');
+  });
+
+  it('renders honest first-launch navigation and inspector tabs', () => {
+    render(<App />);
+    expect(screen.getByRole('heading', { name: 'What would you like Pi to do?' })).toBeInTheDocument();
+    expect(screen.getByText('No sessions yet')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Changes/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Model and reasoning settings' })).toBeDisabled();
+  });
+
+  it('routes every first-launch action through project selection', async () => {
+    const user = userEvent.setup();
+    const runtime = useRuntimeStore.getState().runtime;
+    const selectProject = vi.fn(async () => runtime);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => runtime),
+        onEvents: vi.fn(() => () => undefined),
+        selectProject,
+      } as unknown as PiDesktopApi,
+    });
+    const { container } = render(<App />);
+
+    const actionCards = [...container.querySelectorAll<HTMLButtonElement>('.action-card')];
+    expect(actionCards.map((card) => card.textContent)).toEqual([
+      expect.stringContaining('Open project'),
+      expect.stringContaining('Inspect codebase'),
+      expect.stringContaining('Ship a change'),
+    ]);
+    for (const [index, card] of actionCards.entries()) {
+      await user.click(card);
+      await waitFor(() => expect(selectProject).toHaveBeenCalledTimes(index + 1));
+    }
+    expect(container.querySelector('.brand-mark')).toHaveTextContent('ƒ');
+    expect(container.querySelector('.welcome-symbol')).toHaveTextContent('ƒ');
+  });
+
+  it('opens the session list immediately after project selection', async () => {
+    const initial = useRuntimeStore.getState().runtime;
+    const selected: RuntimeState = {
+      status: 'ready', project: { path: 'C:/selected-project', name: 'selected-project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], sessions: [], error: null,
+    };
+    const selectProject = vi.fn(async () => selected);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => initial),
+        onEvents: vi.fn(() => () => undefined),
+        selectProject,
+      } as unknown as PiDesktopApi,
+    });
+    useUiStore.getState().setSidebarCollapsed(true);
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument();
+    await user.click(container.querySelector<HTMLButtonElement>('.action-card--primary')!);
+
+    await waitFor(() => expect(selectProject).toHaveBeenCalledOnce());
+    await waitFor(() => expect(useUiStore.getState().sidebarCollapsed).toBe(false));
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument();
+  });
+
+  it('keeps app and command-palette new/model actions available while streaming', async () => {
+    const current = { provider: 'test', id: 'current', name: 'Current Model', reasoning: true, contextWindow: 100_000 };
+    const alternate = { provider: 'test', id: 'fast', name: 'Fast Model', reasoning: false, contextWindow: 200_000 };
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: true, runningSessionCount: 1, model: current, pendingModel: null, models: [current, alternate], thinkingLevel: 'medium',
+      messages: [], commands: [], sessions: [], sessionOperation: false, error: null,
+    };
+    useRuntimeStore.getState().setRuntime(runtime);
+    const newSession = vi.fn(async () => runtime);
+    const setModel = vi.fn(async () => ({ ...runtime, pendingModel: alternate }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => runtime),
+        onEvents: vi.fn(() => () => undefined),
+        newSession,
+        setModel,
+      } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true });
+    await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+
+    act(() => useUiStore.getState().setPaletteOpen(true));
+    const modelCommand = screen.getByRole('option', { name: /Use model: Fast Model/u });
+    expect(modelCommand).toBeEnabled();
+    await user.click(modelCommand);
+    await waitFor(() => expect(setModel).toHaveBeenCalledWith('test', 'fast'));
+
+    act(() => useUiStore.getState().setPaletteOpen(true));
+    const newCommand = screen.getByRole('option', { name: /New session/u });
+    expect(newCommand).toBeEnabled();
+    await user.click(newCommand);
+    await waitFor(() => expect(newSession).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows playback activity beside the title only while the sidebar is expanded', async () => {
+    useUiStore.setState({ musicPlaying: true });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    expect(container.querySelector('.music-equalizer')).toBeInTheDocument();
+    expect(container.querySelectorAll('.music-equalizer i')).toHaveLength(4);
+
+    await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }));
+    await waitFor(() => expect(container.querySelector('.music-equalizer')).not.toBeInTheDocument());
+  });
+
+  it('restores persisted manual session ordering as the active sort mode', async () => {
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+      sessions: [
+        { id: 's1', title: 'First', firstMessage: 'First', path: 'one.jsonl', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-01T00:00:00.000Z', messageCount: 1, active: true },
+        { id: 's2', title: 'Second', firstMessage: 'Second', path: 'two.jsonl', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 1, active: false },
+      ],
+    };
+    localStorage.setItem('fate-ui:session-order:C:/project', JSON.stringify(['s1', 's2']));
+    useRuntimeStore.getState().setRuntime(runtime);
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Sort sessions' })).toHaveTextContent('Manual order'));
+  });
+
+  it('puts fork, isolated worktree, clone, compact, rename, and delete on each eligible session row without import chrome', async () => {
+    const user = userEvent.setup();
+    const sessions: NonNullable<RuntimeState['sessions']> = [
+      { id: 's1', title: 'First', firstMessage: 'First prompt', path: 'one.jsonl', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-01T00:00:00.000Z', messageCount: 2, active: true },
+      { id: 's2', title: 'Second', firstMessage: 'Second prompt', path: 'two.jsonl', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false },
+    ];
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: 'one.jsonl',
+      streaming: false, sessionOperation: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+      sessions, sessionCapabilities: { fork: true, clone: true, compact: true, import: true },
+      forkPoints: [{ entryId: 'first-entry', text: 'First prompt' }],
+    };
+    const switched: RuntimeState = {
+      ...runtime, sessionId: 's2', sessionFile: 'two.jsonl', sessions: sessions.map((session) => ({ ...session, active: session.id === 's2' })),
+      forkPoints: [{ entryId: 'second-entry', text: 'Second prompt' }],
+    };
+    const forked = { ...switched, sessionId: 'forked' };
+    const switchSession = vi.fn(async () => switched);
+    const forkSession = vi.fn(async () => ({ state: forked, selectedText: 'Edit this fork prompt' }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { getRuntimeState: vi.fn(async () => runtime), onEvents: vi.fn(() => () => undefined), switchSession, forkSession } as unknown as PiDesktopApi,
+    });
+    useRuntimeStore.getState().setRuntime(runtime);
+    const { container } = render(<App />);
+
+    expect(screen.getByRole('button', { name: 'Create an isolated Git worktree session from First' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clone First' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Compact First' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rename First' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete Second' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Import session/i })).not.toBeInTheDocument();
+    expect(container.querySelector('.session-action-bar')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Create new session from latest prompt in Second' }));
+    await waitFor(() => expect(switchSession).toHaveBeenCalledWith('s2'));
+    expect(forkSession).toHaveBeenCalledWith('second-entry');
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('Edit this fork prompt');
+    expect(screen.getByText(/This new session branches from “Second”/u)).toBeInTheDocument();
+  });
+
+  it('opens an isolated worktree session with the selected prompt and exact branch feedback', async () => {
+    const user = userEvent.setup();
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: 'one.jsonl',
+      streaming: false, sessionOperation: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+      sessions: [{ id: 's1', title: 'Repair Git', firstMessage: 'Repair Git workflow', path: 'one.jsonl', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-01T00:00:00.000Z', messageCount: 2, active: true }],
+      sessionCapabilities: { fork: true, clone: true, compact: true, import: true },
+      forkPoints: [{ entryId: 'entry-1', text: 'Repair Git workflow' }],
+    };
+    const isolated = { ...runtime, project: { path: 'C:/worktrees/repair-git', name: 'project', trusted: true }, sessionId: 'isolated', sessions: [] };
+    const createWorktreeSession = vi.fn(async () => ({
+      state: isolated,
+      selectedText: 'Repair Git workflow',
+      worktree: { path: 'C:/worktrees/repair-git', branch: 'fate/repair-git-workflow', head: 'a'.repeat(40), detached: false, bare: false, current: true },
+    }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { getRuntimeState: vi.fn(async () => runtime), onEvents: vi.fn(() => () => undefined), createWorktreeSession } as unknown as PiDesktopApi,
+    });
+    useRuntimeStore.getState().setRuntime(runtime);
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: 'Create an isolated Git worktree session from Repair Git' }));
+    await waitFor(() => expect(createWorktreeSession).toHaveBeenCalledWith('entry-1'));
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('Repair Git workflow');
+    expect(screen.getByText(/Isolated worktree ready on fate\/repair-git-workflow/u)).toBeInTheDocument();
+    expect(useUiStore.getState().toast).toMatchObject({ title: 'Isolated session ready', message: expect.stringContaining('fate/repair-git-workflow') });
+  });
+
+  it('collapses and restores both side panes', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }));
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Collapse inspector' }));
+    expect(screen.queryByRole('complementary', { name: 'Project inspector' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open inspector' })).toBeInTheDocument();
+  });
+
+  it('resizes panes with keyboard-accessible separators', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const sidebarHandle = screen.getByRole('separator', { name: 'Resize sidebar' });
+    expect(sidebarHandle).toHaveAttribute('aria-valuenow', '264');
+    sidebarHandle.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(sidebarHandle).toHaveAttribute('aria-valuenow', '276');
+  });
+
+  it('buffers live events until startup state hydration completes', async () => {
+    let resolveState: ((state: RuntimeState) => void) | undefined;
+    let listener: ((events: PiEvent[]) => void) | undefined;
+    const statePromise = new Promise<RuntimeState>((resolve) => { resolveState = resolve; });
+    const initial: RuntimeState = {
+      status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: true, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    };
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(() => statePromise),
+        onEvents: vi.fn((next: (events: PiEvent[]) => void) => { listener = next; return () => undefined; }),
+      } as unknown as PiDesktopApi,
+    });
+
+    render(<App />);
+    act(() => listener?.([{ type: 'assistant.text', messageId: 'live', delta: 'not lost', timestamp: 1 }]));
+    await act(async () => { resolveState?.(initial); await statePromise; });
+    await waitFor(() => expect(useRuntimeStore.getState().messagesById.live?.text).toBe('not lost'));
+  });
+
+  it('replays only events newer than the hydration watermark', async () => {
+    let resolveState: ((state: RuntimeState) => void) | undefined;
+    let listener: ((events: PiEvent[]) => void) | undefined;
+    const statePromise = new Promise<RuntimeState>((resolve) => { resolveState = resolve; });
+    const initial: RuntimeState = {
+      status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: true, model: null, models: [], thinkingLevel: 'medium', eventCursor: 4,
+      messages: [{ id: 'live', role: 'assistant', text: '', reasoning: 'already', timestamp: 1 }],
+      tools: [{ id: 'tool-live', name: 'search', input: '{}', output: '', outputTruncated: false, status: 'running', startedAt: 1, updatedAt: 1 }],
+      commands: [], error: null,
+    };
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(() => statePromise),
+        onEvents: vi.fn((next: (events: PiEvent[]) => void) => { listener = next; return () => undefined; }),
+      } as unknown as PiDesktopApi,
+    });
+
+    render(<App />);
+    act(() => listener?.([
+      { type: 'assistant.reasoning', messageId: 'live', delta: 'already', timestamp: 2, cursor: 4 },
+      { type: 'tool.started', toolCallId: 'tool-live', name: 'search', input: '{}', timestamp: 2, cursor: 3 },
+      { type: 'tool.updated', toolCallId: 'tool-live', output: 'partial result', timestamp: 2, cursor: 4 },
+      { type: 'assistant.reasoning', messageId: 'live', delta: ' new', timestamp: 3, cursor: 5 },
+    ]));
+    await act(async () => { resolveState?.(initial); await statePromise; });
+    await waitFor(() => expect(useRuntimeStore.getState().reasoningByMessageId.live).toBe('already new'));
+    expect(useRuntimeStore.getState().toolsById['tool-live']?.output).toBe('partial result');
+  });
+
+  it('does not append stale pre-watermark deltas after an authoritative rewritten completion', () => {
+    const runtime: RuntimeState = {
+      status: 'ready', project: null, sessionId: 's1', sessionFile: null, streaming: false,
+      model: null, models: [], thinkingLevel: 'medium', eventCursor: 3, error: null,
+      messages: [{ id: 'answer', role: 'assistant', text: 'Final rewritten answer', timestamp: 1 }],
+    };
+    const replay = reconcileHydrationEvents(runtime, [
+      { type: 'assistant.text', messageId: 'answer', delta: 'draft text', timestamp: 1, cursor: 1 },
+      { type: 'message.completed', messageId: 'answer', role: 'assistant', text: 'Final rewritten answer', timestamp: 2, cursor: 2 },
+    ]);
+    expect(replay).toEqual([]);
+  });
+
+  it('stops buffering and remains recoverable when hydration fails', async () => {
+    let rejectState: ((error: Error) => void) | undefined;
+    let listener: ((events: PiEvent[]) => void) | undefined;
+    const statePromise = new Promise<RuntimeState>((_resolve, reject) => { rejectState = reject; });
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(() => statePromise),
+        onEvents: vi.fn((next: (events: PiEvent[]) => void) => { listener = next; return () => undefined; }),
+      } as unknown as PiDesktopApi,
+    });
+
+    render(<App />);
+    await act(async () => { rejectState?.(new Error('hydrate failed')); await statePromise.catch(() => undefined); });
+    expect(await screen.findByRole('alert')).toHaveTextContent('hydrate failed');
+    act(() => listener?.([{ type: 'assistant.text', messageId: 'after-failure', delta: 'still bounded', timestamp: 2, cursor: 2 }]));
+    expect(useRuntimeStore.getState().messagesById['after-failure']?.text).toBe('still bounded');
+  });
+
+  it('applies platform information from the existing bridge', async () => {
+    const runtime = useRuntimeStore.getState().runtime;
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getAppInfo: vi.fn(async () => ({ name: 'Fate UI', version: '0.1.0', platform: 'win32', packaged: false })),
+        getRuntimeState: vi.fn(async () => runtime),
+        onEvents: vi.fn(() => () => undefined),
+      } as unknown as PiDesktopApi,
+    });
+    render(<App />);
+    await waitFor(() => expect(document.documentElement.dataset.platform).toBe('win32'));
+    expect(document.querySelector('.app-shell')).toHaveClass('app-shell--inspector-open');
+  });
+
+  it('keeps platform discovery failure non-fatal', async () => {
+    const runtime = useRuntimeStore.getState().runtime;
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getAppInfo: vi.fn(async () => { throw new Error('bridge unavailable'); }),
+        getRuntimeState: vi.fn(async () => runtime),
+        onEvents: vi.fn(() => () => undefined),
+      } as unknown as PiDesktopApi,
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Model and reasoning settings' })).toBeDisabled());
+    expect(document.documentElement.dataset.platform).toBeUndefined();
+  });
+
+  it('hides first-launch content once a project is open with an empty timeline', () => {
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    });
+    const { container } = render(<App />);
+    expect(screen.queryByRole('heading', { name: 'What would you like Pi to do?' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Inspect codebase/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Message Pi')).toBeInTheDocument();
+    expect(container.querySelector('.welcome')).not.toHaveAttribute('aria-labelledby');
+  });
+
+  it('floats extension status at workspace level instead of adding composer weight', () => {
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+      extensionUi: { statuses: [{ key: 'mcp', text: 'MCP: 0/13 servers' }], widgets: [], working: null, title: null },
+    });
+    const { container } = render(<App />);
+
+    expect(container.querySelector('.workspace > .extension-status-rail')).toHaveTextContent('MCP: 0/13 servers');
+    expect(container.querySelector('.composer .extension-status-rail')).toBeNull();
+  });
+
+  it('reports reveal-project failures without reintroducing titlebar connection chrome', async () => {
+    const user = userEvent.setup();
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    };
+    useRuntimeStore.getState().setRuntime(runtime);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => runtime),
+        onEvents: vi.fn(() => () => undefined),
+        revealProject: vi.fn(async () => { throw new Error('Open the project again, then retry.'); }),
+      } as unknown as PiDesktopApi,
+    });
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'Show project in file browser' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Open the project again, then retry.');
+    expect(screen.getByRole('button', { name: 'Model and reasoning settings' })).toBeInTheDocument();
+    expect(screen.queryByText('Connected')).not.toBeInTheDocument();
+  });
+
+  it('does not rely on renderer Node globals', () => {
+    render(<App />);
+    expect('require' in window).toBe(false);
+    expect('piDesktop' in window).toBe(false);
+  });
+
+});
