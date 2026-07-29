@@ -6,6 +6,15 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      promote_run_id:
+        description: Successful workflow run ID whose verified artifacts should be promoted
+        required: false
+        type: string
+      promote_tag:
+        description: Existing version tag to publish when promoting a verified run
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -16,6 +25,7 @@ concurrency:
 
 jobs:
   verify-package:
+    if: github.event_name != 'workflow_dispatch' || inputs.promote_run_id == ''
     name: ${{ matrix.label }} / Node 22
     strategy:
       fail-fast: false
@@ -240,3 +250,51 @@ jobs:
             gh release create "$GITHUB_REF_NAME" artifacts/* --draft --verify-tag --generate-notes --title "Fate UI $GITHUB_REF_NAME" "${release_type[@]}"
           fi
           gh release edit "$GITHUB_REF_NAME" --draft=false
+
+  promote-release:
+    name: Promote verified release artifacts
+    if: github.event_name == 'workflow_dispatch' && inputs.promote_run_id != ''
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+    env:
+      PROMOTE_RUN_ID: ${{ inputs.promote_run_id }}
+      PROMOTE_TAG: ${{ inputs.promote_tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate promotion source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$PROMOTE_RUN_ID" =~ ^[0-9]+$ ]]
+          node scripts/release-artifacts.mjs validate-tag --tag "$PROMOTE_TAG"
+          run_head=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .head_sha)
+          run_conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .conclusion)
+          run_workflow=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .path)
+          tag_head=$(git rev-parse "$PROMOTE_TAG^{}")
+          test "$run_conclusion" = success
+          test "$run_workflow" = .github/workflows/cross-platform.yml
+          test "$run_head" = "$tag_head"
+          git merge-base --is-ancestor "$tag_head" origin/main
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: fate-ui-*
+          path: artifacts
+          merge-multiple: true
+          run-id: ${{ inputs.promote_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify release set and write checksums
+        run: |
+          test "$(find artifacts -maxdepth 1 -type f | wc -l)" -eq 7
+          node scripts/release-artifacts.mjs checksums --source artifacts
+      - name: Publish promoted artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$PROMOTE_TAG" artifacts/* --clobber
+          gh release edit "$PROMOTE_TAG" --draft=false
