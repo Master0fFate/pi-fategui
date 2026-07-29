@@ -23,6 +23,8 @@ const ready = (overrides: Partial<RuntimeState> = {}): RuntimeState => ({
   sessionId: 's1',
   sessionFile: '/sessions/s1.jsonl',
   streaming: false,
+  activeSessionRunning: false,
+  runningSessionCount: 0,
   model: null,
   models: [],
   thinkingLevel: 'medium',
@@ -45,8 +47,8 @@ describe('Sidebar sessions', () => {
     Reflect.deleteProperty(window, 'piDesktop');
   });
 
-  it('keeps new-session and inactive-session navigation enabled while work streams, without enabling destructive actions', async () => {
-    const state = ready({ streaming: true, runningSessionCount: 0 });
+  it('keeps navigation and idle-target actions enabled while the selected session streams', async () => {
+    const state = ready({ streaming: true, activeSessionRunning: true, runningSessionCount: 1 });
     useRuntimeStore.getState().setRuntime(state);
     const newSession = vi.fn(async () => state);
     const switchSession = vi.fn(async () => state);
@@ -61,14 +63,106 @@ describe('Sidebar sessions', () => {
     const openSecond = screen.getByRole('button', { name: /^Second/u });
     expect(create).toBeEnabled();
     expect(openSecond).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Clone Second' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Compact Second' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Clone First' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Rename First' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Clone Second' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Compact Second' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Create an isolated Git worktree session from Second' })).toBeDisabled();
 
     await user.click(openSecond);
     await waitFor(() => expect(switchSession).toHaveBeenCalledWith('s2'));
     await waitFor(() => expect(create).toBeEnabled());
     await user.click(create);
     await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+  });
+
+  it('wraps every rendered session-row action in a tooltip trigger', () => {
+    const { container } = render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    const actionGroups = [...container.querySelectorAll('.session-row-actions')];
+    expect(actionGroups).toHaveLength(2);
+    for (const group of actionGroups) {
+      const actions = [...group.children];
+      expect(actions.length).toBeGreaterThan(0);
+      for (const action of actions) expect(action).toHaveAttribute('data-state', 'closed');
+    }
+    expect(screen.getByRole('button', { name: /^First/u }).closest('.tooltip-trigger')).not.toBeNull();
+  });
+
+  it.each([
+    ['Create new session from latest prompt in First', 'Branch from First’s latest prompt'],
+    ['Create an isolated Git worktree session from First', 'Create an isolated Git worktree session from First'],
+    ['Clone First', 'Clone First'],
+    ['Compact First', 'Compact First’s context'],
+    ['Rename First', 'Rename First'],
+    ['Delete Second', 'Delete Second'],
+  ])('shows useful hover copy for the %s action', async (accessibleName, tooltipCopy) => {
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    const button = screen.getByRole('button', { name: accessibleName });
+    const tooltipTrigger = button.closest<HTMLElement>('.tooltip-trigger');
+    expect(tooltipTrigger).not.toBeNull();
+    await user.hover(tooltipTrigger!);
+
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(tooltipCopy);
+  });
+
+  it('keeps rename and delete confirmation controls hoverable', async () => {
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Rename First' }));
+    for (const name of ['Save session name', 'Cancel rename']) {
+      expect(screen.getByRole('button', { name }).closest('.tooltip-trigger')).not.toBeNull();
+    }
+    await user.click(screen.getByRole('button', { name: 'Cancel rename' }));
+    await user.click(screen.getByRole('button', { name: 'Delete Second' }));
+    for (const name of ['Delete', 'Cancel']) {
+      expect(screen.getByRole('button', { name }).closest('.tooltip-trigger')).not.toBeNull();
+    }
+  });
+
+  it('keeps a disabled session action hoverable and explains why it is unavailable', async () => {
+    useRuntimeStore.getState().setRuntime(ready({
+      sessions: [session('s1', 'First', true), session('s2', 'Second', false, 'running')],
+    }));
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    const clone = screen.getByRole('button', { name: 'Clone Second' });
+    expect(clone).toBeDisabled();
+    const tooltipTrigger = clone.closest<HTMLElement>('.tooltip-trigger');
+    expect(tooltipTrigger).not.toBeNull();
+    await user.hover(tooltipTrigger!);
+
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Wait for “Second” to finish');
+  });
+
+  it('does not let a background running count lock actions for the idle selected session', async () => {
+    const state = ready({
+      activeSessionRunning: false,
+      runningSessionCount: 1,
+      sessions: [session('s1', 'First', true), session('s2', 'Second', false, 'running')],
+    });
+    useRuntimeStore.getState().setRuntime(state);
+    const cloneSession = vi.fn(async () => state);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { cloneSession } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'Create new session from latest prompt in First' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Create an isolated Git worktree session from First' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Clone First' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Clone Second' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Delete Second' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Rename Second' })).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: 'Clone First' }));
+    await waitFor(() => expect(cloneSession).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Rename Second' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Rename Second' }));
+    expect(screen.getByRole('textbox', { name: 'Rename Second' })).toHaveValue('Second');
   });
 
   it('does not let an older navigation response overwrite a newer selected session', async () => {

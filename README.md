@@ -34,7 +34,7 @@ Fate UI turns Pi into a complete desktop workspace without weakening the local c
 - **Private voice input** — record in the composer and turn speech into editable text locally, with a selectable microphone and downloadable, checksum-verified model tiers.
 - **Optional ambient audio** — a compact music dock can play user-supplied public HTTPS media or local audio while staying separate from Pi and project activity.
 - **Calm during long-running work** — bounded event batches, virtualized timelines, guarded project switching, queued messages, stop/steer controls, and durable sessions keep the interface responsive.
-- **Windows beta releases** — native Windows installers are published for tagged beta releases. macOS and Linux users can build verified native packages from source.
+- **Cross-platform beta installers** — tagged releases publish native Windows, macOS, and Linux packages built and installation-smoke-tested on native GitHub runners.
 
 ## Highlights
 
@@ -46,16 +46,10 @@ Fate UI turns Pi into a complete desktop workspace without weakening the local c
 
 ## Installation
 
-### Windows
-
-Download the native Windows installer from the [`v0.1.0-beta.1` GitHub release](https://github.com/Master0fFate/pi-fategui/releases/tag/v0.1.0-beta.1).
+Download installers and `SHA256SUMS` from the [GitHub Releases page](https://github.com/Master0fFate/pi-fategui/releases). New tagged releases publish Windows x64, macOS Apple Silicon and Intel, and Linux x64 builds.
 
 > [!NOTE]
-> Public Windows beta releases are currently unsigned. Windows SmartScreen may display an unknown-publisher warning. Release assets include `SHA256SUMS` so downloads can be verified independently.
-
-### macOS and Linux
-
-Prebuilt macOS and Linux installers are temporarily unavailable. Build the tagged source on your own **native** macOS or Linux machine; do not cross-compile from Windows. The commands below create a local installer for your platform.
+> Public beta installers are currently unsigned. Windows SmartScreen or macOS Gatekeeper may display an unknown-publisher warning. Verify the download against `SHA256SUMS` before installation.
 
 ### Install on Windows
 
@@ -64,48 +58,34 @@ Prebuilt macOS and Linux installers are temporarily unavailable. Build the tagge
 3. Keep **Add Fate UI to PATH** selected if you want the `fate` terminal command.
 4. Open a **new** terminal after installation.
 
-### Build on macOS
+### Install on macOS
 
-Install Node.js **22.19.0+**, pnpm **11.17.0**, Git, and Xcode Command Line Tools. Then run:
+1. Download the `arm64` build for Apple Silicon or the `x64` build for an Intel Mac.
+2. Choose either `Fate-UI-<version>-macOS-<arch>.pkg` or `.dmg`.
+3. Run the PKG to install Fate UI under `/Applications` and add `fate` under `/usr/local/bin`, or open the DMG and copy the app to Applications.
 
-```bash
-git clone --branch v0.1.0-beta.1 https://github.com/Master0fFate/pi-fategui.git
-cd pi-fategui
-corepack enable
-pnpm install --frozen-lockfile
-pnpm dist
-```
+### Install on Linux
 
-Find the generated `.pkg` and `.dmg` in `release/`. The PKG installs Fate UI under `/Applications` and adds the `fate` command under `/usr/local/bin`; the DMG is portable.
+Download `Fate-UI-<version>-Linux-x64.deb` for Debian-based distributions, or the portable `Fate-UI-<version>-Linux-x64.AppImage`.
 
-### Build on Linux
-
-On a Linux desktop, install Node.js **22.19.0+**, pnpm **11.17.0**, Git, `build-essential`, and Python 3. Then run:
+Install the Debian package with:
 
 ```bash
-git clone --branch v0.1.0-beta.1 https://github.com/Master0fFate/pi-fategui.git
-cd pi-fategui
-corepack enable
-pnpm install --frozen-lockfile
-pnpm dist
+sudo apt install ./Fate-UI-<version>-Linux-x64.deb
 ```
 
-Find the generated `.deb` and `.AppImage` in `release/`. Install the Debian package with:
+Or run the AppImage:
 
 ```bash
-sudo apt install ./release/Fate-UI-0.1.0-beta.1-Linux-amd64.deb
+chmod +x Fate-UI-<version>-Linux-x64.AppImage
+./Fate-UI-<version>-Linux-x64.AppImage
 ```
 
-Or run the portable AppImage:
-
-```bash
-chmod +x release/Fate-UI-0.1.0-beta.1-Linux-x86_64.AppImage
-./release/Fate-UI-0.1.0-beta.1-Linux-x86_64.AppImage
-```
+To build an installer from source instead, install the platform prerequisites listed under [Local development](#local-development), check out the desired tag, run `pnpm install --frozen-lockfile`, and then run `pnpm dist` on the target operating system.
 
 ## Open a project from the terminal
 
-With the Windows PATH option, a self-built macOS PKG, or a self-built Linux DEB installed:
+With the Windows PATH option, a macOS PKG, or a Linux DEB installed:
 
 ```bash
 cd /path/to/project
@@ -183,12 +163,12 @@ pnpm dist            # target-native installer artifacts
 
 ## Release process
 
-Windows beta releases are built and smoke-tested on native Windows, then uploaded directly to their matching Git tag so publishing does not depend on GitHub Actions minutes.
+The cross-platform GitHub Actions workflow runs for pull requests, pushes to `main`, version tags, and manual dispatches.
 
-- A beta tag such as `v0.1.0-beta.1` must match `package.json` and point to history contained in `main`.
-- The release contains the x64 Windows installer and `SHA256SUMS`.
-- The optional Windows package-check workflow runs only when manually dispatched.
-- macOS and Linux packages must be built and tested on their respective native platforms before they are published as official artifacts.
+- Windows x64, macOS Apple Silicon, macOS Intel, and Linux x64 packages are built on native hosted runners.
+- The workflow installs or mounts every output format and launches the packaged app: Windows NSIS, macOS DMG and PKG, Linux AppImage and DEB.
+- A version tag such as `v0.1.0-beta.2` must match `package.json` and point to history contained in `main`.
+- Only after all native jobs pass does a tag publish the seven installers plus `SHA256SUMS` to its GitHub release.
 
 ## Architecture and security
 

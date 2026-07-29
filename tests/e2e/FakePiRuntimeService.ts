@@ -22,7 +22,7 @@ export class FakePiRuntimeService {
     const historical = this.activeSession === 'e2e-session-2';
     return {
       status: this.project ? 'ready' : 'disconnected', project: this.project, sessionId: this.project ? this.activeSession : null,
-      sessionFile: null, streaming: this.streaming, model: this.project ? model : null, models: this.project ? [model] : [],
+      sessionFile: null, streaming: this.streaming, activeSessionRunning: this.streaming, model: this.project ? model : null, models: this.project ? [model] : [],
       thinkingLevel: 'medium', permissionLevel: this.permissionLevel,
       messages: historical ? [{ id: 'history-assistant', role: 'assistant', text: '**Second session** history', timestamp: 1, timelinePosition: 0 }] : [],
       tools: historical ? [{ id: 'history-tool', name: 'read', input: '{"path":"README.md"}', output: 'historical output', outputTruncated: false, status: 'succeeded', startedAt: 2, updatedAt: 3, endedAt: 3, timelinePosition: 0.5 }] : [],

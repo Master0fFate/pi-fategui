@@ -9,23 +9,40 @@ const virtuosoMock = vi.hoisted(() => ({ autoscrollToBottom: vi.fn(), scrollToIn
 vi.mock('react-virtuoso', async () => {
   const React = await import('react');
   type MockHandle = { autoscrollToBottom: () => void; scrollToIndex: (location: unknown) => void };
+  type MockFollowOutput = boolean | 'auto' | 'smooth' | ((isAtBottom: boolean) => boolean | 'auto' | 'smooth');
   type MockProps = {
     atBottomStateChange?: (atBottom: boolean) => void;
+    data?: readonly unknown[];
+    followOutput?: MockFollowOutput;
+    initialTopMostItemIndex?: { index: number | 'LAST'; align?: 'start' | 'center' | 'end'; behavior?: 'auto' | 'smooth' };
     scrollerRef?: (target: HTMLElement | Window | null) => void;
   };
 
   const Virtuoso = React.forwardRef<MockHandle, MockProps>((props, ref) => {
     const scroller = React.useRef<HTMLDivElement>(null);
+    const previousDataLength = React.useRef<number | null>(null);
     React.useImperativeHandle(ref, () => ({
       autoscrollToBottom: virtuosoMock.autoscrollToBottom,
       scrollToIndex: virtuosoMock.scrollToIndex,
     }), []);
+    React.useLayoutEffect(() => {
+      const dataLength = props.data?.length ?? 0;
+      const previousLength = previousDataLength.current;
+      previousDataLength.current = dataLength;
+      if (previousLength === null || previousLength === dataLength) return;
+      const behavior = typeof props.followOutput === 'function' ? props.followOutput(true) : props.followOutput;
+      if (behavior) virtuosoMock.scrollToIndex({ index: 'LAST', align: 'end', behavior: behavior === true ? 'auto' : behavior });
+    }, [props.data?.length, props.followOutput]);
     React.useEffect(() => {
       props.scrollerRef?.(scroller.current);
       props.atBottomStateChange?.(true);
       return () => props.scrollerRef?.(null);
     }, [props.atBottomStateChange, props.scrollerRef]);
-    return React.createElement('div', { ref: scroller, 'data-testid': 'virtuoso-scroller' });
+    return React.createElement('div', {
+      ref: scroller,
+      'data-testid': 'virtuoso-scroller',
+      'data-initial-top-most-item': props.initialTopMostItemIndex?.index,
+    });
   });
 
   return { Virtuoso };
@@ -93,6 +110,61 @@ describe('conversation output auto-scroll', () => {
     vi.unstubAllGlobals();
   });
 
+  it('positions an unseen session at the final historical item exactly once', () => {
+    const coldSession = { ...ready(), sessionId: 'cold-history-once', streaming: false, messages: [] };
+    act(() => useRuntimeStore.getState().hydrateRuntime(coldSession));
+    render(<ConversationTimeline />);
+    expect(virtuosoMock.scrollToIndex).not.toHaveBeenCalled();
+
+    act(() => useRuntimeStore.getState().hydrateRuntime({
+      ...coldSession,
+      messages: [{ id: 'historical-1', role: 'user', text: 'Earlier prompt', timestamp: 1 }],
+    }));
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
+
+    act(() => useRuntimeStore.getState().hydrateRuntime({
+      ...coldSession,
+      messages: [
+        { id: 'historical-1', role: 'user', text: 'Earlier prompt', timestamp: 1 },
+        { id: 'historical-2', role: 'assistant', text: 'Earlier answer', timestamp: 2 },
+      ],
+    }));
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledTimes(1);
+  });
+
+  it('positions each selected project/session history at the final item', () => {
+    const firstSelection = {
+      ...ready(),
+      sessionId: 'cold-history-return',
+      streaming: false,
+      messages: [{ id: 'seen-history', role: 'user' as const, text: 'Remember my position', timestamp: 1 }],
+    };
+    const otherProjectSelection = {
+      ...ready(),
+      project: { path: '/other-project', name: 'other-project', trusted: true },
+      sessionId: 'cold-history-return',
+      streaming: false,
+      messages: [
+        { id: 'between-1', role: 'user' as const, text: 'Other prompt', timestamp: 1 },
+        { id: 'between-2', role: 'assistant' as const, text: 'Other answer', timestamp: 2 },
+      ],
+    };
+    act(() => useRuntimeStore.getState().hydrateRuntime(firstSelection));
+    render(<ConversationTimeline />);
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('virtuoso-scroller')).toHaveAttribute('data-initial-top-most-item', 'LAST');
+
+    act(() => useRuntimeStore.getState().hydrateRuntime(otherProjectSelection));
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledTimes(2);
+
+    virtuosoMock.scrollToIndex.mockClear();
+    act(() => useRuntimeStore.getState().hydrateRuntime(firstSelection));
+
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledOnce();
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
+  });
+
   it('follows streaming text, reasoning, and tool updates while pinned to the bottom', () => {
     render(<ConversationTimeline />);
 
@@ -115,6 +187,7 @@ describe('conversation output auto-scroll', () => {
     apply([{ type: 'tool.updated', toolCallId: 'read-1', output: 'README contents', timestamp: 5 }]);
     flushAnimationFrames();
     expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledTimes(5);
+    expect(virtuosoMock.scrollToIndex).not.toHaveBeenCalled();
   });
 
   it('stops following when the user scrolls up and resumes after they return to the bottom', () => {

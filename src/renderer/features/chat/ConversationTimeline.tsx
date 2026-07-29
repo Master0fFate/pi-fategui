@@ -158,6 +158,9 @@ const ReasoningRow = memo(function ReasoningRow({ messageId }: { messageId: stri
 const BOTTOM_THRESHOLD_PX = 4;
 const MIN_SCROLLBAR_THUMB_HEIGHT = 24;
 
+const sessionTimelineKey = (projectPath: string | null, sessionId: string | null) =>
+  sessionId === null ? null : JSON.stringify([projectPath, sessionId]);
+
 interface ScrollbarMetrics {
   maxScroll: number;
   scrollTop: number;
@@ -187,6 +190,10 @@ export function getConversationScrollbarMetrics(
 }
 
 const ConversationFooter = () => <div className="conversation-composer-spacer" aria-hidden="true" />;
+
+// ConversationTimeline owns pinned following below. Item-count following stays
+// disabled so only the session-scoped list and explicit controller move output.
+const preventImplicitTimelineFollow = () => false as const;
 
 export function followsMessage(previousEntry: { kind: string } | undefined): boolean {
   return previousEntry?.kind === 'message';
@@ -221,7 +228,12 @@ export function ConversationTimeline() {
   const order = useRuntimeStore((state) => state.timelineOrder);
   const visibleOrder = useRuntimeStore((state) => state.visibleTimelineOrder);
   const timelineById = useRuntimeStore((state) => state.timelineById);
+  const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
+  const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
+  const hasHistoricalTimeline = useRuntimeStore((state) => state.runtime.messages.length > 0 || Boolean(state.runtime.tools?.length));
+  const timelineSessionKey = sessionTimelineKey(projectPath, sessionId);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const positionedSessionRef = useRef<string | null>(null);
   const scrollerRef = useRef<HTMLElement | null>(null);
   const scrollbarTrackRef = useRef<HTMLDivElement>(null);
   const scrollbarThumbRef = useRef<HTMLDivElement>(null);
@@ -273,6 +285,22 @@ export function ConversationTimeline() {
     setScrollerElement(nextScroller);
     nextScroller?.addEventListener('scroll', updatePinnedState, { passive: true });
   }, [updatePinnedState]);
+
+  useLayoutEffect(() => {
+    if (!timelineSessionKey) {
+      positionedSessionRef.current = null;
+      return;
+    }
+    if (visibleOrder.length === 0 || positionedSessionRef.current === timelineSessionKey) return;
+    const virtuoso = virtuosoRef.current;
+    if (!virtuoso) return;
+    positionedSessionRef.current = timelineSessionKey;
+    // A new live conversation is already visible and follows the pinned-scroll
+    // path. Historical sessions instead open at their absolute final item.
+    if (!hasHistoricalTimeline) return;
+    pinnedToBottomRef.current = true;
+    virtuoso.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
+  }, [hasHistoricalTimeline, timelineSessionKey, visibleOrder.length]);
 
   useLayoutEffect(() => {
     if (!scrollerElement) return;
@@ -406,6 +434,7 @@ export function ConversationTimeline() {
   return (
     <div className="conversation" aria-label="Conversation timeline" aria-live="polite" data-entry-count={order.length} data-visible-entry-count={visibleOrder.length}>
       <Virtuoso
+        key={timelineSessionKey ?? 'no-session'}
         ref={virtuosoRef}
         className="conversation-virtuoso"
         data={visibleOrder}
@@ -418,7 +447,8 @@ export function ConversationTimeline() {
         scrollerRef={bindScroller}
         atBottomStateChange={handleAtBottomStateChange}
         atBottomThreshold={BOTTOM_THRESHOLD_PX}
-        followOutput="auto"
+        initialTopMostItemIndex={hasHistoricalTimeline && visibleOrder.length > 0 ? { index: 'LAST', align: 'end', behavior: 'auto' } : undefined}
+        followOutput={preventImplicitTimelineFollow}
         increaseViewportBy={{ top: 300, bottom: 500 }}
       />
       <div

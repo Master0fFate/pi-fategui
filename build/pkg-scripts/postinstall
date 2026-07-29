@@ -4,7 +4,7 @@ set -eu
 volume=${3:-/}
 bin="$volume/usr/local/bin"
 link="$bin/fate"
-target='/Applications/Fate UI.app/Contents/Resources/cli/fate'
+target='/Applications/fate-ui.app/Contents/Resources/cli/fate'
 
 mkdir -p "$bin"
 if [ -e "$link" ] && [ ! -L "$link" ]; then

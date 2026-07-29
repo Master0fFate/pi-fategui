@@ -721,6 +721,8 @@ describe('conversation components', () => {
 
   it('forks from the composer and restores the selected prompt', async () => {
     const state = ready({
+      activeSessionRunning: false,
+      runningSessionCount: 1,
       sessionCapabilities: { fork: true, clone: true, import: true, compact: true },
       forkPoints: [{ entryId: 'entry-1', text: 'Original direction' }],
     });
@@ -730,6 +732,7 @@ describe('conversation components', () => {
     const user = userEvent.setup();
     render(<Composer onOpenProject={vi.fn()} />);
 
+    expect(screen.getByRole('button', { name: 'Create new session from latest prompt' })).toBeEnabled();
     await user.click(screen.getByRole('button', { name: 'Create new session from latest prompt' }));
     expect(forkSession).toHaveBeenCalledWith('entry-1');
     expect(screen.getByLabelText('Message Pi')).toHaveValue('Original direction');

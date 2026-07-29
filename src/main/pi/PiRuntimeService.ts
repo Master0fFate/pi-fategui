@@ -595,6 +595,7 @@ export class PiRuntimeService {
       sessionId: session?.sessionId ?? null,
       sessionFile: session?.sessionFile ?? null,
       streaming: session?.isStreaming ?? false,
+      activeSessionRunning: session ? this.sessionHasActiveWork(session) : false,
       runningSessionCount: this.runningSessionCount(),
       model: session?.model ? toModelInfo(session.model) : null,
       pendingModel: this.selectedSlot?.pendingModel?.info ?? null,
@@ -1451,8 +1452,11 @@ export class PiRuntimeService {
     slot.unsubscribeSession = session.subscribe((event: AgentSessionEvent) => this.handleSessionEvent(slot, session, generation, event));
     slot.boundSession = session;
     slot.sessionInvalidated = false;
-    slot.createdAt = this.summaryForSessionId(session.sessionId)?.createdAt ?? slot.createdAt;
-    slot.modifiedAt = new Date().toISOString();
+    const existingSummary = this.summaryForSessionId(session.sessionId);
+    slot.createdAt = existingSummary?.createdAt ?? slot.createdAt;
+    // Loading a session is navigation, not activity. Keep persisted recency so
+    // the Recently modified list changes only after the session does work.
+    slot.modifiedAt = existingSummary?.modifiedAt ?? slot.modifiedAt;
   }
 
   private installModelBoundary(slot: RuntimeSlot, session: AgentSession, ownsSession: () => boolean): void {
@@ -1668,11 +1672,11 @@ export class PiRuntimeService {
   }
 
   private sessionHasNonStreamingWork(session: AgentSession): boolean {
-    return session.isCompacting || session.isBashRunning;
+    return session.isCompacting === true || session.isBashRunning === true;
   }
 
   private sessionHasActiveWork(session: AgentSession): boolean {
-    return session.isStreaming || this.sessionHasNonStreamingWork(session);
+    return session.isStreaming === true || this.sessionHasNonStreamingWork(session);
   }
 
   private runReplacement(operation: (runtime: AgentSessionRuntime, slot: RuntimeSlot) => Promise<void>): Promise<RuntimeState> {

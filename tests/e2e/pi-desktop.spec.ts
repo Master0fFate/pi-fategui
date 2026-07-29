@@ -424,20 +424,10 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
         return composer.getBoundingClientRect().top - lastRow.getBoundingClientRect().bottom;
       });
     }, { timeout: 5_000 }).toBeGreaterThanOrEqual(12);
-    const timelineViewport = await page.evaluate(() => {
-      const scroller = document.querySelector<HTMLElement>('.conversation-virtuoso');
-      const composer = document.querySelector<HTMLElement>('.composer-wrap');
-      const lastRow = [...document.querySelectorAll<HTMLElement>('.timeline-row')].at(-1);
-      if (!scroller || !composer || !lastRow) return null;
-      return {
-        scrollable: scroller.scrollHeight > scroller.clientHeight,
-        composerTop: composer.getBoundingClientRect().top,
-        lastRowBottom: lastRow.getBoundingClientRect().bottom,
-      };
-    });
-    expect(timelineViewport).not.toBeNull();
-    expect(timelineViewport!.scrollable).toBe(true);
-    expect(timelineViewport!.lastRowBottom).toBeLessThanOrEqual(timelineViewport!.composerTop - 12);
+    const timelineScrollable = await page.locator('.conversation-virtuoso').evaluate(
+      (element) => element.scrollHeight > element.clientHeight,
+    );
+    expect(timelineScrollable).toBe(true);
     await page.locator('.conversation-virtuoso').evaluate((element) => {
       const scroller = element as HTMLElement;
       scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight - 120);

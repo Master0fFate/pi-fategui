@@ -153,7 +153,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     project: state.runtime.project,
     sessionId: state.runtime.sessionId,
     streaming: state.runtime.streaming,
-    runningSessionCount: state.runtime.runningSessionCount,
+    activeSessionRunning: state.runtime.activeSessionRunning,
     model: state.runtime.model,
     pendingModel: state.runtime.pendingModel,
     models: state.runtime.models,
@@ -183,8 +183,15 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const permissionLabel = permissionLevel === 'read-only' ? 'Read only' : permissionLevel === 'full-access' ? 'Full access' : 'Edit files';
   const PermissionIcon = permissionLevel === 'read-only' ? Shield : permissionLevel === 'full-access' ? Zap : ShieldCheck;
   const forkPoint = runtime.forkPoints?.at(-1);
-  const anySessionRunning = runtime.streaming || (runtime.runningSessionCount ?? 0) > 0;
-  const canFork = Boolean(runtime.sessionCapabilities?.fork && forkPoint && !anySessionRunning && !runtime.sessionOperation);
+  const activeSessionRunning = runtime.activeSessionRunning ?? runtime.streaming;
+  const canFork = Boolean(runtime.sessionCapabilities?.fork && forkPoint && !activeSessionRunning && !runtime.sessionOperation);
+  const forkTooltip = forking
+    ? 'Creating the new session…'
+    : runtime.sessionOperation
+      ? 'Wait for the current session operation to finish'
+      : activeSessionRunning
+        ? 'Wait for this session to finish before branching'
+        : 'Branch into a new session from the latest user message';
   const currentModelName = runtime.model?.name ?? 'No model';
   const nextModelName = nextModel?.name ?? 'No model';
   const modelLabel = compactModelName(nextModelName);
@@ -1003,7 +1010,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     if (!('piDesktop' in window) || forkingRef.current) return;
     const origin = useRuntimeStore.getState().runtime;
     const point = origin.forkPoints?.at(-1);
-    const running = origin.streaming || (origin.runningSessionCount ?? 0) > 0;
+    const running = origin.activeSessionRunning ?? origin.streaming;
     if (!point || !origin.sessionCapabilities?.fork || running || origin.sessionOperation) return;
     forkingRef.current = true;
     setForking(true);
@@ -1277,7 +1284,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                         <ImagePlus size={14} aria-hidden="true" /><span className="icon-label">Attach image</span>
                       </button>
                       {runtime.sessionCapabilities?.fork && forkPoint && (
-                        <button type="button" aria-label="Create new session from latest prompt" disabled={!canFork || forking} onClick={() => { setUtilityMenuOpen(false); void forkConversation(); }}>
+                        <button type="button" aria-label="Create new session from latest prompt" title={forkTooltip} disabled={!canFork || forking} onClick={() => { setUtilityMenuOpen(false); void forkConversation(); }}>
                           {forking ? <LoaderCircle className="tool-spinner" size={14} /> : <GitFork size={14} aria-hidden="true" />}<span className="icon-label">New session from prompt</span>
                         </button>
                       )}
@@ -1350,7 +1357,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
               <>
                 <AppTooltip content="Insert a project-relative file reference" wrapTrigger><button type="button" aria-label="Add file reference" disabled={!connected} onClick={() => void addReference()}><AtSign size={15} /><span className="icon-label">File</span></button></AppTooltip>
                 <AppTooltip content={imageCapable ? 'Attach up to four images' : 'The model selected for the next message does not support images'} wrapTrigger><button type="button" aria-label="Attach image" disabled={!imageCapable || images.length >= 4} onClick={() => fileInput.current?.click()}><ImagePlus size={15} /><span className="icon-label">Image</span></button></AppTooltip>
-                {runtime.sessionCapabilities?.fork && forkPoint && <AppTooltip content="Branch into a new session from the latest user message" wrapTrigger><button type="button" aria-label="Create new session from latest prompt" disabled={!canFork || forking} onClick={() => void forkConversation()}>{forking ? <LoaderCircle className="tool-spinner" size={15} /> : <GitFork size={15} />}<span className="icon-label">New from prompt</span></button></AppTooltip>}
+                {runtime.sessionCapabilities?.fork && forkPoint && <AppTooltip content={forkTooltip} wrapTrigger><button type="button" aria-label="Create new session from latest prompt" disabled={!canFork || forking} onClick={() => void forkConversation()}>{forking ? <LoaderCircle className="tool-spinner" size={15} /> : <GitFork size={15} />}<span className="icon-label">New from prompt</span></button></AppTooltip>}
               </>
             )}
           </div>

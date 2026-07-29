@@ -382,6 +382,7 @@ export const runtimeStateSchema = z.object({
   sessionId: z.string().min(1).nullable(),
   sessionFile: z.string().nullable(),
   streaming: z.boolean(),
+  activeSessionRunning: z.boolean().optional(),
   runningSessionCount: z.number().int().nonnegative().max(4).optional(),
   model: modelInfoSchema.nullable(),
   pendingModel: modelInfoSchema.nullable().optional(),

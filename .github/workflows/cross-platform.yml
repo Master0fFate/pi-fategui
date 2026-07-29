@@ -1,13 +1,17 @@
-name: Windows package check
+name: Cross-platform installers
 
 on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-release-${{ github.ref }}
+  group: cross-platform-installers-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
@@ -20,6 +24,18 @@ jobs:
           - label: Windows x64
             os: windows-2025
             platform: win32
+            arch: x64
+          - label: macOS Apple Silicon
+            os: macos-15
+            platform: darwin
+            arch: arm64
+          - label: macOS Intel
+            os: macos-15-intel
+            platform: darwin
+            arch: x64
+          - label: Linux x64
+            os: ubuntu-22.04
+            platform: linux
             arch: x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -58,18 +74,12 @@ jobs:
       - name: Verify on Linux display
         if: runner.os == 'Linux'
         run: xvfb-run -a pnpm verify
-      - name: Build unpacked package
+      - name: Build and smoke unpacked package
         if: runner.os != 'Linux'
         run: pnpm package
-      - name: Build unpacked package on Linux display
+      - name: Build and smoke unpacked package on Linux display
         if: runner.os == 'Linux'
         run: xvfb-run -a pnpm package
-      - name: Packaged smoke
-        if: runner.os != 'Linux'
-        run: pnpm smoke:packaged
-      - name: Packaged smoke on Linux display
-        if: runner.os == 'Linux'
-        run: xvfb-run -a pnpm smoke:packaged
       - name: Build installer artifacts
         shell: bash
         run: |
@@ -81,6 +91,110 @@ jobs:
           done
       - name: Stage public artifacts only
         run: node scripts/release-artifacts.mjs stage --source release --output artifacts --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+      - name: Install and smoke Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = node -p "require('./package.json').version"
+          $installer = (Resolve-Path "artifacts/Fate-UI-$version-Windows-${{ matrix.arch }}.exe").Path
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'fate-ui-installed'
+          $uninstaller = Join-Path $installDirectory 'Uninstall Fate UI.exe'
+          try {
+            $install = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$installDirectory" -Wait -PassThru
+            if ($install.ExitCode -ne 0) { throw "NSIS installer exited with code $($install.ExitCode)." }
+            $executable = Join-Path $installDirectory 'fate-ui.exe'
+            $launcher = Join-Path $installDirectory 'fate.cmd'
+            if (-not (Test-Path -Path $executable -PathType Leaf)) { throw "Installed executable was not found at $executable." }
+            if (-not (Test-Path -Path $launcher -PathType Leaf)) { throw "Installed CLI launcher was not found at $launcher." }
+            node scripts/smoke-executable.mjs $executable
+            if ($LASTEXITCODE -ne 0) { throw "Installed application smoke exited with code $LASTEXITCODE." }
+          } finally {
+            if (Test-Path -Path $uninstaller -PathType Leaf) {
+              $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+              if ($uninstall.ExitCode -ne 0) { Write-Warning "NSIS uninstaller exited with code $($uninstall.ExitCode)." }
+            }
+          }
+      - name: Mount and smoke macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          dmg="artifacts/Fate-UI-$version-macOS-${{ matrix.arch }}.dmg"
+          mount_point="$RUNNER_TEMP/fate-ui-dmg"
+          mounted=0
+          cleanup() {
+            if [ "$mounted" -eq 1 ]; then hdiutil detach "$mount_point" -quiet || true; fi
+          }
+          trap cleanup EXIT
+
+          mkdir -p "$mount_point"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount_point"
+          mounted=1
+          dmg_app=$(find "$mount_point" -maxdepth 1 -type d -name '*.app' -print -quit)
+          test -n "$dmg_app"
+          test -x "$dmg_app/Contents/MacOS/fate-ui"
+          for attempt in 1 2 3; do
+            if node scripts/smoke-executable.mjs "$dmg_app/Contents/MacOS/fate-ui"; then break; fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            echo "DMG smoke attempt $attempt failed; retrying in 5 seconds."
+            sleep 5
+          done
+          hdiutil detach "$mount_point" -quiet
+          mounted=0
+      - name: Install and smoke macOS PKG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          pkg="artifacts/Fate-UI-$version-macOS-${{ matrix.arch }}.pkg"
+          installed_app='/Applications/fate-ui.app'
+          installed_launcher='/usr/local/bin/fate'
+          launcher_target=''
+          cleanup() {
+            if [ -n "$installed_app" ]; then sudo rm -rf "$installed_app"; fi
+            if [ -n "$launcher_target" ] && [ -L "$installed_launcher" ] && [ "$(readlink "$installed_launcher")" = "$launcher_target" ]; then
+              sudo rm -f "$installed_launcher"
+            fi
+          }
+          trap cleanup EXIT
+
+          sudo installer -pkg "$pkg" -target /
+          pkgutil --pkg-info dev.pi.desktop
+          test -x "$installed_app/Contents/MacOS/fate-ui"
+          launcher_target="$installed_app/Contents/Resources/cli/fate"
+          if [ ! -L "$installed_launcher" ]; then
+            ls -ld "$installed_launcher" || true
+            echo "The PKG did not create the fate launcher symlink." >&2
+            exit 1
+          fi
+          test "$(readlink "$installed_launcher")" = "$launcher_target"
+          test -x "$installed_launcher"
+          for attempt in 1 2 3; do
+            if node scripts/smoke-executable.mjs "$installed_launcher" "$GITHUB_WORKSPACE"; then break; fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            echo "PKG smoke attempt $attempt failed; retrying in 5 seconds."
+            sleep 5
+          done
+      - name: Run, install, and smoke Linux installers
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          appimage="artifacts/Fate-UI-$version-Linux-${{ matrix.arch }}.AppImage"
+          deb="artifacts/Fate-UI-$version-Linux-${{ matrix.arch }}.deb"
+          chmod +x "$appimage"
+          xvfb-run -a node scripts/smoke-executable.mjs "$appimage" --appimage-extract-and-run
+
+          package_name=$(dpkg-deb -f "$deb" Package)
+          trap 'sudo apt-get purge -y "$package_name" >/dev/null 2>&1 || true' EXIT
+          sudo apt-get install -y "./$deb"
+          test -x '/opt/Fate UI/fate-ui'
+          test -x /usr/bin/fate
+          xvfb-run -a node scripts/smoke-executable.mjs /usr/bin/fate "$GITHUB_WORKSPACE"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fate-ui-${{ matrix.platform }}-${{ matrix.arch }}
@@ -112,7 +226,7 @@ jobs:
           merge-multiple: true
       - name: Verify release set and write checksums
         run: |
-          test "$(find artifacts -maxdepth 1 -type f | wc -l)" -eq 1
+          test "$(find artifacts -maxdepth 1 -type f | wc -l)" -eq 7
           node scripts/release-artifacts.mjs checksums --source artifacts
       - name: Publish verified artifacts
         env:
@@ -121,6 +235,8 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" artifacts/* --draft --verify-tag --generate-notes --title "Fate UI $GITHUB_REF_NAME"
+            release_type=()
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then release_type+=(--prerelease); fi
+            gh release create "$GITHUB_REF_NAME" artifacts/* --draft --verify-tag --generate-notes --title "Fate UI $GITHUB_REF_NAME" "${release_type[@]}"
           fi
           gh release edit "$GITHUB_REF_NAME" --draft=false

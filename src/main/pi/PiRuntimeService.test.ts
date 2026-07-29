@@ -815,6 +815,36 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('preserves recent-session order while switching until the session receives a prompt', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'saved', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/saved.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const repository = {
+      list: vi.fn(async (_cwd: string, activeId: string | null) => [{ ...saved, active: activeId === saved.id }]),
+      resolve: vi.fn(async () => saved),
+      delete: vi.fn(async () => undefined),
+      branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.runtime.switchSession.mockImplementationOnce(async () => {
+      fake.session.sessionId = saved.id;
+      fake.session.sessionFile = saved.path;
+      await fake.runtime.setRebindSession.mock.calls[0]![0](fake.session);
+      return { cancelled: false };
+    });
+
+    await service.switchSession(saved.id);
+    expect(service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt).toBe(saved.modifiedAt);
+
+    await service.prompt({ text: 'Continue this work', behavior: 'prompt' });
+    expect(service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt).not.toBe(saved.modifiedAt);
+    fake.settle();
+    await service.dispose();
+  });
+
   it('promotes exact live slots while other sessions keep running and isolates their extension state', async () => {
     const first = fixture();
     const second = fixture();
@@ -833,14 +863,14 @@ describe('PiRuntimeService', () => {
     await service.prompt({ text: 'long first task', behavior: 'prompt' });
 
     const secondState = await service.newSession();
-    expect(secondState).toMatchObject({ sessionId: 'session-2', streaming: false, runningSessionCount: 1 });
+    expect(secondState).toMatchObject({ sessionId: 'session-2', streaming: false, activeSessionRunning: false, runningSessionCount: 1 });
     expect(first.session.abort).not.toHaveBeenCalled();
     expect(secondState.sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'session-1', attention: 'running', active: false }),
     ]));
 
     const promoted = await service.switchSession('session-1');
-    expect(promoted).toMatchObject({ sessionId: 'session-1', streaming: true });
+    expect(promoted).toMatchObject({ sessionId: 'session-1', streaming: true, activeSessionRunning: true });
     expect(second.runtime.dispose).toHaveBeenCalledOnce();
     expect(promoted.sessions?.find((session) => session.id === 'session-1')?.attention).toBeNull();
 
@@ -853,7 +883,7 @@ describe('PiRuntimeService', () => {
     await Promise.resolve();
     first.emitSession({ type: 'agent_settled' });
     await vi.waitFor(() => expect(first.runtime.dispose).toHaveBeenCalledOnce());
-    expect(service.getState(false)).toMatchObject({ sessionId: 'session-3', runningSessionCount: 0 });
+    expect(service.getState(false)).toMatchObject({ sessionId: 'session-3', activeSessionRunning: false, runningSessionCount: 0 });
     expect(service.getState(false).sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'session-1', attention: 'completed', active: false }),
     ]));
