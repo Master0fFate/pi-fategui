@@ -841,7 +841,7 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .changes-branch > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .changes-branch:focus-visible, .summary-counts button:focus-visible, .git-refresh-button:focus-visible { outline: 1px solid var(--theme-accent); outline-offset: 1px; }
 .summary-counts { flex: none; margin-left: auto; }
-.summary-counts .git-view-toggle { display: flex; flex: none; align-items: center; gap: 3px; padding: 0 5px; color: var(--theme-text-soft); font-size: 9px; }
+.summary-counts .git-view-toggle { display: flex; flex: none; align-items: center; justify-content: center; gap: 3px; padding: 0 5px; color: var(--theme-text-soft); font-size: 9px; line-height: 1; }
 .summary-counts .summary-metric { display: flex; width: auto; min-width: 25px; gap: 2px; padding: 0 4px; font: 9px var(--font-code); }
 .summary-counts .summary-metric--files { color: var(--theme-warning); }
 .summary-counts .summary-metric--added { color: var(--theme-success); }
