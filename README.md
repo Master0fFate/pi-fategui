@@ -2,7 +2,7 @@
 
 # Fate UI
 
-### A local-first desktop workbench for the real Pi coding agent
+### A GUI workbench for Pi Agent
 
 Run Pi in a focused graphical workspace—with durable conversations, transparent tool activity, project files, Git, terminals, and explicit trust controls.
 
