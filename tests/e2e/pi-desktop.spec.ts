@@ -270,7 +270,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await compactToolsTrigger.click();
     const compactTools = page.getByRole('dialog', { name: 'Composer tools' });
     await expect(compactTools).toBeVisible();
-    await expect(compactTools.getByRole('button', { name: 'Add file reference' })).toBeVisible();
+    await expect(compactTools.getByRole('button', { name: 'Tag project file or folder' })).toBeVisible();
     await assertInsideViewport(compactTools);
     await page.waitForTimeout(180);
     await page.screenshot({ path: 'test-results/pi-desktop-compact-composer.png' });

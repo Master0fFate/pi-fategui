@@ -455,8 +455,10 @@ describe('conversation components', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent('Permission: Edit files');
     await user.click(screen.getByRole('button', { name: 'Open composer tools' }));
     const tools = screen.getByRole('dialog', { name: 'Composer tools' });
-    expect(within(tools).getByRole('button', { name: 'Tag project file or folder' })).toBeInTheDocument();
-    await user.click(within(tools).getByRole('button', { name: 'Tag project file or folder' }));
+    const projectTagButton = within(tools).getByRole('button', { name: 'Tag project file or folder' });
+    expect(projectTagButton.querySelector('.lucide-hash')).toBeInTheDocument();
+    expect(projectTagButton.querySelector('.lucide-at-sign')).not.toBeInTheDocument();
+    await user.click(projectTagButton);
     expect(screen.getByLabelText('Message Pi')).toHaveValue('#');
     const resources = await screen.findByRole('listbox', { name: 'Project resources' });
     expect(within(resources).getByRole('option', { name: /#README\.md.*project file/iu })).toBeInTheDocument();
