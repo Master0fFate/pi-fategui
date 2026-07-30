@@ -19,6 +19,20 @@ describe('PiEventBatcher', () => {
     expect(emitted[0]).toEqual([{ type: 'assistant.text', messageId: 'm', delta: 'ab', timestamp: 2 }]);
   });
 
+  it('coalesces namespaced child deltas without mixing child runs', () => {
+    const emitted: PiEvent[][] = [];
+    const batcher = new PiEventBatcher((batch) => emitted.push(batch));
+    batcher.enqueue({ type: 'subagent.event', runId: 'child-a', timestamp: 1, event: { type: 'assistant.text', messageId: 'm', delta: 'one', timestamp: 1 } });
+    batcher.enqueue({ type: 'subagent.event', runId: 'child-a', timestamp: 2, event: { type: 'assistant.text', messageId: 'm', delta: ' two', timestamp: 2 } });
+    batcher.enqueue({ type: 'subagent.event', runId: 'child-b', timestamp: 3, event: { type: 'assistant.text', messageId: 'm', delta: 'separate', timestamp: 3 } });
+    batcher.flush();
+
+    expect(emitted.flat()).toEqual([
+      expect.objectContaining({ type: 'subagent.event', runId: 'child-a', event: expect.objectContaining({ delta: 'one two' }) }),
+      expect.objectContaining({ type: 'subagent.event', runId: 'child-b', event: expect.objectContaining({ delta: 'separate' }) }),
+    ]);
+  });
+
   it('updates merged stream byte counts incrementally instead of reserializing the growing event', () => {
     const emitted: PiEvent[][] = [];
     const stringify = vi.spyOn(JSON, 'stringify');
@@ -30,6 +44,30 @@ describe('PiEventBatcher', () => {
 
     expect(emitted).toHaveLength(1);
     expect((emitted[0]?.[0] as { delta?: string }).delta).toHaveLength(2_000);
+    expect(stringify.mock.calls.length).toBeLessThanOrEqual(2_005);
+  });
+
+  it('updates merged child-stream byte counts without reserializing the growing envelope', () => {
+    const emitted: PiEvent[][] = [];
+    const stringify = vi.spyOn(JSON, 'stringify');
+    const batcher = new PiEventBatcher((batch) => emitted.push(batch), { maxDeltaLength: 10_000 });
+    for (let index = 0; index < 2_000; index += 1) {
+      batcher.enqueue({
+        type: 'subagent.event',
+        runId: 'child',
+        timestamp: index,
+        cursor: index,
+        event: { type: 'assistant.text', messageId: 'm', delta: 'x', timestamp: index },
+      });
+    }
+    batcher.flush();
+
+    expect(emitted).toHaveLength(1);
+    const child = emitted[0]?.[0];
+    expect(child?.type).toBe('subagent.event');
+    if (child?.type !== 'subagent.event' || child.event.type !== 'assistant.text') throw new Error('Expected a child assistant stream.');
+    expect(child.event.delta).toHaveLength(2_000);
+    expect(child.cursor).toBe(1_999);
     expect(stringify.mock.calls.length).toBeLessThanOrEqual(2_005);
   });
 

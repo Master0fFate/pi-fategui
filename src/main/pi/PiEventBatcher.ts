@@ -99,6 +99,34 @@ export class PiEventBatcher {
   }
 
   private mergeDelta(event: PiEvent): boolean {
+    if (event.type === 'subagent.event' && (event.event.type === 'assistant.text' || event.event.type === 'assistant.reasoning')) {
+      const previous = this.pending.at(-1);
+      if (
+        !previous
+        || previous.type !== 'subagent.event'
+        || previous.runId !== event.runId
+        || previous.event.type !== event.event.type
+        || previous.event.messageId !== event.event.messageId
+        || previous.event.delta.length + event.event.delta.length > this.maxDeltaLength
+      ) return false;
+      const before = this.eventBytes.get(previous) ?? this.measure(previous);
+      const deltaBytes = Buffer.byteLength(JSON.stringify(event.event.delta), 'utf8') - 2;
+      const childTimestampBytes = String(event.event.timestamp).length - String(previous.event.timestamp).length;
+      const timestampBytes = String(event.timestamp).length - String(previous.timestamp).length;
+      const cursorBytes = event.cursor === undefined
+        ? 0
+        : previous.cursor === undefined
+          ? `,"cursor":${event.cursor}`.length
+          : String(event.cursor).length - String(previous.cursor).length;
+      previous.event.delta += event.event.delta;
+      previous.event.timestamp = event.event.timestamp;
+      previous.timestamp = event.timestamp;
+      if (event.cursor !== undefined) previous.cursor = event.cursor;
+      const after = before + deltaBytes + childTimestampBytes + timestampBytes + cursorBytes;
+      this.eventBytes.set(previous, after);
+      this.pendingBytes += after - before;
+      return true;
+    }
     if (event.type !== 'assistant.text' && event.type !== 'assistant.reasoning') return false;
     const previous = this.pending.at(-1);
     if (!previous || previous.type !== event.type || previous.messageId !== event.messageId) return false;

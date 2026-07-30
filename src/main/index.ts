@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { FilesystemService } from './files/FilesystemService';
 import { GitService } from './git/GitService';
 import { registerIpc } from './ipc/registerIpc';
-import { parseLaunchProjectPath, projectPathFromAdditionalData } from './launchProject';
+import { parseLaunchProjectPath } from './launchProject';
+import { acquireInstanceProfile } from './instanceProfile';
 import { AppLogService } from './logging/AppLogService';
 import { MusicService } from './music/MusicService';
 import { PiRuntimeService } from './pi/PiRuntimeService';
@@ -40,8 +41,10 @@ try {
 } catch (error) {
   initialLaunchError = error;
 }
-const singleInstanceLock = app.requestSingleInstanceLock({ projectPath: initialProjectPath });
-if (!singleInstanceLock) app.quit();
+// Every process gets the first available persistent Electron profile slot.
+// This keeps Chromium storage isolated while allowing independent Fate UI
+// runtimes and projects to run side by side.
+const instanceProfile = acquireInstanceProfile(app);
 
 configurePackagedSpeechLibrary();
 const logs = new AppLogService();
@@ -65,13 +68,6 @@ const rendererPolicy = createTrustedRendererPolicy(rendererPath, process.env.VIT
 
 function sendCommand(command: AppCommand): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcChannels.appCommand, appCommandSchema.parse(command));
-}
-
-function focusMainWindow(): void {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.focus();
 }
 
 function reportLaunchError(error: unknown): void {
@@ -229,16 +225,9 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-if (singleInstanceLock) app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => {
-  if ((!mainWindow || mainWindow.isDestroyed()) && app.isReady()) mainWindow = createWindow();
-  focusMainWindow();
-  const projectPath = projectPathFromAdditionalData(additionalData);
-  if (projectPath) dispatchProjectPath(projectPath);
-});
-
-if (singleInstanceLock) app.whenReady().then(async () => {
+app.whenReady().then(async () => {
   await Promise.all([settings.load(), windowState.load()]);
-  logs.write('info', 'app', `Fate UI ${app.getVersion()} started.`);
+  logs.write('info', 'app', `Fate UI ${app.getVersion()} started in instance slot ${instanceProfile.slot}.`);
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const mediaTypes = 'mediaTypes' in details ? details.mediaTypes : undefined;
     callback(permission === 'media' && isTrustedAudioPermissionRequest(rendererPolicy, {
@@ -273,7 +262,7 @@ if (singleInstanceLock) app.whenReady().then(async () => {
   });
 });
 
-if (singleInstanceLock) app.on('before-quit', (event) => {
+app.on('before-quit', (event) => {
   if (quitReady) return;
   event.preventDefault();
   if (shutdown) return;
@@ -291,6 +280,6 @@ if (singleInstanceLock) app.on('before-quit', (event) => {
   });
 });
 
-if (singleInstanceLock) app.on('window-all-closed', () => {
+app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });

@@ -33,6 +33,7 @@
     "test:watch": "vitest",
     "build:e2e": "pnpm build && vite build --config vite.e2e.config.ts",
     "test:e2e": "pnpm build:e2e && playwright test",
+    "profile:live": "pnpm build:e2e && node scripts/profile-live-renderer.mjs --runs 3 --label live-profile",
     "verify": "pnpm typecheck && pnpm test && pnpm test:e2e",
     "smoke": "pnpm build && cross-env PI_DESKTOP_SMOKE=1 electron .",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",

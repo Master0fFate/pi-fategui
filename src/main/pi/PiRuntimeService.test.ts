@@ -6,9 +6,10 @@ import {
   Theme,
   type AgentSessionRuntime,
   type ModelRuntime,
+  type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { activeToolsForPermission, PiRuntimeService, isCanonicalPathInside, selectUserExtensionPaths, type PiSdkAdapter } from './PiRuntimeService';
+import { activeToolsForPermission, assertOwnedToolDefinitions, PiRuntimeService, isCanonicalPathInside, selectUserExtensionPaths, type PiSdkAdapter } from './PiRuntimeService';
 import type { PiEvent } from '../../shared/contracts/ipc';
 import { PiSessionRepository } from './PiSessionRepository';
 import type { SessionTitleGenerator } from './PiSessionTitleGenerator';
@@ -40,7 +41,9 @@ function fixture(availableModels: typeof model[] = [model]) {
       getLeafId: vi.fn(() => 'leaf-1'),
       getSessionName: vi.fn(() => sessionName),
       appendSessionInfo: vi.fn((name: string) => { sessionName = name; return 'name-entry'; }),
+      appendCustomEntry: vi.fn(() => 'custom-entry'),
     },
+    resourceLoader: { getSkills: () => ({ skills: [], diagnostics: [] }) },
     get isStreaming() { return streaming; },
     bindExtensions: vi.fn(async () => undefined),
     subscribe: vi.fn((listener: (event: unknown) => void) => {
@@ -57,6 +60,7 @@ function fixture(availableModels: typeof model[] = [model]) {
     }),
     steer: vi.fn(async (text: string) => { steeringMessages.push(text); }),
     followUp: vi.fn(async (text: string) => { followUpMessages.push(text); }),
+    sendCustomMessage: vi.fn(async () => undefined),
     clearQueue: vi.fn(() => {
       const queued = { steering: [...steeringMessages], followUp: [...followUpMessages] };
       steeringMessages = [];
@@ -117,6 +121,12 @@ describe('PiRuntimeService', () => {
     expect(activeToolsForPermission(['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen'], 'edit')).toEqual(['read', 'edit', 'write', 'generate_image', 'imagegen']);
     expect(activeToolsForPermission(['read', 'edit', 'write', 'generate_image', 'imagegen'], 'read-only')).toEqual(['read', 'generate_image', 'imagegen']);
     expect(activeToolsForPermission(['read', 'generate_image', 'imagegen'], 'full-access')).toEqual(['read', 'generate_image', 'imagegen', 'write', 'edit', 'bash']);
+  });
+
+  it('fails closed if an extension replaces a Fate-owned orchestration tool', () => {
+    const owned = { name: 'subagent' } as ToolDefinition;
+    expect(() => assertOwnedToolDefinitions({ getToolDefinition: () => owned } as never, [owned])).not.toThrow();
+    expect(() => assertOwnedToolDefinitions({ getToolDefinition: () => ({ name: 'subagent' }) } as never, [owned])).toThrow(/extension replaced Fate UI's owned subagent tool/u);
   });
 
   it('loads enabled global extensions but excludes executable project extensions', () => {
@@ -669,7 +679,15 @@ describe('PiRuntimeService', () => {
 
     const initial = await service.openProject({ path: '/project', name: 'project', trusted: true });
     expect(initial.permissionLevel).toBe('full-access');
-    expect(fake.adapter.createRuntime).toHaveBeenCalledWith('/project', fake.modelRuntime, true);
+    expect(fake.adapter.createRuntime).toHaveBeenCalledWith(
+      '/project', fake.modelRuntime, true,
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'subagent' }),
+        expect.objectContaining({ name: 'subagent_start' }),
+        expect.objectContaining({ name: 'subagent_manage' }),
+        expect.objectContaining({ name: 'subagent_catalog' }),
+      ]),
+    );
 
     const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as ((session: typeof fake.session) => Promise<void>) | undefined;
     const secondSession = { ...fake.session, sessionId: 'session-2' };
@@ -713,6 +731,63 @@ describe('PiRuntimeService', () => {
     await service.prompt({ text: 'work', behavior: 'prompt' });
     expect(await service.abort()).toEqual({ aborted: true });
     expect(fake.session.abort).toHaveBeenCalledOnce();
+    await service.dispose();
+  });
+
+  it('lets Stop terminate managed children even when the main agent is idle', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const coordinator = (service as unknown as { subagents: { hasActiveRuns: (sessionId: string) => boolean; cancelParent: (sessionId: string) => Promise<void> } }).subagents;
+    const active = vi.spyOn(coordinator, 'hasActiveRuns').mockReturnValue(true);
+    const cancel = vi.spyOn(coordinator, 'cancelParent').mockResolvedValue();
+
+    expect(await service.abort()).toEqual({ aborted: true });
+    expect(cancel).toHaveBeenCalledWith('session-1');
+    expect(fake.session.abort).not.toHaveBeenCalled();
+
+    active.mockRestore();
+    cancel.mockRestore();
+    await service.dispose();
+  });
+
+  it('delivers opt-in child completion notifications to the model without cluttering the chat', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const coordinator = (service as unknown as {
+      subagents: { host: { notifyParent: (sessionId: string, mode: 'immediate', text: string, runIds: string[], workflowId?: string) => Promise<void> } };
+    }).subagents;
+
+    await coordinator.host.notifyParent('session-1', 'immediate', 'Child settled.', ['run-1'], 'workflow-1');
+
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledWith({
+      customType: 'fate-subagent-notification',
+      content: [{ type: 'text', text: 'Child settled.' }],
+      display: false,
+      details: { runIds: ['run-1'], workflowId: 'workflow-1' },
+    }, { triggerTurn: true, deliverAs: 'nextTurn' });
+    await service.dispose();
+  });
+
+  it('queues immediate child notifications as follow-ups while streaming and leaves next-turn notifications passive', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const coordinator = (service as unknown as {
+      subagents: { host: { notifyParent: (sessionId: string, mode: 'immediate' | 'next-turn', text: string, runIds: string[]) => Promise<void> } };
+    }).subagents;
+    fake.setStreaming(true);
+
+    await coordinator.host.notifyParent('session-1', 'immediate', 'Wake after the active turn.', ['run-1']);
+    await coordinator.host.notifyParent('session-1', 'next-turn', 'Attach to a future turn.', ['run-2']);
+
+    expect(fake.session.sendCustomMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      customType: 'fate-subagent-notification', details: { runIds: ['run-1'] },
+    }), { triggerTurn: true, deliverAs: 'followUp' });
+    expect(fake.session.sendCustomMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      customType: 'fate-subagent-notification', details: { runIds: ['run-2'] },
+    }), { triggerTurn: false, deliverAs: 'nextTurn' });
     await service.dispose();
   });
 
@@ -842,6 +917,31 @@ describe('PiRuntimeService', () => {
     await service.prompt({ text: 'Continue this work', behavior: 'prompt' });
     expect(service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt).not.toBe(saved.modifiedAt);
     fake.settle();
+    await service.dispose();
+  });
+
+  it('preserves the owning parent slot when a managed child outlives the main turn', async () => {
+    const first = fixture();
+    const second = fixture();
+    second.session.sessionId = 'session-2';
+    const createRuntime = vi.fn()
+      .mockResolvedValueOnce(first.runtime as unknown as AgentSessionRuntime)
+      .mockResolvedValueOnce(second.runtime as unknown as AgentSessionRuntime);
+    const service = new PiRuntimeService({ ...first.adapter, createRuntime });
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const coordinator = (service as unknown as { subagents: { hasActiveRuns: (sessionId: string) => boolean } }).subagents;
+    const active = vi.spyOn(coordinator, 'hasActiveRuns').mockImplementation((sessionId) => sessionId === 'session-1');
+
+    const state = await service.newSession();
+
+    expect(state).toMatchObject({ sessionId: 'session-2', runningSessionCount: 1 });
+    expect(first.runtime.newSession).not.toHaveBeenCalled();
+    expect(first.runtime.dispose).not.toHaveBeenCalled();
+    expect(state.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'session-1', attention: 'running', active: false }),
+    ]));
+
+    active.mockRestore();
     await service.dispose();
   });
 

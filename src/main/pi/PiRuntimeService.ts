@@ -6,6 +6,7 @@ import {
   type AgentSessionEvent,
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
+  type ToolDefinition,
   DefaultPackageManager,
   ModelRuntime,
   SessionManager,
@@ -36,17 +37,20 @@ import type {
   RuntimeTool,
   SessionAttention,
   SessionSummary,
+  SubagentControlInput,
+  SubagentNotification,
   ThinkingLevel,
 } from '../../shared/contracts/ipc';
 import { PiEventBatcher } from './PiEventBatcher';
-import { PiEventNormalizer, messageImages, messageText, safeText } from './PiEventNormalizer';
+import { PiEventNormalizer, messageImages, messageText, safeText, subagentRunIds } from './PiEventNormalizer';
 import { promoteInlineResourceCommand } from './PiInlineCommands';
 import { createPiExtensionUiBridge, emptyExtensionUiState, type ExtensionNoticeLevel, type PiExtensionUiBridge } from './PiExtensionUi';
 import { PiDesktopError, authRequiredError, normalizeError } from './errors';
 import { PiSessionRepository, sessionDisplayTitle } from './PiSessionRepository';
 import { PiSessionTitleGenerator, type SessionTitleGenerator } from './PiSessionTitleGenerator';
-import { createProjectConfinedTools, type ProjectToolAccess } from './PiToolPolicy';
+import { activeToolsForPermission, createProjectConfinedTools, type ProjectToolAccess } from './PiToolPolicy';
 import { validatePromptImages } from './PiPromptImages';
+import { SubagentCoordinator } from './SubagentCoordinator';
 import { InMemorySessionPermissionStore, type SessionPermissionPersistence } from './SessionPermissionStore';
 
 export interface SessionDefaults {
@@ -57,7 +61,7 @@ export interface SessionDefaults {
 export interface PiSdkAdapter {
   supportsClone?: boolean;
   createModelRuntime: () => Promise<ModelRuntime>;
-  createRuntime: (cwd: string, modelRuntime: ModelRuntime, projectTrusted?: boolean) => Promise<AgentSessionRuntime>;
+  createRuntime: (cwd: string, modelRuntime: ModelRuntime, projectTrusted?: boolean, customTools?: ToolDefinition[]) => Promise<AgentSessionRuntime>;
 }
 
 const MAX_HYDRATED_HISTORY_ENTRIES = 5_000;
@@ -128,21 +132,24 @@ interface RuntimeSlot {
   disposePromise: Promise<void> | null;
 }
 
-const toolsByPermissionLevel: Record<PermissionLevel, readonly string[]> = {
-  'read-only': ['read', 'generate_image'],
-  edit: ['read', 'write', 'edit', 'generate_image'],
-  'full-access': ['read', 'write', 'edit', 'bash', 'generate_image'],
-};
-const permissionControlledTools = new Set(['read', 'write', 'edit', 'bash', 'generate_image']);
-
-export function activeToolsForPermission(activeTools: readonly string[], level: PermissionLevel): string[] {
-  const allowed = new Set(toolsByPermissionLevel[level]);
-  const selected = activeTools.filter((name) => !permissionControlledTools.has(name) || allowed.has(name));
-  for (const name of toolsByPermissionLevel[level]) if (!selected.includes(name)) selected.push(name);
-  return selected;
-}
+export { activeToolsForPermission } from './PiToolPolicy';
 
 const toolAccessBySession = new WeakMap<AgentSession, ProjectToolAccess>();
+const ownedCustomToolsBySession = new WeakMap<AgentSession, readonly ToolDefinition[]>();
+
+export function assertOwnedToolDefinitions(
+  session: Pick<AgentSession, 'getToolDefinition'>,
+  ownedTools: readonly ToolDefinition[],
+): void {
+  for (const ownedTool of ownedTools) {
+    if (session.getToolDefinition(ownedTool.name) === ownedTool) continue;
+    throw new PiDesktopError({
+      code: 'PI_RUNTIME_ERROR',
+      message: `Pi refused to start because an extension replaced Fate UI's owned ${ownedTool.name} tool.`,
+      retryable: false,
+    });
+  }
+}
 
 export function selectUserExtensionPaths(resources: readonly { path: string; enabled: boolean; metadata: { scope: string } }[]): string[] {
   return resources
@@ -185,7 +192,7 @@ const realPiSdkAdapter: PiSdkAdapter = {
   // Verified against SDK 0.81.1: clone is runtime.fork(currentLeaf, { position: 'at' }).
   supportsClone: true,
   createModelRuntime: () => ModelRuntime.create(),
-  async createRuntime(cwd, modelRuntime, projectTrusted) {
+  async createRuntime(cwd, modelRuntime, projectTrusted, customTools = []) {
     const factory: CreateAgentSessionRuntimeFactory = async ({ cwd: effectiveCwd, sessionManager, sessionStartEvent }) => {
       // Project trust is decided by Fate UI's main-process prompt before the SDK
       // runtime exists. Pass that decision through so global extensions observe
@@ -232,10 +239,11 @@ const realPiSdkAdapter: PiSdkAdapter = {
         // SDK 0.81.1 declares heterogeneous ToolDefinition arguments as
         // unknown, which is invariant under strictFunctionTypes. Each tool
         // still comes from the SDK's typed public factories.
-        customTools: confinedTools as unknown as NonNullable<Parameters<typeof createAgentSessionFromServices>[0]['customTools']>,
+        customTools: [...confinedTools, ...customTools] as unknown as NonNullable<Parameters<typeof createAgentSessionFromServices>[0]['customTools']>,
         ...(sessionStartEvent ? { sessionStartEvent } : {}),
       });
       toolAccessBySession.set(created.session, toolAccess);
+      ownedCustomToolsBySession.set(created.session, customTools);
       // Gate only Fate UI's controlled tools. User-installed extension tools keep
       // the activation state selected by Pi and their owning extensions.
       created.session.setActiveToolsByName(activeToolsForPermission(created.session.getActiveToolNames(), 'edit'));
@@ -328,6 +336,7 @@ function toTools(messages: readonly unknown[]): RuntimeTool[] {
     const existing = tools.get(value.toolCallId);
     const images = messageImages(message);
     const output = safeText(messageText(message) || (value.details === undefined ? '' : value.details));
+    const runIds = subagentRunIds({ details: value.details });
     tools.set(value.toolCallId, {
       id: value.toolCallId,
       name: typeof value.toolName === 'string' ? value.toolName : existing?.name ?? 'Tool',
@@ -340,6 +349,7 @@ function toTools(messages: readonly unknown[]): RuntimeTool[] {
       endedAt: timestamp,
       timelinePosition: existing?.timelinePosition ?? messageIndex,
       ...(images.length ? { images } : {}),
+      ...(runIds ? { subagentRunIds: runIds } : {}),
     });
   });
   return [...tools.values()];
@@ -505,6 +515,7 @@ export class PiRuntimeService {
   private fallbackStateError: AppError | null = null;
   private eventSink: (events: PiEvent[]) => void = () => undefined;
   private readonly batcher: PiEventBatcher;
+  private readonly subagents: SubagentCoordinator;
   private readonly disconnectedNormalizer = new PiEventNormalizer(() => null);
   private initialization = 0;
   private sessions: SessionSummary[] = [];
@@ -534,6 +545,66 @@ export class PiRuntimeService {
     private readonly sessionTitleGenerator: SessionTitleGenerator = new PiSessionTitleGenerator(),
   ) {
     this.batcher = new PiEventBatcher((events) => this.eventSink(events));
+    this.subagents = new SubagentCoordinator({
+      resolveParent: (sessionId) => {
+        const slot = this.findLiveSlot(sessionId);
+        if (!slot || !this.project) return null;
+        return { projectPath: this.project.path, session: slot.runtime.session, permissionLevel: slot.permissionLevel };
+      },
+      emit: (parentSessionId, event) => {
+        const slot = this.findLiveSlot(parentSessionId);
+        if (this.selectedSlot === slot) {
+          this.enqueue(event);
+        } else if (slot && event.type === 'subagent.started') {
+          this.setSessionAttention(slot, 'running');
+          this.mergeLiveSessionSummaries();
+          this.emitState();
+        } else if (slot && event.type === 'subagent.completed' && (event.run.status === 'error' || event.run.status === 'timed-out' || event.run.status === 'budget-exceeded')) {
+          slot.runFailed = true;
+        } else if (slot && event.type === 'subagent.workflow.updated' && event.workflow.status === 'error') {
+          slot.runFailed = true;
+        }
+      },
+      persist: (parentSessionId, run) => {
+        const slot = this.findLiveSlot(parentSessionId);
+        if (!slot || slot.disposed) return;
+        slot.runtime.session.sessionManager.appendCustomEntry('fate-subagent-run', {
+          kind: 'fate-subagent-snapshot', version: 2, run,
+        });
+        slot.modifiedAt = new Date().toISOString();
+      },
+      persistWorkflow: (parentSessionId, workflow) => {
+        const slot = this.findLiveSlot(parentSessionId);
+        if (!slot || slot.disposed) return;
+        slot.runtime.session.sessionManager.appendCustomEntry('fate-subagent-workflow', {
+          kind: 'fate-subagent-workflow-snapshot', version: 1, workflow,
+        });
+        slot.modifiedAt = new Date().toISOString();
+      },
+      notifyParent: async (parentSessionId, mode: SubagentNotification, text, runIds, workflowId) => {
+        const slot = this.findLiveSlot(parentSessionId);
+        if (!slot || slot.disposed || mode === 'never') return;
+        const session = slot.runtime.session;
+        await session.sendCustomMessage({
+          customType: 'fate-subagent-notification',
+          content: [{ type: 'text', text }],
+          display: false,
+          details: { runIds, ...(workflowId ? { workflowId } : {}) },
+        }, {
+          triggerTurn: mode === 'immediate',
+          deliverAs: mode === 'immediate' && session.isStreaming ? 'followUp' : 'nextTurn',
+        });
+      },
+      settled: (parentSessionId) => {
+        const slot = this.findLiveSlot(parentSessionId);
+        if (!slot || slot.disposed) return;
+        if (this.selectedSlot === slot) {
+          this.emitState();
+        } else if (!this.subagents.hasOwnedWork(parentSessionId) && !this.sessionHasActiveWork(slot.runtime.session)) {
+          this.settleInactiveSlot(slot);
+        }
+      },
+    });
   }
 
   setEventSink(sink: (events: PiEvent[]) => void): void {
@@ -612,6 +683,8 @@ export class PiRuntimeService {
       queue,
       extensionUi: this.selectedSlot?.extensionUiState ?? emptyExtensionUiState(),
       sessions: this.sessions,
+      subagents: session ? this.subagents.getRuns(session.sessionId) : [],
+      subagentWorkflows: session ? this.subagents.getWorkflowViews(session.sessionId) : [],
       ...(includeMessages && session ? { branches: this.sessionRepository.branches(session) } : {}),
       ...(session && typeof session.getUserMessagesForForking === 'function'
         ? { forkPoints: session.getUserMessagesForForking().slice(-2_000).filter((point) => point.entryId.length <= 500).map((point) => ({ ...point, text: point.text.slice(0, 2_000) })) }
@@ -645,6 +718,7 @@ export class PiRuntimeService {
     this.replacementActive = false;
     await this.disposeRuntime();
     if (generation !== this.initialization) return this.getState();
+    this.subagents.reset();
     this.project = null;
     this.modelRuntime = null;
     this.fallbackPermissionLevel = 'full-access';
@@ -666,6 +740,7 @@ export class PiRuntimeService {
     this.replacementActive = false;
     await this.disposeRuntime();
     if (generation !== this.initialization) return this.getState();
+    this.subagents.reset();
     this.project = project;
     this.fallbackPermissionLevel = 'full-access';
     this.models = [];
@@ -700,7 +775,7 @@ export class PiRuntimeService {
 
       // Build project-bound services before checking availability: enabled global
       // user extensions may register providers and models during runtime creation.
-      const runtime = await this.adapter.createRuntime(project.path, modelRuntime, project.trusted);
+      const runtime = await this.adapter.createRuntime(project.path, modelRuntime, project.trusted, this.subagents.createTools(modelRuntime));
       if (generation !== this.initialization) {
         await runtime.dispose();
         return this.getState();
@@ -981,9 +1056,24 @@ export class PiRuntimeService {
 
   async abort(): Promise<{ aborted: boolean }> {
     const session = this.runtime?.session;
-    if (!session || !session.isStreaming) return { aborted: false };
-    await session.abort();
+    if (!session) return { aborted: false };
+    const hasChildren = this.subagents.hasActiveRuns(session.sessionId);
+    if (!session.isStreaming && !hasChildren) return { aborted: false };
+    const [parentAbort] = await Promise.allSettled([
+      session.isStreaming ? session.abort() : Promise.resolve(),
+      this.subagents.cancelParent(session.sessionId),
+    ]);
+    if (parentAbort.status === 'rejected') throw parentAbort.reason;
     return { aborted: true };
+  }
+
+  async controlSubagent(input: SubagentControlInput): Promise<RuntimeState> {
+    const session = this.requireSession();
+    if (!this.modelRuntime) {
+      throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'The model runtime is unavailable for child controls.', retryable: true });
+    }
+    await this.subagents.controlRun(session.sessionId, input, this.modelRuntime);
+    return this.getState(false);
   }
 
   async setModel(provider: string, id: string): Promise<RuntimeState> {
@@ -1077,8 +1167,9 @@ export class PiRuntimeService {
       }
     };
     return this.runReplacement(async (runtime, slot) => {
+      const hasManagedChildren = this.subagents.hasOwnedWork(slot.runtime.session.sessionId);
       if (!slot.runtime.session.isStreaming && this.sessionHasNonStreamingWork(slot.runtime.session)) throw this.activeOperationError('creating a session');
-      if (slot.runtime.session.isStreaming) {
+      if (slot.runtime.session.isStreaming || hasManagedChildren) {
         const created = await this.createAdditionalSlot();
         await this.applySessionDefaults(created.runtime.session, nextDefaults, created);
         await this.selectRuntimeSlot(created);
@@ -1109,6 +1200,7 @@ export class PiRuntimeService {
     const projectPath = this.project?.path;
     if (!projectPath) return Promise.reject(new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before switching sessions.', retryable: true }));
     return this.runReplacement(async (runtime, slot) => {
+      const hasManagedChildren = this.subagents.hasOwnedWork(slot.runtime.session.sessionId);
       if (!slot.runtime.session.isStreaming && this.sessionHasNonStreamingWork(slot.runtime.session)) throw this.activeOperationError('switching sessions');
       if (runtime.session.sessionId === sessionId) {
         this.acknowledgeSession(sessionId);
@@ -1122,7 +1214,7 @@ export class PiRuntimeService {
       const session = await this.sessionRepository.resolve(projectPath, sessionId) ?? this.summaryForSessionId(sessionId);
       if (this.project?.path !== projectPath || slot.disposed || this.selectedSlot !== slot) throw this.replacementSuperseded();
       if (!session || session.path.startsWith('live:')) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The selected session no longer exists.', retryable: true });
-      if (slot.runtime.session.isStreaming) {
+      if (slot.runtime.session.isStreaming || hasManagedChildren) {
         const opened = await this.createAdditionalSlot(session.path);
         await this.selectRuntimeSlot(opened);
         return;
@@ -1171,6 +1263,7 @@ export class PiRuntimeService {
     if (initialization !== this.initialization || this.project?.path !== projectPath) throw this.replacementSuperseded();
     this.sessionAttention.delete(sessionId);
     this.coldPendingModels.delete(sessionId);
+    this.subagents.releaseParent(sessionId);
     await this.refreshSessions();
     if (initialization !== this.initialization || this.project?.path !== projectPath) throw this.replacementSuperseded();
     this.emitState();
@@ -1180,7 +1273,7 @@ export class PiRuntimeService {
   async forkSession(entryId: string): Promise<{ state: RuntimeState; selectedText?: string }> {
     let selectedText: string | undefined;
     const state = await this.runReplacement(async (runtime) => {
-      if (this.sessionHasActiveWork(runtime.session)) throw this.activeOperationError('forking this session');
+      if (this.sessionHasActiveWork(runtime.session) || this.subagents.hasOwnedWork(runtime.session.sessionId)) throw this.activeOperationError('forking this session');
       if (typeof runtime.fork !== 'function') throw this.unsupported('Session branching');
       const points = runtime.session.getUserMessagesForForking?.() ?? [];
       if (!points.some((point) => point.entryId === entryId)) {
@@ -1195,7 +1288,7 @@ export class PiRuntimeService {
 
   cloneSession(): Promise<RuntimeState> {
     return this.runReplacement(async (runtime) => {
-      if (this.sessionHasActiveWork(runtime.session)) throw this.activeOperationError('cloning this session');
+      if (this.sessionHasActiveWork(runtime.session) || this.subagents.hasOwnedWork(runtime.session.sessionId)) throw this.activeOperationError('cloning this session');
       if (this.adapter.supportsClone !== true || typeof runtime.fork !== 'function') throw this.unsupported('Session cloning');
       const leafId = runtime.session.sessionManager?.getLeafId?.();
       if (!leafId) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The current session has no conversation to clone.', retryable: true });
@@ -1205,7 +1298,7 @@ export class PiRuntimeService {
 
   importSession(filePath: string): Promise<RuntimeState> {
     return this.runReplacement(async (runtime) => {
-      if (this.sessionHasActiveWork(runtime.session)) throw this.activeOperationError('importing a session');
+      if (this.sessionHasActiveWork(runtime.session) || this.subagents.hasOwnedWork(runtime.session.sessionId)) throw this.activeOperationError('importing a session');
       if (typeof runtime.importFromJsonl !== 'function') throw this.unsupported('Session import');
       if ((await runtime.importFromJsonl(filePath, this.project!.path))?.cancelled) throw this.replacementCancelled('Session import');
     });
@@ -1213,6 +1306,7 @@ export class PiRuntimeService {
 
   async compact(instructions?: string): Promise<RuntimeState> {
     const session = this.requireIdleSession('compacting context');
+    if (this.subagents.hasOwnedWork(session.sessionId)) throw this.activeOperationError('compacting context while child sessions or mailboxes are live');
     const slot = this.selectedSlot!;
     const initialization = this.initialization;
     const sessionGeneration = slot.sessionGeneration;
@@ -1251,6 +1345,7 @@ export class PiRuntimeService {
     }
     const pending = await Promise.allSettled([...this.pendingDisposals]);
     failures.push(...pending.flatMap((result) => result.status === 'rejected' ? [result.reason] : []));
+    this.subagents.reset();
     this.batcher.dispose();
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, 'Pi runtime shutdown was incomplete.');
@@ -1348,6 +1443,7 @@ export class PiRuntimeService {
     slot.createdAt = new Date().toISOString();
     slot.modifiedAt = slot.createdAt;
     slot.normalizer.resetSession();
+    this.subagents.releaseParent(invalidatedSession.sessionId);
     if (this.selectedSlot === slot) this.batcher.clear();
   }
 
@@ -1386,7 +1482,7 @@ export class PiRuntimeService {
       feature: string,
       operation: () => Promise<{ cancelled?: boolean }>,
     ): Promise<{ cancelled: boolean }> => {
-      if (!ownsSession() || this.selectedSlot !== slot || this.sessionHasActiveWork(session)) return { cancelled: true };
+      if (!ownsSession() || this.selectedSlot !== slot || this.sessionHasActiveWork(session) || this.subagents.hasOwnedWork(session.sessionId)) return { cancelled: true };
       try {
         await this.runReplacement(async (current, currentSlot) => {
           if (current !== runtime || currentSlot !== slot || !ownsSession()) throw this.replacementSuperseded();
@@ -1430,6 +1526,7 @@ export class PiRuntimeService {
       onError: (error) => { if (ownsSession() && this.selectedSlot === slot) this.emitSystemMessage(`Extension error: ${error.error}`, 'error'); },
     });
     if (!ownsSession()) return;
+    assertOwnedToolDefinitions(session, ownedCustomToolsBySession.get(session) ?? []);
     const access = toolAccessBySession.get(session);
     const coldPendingModel = this.coldPendingModels.get(session.sessionId);
     if (coldPendingModel) {
@@ -1447,6 +1544,7 @@ export class PiRuntimeService {
     slot.permissionLevel = await this.permissionForSession(session, slot);
     if (!ownsSession()) return;
     session.setActiveToolsByName(activeToolsForPermission(session.getActiveToolNames(), slot.permissionLevel));
+    this.subagents.restoreParent(session);
     if (access) access.fullAccess = slot.permissionLevel === 'full-access';
     this.installModelBoundary(slot, session, ownsSession);
     slot.unsubscribeSession = session.subscribe((event: AgentSessionEvent) => this.handleSessionEvent(slot, session, generation, event));
@@ -1615,7 +1713,7 @@ export class PiRuntimeService {
   }
 
   private settleInactiveSlot(slot: RuntimeSlot): void {
-    if (slot.disposed || this.selectedSlot === slot || this.sessionHasActiveWork(slot.runtime.session)) return;
+    if (slot.disposed || this.selectedSlot === slot || this.sessionHasActiveWork(slot.runtime.session) || this.subagents.hasOwnedWork(slot.runtime.session.sessionId)) return;
     const initialization = this.initialization;
     const sessionId = slot.runtime.session.sessionId;
     const attentionRevision = this.setSessionAttention(slot, slot.runFailed ? 'error' : 'completed');
@@ -1843,7 +1941,7 @@ export class PiRuntimeService {
   private async createAdditionalSlot(sessionPath?: string): Promise<RuntimeSlot> {
     if (!this.project || !this.modelRuntime) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open and trust a project before using Pi.', retryable: true });
     for (const slot of [...this.liveSlots]) {
-      if (slot !== this.selectedSlot && !this.sessionHasActiveWork(slot.runtime.session)) await this.disposeSlot(slot, false);
+      if (slot !== this.selectedSlot && !this.sessionHasActiveWork(slot.runtime.session) && !this.subagents.hasOwnedWork(slot.runtime.session.sessionId)) await this.disposeSlot(slot, false);
     }
     if (this.liveSlots.size + this.pendingDisposals.size >= MAX_LIVE_RUNTIME_SLOTS) {
       throw new PiDesktopError({
@@ -1853,7 +1951,7 @@ export class PiRuntimeService {
       });
     }
     const generation = this.initialization;
-    const runtime = await this.adapter.createRuntime(this.project.path, this.modelRuntime, this.project.trusted);
+    const runtime = await this.adapter.createRuntime(this.project.path, this.modelRuntime, this.project.trusted, this.subagents.createTools(this.modelRuntime));
     if (generation !== this.initialization) {
       await runtime.dispose().catch(() => undefined);
       throw this.replacementSuperseded();
@@ -1888,7 +1986,7 @@ export class PiRuntimeService {
     slot.attention = null;
     this.batcher.clear();
     if (previous && !previous.disposed) {
-      if (this.sessionHasActiveWork(previous.runtime.session)) {
+      if (this.sessionHasActiveWork(previous.runtime.session) || this.subagents.hasOwnedWork(previous.runtime.session.sessionId)) {
         this.setSessionAttention(previous, 'running');
       } else {
         const initialization = this.initialization;
@@ -1921,7 +2019,9 @@ export class PiRuntimeService {
 
   private runningSessionCount(): number {
     let count = 0;
-    for (const slot of this.liveSlots) if (!slot.disposed && this.sessionHasActiveWork(slot.runtime.session)) count += 1;
+    for (const slot of this.liveSlots) {
+      if (!slot.disposed && (this.sessionHasActiveWork(slot.runtime.session) || this.subagents.hasActiveRuns(slot.runtime.session.sessionId))) count += 1;
+    }
     return count;
   }
 
@@ -2167,6 +2267,9 @@ export class PiRuntimeService {
     this.invalidateSession(slot);
     slot.disposePromise = (async () => {
       const failures: unknown[] = [];
+      if (abortRunning || this.subagents.hasOwnedWork(sessionId)) {
+        try { await this.subagents.cancelParent(sessionId); } catch (error) { failures.push(error); }
+      }
       if (abortRunning) {
         if (session.isStreaming) {
           try { await session.abort(); } catch (error) { failures.push(error); }
@@ -2182,6 +2285,7 @@ export class PiRuntimeService {
       // unwind before runtime.dispose() sends the matching shutdown event.
       await pendingBinding?.catch(() => undefined);
       try { await slot.runtime.dispose(); } catch (error) { failures.push(error); }
+      this.subagents.releaseParent(sessionId);
       if (failures.length > 0) throw new AggregateError(failures, `Pi session ${sessionId} could not be fully disposed.`);
     })();
     const disposal = slot.disposePromise;
@@ -2194,6 +2298,7 @@ export class PiRuntimeService {
   }
 
   private async disposeRuntime(): Promise<void> {
+    await this.subagents.cancelAll();
     const slots = [...this.liveSlots];
     this.selectedSlot = null;
     this.batcher.clear();

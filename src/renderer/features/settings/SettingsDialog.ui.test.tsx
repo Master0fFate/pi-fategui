@@ -13,6 +13,7 @@ const settings: AppSettings = {
   terminalShell: null,
   reduceMotion: false,
   performanceMode: false,
+  holyShitMode: false,
   musicPlayerEnabled: false,
   sendMessageWithModifier: false,
   themeId: 'catppuccin-mocha',
@@ -54,6 +55,7 @@ beforeEach(() => {
   useUiStore.setState({ settingsOpen: true, sendMessageWithModifier: false, speechDownload: null });
   document.documentElement.dataset.performanceMode = 'false';
   document.documentElement.dataset.reduceMotion = 'false';
+  document.documentElement.dataset.holyShitMode = 'false';
 });
 
 afterEach(() => {
@@ -61,6 +63,7 @@ afterEach(() => {
   useUiStore.setState({ settingsOpen: false });
   document.documentElement.dataset.performanceMode = 'false';
   document.documentElement.dataset.reduceMotion = 'false';
+  document.documentElement.dataset.holyShitMode = 'false';
   delete document.documentElement.dataset.interfaceFont;
   delete document.documentElement.dataset.codeFont;
   document.documentElement.style.removeProperty('--font-interface');
@@ -159,6 +162,42 @@ describe('SettingsDialog feedback', () => {
     await user.click(screen.getByRole('button', { name: /Parakeet 0.6B/ }));
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({ speech: expect.objectContaining({ modelId: 'balanced' }) }));
+  });
+
+  it('folds Reduced Motion into Performance mode and restores visuals after Holy sh*t is disabled', async () => {
+    const setSettings = vi.fn(async (value: AppSettings) => value);
+    installBridge(setSettings);
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+
+    const performanceMode = await screen.findByRole('checkbox', { name: /Performance mode/ });
+    const holyShitMode = screen.getByRole('checkbox', { name: /Holy sh\*t/ });
+    expect(screen.queryByRole('checkbox', { name: /^Reduce motion/iu })).not.toBeInTheDocument();
+
+    await user.click(performanceMode);
+    await waitFor(() => {
+      expect(document.documentElement.dataset.performanceMode).toBe('true');
+      expect(document.documentElement.dataset.reduceMotion).toBe('true');
+    });
+
+    await user.click(holyShitMode);
+    await waitFor(() => expect(document.documentElement.dataset.holyShitMode).toBe('true'));
+    await user.click(performanceMode);
+    expect(document.documentElement.dataset.performanceMode).toBe('true');
+    await user.click(holyShitMode);
+    await waitFor(() => {
+      expect(document.documentElement.dataset.holyShitMode).toBe('false');
+      expect(document.documentElement.dataset.performanceMode).toBe('false');
+      expect(document.documentElement.dataset.reduceMotion).toBe('false');
+    });
+
+    await user.click(performanceMode);
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({
+      performanceMode: true,
+      reduceMotion: true,
+      holyShitMode: false,
+    }));
   });
 
   it('shows a recoverable error toast and applies performance settings live', async () => {

@@ -1,9 +1,12 @@
 import { spawn } from 'node:child_process';
-import { watch } from 'node:fs';
+import { mkdirSync, watch } from 'node:fs';
 import path from 'node:path';
 import electronPath from 'electron';
+import { resolveDevelopmentProfile } from './dev-profile.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
+const developmentProfile = resolveDevelopmentProfile(root);
+mkdirSync(developmentProfile.profileRoot, { recursive: true });
 const watchedOutputs = new Map([
   [path.join(root, 'dist', 'main'), 'index.js'],
   [path.join(root, 'dist', 'preload'), 'index.cjs'],
@@ -18,7 +21,9 @@ let restarting = false;
 let restartChain = Promise.resolve();
 
 function electronArguments() {
-  const args = ['.'];
+  // Electron scopes its single-instance lock to userData. A dedicated profile
+  // lets the development build run beside an installed Fate UI instance.
+  const args = ['.', `--user-data-dir=${developmentProfile.electronUserData}`];
   const debuggingPort = process.env.PI_DESKTOP_REMOTE_DEBUGGING_PORT;
   if (debuggingPort && /^\d{2,5}$/.test(debuggingPort)) args.push(`--remote-debugging-port=${debuggingPort}`);
   return args;
@@ -28,11 +33,16 @@ function startElectron() {
   if (stopping) return;
   electronProcess = spawn(electronPath, electronArguments(), {
     cwd: root,
-    env: { ...process.env, VITE_DEV_SERVER_URL: developmentUrl },
+    env: {
+      ...process.env,
+      VITE_DEV_SERVER_URL: developmentUrl,
+      FATE_GUI_DATA_DIR: developmentProfile.fateGuiData,
+    },
     stdio: 'inherit',
     windowsHide: false,
   });
-  console.log(`[dev-electron] started Electron (pid ${electronProcess.pid ?? 'unknown'})`);
+  console.log(`[dev-electron] started isolated Electron (pid ${electronProcess.pid ?? 'unknown'})`);
+  console.log(`[dev-electron] development profile: ${developmentProfile.profileRoot}`);
   electronProcess.once('error', (error) => {
     console.error(`[dev-electron] Electron failed to start: ${error.message}`);
   });

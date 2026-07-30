@@ -1,6 +1,23 @@
-import type { PermissionLevel, PiEvent, ProjectState, PromptAcceptance, PromptInput, QueuedMessage, QueueMutationInput, QueueMutationResult, RuntimeState, SessionSummary, ThinkingLevel } from '../../src/shared/contracts/ipc';
+import type { PermissionLevel, PiEvent, ProjectState, PromptAcceptance, PromptInput, QueuedMessage, QueueMutationInput, QueueMutationResult, RuntimeState, SessionSummary, SubagentControlInput, SubagentRun, ThinkingLevel } from '../../src/shared/contracts/ipc';
 
 const model = { provider: 'test', id: 'deterministic', name: 'Deterministic Test Model', reasoning: true, contextWindow: 100_000, supportsImages: true };
+const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+
+function agentFixture(id: string, handle: string, displayName: string, task: string, status: SubagentRun['status'], mailbox: SubagentRun['mailbox']): SubagentRun {
+  const now = Date.now();
+  return {
+    id, parentSessionId: 'e2e-session-1', parentToolCallId: 'e2e-agent-fixture', task, role: handle.includes('reviewer') ? 'reviewer' : 'runner',
+    handle, displayName, agentName: 'direct', agentSource: 'direct', permissionLevel: 'read-only', enabledTools: ['read', 'grep'],
+    skills: [], skillMode: 'all', preloadedSkills: [], status, model, routingModels: [model], thinkingLevel: 'medium', executionMode: 'managed',
+    controlCount: 0, attempt: 1, maxAttempts: 1, mailbox, notification: 'never', dependsOn: [], createdAt: now - 4_000, updatedAt: now,
+    ...(status === 'running' ? { startedAt: now - 3_500 } : { startedAt: now - 3_500, endedAt: now - 500 }),
+    messages: status === 'running'
+      ? [{ id: `${id}-task`, role: 'user', text: task, timestamp: now - 3_500 }]
+      : [{ id: `${id}-result`, role: 'assistant', text: '**Checks passed.** The assigned task is complete.', timestamp: now - 500 }],
+    tools: [], ...(status === 'completed' ? { result: 'Checks passed. The assigned task is complete.' } : {}),
+    omittedActivity: 0, transcriptTruncated: false, usage: { ...emptyUsage, input: 180, output: 42, contextTokens: 222, turns: 1 },
+  };
+}
 
 export class FakePiRuntimeService {
   private project: ProjectState | null = null;
@@ -9,6 +26,8 @@ export class FakePiRuntimeService {
   private permissionLevel: PermissionLevel = 'full-access';
   private queuedMessages: QueuedMessage[] = [];
   private queueSequence = 0;
+  private profileSequence = 0;
+  private subagents: SubagentRun[] = [];
   private readonly sessionPermissions = new Map<string, PermissionLevel>();
   private sink: (events: PiEvent[]) => void = () => undefined;
   private readonly sessions: SessionSummary[] = [
@@ -38,7 +57,8 @@ export class FakePiRuntimeService {
         followUp: this.queuedMessages.filter((item) => item.behavior === 'followUp').length,
         items: this.queuedMessages.map((item) => ({ ...item, ...(item.images ? { images: item.images.map((image) => ({ ...image })) } : {}) })),
       },
-      sessions: this.sessions.map((session) => ({ ...session, active: session.id === this.activeSession })), branches: [],
+      sessions: this.sessions.map((session) => ({ ...session, active: session.id === this.activeSession })),
+      subagents: this.activeSession === 'e2e-session-1' ? this.subagents : [], branches: [],
       forkPoints: [], sessionCapabilities: { fork: true, clone: true, import: true, compact: true }, sessionOperation: false, error: null,
     };
   }
@@ -55,6 +75,25 @@ export class FakePiRuntimeService {
         createdAt: Date.now(),
       });
       this.sink([{ type: 'run.accepted', runId, timestamp: Date.now() }]);
+      this.emitState();
+      return { accepted: true, runId };
+    }
+    if (input.text === '__FATE_LIVE_PROFILE__') {
+      this.runLiveProfile(runId);
+      return { accepted: true, runId };
+    }
+    if (input.text === '__FATE_AGENT_FIXTURE__') {
+      this.subagents = [
+        agentFixture('e2e-auth-reviewer', 'auth-reviewer-1', 'Auth Reviewer', 'Review the authentication flow', 'running', { state: 'closed', ttlMs: 300_000, followUpCount: 0 }),
+        agentFixture('e2e-test-runner', 'test-runner-1', 'Test Runner', 'Run the desktop regression suite', 'completed', { state: 'available', ttlMs: 300_000, expiresAt: Date.now() + 300_000, followUpCount: 0 }),
+      ];
+      const timestamp = Date.now();
+      const runIds = this.subagents.map((run) => run.id);
+      this.sink([
+        { type: 'tool.started', toolCallId: 'e2e-agent-fixture', name: 'subagent_start', input: '{"tasks":["auth review","regression suite"]}', timestamp },
+        ...this.subagents.map((run) => ({ type: 'subagent.started' as const, run, timestamp })),
+        { type: 'tool.completed', toolCallId: 'e2e-agent-fixture', name: 'subagent_start', output: 'Started @auth-reviewer-1 and @test-runner-1.', subagentRunIds: runIds, error: false, timestamp: timestamp + 1 },
+      ]);
       this.emitState();
       return { accepted: true, runId };
     }
@@ -81,6 +120,32 @@ export class FakePiRuntimeService {
     return { accepted: true, runId };
   }
   async abort(): Promise<{ aborted: boolean }> { const aborted = this.streaming; this.streaming = false; this.emitState(); return { aborted }; }
+  async controlSubagent(input: SubagentControlInput): Promise<RuntimeState> {
+    const target = input.target.replace(/^@/u, '').toLocaleLowerCase();
+    const indexes = target === 'all'
+      ? this.subagents.map((_run, index) => index)
+      : this.subagents.flatMap((run, index) => run.id === input.target || run.handle === target ? [index] : []);
+    if (!indexes.length) throw new Error(`Unknown child target ${input.target}.`);
+    const now = Date.now();
+    for (const index of indexes) {
+      const run = this.subagents[index]!;
+      if (input.action === 'rename') this.subagents[index] = { ...run, displayName: input.displayName, updatedAt: now };
+      else if (input.action === 'close') this.subagents[index] = { ...run, mailbox: { ...run.mailbox, state: 'closed', expiresAt: undefined }, updatedAt: now };
+      else if (input.action === 'cancel') this.subagents[index] = { ...run, status: 'cancelled', mailbox: { ...run.mailbox, state: 'closed', expiresAt: undefined }, updatedAt: now, endedAt: now };
+      else {
+        const message = { id: `${run.id}-control-${now}`, role: input.action === 'steer' ? 'system' as const : 'user' as const, text: input.message, timestamp: now };
+        this.subagents[index] = {
+          ...run,
+          status: input.action === 'followUp' ? 'completed' : run.status,
+          controlCount: run.controlCount + 1,
+          mailbox: input.action === 'followUp' ? { ...run.mailbox, state: 'available', expiresAt: now + run.mailbox.ttlMs, followUpCount: run.mailbox.followUpCount + 1 } : run.mailbox,
+          messages: [...run.messages, message], updatedAt: now,
+        };
+      }
+    }
+    this.emitState();
+    return this.getState();
+  }
   async setModel(): Promise<RuntimeState> { return this.getState(); }
   setThinkingLevel(_level: ThinkingLevel): RuntimeState { return this.getState(); }
   async setPermissionLevel(level: PermissionLevel): Promise<RuntimeState> { this.permissionLevel = level; this.sessionPermissions.set(this.activeSession, level); this.emitState(); return this.getState(); }
@@ -115,6 +180,83 @@ export class FakePiRuntimeService {
   async importSession(): Promise<RuntimeState> { return this.getState(); }
   async compact(): Promise<RuntimeState> { return this.getState(); }
   async dispose(): Promise<void> {}
+
+  private runLiveProfile(runId: string): void {
+    const profileId = ++this.profileSequence;
+    const prefix = `profile-${profileId}`;
+    const historyCount = 600;
+    const deltaCount = 6_000;
+    const batchSize = 60;
+    let historyIndex = 0;
+    let deltaIndex = 0;
+    let output = '';
+    this.streaming = true;
+    this.sink([{ type: 'run.accepted', runId, timestamp: Date.now() }]);
+
+    const pump = () => {
+      if (historyIndex < historyCount) {
+        const events: PiEvent[] = [];
+        while (events.length < 100 && historyIndex < historyCount) {
+          events.push({
+            type: 'message.completed',
+            messageId: `${prefix}-history-${historyIndex}`,
+            role: 'assistant',
+            text: `Profile history row ${historyIndex}: completed output retained for virtualization and subscription pressure.`,
+            timestamp: historyIndex + 1,
+          });
+          historyIndex += 1;
+        }
+        this.sink(events);
+        setTimeout(pump, 0);
+        return;
+      }
+
+      if (deltaIndex === 0) {
+        this.sink([
+          { type: 'run.started', runId, timestamp: 10_000 },
+          { type: 'message.completed', messageId: `${prefix}-user`, role: 'user', text: 'Run the live renderer profile.', timestamp: 10_001 },
+          { type: 'message.started', messageId: `${prefix}-assistant`, role: 'assistant', timestamp: 10_002 },
+          { type: 'tool.started', toolCallId: `${prefix}-tool`, name: 'bash', input: '{"command":"profile live logs"}', timestamp: 10_003 },
+        ]);
+      }
+
+      const events: PiEvent[] = [];
+      while (events.length < batchSize && deltaIndex < deltaCount) {
+        events.push({
+          type: 'assistant.text',
+          messageId: `${prefix}-assistant`,
+          delta: `live-${String(deltaIndex).padStart(5, '0')} `,
+          timestamp: 20_000 + deltaIndex,
+        });
+        if (deltaIndex % 10 === 0 && events.length < batchSize) {
+          output = `${output}${'log-data '.repeat(16)}${deltaIndex}\n`.slice(-64_000);
+          events.push({
+            type: 'tool.updated',
+            toolCallId: `${prefix}-tool`,
+            output,
+            timestamp: 20_000 + deltaIndex,
+          });
+        }
+        deltaIndex += 1;
+      }
+      if (events.length > 0) this.sink(events);
+      if (deltaIndex < deltaCount) {
+        setTimeout(pump, 0);
+        return;
+      }
+
+      const marker = `FATE_PROFILE_COMPLETE_${profileId}`;
+      this.sink([
+        { type: 'tool.completed', toolCallId: `${prefix}-tool`, name: 'bash', output, error: false, timestamp: 40_000 },
+        { type: 'message.completed', messageId: `${prefix}-assistant`, role: 'assistant', text: marker, timestamp: 40_001 },
+        { type: 'run.completed', runId, aborted: false, timestamp: 40_002 },
+      ]);
+      this.streaming = false;
+      this.emitState();
+    };
+    setTimeout(pump, 0);
+  }
+
   private emitState(messagesIncluded = false): void {
     const state = this.getState();
     this.sink([{ type: 'state.changed', state: messagesIncluded ? state : { ...state, messages: [], tools: [] }, messagesIncluded, timestamp: Date.now() }]);

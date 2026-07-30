@@ -63,6 +63,7 @@ import {
   speechStatusSchema,
   speechTranscribeInputSchema,
   speechTranscriptionSchema,
+  subagentControlInputSchema,
   setModelInputSchema,
   setPermissionInputSchema,
   setThinkingInputSchema,
@@ -390,6 +391,9 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     emptyInputSchema.parse(input);
     return abortResultSchema.parse(await runtime.abort());
   });
+  handle(ipcChannels.runtimeControlSubagent, async (_event, input) => runRuntimeMutation('controlling a child agent', async () => (
+    runtimeStateSchema.parse(await runtime.controlSubagent(subagentControlInputSchema.parse(input)))
+  )));
   handle(ipcChannels.runtimeSetModel, async (_event, input) => {
     const parsed = setModelInputSchema.parse(input);
     return runRuntimeMutation('changing the model', async () => runtimeStateSchema.parse(await runtime.setModel(parsed.provider, parsed.id)));

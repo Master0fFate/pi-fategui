@@ -5,13 +5,15 @@ import { applyTheme, resolveTheme } from './theme';
 
 type VisualSettings = Pick<
   AppSettings,
-  'appearance' | 'codeFont' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'themeId'
+  'appearance' | 'codeFont' | 'holyShitMode' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'themeId'
 >;
 
 export function applyVisualSettings(settings: VisualSettings, themes: readonly ThemeDefinition[]): void {
   const root = document.documentElement;
-  root.dataset.reduceMotion = String(settings.reduceMotion);
-  root.dataset.performanceMode = String(settings.performanceMode);
+  const performanceMode = settings.performanceMode || settings.reduceMotion || settings.holyShitMode;
+  root.dataset.reduceMotion = String(performanceMode);
+  root.dataset.performanceMode = String(performanceMode);
+  root.dataset.holyShitMode = String(settings.holyShitMode);
   root.dataset.appearance = settings.appearance;
   applyFonts(settings.interfaceFont, settings.codeFont);
   applyTheme(resolveTheme(themes, settings.themeId));

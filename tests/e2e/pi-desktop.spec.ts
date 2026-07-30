@@ -179,6 +179,57 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.screenshot({ path: 'test-results/pi-desktop-final.png' });
 
     const composerInput = page.getByLabel('Message Pi');
+    await composerInput.fill('__FATE_AGENT_FIXTURE__');
+    await page.getByRole('button', { name: 'Send message' }).click();
+    const subagentTool = page.getByRole('article', { name: 'subagent_start tool running' });
+    await expect(subagentTool).toBeVisible();
+    await expect(subagentTool.locator('.tool-meta')).toHaveText('Running');
+    await expect(page.getByText(/Child session .* settled/iu)).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Subagent sessions, 1 active' }).click();
+    const agents = page.getByRole('region', { name: 'Agent sessions' });
+    const authAgent = agents.getByRole('button', { name: 'Open Auth Reviewer (@auth-reviewer-1) child session: Running' });
+    await expect(authAgent).toBeVisible();
+    await expect(agents.getByRole('button', { name: 'Open Test Runner (@test-runner-1) child session: Completed' })).toBeVisible();
+    await expect(agents).not.toContainText('e2e-auth-reviewer');
+    await expect(page.locator('.tab-agent-count')).toHaveCount(0);
+    const agentRowHeight = (await authAgent.boundingBox())?.height;
+    await authAgent.hover();
+    await expect(agents.getByRole('button', { name: 'Stop @auth-reviewer-1' })).toBeVisible();
+    expect((await authAgent.boundingBox())?.height).toBe(agentRowHeight);
+    const treeDecoration = await agents.evaluate((region) => {
+      const lastRow = region.querySelector<HTMLElement>('.subagent-session-row:last-child');
+      const marks = [...region.querySelectorAll<HTMLElement>('.agent-tree-root-mark, .agent-tree-branch-mark, .subagent-status-mark')];
+      return {
+        lastConnector: lastRow ? getComputedStyle(lastRow, '::after').content : '',
+        marks: marks.map((mark) => ({
+          background: getComputedStyle(mark).backgroundColor,
+          backgroundImage: getComputedStyle(mark).backgroundImage,
+          borderWidth: getComputedStyle(mark).borderTopWidth,
+        })),
+      };
+    });
+    expect(['none', 'normal']).toContain(treeDecoration.lastConnector);
+    expect(treeDecoration.marks.every((mark) => ['rgba(0, 0, 0, 0)', 'transparent'].includes(mark.background)
+      && mark.backgroundImage === 'none' && mark.borderWidth === '0px')).toBe(true);
+    await page.waitForTimeout(180);
+    await page.screenshot({ path: 'test-results/pi-desktop-agents.png' });
+
+    await agents.getByRole('button', { name: 'Rename @test-runner-1' }).click();
+    await agents.getByRole('textbox', { name: 'Display name for @test-runner-1' }).fill('Regression Verifier');
+    await agents.getByRole('button', { name: 'Save display name' }).click();
+    await expect(agents.getByRole('button', { name: 'Open Regression Verifier (@test-runner-1) child session: Completed' })).toBeVisible();
+    await agents.getByRole('button', { name: 'Stop @auth-reviewer-1' }).click();
+    await expect(agents.getByRole('button', { name: 'Open Auth Reviewer (@auth-reviewer-1) child session: Cancelled' })).toBeVisible();
+    await expect(page.getByRole('article', { name: 'subagent_start tool stopped' })).toBeAttached();
+
+    await composerInput.fill('@test');
+    const agentMentions = page.getByRole('listbox', { name: 'Agent mentions' });
+    await expect(agentMentions.getByRole('option')).toContainText('@test-runner-1');
+    await agentMentions.getByRole('option').click();
+    await expect(composerInput).toHaveValue('@test-runner-1 ');
+    await composerInput.fill('');
+    await page.getByRole('tab', { name: 'Changes' }).click();
+
     await composerInput.blur();
     const idleComposerBorder = await page.locator('form.composer').evaluate((element) => getComputedStyle(element).borderTopColor);
     await composerInput.focus();
@@ -328,18 +379,74 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
       const after = await settingsDialog.boundingBox();
       expect(before).toEqual(after);
     };
+    const performanceMode = settingsDialog.getByRole('checkbox', { name: /Performance mode/ });
+    const holyShitMode = settingsDialog.getByRole('checkbox', { name: /Holy sh\*t/ });
+    await expect(settingsDialog.getByRole('checkbox', { name: /^Reduce motion/iu })).toHaveCount(0);
+    const readVisualProfile = () => page.evaluate(() => ({
+      appBackgroundImage: getComputedStyle(document.querySelector<HTMLElement>('.app-shell')!).backgroundImage,
+      dialogBoxShadow: getComputedStyle(document.querySelector<HTMLElement>('.settings-dialog')!).boxShadow,
+      overlayBackdropFilter: getComputedStyle(document.querySelector<HTMLElement>('.dialog-overlay')!).backdropFilter,
+      toggleTransitionDuration: getComputedStyle(document.querySelector<HTMLElement>('.settings-toggle > span')!).transitionDuration,
+    }));
+    const normalVisualProfile = await readVisualProfile();
+    expect(normalVisualProfile.appBackgroundImage).not.toBe('none');
+
     await assertSettingsGeometryStable(async () => {
-      await settingsDialog.getByRole('checkbox', { name: /Performance mode/ }).click();
-      await expect.poll(() => page.evaluate(() => document.documentElement.dataset.performanceMode)).toBe('true');
+      await performanceMode.click();
+      await expect.poll(() => page.evaluate(() => ({
+        performance: document.documentElement.dataset.performanceMode,
+        reduced: document.documentElement.dataset.reduceMotion,
+      }))).toEqual({ performance: 'true', reduced: 'true' });
     });
     await assertSettingsGeometryStable(async () => {
-      await settingsDialog.getByRole('checkbox', { name: /Performance mode/ }).click();
+      await performanceMode.click();
       await expect.poll(() => page.evaluate(() => document.documentElement.dataset.performanceMode)).toBe('false');
     });
     await assertSettingsGeometryStable(async () => {
-      await settingsDialog.getByRole('checkbox', { name: /Reduce motion/ }).click();
-      await expect.poll(() => page.evaluate(() => document.documentElement.dataset.reduceMotion)).toBe('true');
+      await holyShitMode.click();
+      await expect.poll(() => page.evaluate(() => ({
+        holy: document.documentElement.dataset.holyShitMode,
+        performance: document.documentElement.dataset.performanceMode,
+        reduced: document.documentElement.dataset.reduceMotion,
+      }))).toEqual({ holy: 'true', performance: 'true', reduced: 'true' });
     });
+    expect(await readVisualProfile()).toEqual({
+      appBackgroundImage: 'none',
+      dialogBoxShadow: 'none',
+      overlayBackdropFilter: 'none',
+      toggleTransitionDuration: '0s',
+    });
+    const holyShitEscapes = await page.evaluate(() => {
+      const escapes: string[] = [];
+      const hasTime = (value: string) => value.split(',').some((part) => Number.parseFloat(part) > 0);
+      for (const element of Array.from(document.querySelectorAll<HTMLElement>('*'))) {
+        for (const pseudo of [null, '::before', '::after'] as const) {
+          const style = getComputedStyle(element, pseudo);
+          const escaped = style.backgroundImage !== 'none'
+            || style.borderRadius !== '0px'
+            || style.boxShadow !== 'none'
+            || style.textShadow !== 'none'
+            || style.filter !== 'none'
+            || (style.backdropFilter !== 'none' && style.backdropFilter !== '')
+            || style.animationName !== 'none'
+            || hasTime(style.animationDuration)
+            || hasTime(style.transitionDuration)
+            || style.scrollBehavior === 'smooth'
+            || style.willChange !== 'auto';
+          if (escaped) escapes.push(`${element.tagName.toLowerCase()}.${element.className || '(no-class)'}${pseudo ?? ''}`);
+          if (escapes.length >= 20) return escapes;
+        }
+      }
+      return escapes;
+    });
+    expect(holyShitEscapes).toEqual([]);
+    await assertSettingsGeometryStable(async () => {
+      await holyShitMode.click();
+      await expect.poll(() => page.evaluate(() => document.documentElement.dataset.holyShitMode)).toBe('false');
+    });
+    expect(await readVisualProfile()).toEqual(normalVisualProfile);
+
+    await performanceMode.click();
     await settingsDialog.getByRole('checkbox', { name: /Music player/ }).click();
     await settingsDialog.getByRole('button', { name: 'Save changes' }).click();
     await expect(settingsDialog.getByRole('status')).toContainText('Settings saved');
@@ -535,11 +642,16 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.getByRole('button', { name: 'Enable full access' }).click();
     await expect(page.getByRole('button', { name: 'Permission level: Full access' })).toBeVisible();
 
+    await composerInput.fill('First session draft');
     await page.locator('.session-open').filter({ hasText: 'Second session' }).click();
     await expect(page.getByRole('button', { name: 'Permission level: Full access' })).toBeVisible();
+    await expect(composerInput).toHaveValue('');
+    await composerInput.fill('Second session draft');
     await page.locator('.session-open').filter({ hasText: 'First session' }).click();
     await expect(page.getByRole('button', { name: 'Permission level: Full access' })).toBeVisible();
+    await expect(composerInput).toHaveValue('First session draft');
     await page.locator('.session-open').filter({ hasText: 'Second session' }).click();
+    await expect(composerInput).toHaveValue('Second session draft');
     await expect(page.getByText('Second session').first()).toBeVisible();
     await expect(page.locator('.chat-message-row--assistant .message-footer-meta')).toContainText('Deterministic Test Model');
     await expect(page.locator('.markdown-content strong')).toHaveText('Second session');

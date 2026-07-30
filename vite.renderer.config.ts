@@ -24,6 +24,9 @@ export default defineConfig(({ command }) => ({
   build: {
     outDir: path.resolve('dist/renderer'),
     emptyOutDir: true,
+    // Keep bundled fonts as local files so the strict font-src CSP never blocks
+    // Vite-inlined data URLs and the stylesheet stays cheaper to parse.
+    assetsInlineLimit: 0,
   },
   server: {
     port: 5173,

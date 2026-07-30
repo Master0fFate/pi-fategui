@@ -33,7 +33,8 @@ interface UiState {
   speechDownload: SpeechDownloadProgress | null;
   toast: AppToastMessage | null;
   composerDraftRequest: { id: number; text: string; selectAll: boolean; notice?: string } | null;
-  inspectorTab: 'changes' | 'files' | 'tools' | 'resources' | 'context';
+  inspectorTab: 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context';
+  selectedSubagentRunId: string | null;
   setLeftWidth: (width: number) => void;
   setRightWidth: (width: number) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -53,6 +54,9 @@ interface UiState {
   requestComposerDraft: (text: string, selectAll?: boolean, notice?: string) => void;
   clearComposerDraftRequest: (id: number) => void;
   setInspectorTab: (tab: UiState['inspectorTab']) => void;
+  openSubagent: (runId: string) => void;
+  openSubagentList: () => void;
+  closeSubagent: () => void;
 }
 
 const clamp = (value: number, minimum: number, maximum: number) =>
@@ -76,6 +80,7 @@ export const useUiStore = create<UiState>()(
       toast: null,
       composerDraftRequest: null,
       inspectorTab: 'changes',
+      selectedSubagentRunId: null,
       setLeftWidth: (leftWidth) => set({ leftWidth: clamp(leftWidth, LEFT_MIN, LEFT_MAX) }),
       setRightWidth: (rightWidth) => set({ rightWidth: clamp(rightWidth, RIGHT_MIN, RIGHT_MAX) }),
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
@@ -95,6 +100,9 @@ export const useUiStore = create<UiState>()(
       requestComposerDraft: (text, selectAll = false, notice) => set({ composerDraftRequest: { id: ++nextComposerDraftRequestId, text, selectAll, ...(notice ? { notice } : {}) } }),
       clearComposerDraftRequest: (id) => set((state) => state.composerDraftRequest?.id === id ? { composerDraftRequest: null } : state),
       setInspectorTab: (inspectorTab) => set({ inspectorTab }),
+      openSubagent: (selectedSubagentRunId) => set({ selectedSubagentRunId, inspectorTab: 'sessions', inspectorCollapsed: false }),
+      openSubagentList: () => set({ selectedSubagentRunId: null, inspectorTab: 'sessions', inspectorCollapsed: false }),
+      closeSubagent: () => set({ selectedSubagentRunId: null }),
     }),
     {
       name: 'pi-desktop-ui-v1',

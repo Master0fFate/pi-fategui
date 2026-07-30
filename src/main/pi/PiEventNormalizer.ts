@@ -1,5 +1,5 @@
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import type { PiEvent, RuntimeImage } from '../../shared/contracts/ipc';
+import { subagentToolDetailsSchema, type RuntimeImage, type SubagentChildEvent } from '../../shared/contracts/ipc';
 import { normalizeError } from './errors';
 
 const MAX_SERIALIZED_LENGTH = 64_000;
@@ -56,7 +56,10 @@ export function safeText(value: unknown, maximum = MAX_SERIALIZED_LENGTH): strin
       result = String(value);
     }
   }
-  return result.length <= maximum ? result : `${result.slice(0, maximum)}\n… output truncated by Pi Desktop`;
+  if (result.length <= maximum) return result;
+  const marker = '\n… output truncated by Pi Desktop';
+  if (maximum <= marker.length) return result.slice(0, maximum);
+  return `${result.slice(0, maximum - marker.length)}${marker}`;
 }
 
 export function messageText(message: unknown): string {
@@ -76,8 +79,8 @@ export function messageText(message: unknown): string {
   return text || (typeof candidate.errorMessage === 'string' ? candidate.errorMessage.slice(0, MAX_SERIALIZED_LENGTH) : '');
 }
 
-function deltaEvents(type: 'assistant.text' | 'assistant.reasoning', messageId: string, delta: string, now: number): PiEvent[] {
-  const events: PiEvent[] = [];
+function deltaEvents(type: 'assistant.text' | 'assistant.reasoning', messageId: string, delta: string, now: number): SubagentChildEvent[] {
+  const events: SubagentChildEvent[] = [];
   const boundedDelta = delta.slice(0, MAX_DELTA_TOTAL_LENGTH);
   for (let offset = 0; offset < boundedDelta.length; offset += MAX_DELTA_LENGTH) {
     events.push({ type, messageId, delta: boundedDelta.slice(offset, offset + MAX_DELTA_LENGTH), timestamp: now });
@@ -107,9 +110,12 @@ export function messageImages(message: unknown, altPrefix = 'Generated image'): 
 
 function messageRole(message: unknown): 'user' | 'assistant' | 'system' | 'tool' | 'hidden' {
   if (!message || typeof message !== 'object') return 'hidden';
-  const value = message as { role?: unknown; display?: unknown };
+  const value = message as { role?: unknown; display?: unknown; customType?: unknown };
   if (value.role === 'user' || value.role === 'assistant') return value.role;
-  if (value.role === 'custom') return value.display === true ? 'system' : 'hidden';
+  if (value.role === 'custom') {
+    if (value.customType === 'fate-subagent-notification') return 'hidden';
+    return value.display === true ? 'system' : 'hidden';
+  }
   return value.role === 'toolResult' ? 'tool' : 'hidden';
 }
 
@@ -119,12 +125,27 @@ function messageError(message: unknown): boolean {
   return value.isError === true || value.stopReason === 'error';
 }
 
+export function subagentRunIds(value: unknown): string[] | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const details = (value as { details?: unknown }).details;
+  const parsed = subagentToolDetailsSchema.safeParse(details);
+  if (parsed.success && parsed.data.runIds.length > 0) return parsed.data.runIds;
+  if (!details || typeof details !== 'object') return undefined;
+  const workflow = details as { kind?: unknown; version?: unknown; runIds?: unknown };
+  if (workflow.kind !== 'fate-subagent-workflow' || workflow.version !== 1 || !Array.isArray(workflow.runIds)) return undefined;
+  const runIds = workflow.runIds.filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 100);
+  return runIds.length === workflow.runIds.length && runIds.length > 0 ? runIds : undefined;
+}
+
 export class PiEventNormalizer {
   private readonly messageIds = new WeakMap<object, string>();
   private sequence = 0;
   private activeAssistantId: string | null = null;
 
-  constructor(private readonly runId: () => string | null) {}
+  constructor(
+    private readonly runId: () => string | null,
+    private readonly idPrefix = '',
+  ) {}
 
   resetSession(): void {
     this.activeAssistantId = null;
@@ -134,7 +155,7 @@ export class PiEventNormalizer {
     return this.activeAssistantId;
   }
 
-  normalize(event: AgentSessionEvent): PiEvent[] {
+  normalize(event: AgentSessionEvent): SubagentChildEvent[] {
     const now = timestamp();
     switch (event.type) {
       case 'agent_start': {
@@ -176,7 +197,7 @@ export class PiEventNormalizer {
           this.activeAssistantId = null;
         }
         const images = messageImages(event.message, role === 'user' ? 'Attached image' : 'Generated image');
-        const normalized: PiEvent = {
+        const normalized: SubagentChildEvent = {
           type: 'message.completed',
           messageId: id,
           role,
@@ -188,18 +209,28 @@ export class PiEventNormalizer {
         return [normalized];
       }
       case 'tool_execution_start':
-        return [{ type: 'tool.started', toolCallId: event.toolCallId, name: event.toolName, input: safeText(event.args), timestamp: now }];
-      case 'tool_execution_update':
-        return [{ type: 'tool.updated', toolCallId: event.toolCallId, output: safeText(event.partialResult), timestamp: now }];
+        return [{ type: 'tool.started', toolCallId: this.toolId(event.toolCallId), name: event.toolName, input: safeText(event.args), timestamp: now }];
+      case 'tool_execution_update': {
+        const runIds = subagentRunIds(event.partialResult);
+        return [{
+          type: 'tool.updated',
+          toolCallId: this.toolId(event.toolCallId),
+          output: safeText(event.partialResult),
+          ...(runIds ? { subagentRunIds: runIds } : {}),
+          timestamp: now,
+        }];
+      }
       case 'tool_execution_end': {
         const images = messageImages(event.result);
         const text = messageText(event.result);
+        const runIds = subagentRunIds(event.result);
         return [{
           type: 'tool.completed',
-          toolCallId: event.toolCallId,
+          toolCallId: this.toolId(event.toolCallId),
           name: event.toolName,
           output: text ? safeText(text) : (images.length ? '' : safeText(event.result)),
           ...(images.length ? { images } : {}),
+          ...(runIds ? { subagentRunIds: runIds } : {}),
           error: event.isError,
           timestamp: now,
         }];
@@ -220,10 +251,14 @@ export class PiEventNormalizer {
     if (message && typeof message === 'object') {
       const existing = this.messageIds.get(message);
       if (existing) return existing;
-      const created = `message-${++this.sequence}`;
+      const created = `${this.idPrefix}message-${++this.sequence}`;
       this.messageIds.set(message, created);
       return created;
     }
-    return `message-${++this.sequence}`;
+    return `${this.idPrefix}message-${++this.sequence}`;
+  }
+
+  private toolId(toolCallId: string): string {
+    return `${this.idPrefix}${toolCallId}`;
   }
 }

@@ -15,6 +15,7 @@ const defaults: AppSettings = {
   terminalShell: null,
   reduceMotion: false,
   performanceMode: false,
+  holyShitMode: false,
   musicPlayerEnabled: false,
   sendMessageWithModifier: false,
   themeId: 'catppuccin-mocha',

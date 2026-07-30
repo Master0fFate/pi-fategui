@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  SUBAGENT_DISPLAY_NAME_MAX_LENGTH,
+  SUBAGENT_HANDLE_MAX_LENGTH,
+  SUBAGENT_HANDLE_PATTERN,
+} from '../subagentIdentity';
 import { themeCatalogSchema, type ThemeDefinition } from '../themes';
 
 export const ipcChannels = {
@@ -14,6 +19,7 @@ export const ipcChannels = {
   runtimeGetState: 'runtime:get-state',
   runtimePrompt: 'runtime:prompt',
   runtimeAbort: 'runtime:abort',
+  runtimeControlSubagent: 'runtime:control-subagent',
   runtimeSetModel: 'runtime:set-model',
   runtimeSetThinking: 'runtime:set-thinking',
   runtimeSetPermission: 'runtime:set-permission',
@@ -106,11 +112,11 @@ export const codeFontSchema = z.enum(['jetbrains-mono', 'noto-sans-mono', 'syste
 export const speechModelIdSchema = z.enum(['mini', 'balanced', 'max']);
 
 export const modelInfoSchema = z.object({
-  provider: z.string().min(1),
-  id: z.string().min(1),
-  name: z.string().min(1),
+  provider: z.string().min(1).max(200),
+  id: z.string().min(1).max(500),
+  name: z.string().min(1).max(500),
   reasoning: z.boolean(),
-  contextWindow: z.number().int().positive(),
+  contextWindow: z.number().int().positive().max(2_147_483_647),
   supportsImages: z.boolean().optional(),
 });
 
@@ -292,6 +298,7 @@ export const runtimeToolSchema = z.object({
   endedAt: z.number().finite().optional(),
   timelinePosition: z.number().finite().optional(),
   images: z.array(runtimeImageSchema).max(8).optional(),
+  subagentRunIds: z.array(z.string().min(1).max(100)).optional(),
 });
 
 export const slashCommandSchema = z.object({
@@ -306,6 +313,167 @@ export const contextUsageSchema = z.object({
   percent: z.number().nonnegative().nullable(),
   estimated: z.boolean().optional(),
 });
+
+export const MAX_SUBAGENT_IMAGE_CHARACTERS = 8_000_000;
+export const subagentRoleSchema = z.string().trim().min(1).max(80).refine((role) => !/[\u0000-\u001f\u007f]/u.test(role), 'Subagent role labels cannot contain control characters.');
+export const subagentHandleSchema = z.string().trim().min(1).max(SUBAGENT_HANDLE_MAX_LENGTH).regex(SUBAGENT_HANDLE_PATTERN, 'Subagent handles must use lowercase letters, numbers, and single hyphen-separated words.');
+export const subagentDisplayNameSchema = z.string().trim().min(1).max(SUBAGENT_DISPLAY_NAME_MAX_LENGTH).refine((name) => !/[\u0000-\u001f\u007f]/u.test(name), 'Subagent display names cannot contain control characters.');
+export const subagentAgentSourceSchema = z.enum(['direct', 'builtin', 'user', 'project']);
+export const subagentStatusSchema = z.enum(['blocked', 'queued', 'running', 'completed', 'error', 'cancelled', 'timed-out', 'budget-exceeded', 'skipped', 'interrupted']);
+export const subagentSkillModeSchema = z.enum(['all', 'selected', 'none']);
+export const subagentNotificationSchema = z.enum(['never', 'next-turn', 'immediate']);
+export const subagentBudgetSchema = z.object({
+  maxCostUsd: z.number().positive().optional(),
+  maxInputTokens: z.number().int().positive().safe().optional(),
+  maxOutputTokens: z.number().int().positive().safe().optional(),
+  maxTotalTokens: z.number().int().positive().safe().optional(),
+  maxTurns: z.number().int().positive().safe().optional(),
+}).strict();
+export const subagentMailboxSchema = z.object({
+  state: z.enum(['disabled', 'available', 'expired', 'closed']),
+  ttlMs: z.number().int().nonnegative().safe(),
+  expiresAt: z.number().finite().optional(),
+  followUpCount: z.number().int().nonnegative(),
+}).strict();
+export const subagentUsageSchema = z.object({
+  input: z.number().int().nonnegative(),
+  output: z.number().int().nonnegative(),
+  cacheRead: z.number().int().nonnegative(),
+  cacheWrite: z.number().int().nonnegative(),
+  cost: z.number().nonnegative(),
+  contextTokens: z.number().int().nonnegative(),
+  turns: z.number().int().nonnegative(),
+}).strict();
+export const subagentRunSchema = z.object({
+  id: z.string().min(1).max(100),
+  parentSessionId: z.string().min(1).max(500),
+  parentToolCallId: z.string().min(1).max(500),
+  task: z.string().min(1),
+  role: subagentRoleSchema,
+  handle: subagentHandleSchema.optional(),
+  displayName: subagentDisplayNameSchema.optional(),
+  agentName: z.string().min(1).max(80),
+  agentSource: subagentAgentSourceSchema,
+  permissionLevel: permissionLevelSchema,
+  enabledTools: z.array(z.enum(['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash', 'generate_image'])).max(8),
+  skills: z.array(z.string().min(1).max(64)).default([]),
+  skillMode: subagentSkillModeSchema.default('all'),
+  preloadedSkills: z.array(z.string().min(1).max(64)).default([]),
+  status: subagentStatusSchema,
+  model: modelInfoSchema,
+  routingModels: z.array(modelInfoSchema).default([]),
+  thinkingLevel: thinkingLevelSchema,
+  executionMode: z.enum(['blocking', 'managed', 'workflow']),
+  controlCount: z.number().int().nonnegative(),
+  attempt: z.number().int().positive().safe().default(1),
+  maxAttempts: z.number().int().positive().safe().default(1),
+  mailbox: subagentMailboxSchema.default({ state: 'disabled', ttlMs: 0, followUpCount: 0 }),
+  notification: subagentNotificationSchema.default('never'),
+  budget: subagentBudgetSchema.optional(),
+  workflowId: z.string().min(1).max(100).optional(),
+  workflowNodeId: z.string().min(1).max(80).optional(),
+  dependsOn: z.array(z.string().min(1).max(80)).default([]),
+  createdAt: z.number().finite(),
+  updatedAt: z.number().finite(),
+  startedAt: z.number().finite().optional(),
+  endedAt: z.number().finite().optional(),
+  timeoutAt: z.number().finite().optional(),
+  idleTimeoutMs: z.number().int().positive().safe().optional(),
+  messages: z.array(runtimeMessageSchema).max(120),
+  tools: z.array(runtimeToolSchema).max(120),
+  result: z.string().optional(),
+  error: z.string().max(4_000).optional(),
+  omittedActivity: z.number().int().nonnegative(),
+  transcriptTruncated: z.boolean(),
+  usage: subagentUsageSchema,
+}).strict().superRefine((run, context) => {
+  if (run.messages.length + run.tools.length > 120) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Subagent activity exceeds its item limit.' });
+  }
+  if (new Set(run.enabledTools).size !== run.enabledTools.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Subagent enabled tools must be unique.' });
+  }
+  if (new Set(run.skills).size !== run.skills.length || new Set(run.preloadedSkills).size !== run.preloadedSkills.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Subagent skills must be unique.' });
+  }
+  if ((run.workflowId === undefined) !== (run.workflowNodeId === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Workflow run metadata must include both workflow and node IDs.' });
+  }
+  const characters = run.messages.reduce((total, message) => total + message.text.length + (message.reasoning?.length ?? 0), 0)
+    + run.tools.reduce((total, tool) => total + tool.input.length + tool.output.length, 0)
+    + (run.error?.length ?? 0);
+  if (characters > 320_000) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Subagent transcript exceeds its text budget.' });
+  }
+  const imageCharacters = [...run.messages, ...run.tools]
+    .reduce((total, item) => total + (item.images?.reduce((imageTotal, image) => imageTotal + image.data.length, 0) ?? 0), 0);
+  if (imageCharacters > MAX_SUBAGENT_IMAGE_CHARACTERS) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Subagent transcript exceeds its image budget.' });
+  }
+});
+export const subagentWorkflowNodeStatusSchema = z.enum(['pending', 'running', 'completed', 'error', 'skipped', 'cancelled', 'interrupted']);
+export const subagentWorkflowStatusSchema = z.enum(['running', 'completed', 'error', 'cancelled', 'paused']);
+export const subagentWorkflowNodeSchema = z.object({
+  id: z.string().min(1).max(80),
+  handle: subagentHandleSchema.optional(),
+  displayName: subagentDisplayNameSchema.optional(),
+  task: z.string().min(1),
+  status: subagentWorkflowNodeStatusSchema,
+  dependsOn: z.array(z.string().min(1).max(80)),
+  runId: z.string().min(1).max(100).optional(),
+  result: z.string().optional(),
+  error: z.string().max(4_000).optional(),
+  startedAt: z.number().finite().optional(),
+  endedAt: z.number().finite().optional(),
+}).strict();
+export const subagentWorkflowSchema = z.object({
+  id: z.string().min(1).max(100),
+  parentSessionId: z.string().min(1).max(500),
+  parentToolCallId: z.string().min(1).max(500),
+  status: subagentWorkflowStatusSchema,
+  maxConcurrency: z.number().int().positive().safe(),
+  notification: subagentNotificationSchema,
+  budget: subagentBudgetSchema.optional(),
+  usage: subagentUsageSchema,
+  nodes: z.array(subagentWorkflowNodeSchema).min(1),
+  createdAt: z.number().finite(),
+  updatedAt: z.number().finite(),
+  endedAt: z.number().finite().optional(),
+  error: z.string().max(4_000).optional(),
+}).strict().superRefine((workflow, context) => {
+  const ids = new Set(workflow.nodes.map((node) => node.id));
+  if (ids.size !== workflow.nodes.length || workflow.nodes.some((node) => node.dependsOn.some((dependency) => !ids.has(dependency)))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Workflow nodes and dependencies must reference unique local IDs.' });
+    return;
+  }
+  const remainingDependencies = new Map(workflow.nodes.map((node) => [node.id, node.dependsOn.length]));
+  const dependents = new Map(workflow.nodes.map((node) => [node.id, [] as string[]]));
+  for (const node of workflow.nodes) for (const dependency of node.dependsOn) dependents.get(dependency)!.push(node.id);
+  const ready = workflow.nodes.filter((node) => node.dependsOn.length === 0).map((node) => node.id);
+  let visited = 0;
+  for (let index = 0; index < ready.length; index += 1) {
+    const id = ready[index]!;
+    visited += 1;
+    for (const dependent of dependents.get(id)!) {
+      const remaining = remainingDependencies.get(dependent)! - 1;
+      remainingDependencies.set(dependent, remaining);
+      if (remaining === 0) ready.push(dependent);
+    }
+  }
+  if (visited !== workflow.nodes.length) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Workflow dependencies must be acyclic.' });
+});
+
+export const subagentToolDetailsSchema = z.object({
+  kind: z.literal('fate-subagent'),
+  version: z.union([z.literal(2), z.literal(3)]),
+  runIds: z.array(z.string().min(1).max(100)),
+  runs: z.array(subagentRunSchema).optional(),
+}).strict();
+export const subagentSnapshotSchema = z.object({
+  kind: z.literal('fate-subagent-snapshot'),
+  version: z.union([z.literal(1), z.literal(2)]),
+  run: subagentRunSchema,
+}).strict();
 
 export const sessionAttentionSchema = z.enum(['running', 'completed', 'error']);
 export const sessionSummarySchema = z.object({
@@ -399,6 +567,8 @@ export const runtimeStateSchema = z.object({
   queue: runtimeQueueSchema.optional(),
   extensionUi: extensionUiStateSchema.optional(),
   sessions: z.array(sessionSummarySchema).max(1_000).optional(),
+  subagents: z.array(subagentRunSchema).optional(),
+  subagentWorkflows: z.array(subagentWorkflowSchema).optional(),
   branches: z.array(sessionBranchSchema).max(5_000).optional(),
   forkPoints: z.array(forkPointSchema).max(2_000).optional(),
   sessionCapabilities: sessionCapabilitiesSchema.optional(),
@@ -408,21 +578,66 @@ export const runtimeStateSchema = z.object({
 });
 
 const eventBaseSchema = z.object({ timestamp: z.number().finite(), cursor: z.number().int().nonnegative().optional() });
+const runStartedEventSchema = eventBaseSchema.extend({ type: z.literal('run.started'), runId: z.string().min(1) });
+const runCompletedEventSchema = eventBaseSchema.extend({ type: z.literal('run.completed'), runId: z.string().min(1), aborted: z.boolean() });
+const messageStartedEventSchema = eventBaseSchema.extend({ type: z.literal('message.started'), messageId: z.string().min(1), role: z.enum(['user', 'assistant', 'system', 'tool']) });
+const messageCompletedEventSchema = eventBaseSchema.extend({ type: z.literal('message.completed'), messageId: z.string().min(1), role: z.enum(['user', 'assistant', 'system', 'tool']), text: z.string().max(65_000), images: z.array(runtimeImageSchema).max(8).optional(), error: z.boolean().optional() });
+const assistantTextEventSchema = eventBaseSchema.extend({ type: z.literal('assistant.text'), messageId: z.string().min(1), delta: z.string().min(1).max(32_000) });
+const assistantReasoningEventSchema = eventBaseSchema.extend({ type: z.literal('assistant.reasoning'), messageId: z.string().min(1), delta: z.string().min(1).max(32_000) });
+const toolStartedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.started'), toolCallId: z.string().min(1), name: z.string().min(1), input: z.string().max(65_000), subagentRunIds: z.array(z.string().min(1).max(100)).optional() });
+const toolUpdatedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.updated'), toolCallId: z.string().min(1), output: z.string().max(65_000), subagentRunIds: z.array(z.string().min(1).max(100)).optional() });
+const toolCompletedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.completed'), toolCallId: z.string().min(1), name: z.string().min(1), output: z.string().max(65_000), images: z.array(runtimeImageSchema).max(8).optional(), error: z.boolean(), subagentRunIds: z.array(z.string().min(1).max(100)).optional() });
+const queueChangedEventSchema = eventBaseSchema.extend({ type: z.literal('queue.changed'), steering: z.number().int().nonnegative(), followUp: z.number().int().nonnegative() });
+const contextCompactionEventSchema = eventBaseSchema.extend({ type: z.literal('context.compaction'), phase: z.enum(['started', 'completed', 'failed']), aborted: z.boolean().optional(), error: appErrorSchema.optional() });
+const errorEventSchema = eventBaseSchema.extend({ type: z.literal('error'), error: appErrorSchema });
+export const subagentChildEventSchema = z.discriminatedUnion('type', [
+  runStartedEventSchema,
+  runCompletedEventSchema,
+  messageStartedEventSchema,
+  messageCompletedEventSchema,
+  assistantTextEventSchema,
+  assistantReasoningEventSchema,
+  toolStartedEventSchema,
+  toolUpdatedEventSchema,
+  toolCompletedEventSchema,
+  queueChangedEventSchema,
+  contextCompactionEventSchema,
+  errorEventSchema,
+]);
 export const piEventSchema = z.discriminatedUnion('type', [
   eventBaseSchema.extend({ type: z.literal('run.accepted'), runId: z.string().min(1) }),
-  eventBaseSchema.extend({ type: z.literal('run.started'), runId: z.string().min(1) }),
-  eventBaseSchema.extend({ type: z.literal('run.completed'), runId: z.string().min(1), aborted: z.boolean() }),
-  eventBaseSchema.extend({ type: z.literal('message.started'), messageId: z.string().min(1), role: z.enum(['user', 'assistant', 'system', 'tool']) }),
-  eventBaseSchema.extend({ type: z.literal('message.completed'), messageId: z.string().min(1), role: z.enum(['user', 'assistant', 'system', 'tool']), text: z.string().max(65_000), images: z.array(runtimeImageSchema).max(8).optional(), error: z.boolean().optional() }),
-  eventBaseSchema.extend({ type: z.literal('assistant.text'), messageId: z.string().min(1), delta: z.string().min(1).max(32_000) }),
-  eventBaseSchema.extend({ type: z.literal('assistant.reasoning'), messageId: z.string().min(1), delta: z.string().min(1).max(32_000) }),
-  eventBaseSchema.extend({ type: z.literal('tool.started'), toolCallId: z.string().min(1), name: z.string().min(1), input: z.string().max(65_000) }),
-  eventBaseSchema.extend({ type: z.literal('tool.updated'), toolCallId: z.string().min(1), output: z.string().max(65_000) }),
-  eventBaseSchema.extend({ type: z.literal('tool.completed'), toolCallId: z.string().min(1), name: z.string().min(1), output: z.string().max(65_000), images: z.array(runtimeImageSchema).max(8).optional(), error: z.boolean() }),
-  eventBaseSchema.extend({ type: z.literal('queue.changed'), steering: z.number().int().nonnegative(), followUp: z.number().int().nonnegative() }),
-  eventBaseSchema.extend({ type: z.literal('context.compaction'), phase: z.enum(['started', 'completed', 'failed']), aborted: z.boolean().optional(), error: appErrorSchema.optional() }),
+  runStartedEventSchema,
+  runCompletedEventSchema,
+  messageStartedEventSchema,
+  messageCompletedEventSchema,
+  assistantTextEventSchema,
+  assistantReasoningEventSchema,
+  toolStartedEventSchema,
+  toolUpdatedEventSchema,
+  toolCompletedEventSchema,
+  queueChangedEventSchema,
+  contextCompactionEventSchema,
   eventBaseSchema.extend({ type: z.literal('state.changed'), state: runtimeStateSchema, messagesIncluded: z.boolean() }),
-  eventBaseSchema.extend({ type: z.literal('error'), error: appErrorSchema }),
+  errorEventSchema,
+  eventBaseSchema.extend({ type: z.literal('subagent.started'), run: subagentRunSchema }),
+  eventBaseSchema.extend({
+    type: z.literal('subagent.updated'),
+    runId: z.string().min(1).max(100),
+    status: subagentStatusSchema,
+    updatedAt: z.number().finite(),
+    startedAt: z.number().finite().optional(),
+    timeoutAt: z.number().finite().optional(),
+    model: modelInfoSchema.optional(),
+    thinkingLevel: thinkingLevelSchema.optional(),
+    controlCount: z.number().int().nonnegative().optional(),
+    displayName: subagentDisplayNameSchema.optional(),
+    attempt: z.number().int().positive().safe().optional(),
+    mailbox: subagentMailboxSchema.optional(),
+    usage: subagentUsageSchema.optional(),
+  }),
+  eventBaseSchema.extend({ type: z.literal('subagent.event'), runId: z.string().min(1).max(100), event: subagentChildEventSchema }),
+  eventBaseSchema.extend({ type: z.literal('subagent.completed'), run: subagentRunSchema }),
+  eventBaseSchema.extend({ type: z.literal('subagent.workflow.updated'), workflow: subagentWorkflowSchema }),
 ]);
 
 export const piEventBatchSchema = z.array(piEventSchema).min(1).max(100);
@@ -433,6 +648,15 @@ export const promptInputSchema = z.object({
 }).strict();
 export const promptAcceptanceSchema = z.object({ accepted: z.boolean(), runId: z.string().min(1) });
 export const abortResultSchema = z.object({ aborted: z.boolean() });
+const subagentControlTargetSchema = z.string().trim().min(1).max(100).refine((target) => !/[\u0000-\u001f\u007f]/u.test(target), 'Subagent targets cannot contain control characters.');
+const individualSubagentTargetSchema = subagentControlTargetSchema.refine((target) => target.toLocaleLowerCase().replace(/^@/u, '') !== 'all', 'This action requires one agent handle.');
+export const subagentControlInputSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('cancel'), target: subagentControlTargetSchema, reason: z.string().trim().min(1).max(500).optional() }).strict(),
+  z.object({ action: z.literal('close'), target: individualSubagentTargetSchema }).strict(),
+  z.object({ action: z.literal('steer'), target: individualSubagentTargetSchema, message: z.string().trim().min(1).max(20_000) }).strict(),
+  z.object({ action: z.literal('followUp'), target: individualSubagentTargetSchema, message: z.string().trim().min(1).max(200_000) }).strict(),
+  z.object({ action: z.literal('rename'), target: individualSubagentTargetSchema, displayName: subagentDisplayNameSchema }).strict(),
+]);
 export const setModelInputSchema = z.object({ provider: z.string().min(1), id: z.string().min(1) }).strict();
 export const setThinkingInputSchema = z.object({ level: thinkingLevelSchema }).strict();
 export const setPermissionInputSchema = z.object({ level: permissionLevelSchema }).strict();
@@ -518,6 +742,7 @@ export const appSettingsSchema = z.object({
   terminalShell: z.string().max(4_096).nullable(),
   reduceMotion: z.boolean(),
   performanceMode: z.boolean().default(false),
+  holyShitMode: z.boolean().default(false),
   musicPlayerEnabled: z.boolean().default(false),
   sendMessageWithModifier: z.boolean().default(false),
   themeId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,47}$/).default('catppuccin-mocha'),
@@ -589,6 +814,22 @@ export type ImageSaveResult = z.infer<typeof imageSaveResultSchema>;
 export type RuntimeMessage = z.infer<typeof runtimeMessageSchema>;
 export type RuntimeTool = z.infer<typeof runtimeToolSchema>;
 export type RuntimeState = z.infer<typeof runtimeStateSchema>;
+export type SubagentRole = z.infer<typeof subagentRoleSchema>;
+export type SubagentAgentSource = z.infer<typeof subagentAgentSourceSchema>;
+export type SubagentStatus = z.infer<typeof subagentStatusSchema>;
+export type SubagentSkillMode = z.infer<typeof subagentSkillModeSchema>;
+export type SubagentNotification = z.infer<typeof subagentNotificationSchema>;
+export type SubagentBudget = z.infer<typeof subagentBudgetSchema>;
+export type SubagentMailbox = z.infer<typeof subagentMailboxSchema>;
+export type SubagentUsage = z.infer<typeof subagentUsageSchema>;
+export type SubagentRun = z.infer<typeof subagentRunSchema>;
+export type SubagentWorkflowNodeStatus = z.infer<typeof subagentWorkflowNodeStatusSchema>;
+export type SubagentWorkflowStatus = z.infer<typeof subagentWorkflowStatusSchema>;
+export type SubagentWorkflowNode = z.infer<typeof subagentWorkflowNodeSchema>;
+export type SubagentWorkflow = z.infer<typeof subagentWorkflowSchema>;
+export type SubagentToolDetails = z.infer<typeof subagentToolDetailsSchema>;
+export type SubagentSnapshot = z.infer<typeof subagentSnapshotSchema>;
+export type SubagentChildEvent = z.infer<typeof subagentChildEventSchema>;
 export type ExtensionUiState = z.infer<typeof extensionUiStateSchema>;
 export type SessionAttention = z.infer<typeof sessionAttentionSchema>;
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
@@ -596,6 +837,7 @@ export type SessionBranch = z.infer<typeof sessionBranchSchema>;
 export type PiEvent = z.infer<typeof piEventSchema>;
 export type PromptInput = z.infer<typeof promptInputSchema>;
 export type PromptAcceptance = z.infer<typeof promptAcceptanceSchema>;
+export type SubagentControlInput = z.infer<typeof subagentControlInputSchema>;
 export type QueuedMessage = z.infer<typeof queuedMessageSchema>;
 export type QueueMutationInput = z.infer<typeof queueMutationInputSchema>;
 export type QueueMutationResult = z.infer<typeof queueMutationResultSchema>;
@@ -639,6 +881,7 @@ export interface PiDesktopApi {
   getRuntimeState: () => Promise<RuntimeState>;
   prompt: (input: PromptInput) => Promise<PromptAcceptance>;
   abort: () => Promise<{ aborted: boolean }>;
+  controlSubagent: (input: SubagentControlInput) => Promise<RuntimeState>;
   setModel: (provider: string, id: string) => Promise<RuntimeState>;
   setThinkingLevel: (level: ThinkingLevel) => Promise<RuntimeState>;
   setPermissionLevel: (level: PermissionLevel) => Promise<RuntimeState>;

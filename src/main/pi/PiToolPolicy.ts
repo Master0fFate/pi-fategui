@@ -3,13 +3,35 @@ import path from 'node:path';
 import {
   createBashToolDefinition,
   createEditToolDefinition,
+  createFindToolDefinition,
+  createGrepToolDefinition,
+  createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
 } from '@earendil-works/pi-coding-agent';
+import type { PermissionLevel } from '../../shared/contracts/ipc';
 import { PiDesktopError } from './errors';
 import { createGenerateImageTool } from './PiImageTool';
 
 const MAX_PI_READ_BYTES = 8 * 1024 * 1024;
+
+const toolsByPermissionLevel: Record<PermissionLevel, readonly string[]> = {
+  'read-only': ['read', 'generate_image'],
+  edit: ['read', 'write', 'edit', 'generate_image'],
+  'full-access': ['read', 'write', 'edit', 'bash', 'generate_image'],
+};
+const permissionControlledTools = new Set(['read', 'write', 'edit', 'bash', 'generate_image']);
+
+export function activeToolsForPermission(activeTools: readonly string[], level: PermissionLevel): string[] {
+  const allowed = new Set(toolsByPermissionLevel[level]);
+  const selected = activeTools.filter((name) => !permissionControlledTools.has(name) || allowed.has(name));
+  for (const name of toolsByPermissionLevel[level]) if (!selected.includes(name)) selected.push(name);
+  return selected;
+}
+
+export function toolNamesForPermission(level: PermissionLevel): string[] {
+  return [...toolsByPermissionLevel[level]];
+}
 
 function isContained(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
@@ -116,6 +138,7 @@ export async function createProjectConfinedTools(
   cwd: string,
   access: ProjectToolAccess = { fullAccess: false },
   readableRoots: ReadableRoots = [],
+  options: { searchTools?: boolean } = {},
 ) {
   const canonicalCwd = path.normalize(await fs.realpath(cwd));
   const policy = await ProjectPathPolicy.create(canonicalCwd, access, readableRoots);
@@ -178,11 +201,54 @@ export async function createProjectConfinedTools(
     mkdir: async (directoryPath: string) => { await fs.mkdir(await policy.writable(directoryPath), { recursive: true }); },
     writeFile: secureWriteFile,
   };
+  const searchTools = options.searchTools ? [
+    createGrepToolDefinition(canonicalCwd, {
+      operations: {
+        isDirectory: async (target) => (await fs.stat(await policy.readable(target))).isDirectory(),
+        readFile: async (target) => (await withReadable(target, true))!.toString('utf8'),
+      },
+    }),
+    createFindToolDefinition(canonicalCwd, {
+      operations: {
+        exists: async (target) => {
+          try { await policy.readable(target); return true; } catch { return false; }
+        },
+        glob: async (pattern, directory, globOptions) => {
+          if (path.isAbsolute(pattern) || pattern.includes('..')) {
+            throw new PiDesktopError({ code: 'INVALID_PROJECT', message: 'Pi find patterns must stay inside the approved search directory.', retryable: false });
+          }
+          const canonicalDirectory = await policy.readable(directory);
+          const results: string[] = [];
+          for await (const match of fs.glob(pattern, { cwd: canonicalDirectory, exclude: globOptions.ignore })) {
+            const candidate = path.resolve(canonicalDirectory, String(match));
+            try {
+              await policy.readable(candidate);
+              results.push(String(match));
+            } catch {
+              // A glob that escapes the approved roots is omitted.
+            }
+            if (results.length >= globOptions.limit) break;
+          }
+          return results;
+        },
+      },
+    }),
+    createLsToolDefinition(canonicalCwd, {
+      operations: {
+        exists: async (target) => {
+          try { await policy.readable(target); return true; } catch { return false; }
+        },
+        stat: async (target) => fs.stat(await policy.readable(target)),
+        readdir: async (target) => fs.readdir(await policy.readable(target)),
+      },
+    }),
+  ] : [];
   return [
     createBashToolDefinition(canonicalCwd),
     createReadToolDefinition(canonicalCwd, { operations: readOperations }),
     createWriteToolDefinition(canonicalCwd, { operations: writeOperations }),
     createEditToolDefinition(canonicalCwd, { operations: { ...readOperations, writeFile: writeOperations.writeFile } }),
     createGenerateImageTool(),
+    ...searchTools,
   ];
 }

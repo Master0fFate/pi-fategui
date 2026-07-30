@@ -1,21 +1,26 @@
 import { Brain, Check, CircleAlert, Copy, GitFork, PackageCheck, PackageOpen, Plug, RotateCcw } from 'lucide-react';
 import { memo, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { useShallow } from 'zustand/react/shallow';
 import { AppTooltip } from '../../components/AppTooltip';
 import { writeClipboardText } from '../../lib/clipboard';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
+import { MentionText } from './AgentMention';
 import { AssistantMarkdown } from './RichMessageContent';
 import { ToolCard } from './ToolCard';
 
 export { AssistantMarkdown } from './RichMessageContent';
 
+const messageTimestampFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
 function formatMessageTimestamp(timestamp: number): string {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return 'Time unavailable';
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp);
+  return messageTimestampFormatter.format(timestamp);
 }
 
 const MAX_FORK_POINT_TEXT = 2_000;
+const EMPTY_MESSAGE_ORDER: readonly string[] = [];
 const forkTextMatches = (messageText: string, pointText: string) => messageText.slice(0, MAX_FORK_POINT_TEXT) === pointText;
 
 export function forkEntryForMessage(messageId: string, messageOrder: readonly string[], messagesById: Record<string, { role: string; text: string }>, forkPoints: readonly { entryId: string; text: string }[] | undefined): string | null {
@@ -57,27 +62,32 @@ export function forkEntryForMessage(messageId: string, messageOrder: readonly st
 }
 
 export const MessageRow = memo(function MessageRow({ messageId }: { messageId: string }) {
-  const message = useRuntimeStore((state) => state.messagesById[messageId]);
-  const runtime = useRuntimeStore((state) => state.runtime);
-  const messageOrder = useRuntimeStore((state) => state.messageOrder);
-  const messagesById = useRuntimeStore((state) => state.messagesById);
+  const { message, streaming, latestMessageId, modelName, forkPoints, forkMessageOrder, forkCapable, sessionOperation } = useRuntimeStore(useShallow((state) => ({
+    message: state.messagesById[messageId],
+    streaming: state.runtime.streaming,
+    latestMessageId: state.messageOrder.at(-1),
+    modelName: state.runtime.model?.name ?? 'Assistant',
+    forkPoints: state.runtime.forkPoints,
+    forkMessageOrder: state.runtime.forkPoints?.length ? state.messageOrder : EMPTY_MESSAGE_ORDER,
+    forkCapable: Boolean(state.runtime.sessionCapabilities?.fork),
+    sessionOperation: Boolean(state.runtime.sessionOperation),
+  })));
   const [copied, setCopied] = useState(false);
   const [copying, setCopying] = useState(false);
   const [forking, setForking] = useState(false);
   if (!message || (message.role === 'assistant' && !message.text && !message.images?.length)) return null;
-  const streamingThisMessage = runtime.streaming && messageOrder.at(-1) === messageId;
+  const streamingThisMessage = streaming && latestMessageId === messageId;
   const richContent = message.role === 'assistant' || message.role === 'system' || Boolean(message.images?.length);
-  const modelName = runtime.model?.name ?? 'Assistant';
-  const forkEntryId = forkEntryForMessage(messageId, messageOrder, messagesById, runtime.forkPoints);
-  const canFork = Boolean(forkEntryId && runtime.sessionCapabilities?.fork && !runtime.streaming && !runtime.sessionOperation);
+  const forkEntryId = forkEntryForMessage(messageId, forkMessageOrder, useRuntimeStore.getState().messagesById, forkPoints);
+  const canFork = Boolean(forkEntryId && forkCapable && !streaming && !sessionOperation);
   const label = message.role === 'user' ? 'You' : message.role === 'assistant' ? modelName : message.role === 'system' ? 'System' : 'Tool result';
   const forkUnavailable = forking
     ? 'Creating the new session…'
-    : runtime.streaming
+    : streaming
       ? 'Available when Pi finishes the current response'
-      : runtime.sessionOperation
+      : sessionOperation
         ? 'Available when the current session operation finishes'
-        : !runtime.sessionCapabilities?.fork
+        : !forkCapable
           ? 'Session branching is unavailable'
           : !forkEntryId
             ? 'The branch point for this message is unavailable'
@@ -108,7 +118,7 @@ export const MessageRow = memo(function MessageRow({ messageId }: { messageId: s
     try {
       const result = await window.piDesktop.forkSession(forkEntryId);
       useRuntimeStore.getState().setRuntime(result.state);
-      const promptText = result.selectedText ?? runtime.forkPoints?.find((point) => point.entryId === forkEntryId)?.text ?? '';
+      const promptText = result.selectedText ?? forkPoints?.find((point) => point.entryId === forkEntryId)?.text ?? '';
       if (retry) {
         if (!promptText) throw new Error('The prompt for this response is unavailable.');
         if (typeof window.piDesktop.prompt !== 'function') throw new Error('The desktop prompt bridge is unavailable.');
@@ -130,7 +140,7 @@ export const MessageRow = memo(function MessageRow({ messageId }: { messageId: s
       <article className={`chat-message chat-message--${message.role}${message.error ? ' chat-message--error' : ''}`}>
         {richContent && !(message.role === 'assistant' && streamingThisMessage && !message.images?.length)
           ? <AssistantMarkdown text={message.text} images={message.images} />
-          : <p className="message-plain">{message.text}</p>}
+          : <p className="message-plain"><MentionText text={message.text} /></p>}
       </article>
       <footer className="message-footer">
         <span className="message-footer-meta">{message.role === 'system' ? <><Plug size={11} aria-hidden="true" /><span className="icon-label">{label} <span aria-hidden="true">·</span> {formatMessageTimestamp(message.timestamp)}</span></> : <>{label} <span aria-hidden="true">·</span> {formatMessageTimestamp(message.timestamp)}</>}</span>
@@ -240,6 +250,8 @@ export function ConversationTimeline() {
   const draggedPointerIdRef = useRef<number | null>(null);
   const dragOffsetRef = useRef(0);
   const pinnedToBottomRef = useRef(false);
+  const userScrollIntentRef = useRef(false);
+  const userScrollIntentFrameRef = useRef<number | null>(null);
   const followFrameRef = useRef<number | null>(null);
   const scrollbarFrameRef = useRef<number | null>(null);
   const [scrollerElement, setScrollerElement] = useState<HTMLElement | null>(null);
@@ -272,19 +284,36 @@ export function ConversationTimeline() {
     });
   }, [refreshScrollbar]);
 
+  const markUserScrollIntent = useCallback(() => {
+    userScrollIntentRef.current = true;
+    if (userScrollIntentFrameRef.current !== null) window.cancelAnimationFrame(userScrollIntentFrameRef.current);
+    userScrollIntentFrameRef.current = window.requestAnimationFrame(() => {
+      userScrollIntentRef.current = false;
+      userScrollIntentFrameRef.current = null;
+    });
+  }, []);
+
   const updatePinnedState = useCallback(() => {
     const scroller = scrollerRef.current;
-    if (scroller) pinnedToBottomRef.current = scrollerIsAtBottom(scroller);
+    if (!scroller) return;
+    const atBottom = scrollerIsAtBottom(scroller);
+    // Virtuoso and browser scroll anchoring both emit native scroll events while
+    // a growing row is measured. Only explicit input may unpin the conversation.
+    if (atBottom || userScrollIntentRef.current) pinnedToBottomRef.current = atBottom;
   }, []);
 
   const bindScroller = useCallback((target: HTMLElement | Window | null) => {
     const nextScroller = target instanceof HTMLElement ? target : null;
     if (scrollerRef.current === nextScroller) return;
     scrollerRef.current?.removeEventListener('scroll', updatePinnedState);
+    scrollerRef.current?.removeEventListener('wheel', markUserScrollIntent);
+    scrollerRef.current?.removeEventListener('touchmove', markUserScrollIntent);
     scrollerRef.current = nextScroller;
     setScrollerElement(nextScroller);
     nextScroller?.addEventListener('scroll', updatePinnedState, { passive: true });
-  }, [updatePinnedState]);
+    nextScroller?.addEventListener('wheel', markUserScrollIntent, { passive: true });
+    nextScroller?.addEventListener('touchmove', markUserScrollIntent, { passive: true });
+  }, [markUserScrollIntent, updatePinnedState]);
 
   useLayoutEffect(() => {
     if (!timelineSessionKey) {
@@ -317,8 +346,9 @@ export function ConversationTimeline() {
 
   const handleAtBottomStateChange = useCallback((atBottom: boolean) => {
     // A growing final row briefly reports false before the scheduled follow runs.
-    // Native scroll events still let an intentional user scroll cancel that follow.
-    if (atBottom || followFrameRef.current === null) pinnedToBottomRef.current = atBottom;
+    // Keep following unless wheel/touch input or an explicit scrollbar action
+    // shows that the user intentionally moved away from the bottom.
+    if (atBottom || userScrollIntentRef.current) pinnedToBottomRef.current = atBottom;
   }, []);
 
   useEffect(() => {
@@ -369,9 +399,12 @@ export function ConversationTimeline() {
       unsubscribe();
       cancelScheduledFollow();
       if (scrollbarFrameRef.current !== null) window.cancelAnimationFrame(scrollbarFrameRef.current);
+      if (userScrollIntentFrameRef.current !== null) window.cancelAnimationFrame(userScrollIntentFrameRef.current);
       scrollerRef.current?.removeEventListener('scroll', updatePinnedState);
+      scrollerRef.current?.removeEventListener('wheel', markUserScrollIntent);
+      scrollerRef.current?.removeEventListener('touchmove', markUserScrollIntent);
     };
-  }, [refreshScrollbar, scheduleScrollbarRefresh, updatePinnedState]);
+  }, [markUserScrollIntent, refreshScrollbar, scheduleScrollbarRefresh, updatePinnedState]);
 
   const scrollToThumbOffset = useCallback((offset: number) => {
     const scroller = scrollerRef.current;
@@ -381,6 +414,7 @@ export function ConversationTimeline() {
     const maxThumbOffset = track.clientHeight - metrics.thumbHeight;
     const boundedOffset = clamp(offset, 0, maxThumbOffset);
     scroller.scrollTop = maxThumbOffset > 0 ? boundedOffset / maxThumbOffset * metrics.maxScroll : 0;
+    pinnedToBottomRef.current = scrollerIsAtBottom(scroller);
     refreshScrollbar();
   }, [readScrollbarMetrics, refreshScrollbar]);
 
@@ -428,6 +462,7 @@ export function ConversationTimeline() {
     if (nextScrollTop === null) return;
     event.preventDefault();
     scroller.scrollTop = nextScrollTop;
+    pinnedToBottomRef.current = scrollerIsAtBottom(scroller);
     refreshScrollbar();
   };
 

@@ -33,6 +33,7 @@ Fate UI turns Pi into a complete desktop workspace without weakening the local c
 - **Make the workspace yours** — choose built-in or validated custom themes, plus interface and code fonts—including a light Daylight theme and Poppins interface type.
 - **Private voice input** — record in the composer and turn speech into editable text locally, with a selectable microphone and downloadable, checksum-verified model tiers.
 - **Optional ambient audio** — a compact music dock can play user-supplied public HTTPS media or local audio while staying separate from Pi and project activity.
+- **Managed multi-model subagents** — Pi can route isolated children to different authenticated providers, reasoning levels, tools, skills, and reusable agent profiles; run dependency workflows; and inspect, steer, retarget, follow up with, or terminate them while Fate UI preserves read-only nested transcripts.
 - **Calm during long-running work** — bounded event batches, virtualized timelines, guarded project switching, queued messages, stop/steer controls, and durable sessions keep the interface responsive.
 - **Cross-platform beta installers** — tagged releases publish native Windows, macOS, and Linux packages built and installation-smoke-tested on native GitHub runners.
 
@@ -98,7 +99,7 @@ You can also provide a directory explicitly:
 fate /path/to/project
 ```
 
-Fate UI opens the canonical directory and displays its normal trust prompt. If Fate UI is already running, the existing window is focused and the project change is serialized safely against active Pi, Git, and session operations.
+Fate UI opens the canonical directory and displays its normal trust prompt. Every invocation opens an independent window and runtime, even when another installed Fate UI instance is already running. Concurrent processes use separate persistent Electron profile slots while sharing Pi credentials and the session catalog.
 
 ## Authenticate Pi
 
@@ -126,6 +127,42 @@ Fate UI starts Pi in project-confined **Edit files** mode.
 
 Opening another project resets the active Pi permission level. The manual terminal remains visibly separate from Pi-generated tool activity.
 
+## Managed subagents
+
+Every top-level Pi session can use five Fate-owned orchestration tools:
+
+- `subagent` runs any explicitly requested number of blocking delegations.
+- `subagent_start` launches any explicitly requested number of managed children and returns run IDs immediately.
+- `subagent_manage` lists, inspects, waits for, steers, retargets, follows up with, closes, or cancels managed children.
+- `subagent_workflow` starts and manages arbitrary acyclic dependency graphs and user-selected concurrency.
+- `subagent_catalog` discovers authenticated Pi models, reusable agent profiles, skills, and the child capability contract.
+
+Each child gets an immutable conversation-local handle such as `@auth-reviewer-1` and a renameable display label. Typing `@` opens handle autocomplete, recognized mentions link to the matching inspector session, and exact commands such as `@stop @auth-reviewer-1` remain deterministic. The conversation keeps the real subagent tool call visible as a compact **Running**, **Completed**, **Error**, or **Stopped** marker; detailed activity and controls stay in the **Agents** inspector.
+
+Four concurrent children is planning guidance only when neither the user nor the task specifies a scale. An explicit count is binding: asking for 10 launches 10, and an explicit workflow `maxConcurrency` of 20 schedules 20. Direct batches, workflow nodes, active children, selected skills, routing attempts, and configured durations have no harness policy ceiling. Workflow concurrency defaults to four only when omitted. This follows the liberal shape of [OpenAI's Responses Multi-agent API](https://developers.openai.com/api/docs/guides/responses-multi-agent)—recommended low default, no fixed concurrency/total/depth ceiling—while retaining Fate's independent provider routing and durable desktop inspection. [Claude Code's current dynamic workflows](https://code.claude.com/docs/en/workflows) provide useful scale and resumability patterns, but their documented 16-concurrent/1,000-total runtime caps are intentionally not copied here.
+
+A child can use a different exact `{ provider, id }` than its parent and an independent thinking level. Each specification can also select a profile, role label, permission, exact tool allowlist, Pi skills, timeout, no-activity timeout, ordered model fallbacks, retry count, mailbox lifetime, notification mode, and observable token/cost/turn budget. Timeouts and idle limits are opt-in: omit them or set zero for no automatic stop, including multi-hour work. Fate reuses Pi's main-process model runtime and credentials; no provider secrets cross IPC. Children run in isolated SDK sessions, cannot recursively launch Fate subagents, and receive only the Fate-confined tools allowed by both their requested permission and the parent session's permission. Edit/full-access children perform assigned edits, commands, and verification themselves rather than returning implementation instructions for the parent to repeat.
+
+Cross-agent messages use the receiving model's own context window as their admission boundary. Fate estimates the receiver's current context plus the proposed transfer with Pi's provider-neutral estimator. If it would exceed that model's window, Fate refuses the transfer, names the exact provider/model and maximum token window, preserves the child work in the Agents inspector, and does not compact history merely to force the oversized transfer through. Fixed renderer transcript bounds protect IPC/UI memory only; they do not replace the child model's working context or truncate an admitted final child result.
+
+Managed children can retain their SDK session as a user-configured mailbox for exact follow-up turns. Completion delivery is opt-in: `next-turn` adds model-visible context to a future parent turn, while `immediate` triggers a turn when idle or queues a follow-up when the parent is already streaming. Workflow state and settled child snapshots are persisted with the parent session; an active workflow recovered after restart is paused and must be resumed explicitly.
+
+Reusable Markdown profiles are discovered from `~/.pi/agent/agents/*.md` and, for trusted projects, `.pi/agents/*.md`. Supported frontmatter is intentionally small:
+
+```markdown
+---
+name: security-reviewer
+description: Reviews a change for concrete security regressions
+role: reviewer
+tools: read, grep, find, ls
+model: provider/model-id
+---
+
+Review evidence first. Report only actionable findings.
+```
+
+The **Agents** inspector shows workflow graphs and each nested run's profile, provider/model, thinking level, authority, skills, attempts, mailbox state, budgets, usage, controls, reasoning, messages, and tool activity. Child transcripts are inspection-only in the renderer; orchestration remains owned by the parent Pi agent.
+
 ## Local development
 
 ### Prerequisites
@@ -145,6 +182,8 @@ corepack enable
 pnpm install --frozen-lockfile
 pnpm dev
 ```
+
+The development launcher uses an isolated Electron profile, so it can run alongside an installed Fate UI without activating the installed process. The profile is stable per checkout under the operating system's temporary directory. Set `PI_DESKTOP_DEV_PROFILE` to override its location; an explicit `FATE_GUI_DATA_DIR` still overrides Fate's development data directory.
 
 ### Verification
 

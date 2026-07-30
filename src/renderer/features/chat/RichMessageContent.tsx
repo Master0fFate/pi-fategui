@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import type { RuntimeImage } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
 import { writeClipboardText } from '../../lib/clipboard';
+import { AgentMentionLink, remarkAgentMentions } from './AgentMention';
 
 let mermaidQueue: Promise<void> = Promise.resolve();
 let pendingMermaidRenders = 0;
@@ -215,6 +216,7 @@ function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string |
 
 function safeMarkdownUrl(url: string): string {
   const trimmed = url.trim();
+  if (trimmed.startsWith('fate-agent:')) return trimmed;
   if (/^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(trimmed)) return trimmed.length <= MAX_INLINE_IMAGE_URL_LENGTH ? trimmed : '';
   if (/^blob:/i.test(trimmed) || trimmed.startsWith('#')) return trimmed;
   try {
@@ -273,10 +275,10 @@ export function AssistantMarkdown({ text, images = [] }: { text: string; images?
   return (
     <div className="markdown-content">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkAgentMentions]}
         urlTransform={safeMarkdownUrl}
         components={{
-          a: ({ children, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
+          a: AgentMentionLink,
           img: ({ src, alt }) => <ChatImage src={src} alt={alt ?? ''} />,
           pre: MermaidAwarePre,
         }}

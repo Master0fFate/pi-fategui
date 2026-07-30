@@ -34,7 +34,7 @@ import { enumerateMicrophones, microphoneAccessError, requestMicrophoneDevices, 
 
 const fallback: AppSettings = {
   appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true,
-  terminalShell: null, reduceMotion: false, performanceMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight',
+  terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight',
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
   speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
 };
@@ -224,6 +224,7 @@ export function SettingsDialog() {
     settings.interfaceFont,
     settings.performanceMode,
     settings.reduceMotion,
+    settings.holyShitMode,
     settings.themeId,
     settingsLoaded,
     themes,
@@ -380,10 +381,10 @@ export function SettingsDialog() {
                     <div className="settings-theme-row"><div><strong>Code & terminal</strong><small>Used for code, tool output, diffs, and the integrated terminal.</small></div><SelectControl label="Code and terminal font" value={settings.codeFont} className="settings-font-select" options={codeFontOptions} onValueChange={(codeFont) => setSettings({ ...settings, codeFont: codeFont as AppSettings['codeFont'] })} /></div>
                     <div className="settings-font-preview" aria-label="Extended Unicode font preview"><span lang="hr">Čć Đđ Šš Žž</span><span lang="ru">Привет</span><span lang="hi">नमस्ते</span><span lang="he" dir="rtl">שלום</span><span lang="zh-Hans">中文</span></div>
                   </div>
-                  <div className="settings-title settings-title--spaced"><span><Gauge size={17} /></span><div><h3>Performance</h3><p>Trade visual finish for lower rendering cost when needed.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><span><Gauge size={17} /></span><div><h3>Performance</h3><p>Lower rendering cost without disabling any app capability.</p></div></div>
                   <div className="settings-group">
-                    <label className="settings-toggle"><div><strong>Performance mode</strong><small>Disables transitions, entrance motion, ambient gradients, and deep shadows.</small></div><input type="checkbox" checked={settings.performanceMode} onChange={(event) => setSettings({ ...settings, performanceMode: event.target.checked })} /><span aria-hidden="true" /></label>
-                    <label className="settings-toggle"><div><strong>Reduce motion</strong><small>Stops panel slides, popovers, and nonessential movement immediately.</small></div><input type="checkbox" checked={settings.reduceMotion} onChange={(event) => setSettings({ ...settings, reduceMotion: event.target.checked })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>Performance mode</strong><small>Includes Reduced Motion and disables transitions, entrance motion, ambient gradients, blur, and deep shadows.</small></div><input type="checkbox" checked={settings.performanceMode || settings.reduceMotion} onChange={(event) => setSettings({ ...settings, performanceMode: event.target.checked, reduceMotion: event.target.checked })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>Holy sh*t</strong><small>Bare-bones fallback for very weak hardware: removes gradients, shadows, blur, animation, and smooth scrolling. Turn it off to restore your visual settings.</small></div><input type="checkbox" checked={settings.holyShitMode} onChange={(event) => setSettings({ ...settings, holyShitMode: event.target.checked })} /><span aria-hidden="true" /></label>
                   </div>
                   <div className="settings-title settings-title--spaced"><span><Music2 size={17} /></span><div><h3>Ambient audio</h3><p>An optional player that stays separate from Pi and your project.</p></div></div>
                   <div className="settings-group">

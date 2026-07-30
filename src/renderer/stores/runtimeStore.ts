@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import type { AppError, PiEvent, RuntimeMessage, RuntimeState, RuntimeTool } from '../../shared/contracts/ipc';
+import type { AppError, PiEvent, RuntimeMessage, RuntimeState, RuntimeTool, SubagentRun } from '../../shared/contracts/ipc';
+import { applySubagentChildEvent, boundSubagentRun, boundSubagentRuns } from '../../shared/subagents';
 
 type RuntimeQueue = NonNullable<RuntimeState['queue']>;
 const emptyQueue = (): RuntimeQueue => ({ steering: 0, followUp: 0, items: [] });
@@ -40,6 +41,8 @@ interface RuntimeStore {
   reasoningByMessageId: Record<string, string>;
   toolsById: Record<string, ToolExecution>;
   toolOrder: string[];
+  subagentsById: Record<string, SubagentRun>;
+  subagentOrder: string[];
   timelineById: Record<string, TimelineEntity>;
   timelineOrder: string[];
   visibleTimelineOrder: string[];
@@ -70,6 +73,23 @@ function boundLiveText(value: string): string {
   const marker = '\n… live text truncated …\n';
   const available = MAX_LIVE_TOOL_OUTPUT - marker.length;
   return `${value.slice(0, Math.ceil(available / 2))}${marker}${value.slice(-Math.floor(available / 2))}`;
+}
+
+function coalesceAdjacentStreamDelta(events: readonly PiEvent[], startIndex: number): { event: PiEvent; lastIndex: number } {
+  const first = events[startIndex]!;
+  if (first.type !== 'assistant.text' && first.type !== 'assistant.reasoning') return { event: first, lastIndex: startIndex };
+  let delta = first.delta;
+  let lastIndex = startIndex;
+  while (lastIndex + 1 < events.length) {
+    const next = events[lastIndex + 1]!;
+    if (next.type !== first.type || next.messageId !== first.messageId) break;
+    delta += next.delta;
+    lastIndex += 1;
+  }
+  return {
+    event: lastIndex === startIndex ? first : { ...first, delta },
+    lastIndex,
+  };
 }
 
 function enforceLiveImageBudget(
@@ -115,6 +135,14 @@ function enforceLiveImageBudget(
     }
   }
   return { messagesById, toolsById };
+}
+
+function indexedSubagents(runs: SubagentRun[] = []) {
+  const bounded = boundSubagentRuns(runs);
+  return {
+    subagentsById: Object.fromEntries(bounded.map((run) => [run.id, run])),
+    subagentOrder: bounded.map((run) => run.id),
+  };
 }
 
 function indexed(messages: RuntimeMessage[], tools: RuntimeTool[] = []) {
@@ -206,6 +234,7 @@ function indexed(messages: RuntimeMessage[], tools: RuntimeTool[] = []) {
 export const useRuntimeStore = create<RuntimeStore>((set) => ({
   runtime: disconnected,
   ...indexed([]),
+  ...indexedSubagents(),
   queue: emptyQueue(),
   lastError: null,
   sequence: 0,
@@ -217,25 +246,34 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     if (sameSession) {
       // Command responses are metadata snapshots. Preserve event-owned entities
       // until an explicit authoritative hydration or session change occurs.
+      const subagents = runtime.subagents ? indexedSubagents(runtime.subagents) : {
+        subagentsById: current.subagentsById,
+        subagentOrder: current.subagentOrder,
+      };
       return {
         runtime: {
           ...current.runtime,
           ...runtime,
           messages: current.runtime.messages,
           ...(current.runtime.tools ? { tools: current.runtime.tools } : {}),
+          subagents: subagents.subagentOrder.flatMap((id) => subagents.subagentsById[id] ? [subagents.subagentsById[id]!] : []),
         },
+        ...subagents,
         queue: runtime.queue ?? current.queue,
         lastError: runtime.error,
       };
     }
     const projection = indexed(runtime.messages, runtime.tools);
+    const subagents = indexedSubagents(runtime.subagents);
     return {
       runtime: {
         ...runtime,
         messages: projection.messageOrder.flatMap((id) => projection.messagesById[id] ? [projection.messagesById[id]!] : []),
         tools: projection.toolOrder.flatMap((id) => projection.toolsById[id] ? [projection.toolsById[id]!] : []),
+        subagents: subagents.subagentOrder.flatMap((id) => subagents.subagentsById[id] ? [subagents.subagentsById[id]!] : []),
       },
       ...projection,
+      ...subagents,
       queue: runtime.queue ?? emptyQueue(),
       lastError: runtime.error,
       sequence: 0,
@@ -244,13 +282,16 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   }),
   hydrateRuntime: (runtime) => set(() => {
     const projection = indexed(runtime.messages, runtime.tools);
+    const subagents = indexedSubagents(runtime.subagents);
     return {
       runtime: {
         ...runtime,
         messages: projection.messageOrder.flatMap((id) => projection.messagesById[id] ? [projection.messagesById[id]!] : []),
         tools: projection.toolOrder.flatMap((id) => projection.toolsById[id] ? [projection.toolsById[id]!] : []),
+        subagents: subagents.subagentOrder.flatMap((id) => subagents.subagentsById[id] ? [subagents.subagentsById[id]!] : []),
       },
       ...projection,
+      ...subagents,
       queue: runtime.queue ?? emptyQueue(),
       lastError: runtime.error,
       sequence: 0,
@@ -264,6 +305,10 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     let reasoningByMessageId = current.reasoningByMessageId;
     let toolsById = current.toolsById;
     let toolOrder = current.toolOrder;
+    let subagentsById = current.subagentsById;
+    let subagentOrder = current.subagentOrder;
+    let subagentsChanged = false;
+    let subagentImagePayloadChanged = false;
     let timelineById = current.timelineById;
     let timelineOrder = current.timelineOrder;
     let visibleTimelineOrder = current.visibleTimelineOrder;
@@ -285,6 +330,15 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     const setTool = (id: string, tool: ToolExecution) => {
       if (toolsById === current.toolsById) toolsById = { ...toolsById };
       toolsById[id] = tool;
+    };
+    const setSubagent = (run: SubagentRun) => {
+      if (subagentsById === current.subagentsById) subagentsById = { ...subagentsById };
+      if (!subagentsById[run.id]) {
+        if (subagentOrder === current.subagentOrder) subagentOrder = [...subagentOrder];
+        subagentOrder.push(run.id);
+      }
+      subagentsById[run.id] = boundSubagentRun(run);
+      subagentsChanged = true;
     };
     const setTimeline = (entry: TimelineEntity) => {
       if (timelineById === current.timelineById) timelineById = { ...timelineById };
@@ -342,21 +396,31 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       setTimelineVisibility(id, true);
     };
 
-    for (const event of events) {
+    for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
+      const merged = coalesceAdjacentStreamDelta(events, eventIndex);
+      const event = merged.event;
+      eventIndex = merged.lastIndex;
       if (event.type === 'state.changed') {
         const sameSession = runtime.project?.path === event.state.project?.path
           && (runtime.sessionId === null ? messageOrder.length > 0 || toolOrder.length > 0 : runtime.sessionId === event.state.sessionId);
         if (event.messagesIncluded || !sameSession) {
           runtime = event.state;
           ({ messagesById, messageOrder, reasoningByMessageId, toolsById, toolOrder, timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds } = indexed(event.state.messages, event.state.tools));
+          ({ subagentsById, subagentOrder } = indexedSubagents(event.state.subagents));
+          subagentsChanged = true;
           activeCompactionId = null;
           queue = event.state.queue ?? emptyQueue();
         } else {
+          if (event.state.subagents) {
+            ({ subagentsById, subagentOrder } = indexedSubagents(event.state.subagents));
+            subagentsChanged = true;
+          }
           runtime = {
             ...runtime,
             ...event.state,
             messages: runtime.messages,
             ...(runtime.tools ? { tools: runtime.tools } : {}),
+            subagents: subagentOrder.flatMap((id) => subagentsById[id] ? [subagentsById[id]!] : []),
           };
           if (event.state.queue) queue = event.state.queue;
         }
@@ -390,6 +454,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         setTool(event.toolCallId, {
           id: event.toolCallId, name: event.name, input: event.input, output: '', outputTruncated: false,
           status: 'running', startedAt: event.timestamp, updatedAt: event.timestamp,
+          ...(event.subagentRunIds === undefined ? {} : { subagentRunIds: event.subagentRunIds }),
         });
       } else if (event.type === 'tool.updated') {
         appendTool(event.toolCallId, event.timestamp);
@@ -397,7 +462,12 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           id: event.toolCallId, name: 'Tool', input: '', output: '', outputTruncated: false,
           status: 'running' as const, startedAt: event.timestamp, updatedAt: event.timestamp,
         };
-        setTool(event.toolCallId, { ...existing, ...boundOutput(event.output), updatedAt: event.timestamp });
+        setTool(event.toolCallId, {
+          ...existing,
+          ...boundOutput(event.output),
+          updatedAt: event.timestamp,
+          ...(event.subagentRunIds === undefined ? {} : { subagentRunIds: event.subagentRunIds }),
+        });
       } else if (event.type === 'tool.completed') {
         appendTool(event.toolCallId, event.timestamp);
         const existing = toolsById[event.toolCallId];
@@ -412,7 +482,49 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           updatedAt: event.timestamp,
           endedAt: event.timestamp,
           ...(event.images === undefined ? {} : { images: event.images }),
+          ...((event.subagentRunIds ?? existing?.subagentRunIds) ? { subagentRunIds: event.subagentRunIds ?? existing?.subagentRunIds } : {}),
         });
+      } else if (event.type === 'subagent.started') {
+        setSubagent(event.run);
+      } else if (event.type === 'subagent.updated') {
+        const existing = subagentsById[event.runId];
+        if (existing) {
+          const base = { ...existing };
+          if (event.status === 'queued' || event.status === 'running') delete base.endedAt;
+          setSubagent({
+            ...base,
+            status: event.status,
+            updatedAt: event.updatedAt,
+            ...(event.startedAt === undefined ? {} : { startedAt: event.startedAt }),
+            ...(event.timeoutAt === undefined ? {} : { timeoutAt: event.timeoutAt }),
+            ...(event.model === undefined ? {} : { model: event.model }),
+            ...(event.thinkingLevel === undefined ? {} : { thinkingLevel: event.thinkingLevel }),
+            ...(event.controlCount === undefined ? {} : { controlCount: event.controlCount }),
+            ...(event.displayName === undefined ? {} : { displayName: event.displayName }),
+            ...(event.attempt === undefined ? {} : { attempt: event.attempt }),
+            ...(event.mailbox === undefined ? {} : { mailbox: event.mailbox }),
+            ...(event.usage === undefined ? {} : { usage: event.usage }),
+          });
+        }
+      } else if (event.type === 'subagent.event') {
+        const existing = subagentsById[event.runId];
+        if (existing) {
+          subagentImagePayloadChanged ||= (event.event.type === 'message.completed' || event.event.type === 'tool.completed')
+            && Boolean(event.event.images?.length);
+          setSubagent(applySubagentChildEvent(existing, event.event));
+        }
+      } else if (event.type === 'subagent.completed') {
+        subagentImagePayloadChanged ||= Boolean(
+          event.run.messages.some((message) => message.images?.length)
+          || event.run.tools.some((tool) => tool.images?.length),
+        );
+        setSubagent(event.run);
+      } else if (event.type === 'subagent.workflow.updated') {
+        const workflows = [...(runtime.subagentWorkflows ?? [])];
+        const index = workflows.findIndex((workflow) => workflow.id === event.workflow.id);
+        if (index >= 0) workflows[index] = event.workflow;
+        else workflows.push(event.workflow);
+        runtime = { ...runtime, subagentWorkflows: workflows };
       } else if (event.type === 'queue.changed') {
         queue = reconcileQueue(queue, event.steering, event.followUp);
         runtime = { ...runtime, queue };
@@ -508,8 +620,20 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       };
     }
 
+    if (subagentsChanged) {
+      if (subagentImagePayloadChanged) {
+        const bounded = boundSubagentRuns(subagentOrder.flatMap((id) => subagentsById[id] ? [subagentsById[id]!] : []));
+        subagentsById = Object.fromEntries(bounded.map((run) => [run.id, run]));
+      }
+      runtime = {
+        ...runtime,
+        subagents: subagentOrder.flatMap((id) => subagentsById[id] ? [subagentsById[id]!] : []),
+      };
+    }
+
     return {
       runtime, messagesById, messageOrder, reasoningByMessageId, toolsById, toolOrder,
+      subagentsById, subagentOrder,
       timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds, queue, lastError, sequence, activeCompactionId,
     };
   }),

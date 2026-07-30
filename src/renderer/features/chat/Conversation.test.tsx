@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { Profiler } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PiDesktopApi, RuntimeState } from '../../../shared/contracts/ipc';
+import type { PiDesktopApi, RuntimeState, SubagentRun } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { clampComposerInputHeight, Composer, uniqueAttachmentName } from './Composer';
@@ -24,6 +25,16 @@ const ready = (overrides: Partial<RuntimeState> = {}): RuntimeState => ({
   models: [], thinkingLevel: 'medium', permissionLevel: 'edit', messages: [], commands: [{ name: 'review', description: 'Review current changes' }], error: null,
   ...overrides,
 });
+
+const childRun: SubagentRun = {
+  id: 'child-auth', parentSessionId: 's1', parentToolCallId: 'delegate-auth', task: 'Review the authentication flow',
+  role: 'reviewer', handle: 'auth-reviewer-1', displayName: 'Auth Reviewer', agentName: 'direct', agentSource: 'direct',
+  permissionLevel: 'read-only', enabledTools: ['read'], skills: [], skillMode: 'none', preloadedSkills: [], status: 'running',
+  model: { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 }, routingModels: [], thinkingLevel: 'medium',
+  executionMode: 'managed', controlCount: 0, attempt: 1, maxAttempts: 1, mailbox: { state: 'closed', ttlMs: 300_000, followUpCount: 0 },
+  notification: 'never', dependsOn: [], createdAt: 1, updatedAt: 2, messages: [], tools: [], omittedActivity: 0, transcriptTruncated: false,
+  usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+};
 
 const reset = () => {
   useRuntimeStore.getState().setRuntime({ ...ready(), sessionId: null });
@@ -53,6 +64,26 @@ describe('conversation components', () => {
     expect(followsMessage(undefined)).toBe(false);
   });
 
+  it('does not rerender a stable message for another message’s live delta', () => {
+    useRuntimeStore.setState((state) => ({ runtime: { ...state.runtime, streaming: true } }));
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.completed', messageId: 'stable-user', role: 'user', text: 'Stable prompt', timestamp: 1 },
+      { type: 'message.started', messageId: 'live-assistant', role: 'assistant', timestamp: 2 },
+      { type: 'assistant.text', messageId: 'live-assistant', delta: 'first', timestamp: 3 },
+    ]);
+    const onRender = vi.fn();
+    render(<Profiler id="stable-message" onRender={onRender}><MessageRow messageId="stable-user" /></Profiler>);
+    const initialRenderCount = onRender.mock.calls.length;
+
+    act(() => {
+      useRuntimeStore.getState().applyEvents([
+        { type: 'assistant.text', messageId: 'live-assistant', delta: ' second', timestamp: 4 },
+      ]);
+    });
+
+    expect(onRender).toHaveBeenCalledTimes(initialRenderCount);
+  });
+
   it('defers full Markdown parsing until the active stream completes', () => {
     useRuntimeStore.setState((state) => ({ runtime: { ...state.runtime, streaming: true } }));
     useRuntimeStore.getState().applyEvents([
@@ -74,6 +105,13 @@ describe('conversation components', () => {
     expect(screen.getByText('Ready').tagName).toBe('STRONG');
     expect(container.querySelector('.markdown-content code')).toHaveTextContent('code');
     expect(container.querySelectorAll('.markdown-content li')).toHaveLength(2);
+  });
+
+  it('links agent mentions in Markdown without touching inline code', () => {
+    useRuntimeStore.getState().hydrateRuntime(ready({ subagents: [childRun] }));
+    render(<AssistantMarkdown text={'Ping @auth-reviewer-1, then run `@auth-reviewer-1`.'} />);
+    expect(screen.getAllByRole('button', { name: '@auth-reviewer-1' })).toHaveLength(1);
+    expect(screen.getByText('@auth-reviewer-1', { selector: 'code' })).toBeInTheDocument();
   });
 
   it('places message metadata and icon actions below the bubble', () => {
@@ -300,6 +338,33 @@ describe('conversation components', () => {
     expect(failedTool).toHaveTextContent('failed');
   });
 
+  it('keeps subagent lifecycle state visible in its compact tool card', () => {
+    const launchTool = {
+      id: 'delegate-auth', name: 'subagent_start', input: '{"task":"Review auth"}', output: 'Started @auth-reviewer-1',
+      outputTruncated: false, status: 'succeeded' as const, startedAt: 1, updatedAt: 2, endedAt: 2,
+      subagentRunIds: [childRun.id],
+    };
+    const hydrateChild = (run: SubagentRun) => useRuntimeStore.getState().hydrateRuntime(ready({
+      subagents: [run],
+      tools: [launchTool],
+    }));
+    hydrateChild(childRun);
+    const { container } = render(<ToolCard toolCallId={launchTool.id} />);
+
+    expect(screen.getByRole('article', { name: 'subagent_start tool running' })).toBeInTheDocument();
+    expect(screen.getByText('Running')).toBeInTheDocument();
+    expect(screen.queryByText(/Child session .* settled/iu)).not.toBeInTheDocument();
+
+    act(() => hydrateChild({ ...childRun, status: 'completed', endedAt: 3, updatedAt: 3, result: 'Auth is sound.' }));
+    expect(screen.getByRole('article', { name: 'subagent_start tool completed' })).toBeInTheDocument();
+    expect(screen.getByText('Completed')).toBeInTheDocument();
+
+    act(() => hydrateChild({ ...childRun, status: 'error', endedAt: 4, updatedAt: 4, error: 'Review failed.' }));
+    expect(screen.getByRole('article', { name: 'subagent_start tool error' })).toBeInTheDocument();
+    expect(screen.getByText('Error')).toBeInTheDocument();
+    expect(container.querySelector('.tool-card--error .tool-status-icon')).toBeInTheDocument();
+  });
+
   it('shows actual Pi context usage beside the send action', () => {
     useRuntimeStore.setState({ runtime: ready({ contextUsage: { tokens: 42_000, contextWindow: 100_000, percent: 42 } }) });
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: {} as PiDesktopApi });
@@ -410,6 +475,36 @@ describe('conversation components', () => {
     expect(prompt).toHaveBeenCalledWith({ text: '/review @"src/example file.ts"', behavior: 'prompt' });
   });
 
+  it('autocompletes stable agent handles and executes only exact stop syntax directly', async () => {
+    const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+    const controlSubagent = vi.fn(async () => ready({ subagents: [{ ...childRun, status: 'cancelled', endedAt: 3 }] }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { prompt, controlSubagent } as unknown as PiDesktopApi,
+    });
+    useRuntimeStore.getState().hydrateRuntime(ready({ subagents: [childRun] }));
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+    const input = screen.getByLabelText('Message Pi');
+
+    await user.type(input, '@auth');
+    const mentions = screen.getByRole('listbox', { name: 'Agent mentions' });
+    expect(within(mentions).getByRole('option', { name: /@auth-reviewer-1.*Auth Reviewer.*running.*authentication flow/iu })).toBeInTheDocument();
+    await user.click(within(mentions).getByRole('option'));
+    expect(input).toHaveValue('@auth-reviewer-1 ');
+
+    await user.type(input, 'summarize your findings');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(prompt).toHaveBeenCalledWith({ text: '@auth-reviewer-1 summarize your findings', behavior: 'prompt' }));
+    expect(controlSubagent).not.toHaveBeenCalled();
+
+    await user.type(input, '@stop @auth-reviewer-1');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(controlSubagent).toHaveBeenCalledWith({ action: 'cancel', target: '@auth-reviewer-1' }));
+    expect(prompt).toHaveBeenCalledOnce();
+    expect(input).toHaveValue('');
+  });
+
   it('locks rapid submissions and preserves newer draft and attachment edits after delayed acceptance', async () => {
     let acceptPrompt: ((value: { accepted: boolean; runId: string }) => void) | undefined;
     const prompt = vi.fn(() => new Promise<{ accepted: boolean; runId: string }>((resolve) => { acceptPrompt = resolve; }));
@@ -439,6 +534,68 @@ describe('conversation components', () => {
       text: 'Submitted draft',
       images: [expect.objectContaining({ name: 'first.png' })],
     }));
+  });
+
+  it('isolates and restores unfinished text and attachments for each project session', async () => {
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {} as PiDesktopApi });
+    const imageModel = { ...ready().model!, supportsImages: true };
+    useRuntimeStore.setState({ runtime: ready({ model: imageModel }) });
+    render(<Composer onOpenProject={vi.fn()} />);
+    const input = screen.getByLabelText('Message Pi');
+
+    fireEvent.change(input, { target: { value: 'Session one draft' } });
+    fireEvent.paste(input, { clipboardData: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove one.png' })).toBeInTheDocument());
+
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's2', model: imageModel })));
+    await waitFor(() => expect(input).toHaveValue(''));
+    expect(screen.queryByRole('button', { name: 'Remove one.png' })).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'Session two draft' } });
+
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's1', model: imageModel })));
+    await waitFor(() => expect(input).toHaveValue('Session one draft'));
+    expect(screen.getByRole('button', { name: 'Remove one.png' })).toBeInTheDocument();
+
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's2', model: imageModel })));
+    await waitFor(() => expect(input).toHaveValue('Session two draft'));
+    expect(screen.queryByRole('button', { name: 'Remove one.png' })).not.toBeInTheDocument();
+  });
+
+  it('restores each session selection even when the draft text is identical', async () => {
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {} as PiDesktopApi });
+    render(<Composer onOpenProject={vi.fn()} />);
+    const input = screen.getByLabelText('Message Pi') as HTMLTextAreaElement;
+
+    fireEvent.change(input, { target: { value: 'identical draft' } });
+    input.setSelectionRange(1, 4);
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's2' })));
+    await waitFor(() => expect(input).toHaveValue(''));
+    fireEvent.change(input, { target: { value: 'identical draft' } });
+    input.setSelectionRange(6, 11);
+
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's1' })));
+    await waitFor(() => expect([input.selectionStart, input.selectionEnd]).toEqual([1, 4]));
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's2' })));
+    await waitFor(() => expect([input.selectionStart, input.selectionEnd]).toEqual([6, 11]));
+  });
+
+  it('clears an accepted origin draft without touching the session selected while acceptance is pending', async () => {
+    let acceptPrompt: ((value: { accepted: boolean; runId: string }) => void) | undefined;
+    const prompt = vi.fn(() => new Promise<{ accepted: boolean; runId: string }>((resolve) => { acceptPrompt = resolve; }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt } as unknown as PiDesktopApi });
+    render(<Composer onOpenProject={vi.fn()} />);
+    const input = screen.getByLabelText('Message Pi');
+
+    fireEvent.change(input, { target: { value: 'Accepted in session one' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's2' })));
+    await waitFor(() => expect(input).toHaveValue(''));
+    fireEvent.change(input, { target: { value: 'Keep session two' } });
+
+    acceptPrompt?.({ accepted: true, runId: 'run-1' });
+    await waitFor(() => expect(input).toHaveValue('Keep session two'));
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's1' })));
+    await waitFor(() => expect(input).toHaveValue(''));
   });
 
   it('sends with Enter by default and keeps modifier-only sending as an opt-in', async () => {
@@ -518,6 +675,20 @@ describe('conversation components', () => {
     await user.clear(input);
     await user.type(input, 'ask /not-found');
     expect(screen.queryByRole('listbox', { name: 'Skills and commands' })).not.toBeInTheDocument();
+  });
+
+  it('renders recognized mentions as inspector links without linking unknown handles', async () => {
+    useRuntimeStore.getState().hydrateRuntime(ready({ subagents: [childRun] }));
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.completed', messageId: 'mention-message', role: 'user', text: 'Ask @auth-reviewer-1, not @missing-agent-1.', timestamp: 1 },
+    ]);
+    const user = userEvent.setup();
+    render(<MessageRow messageId="mention-message" />);
+
+    const mention = screen.getByRole('button', { name: '@auth-reviewer-1' });
+    expect(screen.getByText('@missing-agent-1').tagName).toBe('SPAN');
+    await user.click(mention);
+    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'sessions', selectedSubagentRunId: childRun.id, inspectorCollapsed: false });
   });
 
   it('renders extension output as a distinct system message', () => {

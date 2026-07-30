@@ -12,6 +12,8 @@ describe('UI store', () => {
       musicPlaying: false,
       sendMessageWithModifier: false,
       toast: null,
+      inspectorTab: 'changes',
+      selectedSubagentRunId: null,
     });
   });
 
@@ -43,6 +45,19 @@ describe('UI store', () => {
     expect(useUiStore.getState().toast).toMatchObject({ kind: 'warning', title: 'Microphone changed' });
     useUiStore.getState().dismissToast();
     expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it('opens a child detail or the child-session list in the expanded inspector', () => {
+    useUiStore.setState({ inspectorCollapsed: true });
+    useUiStore.getState().openSubagent('child-1');
+    expect(useUiStore.getState()).toMatchObject({
+      inspectorTab: 'sessions', inspectorCollapsed: false, selectedSubagentRunId: 'child-1',
+    });
+
+    useUiStore.getState().openSubagentList();
+    expect(useUiStore.getState()).toMatchObject({
+      inspectorTab: 'sessions', inspectorCollapsed: false, selectedSubagentRunId: null,
+    });
   });
 
   it('sets and toggles both collapsible panes independently', () => {

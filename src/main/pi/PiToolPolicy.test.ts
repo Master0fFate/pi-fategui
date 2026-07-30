@@ -2,7 +2,7 @@ import { link, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createReadToolDefinition, createWriteToolDefinition } from '@earendil-works/pi-coding-agent';
+import { createFindToolDefinition, createLsToolDefinition, createReadToolDefinition, createWriteToolDefinition } from '@earendil-works/pi-coding-agent';
 import { createProjectConfinedTools, ProjectPathPolicy } from './PiToolPolicy';
 
 const roots: string[] = [];
@@ -45,6 +45,23 @@ describe('ProjectPathPolicy', () => {
     const tools = await createProjectConfinedTools(project);
 
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['bash', 'read', 'write', 'edit', 'generate_image']));
+  });
+
+  it('offers project-confined discovery tools to isolated child agents without traversal', async () => {
+    const { project } = await fixture();
+    const tools = await createProjectConfinedTools(project, { fullAccess: false }, [], { searchTools: true });
+    const findTool = tools.find((tool) => tool.name === 'find') as ReturnType<typeof createFindToolDefinition>;
+    const lsTool = tools.find((tool) => tool.name === 'ls') as ReturnType<typeof createLsToolDefinition>;
+
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['grep', 'find', 'ls']));
+    await expect(findTool.execute('find-safe', { pattern: '*.txt', path: '.' }, undefined, undefined, {} as never)).resolves.toMatchObject({
+      content: [expect.objectContaining({ text: expect.stringContaining('inside.txt') })],
+    });
+    await expect(lsTool.execute('ls-safe', { path: '.' }, undefined, undefined, {} as never)).resolves.toMatchObject({
+      content: [expect.objectContaining({ text: expect.stringContaining('inside.txt') })],
+    });
+    await expect(lsTool.execute('ls-escape', { path: '../outside' }, undefined, undefined, {} as never)).rejects.toThrow(/not found|project|read/i);
+    await expect(findTool.execute('find-escape', { pattern: '../outside/**', path: '.' }, undefined, undefined, {} as never)).rejects.toThrow(/approved search directory/i);
   });
 
   it('refuses project-confined writes through multiply-linked files before truncation', async () => {

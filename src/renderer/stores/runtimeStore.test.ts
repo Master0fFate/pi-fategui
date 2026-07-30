@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { PiEvent } from '../../shared/contracts/ipc';
+import type { PiEvent, SubagentRun } from '../../shared/contracts/ipc';
 import { MAX_LIVE_TIMELINE_ENTITIES, MAX_LIVE_TOOL_OUTPUT, useRuntimeStore } from './runtimeStore';
 
 const reset = () => useRuntimeStore.setState({
   runtime: { status: 'disconnected', project: null, sessionId: null, sessionFile: null, streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null },
   messagesById: {}, messageOrder: [], reasoningByMessageId: {}, toolsById: {}, toolOrder: [],
+  subagentsById: {}, subagentOrder: [],
   timelineById: {}, timelineOrder: [], visibleTimelineOrder: [], visibleTimelineIds: new Set(), queue: { steering: 0, followUp: 0, items: [] }, lastError: null,
   sequence: 0, activeCompactionId: null,
 });
@@ -34,6 +35,34 @@ describe('runtimeStore event reducer', () => {
     // pre-existing message entities.
     expect(timelineOrder).toEqual(['message:m1', 'message:m2']);
     expect(useRuntimeStore.getState().timelineOrder).toEqual(['reasoning:m1', 'message:m1', 'message:m2']);
+  });
+
+  it('coalesces adjacent renderer deltas without changing reducer semantics', () => {
+    const events: PiEvent[] = [
+      { type: 'message.started', messageId: 'stream', role: 'assistant', timestamp: 1 },
+      { type: 'assistant.text', messageId: 'stream', delta: 'a'.repeat(40_000), timestamp: 2 },
+      { type: 'assistant.text', messageId: 'stream', delta: 'b'.repeat(40_000), timestamp: 3 },
+      { type: 'assistant.text', messageId: 'stream', delta: 'c'.repeat(1_000), timestamp: 4 },
+      { type: 'assistant.reasoning', messageId: 'stream', delta: 'first ', timestamp: 5 },
+      { type: 'assistant.reasoning', messageId: 'stream', delta: 'second', timestamp: 6 },
+      { type: 'tool.started', toolCallId: 'tool', name: 'read', input: '{}', timestamp: 7 },
+    ];
+    useRuntimeStore.getState().applyEvents(events);
+    const batched = {
+      message: useRuntimeStore.getState().messagesById.stream,
+      reasoning: useRuntimeStore.getState().reasoningByMessageId.stream,
+      timeline: useRuntimeStore.getState().timelineOrder,
+      tool: useRuntimeStore.getState().toolsById.tool,
+    };
+
+    reset();
+    for (const event of events) useRuntimeStore.getState().applyEvents([event]);
+    expect({
+      message: useRuntimeStore.getState().messagesById.stream,
+      reasoning: useRuntimeStore.getState().reasoningByMessageId.stream,
+      timeline: useRuntimeStore.getState().timelineOrder,
+      tool: useRuntimeStore.getState().toolsById.tool,
+    }).toEqual(batched);
   });
 
   it('keeps the visible timeline stable across subsequent deltas in a long session', () => {
@@ -166,6 +195,67 @@ describe('runtimeStore event reducer', () => {
     ]);
     expect(useRuntimeStore.getState().toolsById.t1).toMatchObject({ status: 'error', output: 'failed', startedAt: 10, endedAt: 20 });
     expect(useRuntimeStore.getState().timelineOrder).toEqual(['tool:t1']);
+  });
+
+  it('keeps child streams isolated while linking the parent tool to its controlled session', () => {
+    const run: SubagentRun = {
+      id: 'subagent-1', parentSessionId: 's1', parentToolCallId: 'delegate-1', task: 'Inspect runtime state',
+      role: 'scout', handle: 'runtime-scout-1', displayName: 'Runtime Scout', agentName: 'scout', agentSource: 'direct' as const,
+      permissionLevel: 'read-only' as const, enabledTools: ['read', 'grep'], skills: [], skillMode: 'all', preloadedSkills: [], status: 'queued' as const,
+      model: { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 },
+      routingModels: [{ provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 }],
+      thinkingLevel: 'medium' as const, executionMode: 'managed' as const, controlCount: 0, attempt: 1, maxAttempts: 1,
+      mailbox: { state: 'closed', ttlMs: 300_000, followUpCount: 0 }, notification: 'never', dependsOn: [],
+      createdAt: 1, updatedAt: 1, messages: [], tools: [], omittedActivity: 0, transcriptTruncated: false,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+    };
+    useRuntimeStore.getState().applyEvents([
+      { type: 'tool.started', toolCallId: 'delegate-1', name: 'subagent', input: '{}', timestamp: 1 },
+      { type: 'subagent.started', run, timestamp: 1 },
+      { type: 'subagent.updated', runId: run.id, status: 'running', startedAt: 2, updatedAt: 2, timestamp: 2 },
+      { type: 'subagent.event', runId: run.id, timestamp: 3, event: { type: 'message.started', messageId: 'child-answer', role: 'assistant', timestamp: 3 } },
+      { type: 'subagent.event', runId: run.id, timestamp: 4, event: { type: 'assistant.reasoning', messageId: 'child-answer', delta: 'Checking.', timestamp: 4 } },
+      { type: 'subagent.event', runId: run.id, timestamp: 5, event: { type: 'assistant.text', messageId: 'child-answer', delta: 'Found it.', timestamp: 5 } },
+      {
+        type: 'subagent.updated', runId: run.id, status: 'running', updatedAt: 6, timestamp: 6,
+        model: { provider: 'alternate', id: 'glm', name: 'GLM', reasoning: true, contextWindow: 200_000 },
+        thinkingLevel: 'high', controlCount: 1, displayName: 'Boundary Scout',
+      },
+      { type: 'tool.completed', toolCallId: 'delegate-1', name: 'subagent', output: 'Found it.', error: false, subagentRunIds: [run.id], timestamp: 7 },
+    ]);
+
+    expect(useRuntimeStore.getState().messagesById['child-answer']).toBeUndefined();
+    expect(useRuntimeStore.getState().subagentsById[run.id]?.messages[0]).toMatchObject({ text: 'Found it.', reasoning: 'Checking.' });
+    expect(useRuntimeStore.getState().subagentsById[run.id]).toMatchObject({
+      status: 'running', displayName: 'Boundary Scout', model: { provider: 'alternate', id: 'glm' }, thinkingLevel: 'high', controlCount: 1,
+    });
+    expect(useRuntimeStore.getState().toolsById['delegate-1']?.subagentRunIds).toEqual([run.id]);
+    expect(useRuntimeStore.getState().runtime.subagents).toHaveLength(1);
+
+    useRuntimeStore.getState().applyEvents(Array.from({ length: 59 }, (_, index): PiEvent => ({
+      type: 'subagent.started',
+      run: { ...run, id: `subagent-${index + 2}`, parentToolCallId: `delegate-${index + 2}`, createdAt: index + 2, updatedAt: index + 2 },
+      timestamp: index + 2,
+    })));
+    expect(useRuntimeStore.getState().subagentOrder).toHaveLength(60);
+    expect(useRuntimeStore.getState().runtime.subagents).toHaveLength(60);
+  });
+
+  it('projects live workflow graph updates without mixing them into the parent transcript', () => {
+    useRuntimeStore.getState().applyEvents([{
+      type: 'subagent.workflow.updated',
+      timestamp: 2,
+      workflow: {
+        id: 'workflow-1', parentSessionId: 's1', parentToolCallId: 'workflow-tool', status: 'running',
+        maxConcurrency: 2, notification: 'next-turn', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+        nodes: [{ id: 'node-a', task: 'Inspect', status: 'pending', dependsOn: [] }], createdAt: 1, updatedAt: 2,
+      },
+    }]);
+
+    expect(useRuntimeStore.getState().runtime.subagentWorkflows).toEqual([
+      expect.objectContaining({ id: 'workflow-1', status: 'running', nodes: [expect.objectContaining({ id: 'node-a' })] }),
+    ]);
+    expect(useRuntimeStore.getState().messageOrder).toEqual([]);
   });
 
   it('preserves tool history when controls update the same runtime session', () => {

@@ -57,6 +57,7 @@ import {
   speechStatusSchema,
   speechTranscribeInputSchema,
   speechTranscriptionSchema,
+  subagentControlInputSchema,
   setModelInputSchema,
   setPermissionInputSchema,
   setThinkingInputSchema,
@@ -83,6 +84,7 @@ import {
   type PermissionLevel,
   type SpeechDownloadProgress,
   type SpeechModelId,
+  type SubagentControlInput,
   type ThinkingLevel,
   type WindowControlAction,
   type WindowState,
@@ -139,6 +141,10 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async abort() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeAbort, emptyInputSchema.parse({}));
     return abortResultSchema.parse(result);
+  },
+  async controlSubagent(input: SubagentControlInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeControlSubagent, subagentControlInputSchema.parse(input));
+    return runtimeStateSchema.parse(result);
   },
   async setModel(provider: string, id: string) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeSetModel, setModelInputSchema.parse({ provider, id }));

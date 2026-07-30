@@ -4,7 +4,11 @@ import type { PiEvent, RuntimeState } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { ConversationTimeline, getConversationScrollbarMetrics } from './ConversationTimeline';
 
-const virtuosoMock = vi.hoisted(() => ({ autoscrollToBottom: vi.fn(), scrollToIndex: vi.fn() }));
+const virtuosoMock = vi.hoisted(() => ({
+  autoscrollToBottom: vi.fn(),
+  scrollToIndex: vi.fn(),
+  atBottomStateChange: null as ((atBottom: boolean) => void) | null,
+}));
 
 vi.mock('react-virtuoso', async () => {
   const React = await import('react');
@@ -35,8 +39,12 @@ vi.mock('react-virtuoso', async () => {
     }, [props.data?.length, props.followOutput]);
     React.useEffect(() => {
       props.scrollerRef?.(scroller.current);
+      virtuosoMock.atBottomStateChange = props.atBottomStateChange ?? null;
       props.atBottomStateChange?.(true);
-      return () => props.scrollerRef?.(null);
+      return () => {
+        props.scrollerRef?.(null);
+        virtuosoMock.atBottomStateChange = null;
+      };
     }, [props.atBottomStateChange, props.scrollerRef]);
     return React.createElement('div', {
       ref: scroller,
@@ -94,6 +102,7 @@ describe('conversation output auto-scroll', () => {
     nextAnimationFrameId = 1;
     virtuosoMock.autoscrollToBottom.mockReset();
     virtuosoMock.scrollToIndex.mockReset();
+    virtuosoMock.atBottomStateChange = null;
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       const id = nextAnimationFrameId++;
       animationFrames.set(id, callback);
@@ -190,6 +199,27 @@ describe('conversation output auto-scroll', () => {
     expect(virtuosoMock.scrollToIndex).not.toHaveBeenCalled();
   });
 
+  it('keeps following when a reasoning row changes layout before the scheduled scroll', () => {
+    render(<ConversationTimeline />);
+    const scroller = screen.getByTestId('virtuoso-scroller');
+    let scrollHeight = 1_000;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+    });
+    scroller.scrollTop = 600;
+    fireEvent.scroll(scroller);
+
+    apply([{ type: 'assistant.reasoning', messageId: 'assistant-1', delta: 'Checking', timestamp: 1 }]);
+    scrollHeight = 1_120;
+    virtuosoMock.atBottomStateChange?.(false);
+    fireEvent.scroll(scroller);
+    flushAnimationFrames();
+
+    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledOnce();
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
+  });
+
   it('stops following when the user scrolls up and resumes after they return to the bottom', () => {
     render(<ConversationTimeline />);
     const scroller = screen.getByTestId('virtuoso-scroller');
@@ -202,11 +232,13 @@ describe('conversation output auto-scroll', () => {
     fireEvent.scroll(scroller);
     apply([{ type: 'assistant.text', messageId: 'assistant-1', delta: 'First', timestamp: 1 }]);
 
+    fireEvent.wheel(scroller, { deltaY: -120 });
     scroller.scrollTop = 450;
     fireEvent.scroll(scroller);
     flushAnimationFrames();
     expect(virtuosoMock.autoscrollToBottom).not.toHaveBeenCalled();
 
+    fireEvent.wheel(scroller, { deltaY: 120 });
     scroller.scrollTop = 600;
     fireEvent.scroll(scroller);
     apply([{ type: 'assistant.text', messageId: 'assistant-1', delta: ' second', timestamp: 2 }]);

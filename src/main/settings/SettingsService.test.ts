@@ -28,12 +28,13 @@ describe('SettingsService', () => {
     const service = new SettingsService(logs, dataRoot);
     const saved = await service.set({
       appearance: 'system', defaultModel: 'provider/model', thinkingLevel: 'high',
-      confirmRiskyCommands: false, terminalShell: 'pwsh.exe', reduceMotion: true, performanceMode: true, musicPlayerEnabled: true, sendMessageWithModifier: true, themeId: 'graphite',
+      confirmRiskyCommands: false, terminalShell: 'pwsh.exe', reduceMotion: true, performanceMode: true, holyShitMode: true, musicPlayerEnabled: true, sendMessageWithModifier: true, themeId: 'graphite',
       interfaceFont: 'poppins', codeFont: 'noto-sans-mono',
       speech: { enabled: true, modelId: 'balanced', language: 'auto', inputDeviceId: null },
     });
 
     expect(saved.reduceMotion).toBe(true);
+    expect(saved.holyShitMode).toBe(true);
     expect(saved.musicPlayerEnabled).toBe(true);
     expect(saved.sendMessageWithModifier).toBe(true);
     expect(saved.interfaceFont).toBe('poppins');
@@ -48,7 +49,7 @@ describe('SettingsService', () => {
     }), 'utf8');
     const logs = new AppLogService();
     const loaded = await new SettingsService(logs, dataRoot).load();
-    expect(loaded).toMatchObject({ appearance: 'system', thinkingLevel: 'high', sendMessageWithModifier: false, interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono' });
+    expect(loaded).toMatchObject({ appearance: 'system', thinkingLevel: 'high', holyShitMode: false, sendMessageWithModifier: false, interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono' });
     expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(loaded);
   });
 
@@ -79,7 +80,7 @@ describe('SettingsService', () => {
   it('serializes concurrent writes and returns each persisted snapshot', async () => {
     const logs = new AppLogService();
     const service = new SettingsService(logs, dataRoot);
-    const first = { appearance: 'dark', defaultModel: null, thinkingLevel: 'low', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } } as const;
+    const first = { appearance: 'dark', defaultModel: null, thinkingLevel: 'low', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } } as const;
     const second = { ...first, thinkingLevel: 'high' as const, reduceMotion: true };
 
     const [firstSaved, secondSaved] = await Promise.all([service.set(first), service.set(second)]);

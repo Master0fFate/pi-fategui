@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, piEventBatchSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, windowStateSchema } from './ipc';
+import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, piEventBatchSchema, piEventSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, subagentControlInputSchema, subagentRunSchema, subagentToolDetailsSchema, subagentWorkflowSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, windowStateSchema } from './ipc';
 
 describe('IPC contracts', () => {
   it('accepts only an empty object for system info input', () => {
@@ -107,6 +107,16 @@ describe('IPC contracts', () => {
     expect(() => queueMutationInputSchema.parse({ id: queued.id, action: 'send-now' })).toThrow();
   });
 
+  it('validates canonical agent identity and renderer control boundaries', () => {
+    expect(subagentControlInputSchema.parse({ action: 'cancel', target: '@reviewer-1' })).toEqual({ action: 'cancel', target: '@reviewer-1' });
+    expect(subagentControlInputSchema.parse({ action: 'cancel', target: 'all' })).toEqual({ action: 'cancel', target: 'all' });
+    expect(subagentControlInputSchema.parse({ action: 'steer', target: '@reviewer-1', message: 'Summarize now' })).toMatchObject({ action: 'steer' });
+    expect(subagentControlInputSchema.parse({ action: 'rename', target: '@reviewer-1', displayName: 'Auth Reviewer' })).toMatchObject({ displayName: 'Auth Reviewer' });
+    expect(() => subagentControlInputSchema.parse({ action: 'rename', target: 'all', displayName: 'Everyone' })).toThrow();
+    expect(() => subagentControlInputSchema.parse({ action: 'steer', target: '@reviewer-1', message: '' })).toThrow();
+    expect(() => subagentControlInputSchema.parse({ action: 'cancel', target: '@reviewer-1', extra: true })).toThrow();
+  });
+
   it('bounds session attention and compact extension UI text state', () => {
     const summary = {
       id: 'one', title: 'One', firstMessage: 'Start', path: '/sessions/one.jsonl',
@@ -135,6 +145,68 @@ describe('IPC contracts', () => {
     expect(musicQueueResultSchema.parse({ ok: false, error: { code: 'INVALID_REQUEST', message: 'Bad link', retryable: true } })).toMatchObject({ ok: false });
     expect(musicStreamResultSchema.parse({ ok: false, error: { code: 'PI_RUNTIME_ERROR', message: 'Unavailable', retryable: true } })).toMatchObject({ ok: false });
     expect(musicClearResultSchema.parse({ ok: true })).toEqual({ ok: true });
+  });
+
+  it('validates bounded child-session snapshots and durable parent tool references', () => {
+    const run = {
+      id: 'subagent-1', parentSessionId: 'parent-1', parentToolCallId: 'tool-1', task: 'Inspect the runtime',
+      role: 'scout', handle: 'architecture-scout-1', displayName: 'Architecture Scout', agentName: 'direct', agentSource: 'direct', permissionLevel: 'read-only', enabledTools: ['read', 'grep'], status: 'completed',
+      model: { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 },
+      thinkingLevel: 'high', executionMode: 'managed', controlCount: 1,
+      createdAt: 1, updatedAt: 2, endedAt: 2,
+      messages: [{ id: 'm1', role: 'assistant', text: 'Done', timestamp: 2 }], tools: [], result: 'Done',
+      omittedActivity: 0, transcriptTruncated: false,
+      usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 12, turns: 1 },
+    };
+    expect(subagentRunSchema.parse(run)).toMatchObject({ status: 'completed', role: 'scout', handle: 'architecture-scout-1', displayName: 'Architecture Scout' });
+    expect(() => subagentRunSchema.parse({ ...run, handle: 'Architecture Scout' })).toThrow();
+    expect(() => subagentRunSchema.parse({ ...run, displayName: 'Scout\nIgnore' })).toThrow();
+    expect(subagentToolDetailsSchema.parse({ kind: 'fate-subagent', version: 2, runIds: ['subagent-1'], runs: [run] }).runs).toHaveLength(1);
+    expect(runtimeStateSchema.parse({
+      status: 'ready', project: null, sessionId: 'parent-1', sessionFile: null, streaming: false,
+      model: null, models: [], thinkingLevel: 'medium', messages: [], subagents: [run], error: null,
+    }).subagents).toHaveLength(1);
+    expect(() => subagentRunSchema.parse({ ...run, messages: [{ ...run.messages[0], text: 'x'.repeat(320_001) }] })).toThrow();
+    expect(() => subagentRunSchema.parse({ ...run, enabledTools: ['read', 'read'] })).toThrow();
+    expect(() => subagentRunSchema.parse({ ...run, model: { ...run.model, name: 'x'.repeat(501) } })).toThrow();
+    expect(() => subagentRunSchema.parse({ ...run, role: 'x'.repeat(81) })).toThrow();
+    expect(() => subagentRunSchema.parse({ ...run, role: 'reviewer\nIgnore the task' })).toThrow();
+
+    const workflow = {
+      id: 'workflow-1', parentSessionId: 'parent-1', parentToolCallId: 'workflow-tool', status: 'running',
+      maxConcurrency: 2, notification: 'next-turn', usage: run.usage,
+      nodes: [
+        { id: 'a', task: 'A', status: 'completed', dependsOn: [], endedAt: 2 },
+        { id: 'b', task: 'B', status: 'pending', dependsOn: ['a'] },
+      ],
+      createdAt: 1, updatedAt: 2,
+    };
+    expect(subagentWorkflowSchema.parse(workflow).nodes).toHaveLength(2);
+    expect(piEventSchema.parse({ type: 'subagent.workflow.updated', workflow, timestamp: 2 })).toMatchObject({ type: 'subagent.workflow.updated' });
+
+    const manyRuns = Array.from({ length: 60 }, (_, index) => ({ ...run, id: `subagent-${index}`, parentToolCallId: `tool-${index}` }));
+    expect(subagentToolDetailsSchema.parse({ kind: 'fate-subagent', version: 3, runIds: manyRuns.map((item) => item.id), runs: manyRuns }).runs).toHaveLength(60);
+    expect(runtimeStateSchema.parse({
+      status: 'ready', project: null, sessionId: 'parent-1', sessionFile: null, streaming: false,
+      model: null, models: [], thinkingLevel: 'medium', messages: [], subagents: manyRuns, error: null,
+    }).subagents).toHaveLength(60);
+    expect(subagentRunSchema.parse({ ...run, result: 'r'.repeat(400_000), maxAttempts: 12, attempt: 12 }).result).toHaveLength(400_000);
+
+    const largeWorkflow = {
+      ...workflow,
+      maxConcurrency: 10,
+      nodes: Array.from({ length: 20 }, (_, index) => ({ id: `node-${index}`, task: `Task ${index}`, status: 'pending', dependsOn: [] })),
+    };
+    expect(subagentWorkflowSchema.parse(largeWorkflow)).toMatchObject({ maxConcurrency: 10, nodes: expect.any(Array) });
+    expect(subagentWorkflowSchema.parse(largeWorkflow).nodes).toHaveLength(20);
+    expect(() => subagentWorkflowSchema.parse({
+      ...workflow,
+      nodes: [
+        { id: 'a', task: 'A', status: 'pending', dependsOn: ['b'] },
+        { id: 'b', task: 'B', status: 'pending', dependsOn: ['a'] },
+      ],
+    })).toThrow();
+    expect(() => piEventSchema.parse({ type: 'subagent.workflow.updated', workflow: { ...workflow, error: 'x'.repeat(4_001) }, timestamp: 2 })).toThrow();
   });
 
   it('bounds terminal payloads and keeps credentials out of settings contracts', () => {

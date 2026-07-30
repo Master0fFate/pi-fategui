@@ -4,11 +4,13 @@ import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, Ellipsis, FileTe
 import { type ChangeEvent, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { PromptInput, QueueMutationInput } from '../../../shared/contracts/ipc';
+import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AppTooltip } from '../../components/AppTooltip';
 import { SelectControl } from '../../components/SelectControl';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { ContextWheel } from './ContextWheel';
+import { agentMentionContext, findAgentMentions, parseAgentStopCommand } from './agentMentions';
 import { findSlashCommands, slashCommandContext, slashCommandDescription, slashCommandLabel, type SlashCommand } from './slashCommands';
 
 interface Attachment {
@@ -18,6 +20,25 @@ interface Attachment {
   bytes: number;
   pixels: number;
 }
+
+interface SessionDraft {
+  text: string;
+  textRevision: number;
+  images: Attachment[];
+  imagesRevision: number;
+  forkNotice: string | null;
+  selectionStart: number;
+  selectionEnd: number;
+  scrollTop: number;
+}
+
+const emptySessionDraft = (): SessionDraft => ({
+  text: '', textRevision: 0, images: [], imagesRevision: 0, forkNotice: null,
+  selectionStart: 0, selectionEnd: 0, scrollTop: 0,
+});
+
+const sessionDraftKey = (projectPath: string | null, sessionId: string | null): string | null =>
+  sessionId === null ? null : JSON.stringify([projectPath, sessionId]);
 
 const MAX_ATTACHMENT_BYTES = 10_000_000;
 const MAX_TOTAL_ATTACHMENT_BYTES = 15_000_000;
@@ -120,7 +141,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [queueBusyId, setQueueBusyId] = useState<string | null>(null);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const [selectedAgentIndex, setSelectedAgentIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
   const [caretPosition, setCaretPosition] = useState(0);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [inputHeight, setInputHeight] = useState(MIN_COMPOSER_INPUT_HEIGHT);
@@ -130,12 +153,18 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const inputShell = useRef<HTMLDivElement>(null);
   const resizeCleanup = useRef<(() => void) | null>(null);
   const slashList = useRef<HTMLDivElement>(null);
+  const agentList = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const activeRecording = useRef<ActiveRecording | null>(null);
   const draftRef = useRef(draft);
   const imagesRef = useRef(images);
   const draftRevision = useRef(0);
   const imagesRevision = useRef(0);
+  const sessionDrafts = useRef(new Map<string, SessionDraft>());
+  const activeDraftKey = useRef<string | null>(null);
+  const pendingDraftSelection = useRef<{ key: string | null; text: string; start: number; end: number; scrollTop: number } | null>(null);
+  const forkNoticeRef = useRef(forkNotice);
+  const caretPositionRef = useRef(caretPosition);
   const submittingRef = useRef(false);
   const queueBusyRef = useRef(false);
   const modelBusyRef = useRef(false);
@@ -166,7 +195,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     sessionCapabilities: state.runtime.sessionCapabilities,
     sessionOperation: state.runtime.sessionOperation,
   })));
+  const activeSessionDraftKey = sessionDraftKey(runtime.project?.path ?? null, runtime.sessionId);
   const queue = useRuntimeStore((state) => state.queue);
+  const subagentOrder = useRuntimeStore((state) => state.subagentOrder);
   const queuedItems = queue.items ?? [];
   const sendMessageWithModifier = useUiStore((state) => state.sendMessageWithModifier);
   const composerDraftRequest = useUiStore((state) => state.composerDraftRequest);
@@ -199,20 +230,64 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const voiceDownloadProgress = speechDownload?.modelId === speech.modelId
     ? speechDownload.state === 'verifying' ? 100 : Math.min(100, Math.round(speechDownload.downloadedBytes / speechDownload.totalBytes * 100))
     : 0;
+  forkNoticeRef.current = forkNotice;
+  caretPositionRef.current = caretPosition;
 
-  const updateDraft = useCallback((next: string) => {
+  const saveActiveDraft = useCallback((key: string) => {
+    const input = textarea.current;
+    const current = sessionDrafts.current.get(key) ?? emptySessionDraft();
+    sessionDrafts.current.set(key, {
+      ...current,
+      text: draftRef.current,
+      textRevision: draftRevision.current,
+      images: imagesRef.current,
+      imagesRevision: imagesRevision.current,
+      forkNotice: forkNoticeRef.current,
+      selectionStart: input?.selectionStart ?? caretPositionRef.current,
+      selectionEnd: input?.selectionEnd ?? caretPositionRef.current,
+      scrollTop: Math.max(0, input?.scrollTop ?? 0),
+    });
+  }, []);
+  const updateDraftForKey = useCallback((key: string | null, next: string) => {
+    if (key === null) return;
+    const current = sessionDrafts.current.get(key) ?? emptySessionDraft();
+    const textRevision = current.textRevision + 1;
+    sessionDrafts.current.set(key, { ...current, text: next, textRevision });
+    if (activeDraftKey.current !== key) return;
     draftRef.current = next;
-    draftRevision.current += 1;
+    draftRevision.current = textRevision;
     setDraft(next);
   }, []);
-  const updateImages = useCallback((update: Attachment[] | ((current: Attachment[]) => Attachment[])) => {
-    const current = imagesRef.current;
+  const updateDraft = useCallback((next: string) => {
+    updateDraftForKey(activeDraftKey.current, next);
+  }, [updateDraftForKey]);
+  const updateImagesForKey = useCallback((key: string | null, update: Attachment[] | ((current: Attachment[]) => Attachment[])) => {
+    if (key === null) return;
+    const stored = sessionDrafts.current.get(key) ?? emptySessionDraft();
+    const current = activeDraftKey.current === key ? imagesRef.current : stored.images;
     const next = typeof update === 'function' ? update(current) : update;
     if (next === current) return;
+    const nextImagesRevision = stored.imagesRevision + 1;
+    sessionDrafts.current.set(key, { ...stored, images: next, imagesRevision: nextImagesRevision });
+    if (activeDraftKey.current !== key) return;
     imagesRef.current = next;
-    imagesRevision.current += 1;
+    imagesRevision.current = nextImagesRevision;
     setImages(next);
   }, []);
+  const updateImages = useCallback((update: Attachment[] | ((current: Attachment[]) => Attachment[])) => {
+    updateImagesForKey(activeDraftKey.current, update);
+  }, [updateImagesForKey]);
+  const updateForkNoticeForKey = useCallback((key: string | null, next: string | null) => {
+    if (key === null) return;
+    const current = sessionDrafts.current.get(key) ?? emptySessionDraft();
+    sessionDrafts.current.set(key, { ...current, forkNotice: next });
+    if (activeDraftKey.current !== key) return;
+    forkNoticeRef.current = next;
+    setForkNotice(next);
+  }, []);
+  const updateForkNotice = useCallback((next: string | null) => {
+    updateForkNoticeForKey(activeDraftKey.current, next);
+  }, [updateForkNoticeForKey]);
   const updateVoiceState = useCallback((next: VoiceState) => {
     voiceStateRef.current = next;
     if (mounted.current) setVoiceState(next);
@@ -244,20 +319,82 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     ? Math.min(selectedCommandIndex, commandSuggestions.length - 1)
     : 0;
   const selectedCommand = commandSuggestions[activeCommandIndex];
+  const mentionContext = agentMentionContext(draft, caretPosition);
+  const mentionQuery = mentionContext?.query ?? null;
+  const agentSuggestions = useMemo(
+    () => mentionQuery === null
+      ? []
+      : findAgentMentions(subagentOrder.flatMap((id) => {
+        const run = useRuntimeStore.getState().subagentsById[id];
+        return run ? [run] : [];
+      }), mentionQuery),
+    [mentionQuery, subagentOrder],
+  );
+  const mentionMenuOpen = !slashMenuOpen && mentionContext !== null && agentSuggestions.length > 0 && !mentionDismissed;
+  const activeAgentIndex = agentSuggestions.length > 0
+    ? Math.min(selectedAgentIndex, agentSuggestions.length - 1)
+    : 0;
+  const selectedAgent = agentSuggestions[activeAgentIndex];
+
+  useLayoutEffect(() => {
+    const previousKey = activeDraftKey.current;
+    if (previousKey === activeSessionDraftKey) return;
+    if (previousKey !== null) saveActiveDraft(previousKey);
+    activeDraftKey.current = activeSessionDraftKey;
+    const next = activeSessionDraftKey === null
+      ? emptySessionDraft()
+      : sessionDrafts.current.get(activeSessionDraftKey) ?? emptySessionDraft();
+    if (activeSessionDraftKey !== null && !sessionDrafts.current.has(activeSessionDraftKey)) {
+      sessionDrafts.current.set(activeSessionDraftKey, next);
+    }
+    draftRef.current = next.text;
+    draftRevision.current = next.textRevision;
+    imagesRef.current = next.images;
+    imagesRevision.current = next.imagesRevision;
+    forkNoticeRef.current = next.forkNotice;
+    caretPositionRef.current = next.selectionStart;
+    setDraft(next.text);
+    setImages(next.images);
+    setForkNotice(next.forkNotice);
+    setCaretPosition(next.selectionStart);
+    setPreviewImage(null);
+    setComposerError(null);
+    setSlashDismissed(false);
+    setMentionDismissed(false);
+    const start = Math.min(next.text.length, next.selectionStart);
+    pendingDraftSelection.current = {
+      key: activeSessionDraftKey,
+      text: next.text,
+      start,
+      end: Math.min(next.text.length, Math.max(start, next.selectionEnd)),
+      scrollTop: next.scrollTop,
+    };
+  }, [activeSessionDraftKey, saveActiveDraft]);
+
+  useLayoutEffect(() => {
+    const pending = pendingDraftSelection.current;
+    const input = textarea.current;
+    if (!pending || !input || pending.key !== activeDraftKey.current || input.value !== pending.text) return;
+    input.setSelectionRange(pending.start, pending.end);
+    input.scrollTop = pending.scrollTop;
+    pendingDraftSelection.current = null;
+  }, [activeSessionDraftKey, draft]);
 
   useEffect(() => {
     if (!composerDraftRequest) return;
+    const targetKey = activeDraftKey.current;
     updateDraft(composerDraftRequest.text);
     updateImages([]);
-    setForkNotice(composerDraftRequest.notice ?? null);
+    updateForkNotice(composerDraftRequest.notice ?? null);
     setCaretPosition(composerDraftRequest.selectAll ? 0 : composerDraftRequest.text.length);
     clearComposerDraftRequest(composerDraftRequest.id);
     requestAnimationFrame(() => {
+      if (!mounted.current || activeDraftKey.current !== targetKey || draftRef.current !== composerDraftRequest.text) return;
       textarea.current?.focus({ preventScroll: true });
       const end = composerDraftRequest.text.length;
       textarea.current?.setSelectionRange(composerDraftRequest.selectAll ? 0 : end, end);
     });
-  }, [clearComposerDraftRequest, composerDraftRequest, updateDraft, updateImages]);
+  }, [clearComposerDraftRequest, composerDraftRequest, updateDraft, updateForkNotice, updateImages]);
 
   useLayoutEffect(() => {
     const element = composer.current;
@@ -405,15 +542,24 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   }, [commandContext?.start, commandQuery]);
 
   useEffect(() => {
+    setSelectedAgentIndex(0);
+  }, [mentionContext?.start, mentionQuery]);
+
+  useEffect(() => {
     if (!slashMenuOpen) return;
     const activeOption = slashList.current?.querySelector<HTMLElement>('[data-active="true"]');
     if (typeof activeOption?.scrollIntoView === 'function') activeOption.scrollIntoView({ block: 'nearest' });
   }, [activeCommandIndex, slashMenuOpen]);
 
+  useEffect(() => {
+    if (!mentionMenuOpen) return;
+    const activeOption = agentList.current?.querySelector<HTMLElement>('[data-active="true"]');
+    if (typeof activeOption?.scrollIntoView === 'function') activeOption.scrollIntoView({ block: 'nearest' });
+  }, [activeAgentIndex, mentionMenuOpen]);
+
   const submit = async (behavior: PromptInput['behavior']) => {
     const runtimeNow = useRuntimeStore.getState().runtime;
-    const originSessionId = runtimeNow.sessionId;
-    const originProjectPath = runtimeNow.project?.path ?? null;
+    const originDraftKey = sessionDraftKey(runtimeNow.project?.path ?? null, runtimeNow.sessionId);
     const submittedDraft = draftRef.current;
     const submittedDraftRevision = draftRevision.current;
     const submittedImages = imagesRef.current;
@@ -425,28 +571,43 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       setSubmitting(true);
       setComposerError(null);
     }
-    try {
-      const promptImages = submittedImages.map(({ name, mimeType, data }) => ({ name, mimeType, data }));
-      const acceptance = await window.piDesktop.prompt({ text, behavior, ...(promptImages.length ? { images: promptImages } : {}) });
-      if (!acceptance.accepted || !mounted.current) return;
-      const currentRuntime = useRuntimeStore.getState().runtime;
-      if (currentRuntime.sessionId !== originSessionId || (currentRuntime.project?.path ?? null) !== originProjectPath) return;
-
-      if (draftRevision.current === submittedDraftRevision) {
-        updateDraft('');
-        setForkNotice(null);
+    const clearSubmittedDraft = () => {
+      if (!mounted.current || originDraftKey === null) return;
+      const originDraft = sessionDrafts.current.get(originDraftKey);
+      if (originDraft?.textRevision === submittedDraftRevision) {
+        updateDraftForKey(originDraftKey, '');
+        updateForkNoticeForKey(originDraftKey, null);
       }
-      if (imagesRevision.current === submittedImagesRevision) {
-        updateImages([]);
+      if (originDraft?.imagesRevision === submittedImagesRevision) {
+        updateImagesForKey(originDraftKey, []);
       } else if (submittedImages.length > 0) {
         const submitted = new Set(submittedImages);
-        updateImages((current) => {
+        updateImagesForKey(originDraftKey, (current) => {
           const remaining = current.filter((image) => !submitted.has(image));
           return remaining.length === current.length ? current : remaining;
         });
       }
+    };
+    try {
+      const stopCommand = submittedImages.length === 0 ? parseAgentStopCommand(text) : null;
+      if (stopCommand) {
+        if (typeof window.piDesktop.controlSubagent !== 'function') throw new Error('Restart Fate UI to use direct agent controls.');
+        const state = await window.piDesktop.controlSubagent({ action: 'cancel', target: stopCommand.target });
+        const current = useRuntimeStore.getState().runtime;
+        const selectionIsOrigin = current.sessionId === runtimeNow.sessionId && current.project?.path === runtimeNow.project?.path;
+        const resultIsCurrent = current.sessionId === state.sessionId && current.project?.path === state.project?.path;
+        if (selectionIsOrigin || resultIsCurrent) useRuntimeStore.getState().setRuntime(state);
+        clearSubmittedDraft();
+        return;
+      }
+      const promptImages = submittedImages.map(({ name, mimeType, data }) => ({ name, mimeType, data }));
+      const acceptance = await window.piDesktop.prompt({ text, behavior, ...(promptImages.length ? { images: promptImages } : {}) });
+      if (!acceptance.accepted) return;
+      clearSubmittedDraft();
     } catch (error) {
-      if (mounted.current) setComposerError(error instanceof Error ? error.message : 'Pi could not accept this message.');
+      if (mounted.current && activeDraftKey.current === originDraftKey) {
+        setComposerError(error instanceof Error ? error.message : 'Pi could not accept this message.');
+      }
     } finally {
       submittingRef.current = false;
       if (mounted.current) setSubmitting(false);
@@ -538,8 +699,55 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     });
   };
 
+  const selectAgentMention = (run: NonNullable<typeof selectedAgent>) => {
+    if (!mentionContext) return;
+    const before = draft.slice(0, mentionContext.start);
+    const after = draft.slice(mentionContext.end);
+    const mention = `@${subagentHandle(run)}`;
+    const trailingSpace = after.length === 0 || !/^\s/u.test(after) ? ' ' : '';
+    const insertion = `${mention}${trailingSpace}`;
+    const nextDraft = `${before}${insertion}${after}`;
+    const nextCaret = before.length + insertion.length;
+    updateDraft(nextDraft);
+    setCaretPosition(nextCaret);
+    setMentionDismissed(true);
+    requestAnimationFrame(() => {
+      textarea.current?.focus();
+      textarea.current?.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return;
+    const modifierPressed = event.metaKey || event.ctrlKey;
+    const shouldSend = sendMessageWithModifier
+      ? modifierPressed
+      : !event.shiftKey && !event.altKey;
+    if (event.key === 'Enter' && shouldSend && parseAgentStopCommand(draft)) {
+      event.preventDefault();
+      void submit(runtime.streaming ? 'followUp' : 'prompt');
+      return;
+    }
+    if (mentionMenuOpen) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const offset = event.key === 'ArrowDown' ? 1 : -1;
+        setSelectedAgentIndex((current) => (current + offset + agentSuggestions.length) % agentSuggestions.length);
+        return;
+      }
+      if ((event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.shiftKey) || event.key === 'Tab') {
+        if (selectedAgent) {
+          event.preventDefault();
+          selectAgentMention(selectedAgent);
+        }
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMentionDismissed(true);
+        return;
+      }
+    }
     if (slashMenuOpen) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
@@ -562,10 +770,6 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         return;
       }
     }
-    const modifierPressed = event.metaKey || event.ctrlKey;
-    const shouldSend = sendMessageWithModifier
-      ? modifierPressed
-      : !event.shiftKey && !event.altKey;
     if (event.key === 'Enter' && shouldSend) {
       event.preventDefault();
       void submit(runtime.streaming ? 'followUp' : 'prompt');
@@ -638,7 +842,10 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       setComposerError('The model selected for the next message does not support image attachments.');
       return;
     }
-    const currentImages = imagesRef.current;
+    const targetKey = activeDraftKey.current;
+    if (targetKey === null) return;
+    const currentImages = sessionDrafts.current.get(targetKey)?.images ?? imagesRef.current;
+    const targetIsActive = () => mounted.current && activeDraftKey.current === targetKey;
     const files = [...incoming].slice(0, Math.max(0, 4 - currentImages.length));
     let pendingBytes = 0;
     const existingBytes = currentImages.reduce((total, image) => total + image.bytes, 0);
@@ -667,11 +874,11 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 || pixels > MAX_TOTAL_ATTACHMENT_PIXELS;
               bitmap.close();
               if (invalid) {
-                setComposerError(`${file.name || 'Image'} exceeds the 8,192-pixel side or 24-megapixel limit.`);
+                if (targetIsActive()) setComposerError(`${file.name || 'Image'} exceeds the 8,192-pixel side or 24-megapixel limit.`);
                 return;
               }
             } catch {
-              if (mounted.current) setComposerError(`${file.name || 'Image'} could not be decoded safely.`);
+              if (targetIsActive()) setComposerError(`${file.name || 'Image'} could not be decoded safely.`);
               return;
             }
           }
@@ -679,11 +886,11 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
           const result = typeof reader.result === 'string' ? reader.result : '';
           const data = result.slice(result.indexOf(',') + 1);
           const sourceName = file.name || `pasted-image.${file.type.split('/')[1] ?? 'png'}`;
-          updateImages((current) => {
+          updateImagesForKey(targetKey, (current) => {
             const totalBytes = current.reduce((total, image) => total + image.bytes, 0);
             const totalPixels = current.reduce((total, image) => total + image.pixels, 0);
             if (current.length >= 4 || totalBytes + file.size > MAX_TOTAL_ATTACHMENT_BYTES || totalPixels + pixels > MAX_TOTAL_ATTACHMENT_PIXELS) {
-              queueMicrotask(() => { if (mounted.current) setComposerError('Image attachments exceed the combined size or pixel budget.'); });
+              queueMicrotask(() => { if (targetIsActive()) setComposerError('Image attachments exceed the combined size or pixel budget.'); });
               return current;
             }
             const name = uniqueAttachmentName(sourceName, current.map((image) => image.name));
@@ -691,10 +898,10 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
           });
         })();
       };
-      reader.onerror = () => { if (mounted.current) setComposerError(`Could not read ${file.name || 'that image'}.`); };
+      reader.onerror = () => { if (targetIsActive()) setComposerError(`Could not read ${file.name || 'that image'}.`); };
       reader.readAsDataURL(file);
     }
-  }, [imageCapable, updateImages]);
+  }, [imageCapable, updateImagesForKey]);
 
   const attachImages = (event: ChangeEvent<HTMLInputElement>) => {
     addImageFiles([...(event.target.files ?? [])]);
@@ -1023,13 +1230,13 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       const resultIsCurrent = current.sessionId === result.state.sessionId && current.project?.path === result.state.project?.path;
       if (!selectionIsOrigin && !resultIsCurrent) return;
       useRuntimeStore.getState().setRuntime(result.state);
-      updateDraft(result.selectedText ?? point.text);
-      setForkNotice('This is a new session branched from the latest user message. Edit the selected prompt, then send it to continue.');
-      showToast({ kind: 'success', title: 'Fork ready', message: 'A new session is active. Edit the selected prompt and send when ready.' });
+      useUiStore.getState().requestComposerDraft(
+        result.selectedText ?? point.text,
+        true,
+        'This is a new session branched from the latest user message. Edit the selected prompt, then send it to continue.',
+      );
       textarea.current?.focus({ preventScroll: true });
-      requestAnimationFrame(() => {
-        if (mounted.current) textarea.current?.setSelectionRange(0, textarea.current.value.length);
-      });
+      showToast({ kind: 'success', title: 'Fork ready', message: 'A new session is active. Edit the selected prompt and send when ready.' });
     } catch (error) {
       if (mounted.current) setComposerError(error instanceof Error ? error.message : 'The conversation could not be forked.');
     } finally {
@@ -1121,6 +1328,39 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
 
   return (
     <div className="composer-wrap">
+      {mentionMenuOpen && mentionContext && (
+        <div className="slash-suggestions agent-suggestions" role="listbox" aria-label="Agent mentions" id="agent-suggestions">
+          <div className="slash-suggestions-heading">
+            <span>Agents</span>
+            <code>@{mentionQuery}</code>
+          </div>
+          <div ref={agentList} className="slash-suggestions-list">
+            {agentSuggestions.map((run, index) => (
+              <button
+                id={`agent-option-${index}`}
+                key={run.id}
+                type="button"
+                role="option"
+                aria-selected={index === activeAgentIndex}
+                data-active={index === activeAgentIndex}
+                onMouseEnter={() => setSelectedAgentIndex(index)}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => selectAgentMention(run)}
+              >
+                <AtSign size={14} aria-hidden="true" />
+                <span className="slash-suggestion-copy agent-suggestion-copy icon-label">
+                  <strong>@{subagentHandle(run)}</strong>
+                  <small>{subagentDisplayName(run)} · {run.status} · {run.task}</small>
+                </span>
+                <em>{run.status === 'running' || run.status === 'queued' ? 'live' : 'history'}</em>
+              </button>
+            ))}
+          </div>
+          <div className="slash-suggestions-hints" aria-hidden="true">
+            <span><b>↑↓</b> Navigate</span><span><b>Enter</b> Mention</span><span><b>Esc</b> Close</span>
+          </div>
+        </div>
+      )}
       {slashMenuOpen && commandContext && (
         <div className="slash-suggestions" role="listbox" aria-label="Skills and commands" id="slash-suggestions">
           <div className="slash-suggestions-heading">
@@ -1221,7 +1461,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
           <div className="composer-fork-notice" role="status">
             <GitFork size={14} aria-hidden="true" />
             <span><strong>Fork ready</strong><small>{forkNotice}</small></span>
-            <button type="button" aria-label="Dismiss fork instructions" onClick={() => setForkNotice(null)}><X size={12} /></button>
+            <button type="button" aria-label="Dismiss fork instructions" onClick={() => updateForkNotice(null)}><X size={12} /></button>
           </div>
         )}
         {images.length > 0 && <div className="composer-attachments">{images.map((image, index) => (
@@ -1232,15 +1472,18 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
             ref={textarea}
             id="pi-composer"
             aria-label="Message Pi"
-            aria-controls={slashMenuOpen ? 'slash-suggestions' : undefined}
-            aria-expanded={slashMenuOpen}
+            aria-controls={mentionMenuOpen ? 'agent-suggestions' : slashMenuOpen ? 'slash-suggestions' : undefined}
+            aria-expanded={mentionMenuOpen || slashMenuOpen}
             aria-autocomplete="list"
-            aria-activedescendant={slashMenuOpen && commandSuggestions.length > 0 ? `slash-option-${activeCommandIndex}` : undefined}
+            aria-activedescendant={mentionMenuOpen && agentSuggestions.length > 0
+              ? `agent-option-${activeAgentIndex}`
+              : slashMenuOpen && commandSuggestions.length > 0 ? `slash-option-${activeCommandIndex}` : undefined}
             value={draft}
             onChange={(event) => {
               updateDraft(event.target.value);
               setCaretPosition(event.target.selectionStart);
               setSlashDismissed(false);
+              setMentionDismissed(false);
             }}
             onSelect={(event) => setCaretPosition(event.currentTarget.selectionStart)}
             onScroll={syncInputFades}

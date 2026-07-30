@@ -16,6 +16,16 @@ describe('PiEventNormalizer', () => {
     expect(split.every((item) => item.type === 'assistant.text' && item.delta.length <= 32_000)).toBe(true);
   });
 
+  it('namespaces child-attempt message and tool identities without affecting parent normalizers', () => {
+    const normalizer = new PiEventNormalizer(() => 'run-1', 'attempt-2:');
+    expect(normalizer.normalize(event({ type: 'message_start', message: { role: 'assistant', content: [] } }))[0]).toMatchObject({
+      type: 'message.started', messageId: 'attempt-2:message-1',
+    });
+    expect(normalizer.normalize(event({ type: 'tool_execution_start', toolCallId: 'read-1', toolName: 'read', args: {} }))[0]).toMatchObject({
+      type: 'tool.started', toolCallId: 'attempt-2:read-1',
+    });
+  });
+
   it('keeps one assistant ID across fresh SDK update, streaming, and final objects', () => {
     const normalizer = new PiEventNormalizer(() => 'run-1');
     const started = normalizer.normalize(event({ type: 'message_start', message: { role: 'assistant', content: [] } }))[0];
@@ -33,12 +43,21 @@ describe('PiEventNormalizer', () => {
 
   it('normalizes tool transitions and bounds serialized output without duplicating tool-result messages', () => {
     const normalizer = new PiEventNormalizer(() => 'run-1');
+    const runIds = Array.from({ length: 20 }, (_, index) => `subagent-${index}`);
     expect(normalizer.normalize(event({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'read', args: { path: 'x' } }))[0]).toMatchObject({ type: 'tool.started', toolCallId: 't1', name: 'read' });
-    expect(normalizer.normalize(event({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'read', result: 'ok', isError: false }))[0]).toMatchObject({ type: 'tool.completed', error: false });
+    expect(normalizer.normalize(event({
+      type: 'tool_execution_update', toolCallId: 't1', toolName: 'subagent', args: {},
+      partialResult: { content: [{ type: 'text', text: 'running' }], details: { kind: 'fate-subagent', version: 3, runIds } },
+    }))[0]).toMatchObject({ type: 'tool.updated', subagentRunIds: runIds });
+    expect(normalizer.normalize(event({
+      type: 'tool_execution_end', toolCallId: 't1', toolName: 'subagent',
+      result: { content: [{ type: 'text', text: 'ok' }], details: { kind: 'fate-subagent', version: 3, runIds } }, isError: false,
+    }))[0]).toMatchObject({ type: 'tool.completed', error: false, subagentRunIds: runIds });
     const toolMessage = { role: 'toolResult', toolCallId: 't1', content: [{ type: 'text', text: 'ok' }] };
     expect(normalizer.normalize(event({ type: 'message_start', message: toolMessage }))).toEqual([]);
     expect(normalizer.normalize(event({ type: 'message_end', message: toolMessage }))).toEqual([]);
     expect(safeText('x'.repeat(70_000)).length).toBeLessThan(65_000);
+    expect(safeText('x'.repeat(100), 40)).toHaveLength(40);
     const pathological = Object.fromEntries(Array.from({ length: 10_000 }, (_value, index) => [`key-${index}`, 'x'.repeat(1_000)]));
     expect(safeText(pathological).length).toBeLessThan(65_000);
 
@@ -72,7 +91,7 @@ describe('PiEventNormalizer', () => {
     });
   });
 
-  it('surfaces visible extension messages as system output and keeps hidden context hidden', () => {
+  it('surfaces visible extension output while hiding private context and child completion notices', () => {
     const normalizer = new PiEventNormalizer(() => null);
     const visible = { role: 'custom', customType: 'parallax', content: 'Parallax active', display: true, timestamp: 1 };
     expect(normalizer.normalize(event({ type: 'message_start', message: visible }))[0]).toMatchObject({ type: 'message.started', role: 'system' });
@@ -81,6 +100,10 @@ describe('PiEventNormalizer', () => {
     const hidden = { ...visible, display: false };
     expect(normalizer.normalize(event({ type: 'message_start', message: hidden }))).toEqual([]);
     expect(normalizer.normalize(event({ type: 'message_end', message: hidden }))).toEqual([]);
+
+    const legacyChildNotice = { ...visible, customType: 'fate-subagent-notification', content: 'Child session settled.', display: true };
+    expect(normalizer.normalize(event({ type: 'message_start', message: legacyChildNotice }))).toEqual([]);
+    expect(normalizer.normalize(event({ type: 'message_end', message: legacyChildNotice }))).toEqual([]);
   });
 
   it('preserves compaction failure instead of reporting false success', () => {

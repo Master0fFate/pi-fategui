@@ -33,7 +33,8 @@ const projects = {
   prepareDerivedWorktree: async (worktreePath: string, sourceProjectPath: string) => activation({ path: worktreePath, name: path.basename(sourceProjectPath), trusted: true }),
   selectFile: async () => 'src/example.ts',
 } as unknown as ProjectService;
-let settingsValue: AppSettings = { appearance: 'dark', defaultModel: 'test/deterministic', thinkingLevel: 'medium', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } };
+const profileVisualMode = process.env.FATE_GUI_PROFILE_VISUAL_MODE;
+let settingsValue: AppSettings = { appearance: 'dark', defaultModel: 'test/deterministic', thinkingLevel: 'medium', confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } };
 const settings = { load: async () => settingsValue, get: () => settingsValue, set: async (value: AppSettings) => { settingsValue = value; return value; } } as unknown as SettingsService;
 const logs = { list: () => [], write: () => undefined } as unknown as AppLogService;
 const music = {
