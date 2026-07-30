@@ -162,7 +162,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const imagesRevision = useRef(0);
   const sessionDrafts = useRef(new Map<string, SessionDraft>());
   const activeDraftKey = useRef<string | null>(null);
-  const pendingDraftSelection = useRef<{ key: string | null; text: string; start: number; end: number; scrollTop: number } | null>(null);
+  const pendingDraftSelection = useRef<{ key: string | null; text: string; start: number; end: number; scrollTop: number; focus?: boolean } | null>(null);
   const forkNoticeRef = useRef(forkNotice);
   const caretPositionRef = useRef(caretPosition);
   const submittingRef = useRef(false);
@@ -375,6 +375,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     const pending = pendingDraftSelection.current;
     const input = textarea.current;
     if (!pending || !input || pending.key !== activeDraftKey.current || input.value !== pending.text) return;
+    if (pending.focus) input.focus({ preventScroll: true });
     input.setSelectionRange(pending.start, pending.end);
     input.scrollTop = pending.scrollTop;
     pendingDraftSelection.current = null;
@@ -690,13 +691,17 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     const insertion = `${commandText}${trailingSpace}`;
     const nextDraft = `${before}${insertion}${after}`;
     const nextCaret = before.length + insertion.length;
+    pendingDraftSelection.current = {
+      key: activeDraftKey.current,
+      text: nextDraft,
+      start: nextCaret,
+      end: nextCaret,
+      scrollTop: Math.max(0, textarea.current?.scrollTop ?? 0),
+      focus: true,
+    };
     updateDraft(nextDraft);
     setCaretPosition(nextCaret);
     setSlashDismissed(true);
-    requestAnimationFrame(() => {
-      textarea.current?.focus();
-      textarea.current?.setSelectionRange(nextCaret, nextCaret);
-    });
   };
 
   const selectAgentMention = (run: NonNullable<typeof selectedAgent>) => {
@@ -708,13 +713,17 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     const insertion = `${mention}${trailingSpace}`;
     const nextDraft = `${before}${insertion}${after}`;
     const nextCaret = before.length + insertion.length;
+    pendingDraftSelection.current = {
+      key: activeDraftKey.current,
+      text: nextDraft,
+      start: nextCaret,
+      end: nextCaret,
+      scrollTop: Math.max(0, textarea.current?.scrollTop ?? 0),
+      focus: true,
+    };
     updateDraft(nextDraft);
     setCaretPosition(nextCaret);
     setMentionDismissed(true);
-    requestAnimationFrame(() => {
-      textarea.current?.focus();
-      textarea.current?.setSelectionRange(nextCaret, nextCaret);
-    });
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {

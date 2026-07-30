@@ -490,10 +490,17 @@ describe('conversation components', () => {
     await user.type(input, '@auth');
     const mentions = screen.getByRole('listbox', { name: 'Agent mentions' });
     expect(within(mentions).getByRole('option', { name: /@auth-reviewer-1.*Auth Reviewer.*running.*authentication flow/iu })).toBeInTheDocument();
+    const deferredFrames: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      deferredFrames.push(callback);
+      return deferredFrames.length;
+    });
     await user.click(within(mentions).getByRole('option'));
     expect(input).toHaveValue('@auth-reviewer-1 ');
 
-    await user.type(input, 'summarize your findings');
+    await user.type(input, 's');
+    act(() => deferredFrames.splice(0).forEach((callback) => callback(0)));
+    await user.type(input, 'ummarize your findings');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     await waitFor(() => expect(prompt).toHaveBeenCalledWith({ text: '@auth-reviewer-1 summarize your findings', behavior: 'prompt' }));
     expect(controlSubagent).not.toHaveBeenCalled();
