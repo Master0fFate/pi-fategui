@@ -129,39 +129,15 @@ Opening another project resets the active Pi permission level. The manual termin
 
 ## Managed subagents
 
-Every top-level Pi session can use five Fate-owned orchestration tools:
+Top-level Pi sessions expose five Fate-owned tools: `subagent` for blocking delegation, `subagent_start` for background children, `subagent_manage` for lifecycle controls and follow-ups, `subagent_workflow` for dependency graphs, and `subagent_catalog` for models, profiles, skills, and capabilities.
 
-- `subagent` runs any explicitly requested number of blocking delegations.
-- `subagent_start` launches any explicitly requested number of managed children and returns run IDs immediately.
-- `subagent_manage` lists, inspects, waits for, steers, retargets, follows up with, closes, or cancels managed children.
-- `subagent_workflow` starts and manages arbitrary acyclic dependency graphs and user-selected concurrency.
-- `subagent_catalog` discovers authenticated Pi models, reusable agent profiles, skills, and the child capability contract.
+Each child receives a stable handle such as `@auth-reviewer-1`. Type `@` to autocomplete handles or use commands such as `@stop @auth-reviewer-1`. The conversation shows compact run status while the **Agents** inspector provides transcripts, tool activity, reasoning, usage, workflow graphs, and controls.
 
-Each child gets an immutable conversation-local handle such as `@auth-reviewer-1` and a renameable display label. Typing `@` opens handle autocomplete, recognized mentions link to the matching inspector session, and exact commands such as `@stop @auth-reviewer-1` remain deterministic. The conversation keeps the real subagent tool call visible as a compact **Running**, **Completed**, **Error**, or **Stopped** marker; detailed activity and controls stay in the **Agents** inspector.
+Children run in isolated Pi SDK sessions and may select their own model, thinking level, profile, role, permission, tools, skills, retries, fallbacks, timeouts, mailbox, notifications, and budgets. Their authority cannot exceed the parent session, provider credentials remain in the main process, and children cannot recursively launch Fate subagents. Cross-agent transfers must fit the receiving model's context window.
 
-Four concurrent children is planning guidance only when neither the user nor the task specifies a scale. An explicit count is binding: asking for 10 launches 10, and an explicit workflow `maxConcurrency` of 20 schedules 20. Direct batches, workflow nodes, active children, selected skills, routing attempts, and configured durations have no harness policy ceiling. Workflow concurrency defaults to four only when omitted. This follows the liberal shape of [OpenAI's Responses Multi-agent API](https://developers.openai.com/api/docs/guides/responses-multi-agent)—recommended low default, no fixed concurrency/total/depth ceiling—while retaining Fate's independent provider routing and durable desktop inspection. [Claude Code's current dynamic workflows](https://code.claude.com/docs/en/workflows) provide useful scale and resumability patterns, but their documented 16-concurrent/1,000-total runtime caps are intentionally not copied here.
+Concurrency defaults to four only when unspecified; explicit child counts and workflow concurrency are honored without a harness-imposed ceiling. Managed sessions may retain mailboxes for follow-ups, and workflows persist with the parent session. Recovered active workflows pause until explicitly resumed.
 
-A child can use a different exact `{ provider, id }` than its parent and an independent thinking level. Each specification can also select a profile, role label, permission, exact tool allowlist, Pi skills, timeout, no-activity timeout, ordered model fallbacks, retry count, mailbox lifetime, notification mode, and observable token/cost/turn budget. Timeouts and idle limits are opt-in: omit them or set zero for no automatic stop, including multi-hour work. Fate reuses Pi's main-process model runtime and credentials; no provider secrets cross IPC. Children run in isolated SDK sessions, cannot recursively launch Fate subagents, and receive only the Fate-confined tools allowed by both their requested permission and the parent session's permission. Edit/full-access children perform assigned edits, commands, and verification themselves rather than returning implementation instructions for the parent to repeat.
-
-Cross-agent messages use the receiving model's own context window as their admission boundary. Fate estimates the receiver's current context plus the proposed transfer with Pi's provider-neutral estimator. If it would exceed that model's window, Fate refuses the transfer, names the exact provider/model and maximum token window, preserves the child work in the Agents inspector, and does not compact history merely to force the oversized transfer through. Fixed renderer transcript bounds protect IPC/UI memory only; they do not replace the child model's working context or truncate an admitted final child result.
-
-Managed children can retain their SDK session as a user-configured mailbox for exact follow-up turns. Completion delivery is opt-in: `next-turn` adds model-visible context to a future parent turn, while `immediate` triggers a turn when idle or queues a follow-up when the parent is already streaming. Workflow state and settled child snapshots are persisted with the parent session; an active workflow recovered after restart is paused and must be resumed explicitly.
-
-Reusable Markdown profiles are discovered from `~/.pi/agent/agents/*.md` and, for trusted projects, `.pi/agents/*.md`. Supported frontmatter is intentionally small:
-
-```markdown
----
-name: security-reviewer
-description: Reviews a change for concrete security regressions
-role: reviewer
-tools: read, grep, find, ls
-model: provider/model-id
----
-
-Review evidence first. Report only actionable findings.
-```
-
-The **Agents** inspector shows workflow graphs and each nested run's profile, provider/model, thinking level, authority, skills, attempts, mailbox state, budgets, usage, controls, reasoning, messages, and tool activity. Child transcripts are inspection-only in the renderer; orchestration remains owned by the parent Pi agent.
+Reusable Markdown profiles are loaded from `~/.pi/agent/agents/*.md` and, in trusted projects, `.pi/agents/*.md`. Profiles support a small frontmatter set for fields such as name, description, role, tools, and model.
 
 ## Local development
 
