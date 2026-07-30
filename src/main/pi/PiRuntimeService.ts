@@ -38,12 +38,13 @@ import type {
   SessionAttention,
   SessionSummary,
   SubagentControlInput,
+  SubagentParentLivenessReport,
   SubagentNotification,
   ThinkingLevel,
 } from '../../shared/contracts/ipc';
 import { PiEventBatcher } from './PiEventBatcher';
 import { PiEventNormalizer, messageImages, messageText, safeText, subagentRunIds } from './PiEventNormalizer';
-import { promoteInlineResourceCommand } from './PiInlineCommands';
+import { expandMultipleSkillCommands, promoteInlineResourceCommand } from './PiInlineCommands';
 import { createPiExtensionUiBridge, emptyExtensionUiState, type ExtensionNoticeLevel, type PiExtensionUiBridge } from './PiExtensionUi';
 import { PiDesktopError, authRequiredError, normalizeError } from './errors';
 import { PiSessionRepository, sessionDisplayTitle } from './PiSessionRepository';
@@ -581,7 +582,7 @@ export class PiRuntimeService {
         });
         slot.modifiedAt = new Date().toISOString();
       },
-      notifyParent: async (parentSessionId, mode: SubagentNotification, text, runIds, workflowId) => {
+      notifyParent: async (parentSessionId, mode: SubagentNotification, text, runIds, workflowId, livenessReport?: SubagentParentLivenessReport) => {
         const slot = this.findLiveSlot(parentSessionId);
         if (!slot || slot.disposed || mode === 'never') return;
         const session = slot.runtime.session;
@@ -589,7 +590,7 @@ export class PiRuntimeService {
           customType: 'fate-subagent-notification',
           content: [{ type: 'text', text }],
           display: false,
-          details: { runIds, ...(workflowId ? { workflowId } : {}) },
+          details: { runIds, ...(workflowId ? { workflowId } : {}), ...(livenessReport ? { livenessReport } : {}) },
         }, {
           triggerTurn: mode === 'immediate',
           deliverAs: mode === 'immediate' && session.isStreaming ? 'followUp' : 'nextTurn',
@@ -828,7 +829,8 @@ export class PiRuntimeService {
     }
     const initialization = this.initialization;
     const runId = randomUUID();
-    const promptText = promoteInlineResourceCommand(input.text, this.getCommands(session));
+    const promptText = expandMultipleSkillCommands(input.text, session.resourceLoader.getSkills().skills)
+      ?? promoteInlineResourceCommand(input.text, this.getCommands(session));
     validatePromptImages(input.images);
     const images = input.images?.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType }));
     const queuedBehavior = session.isStreaming && input.behavior !== 'prompt' ? input.behavior : null;
@@ -876,7 +878,7 @@ export class PiRuntimeService {
     ));
     if (startsRun) {
       slot.activeRunId = runId;
-      slot.objective = promptText.trim().slice(0, 500);
+      slot.objective = input.text.trim().slice(0, 500);
       if (stagedModel || stagedThinkingLevel) {
         if (stagedModel) {
           slot.pendingModel = null;
@@ -1211,7 +1213,9 @@ export class PiRuntimeService {
         await this.selectRuntimeSlot(live);
         return;
       }
-      const session = await this.sessionRepository.resolve(projectPath, sessionId) ?? this.summaryForSessionId(sessionId);
+      // The sidebar summary already owns the validated session path. Avoid a
+      // second project-wide SessionManager.list() scan on every selection.
+      const session = this.summaryForSessionId(sessionId) ?? await this.sessionRepository.resolve(projectPath, sessionId);
       if (this.project?.path !== projectPath || slot.disposed || this.selectedSlot !== slot) throw this.replacementSuperseded();
       if (!session || session.path.startsWith('live:')) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The selected session no longer exists.', retryable: true });
       if (slot.runtime.session.isStreaming || hasManagedChildren) {
@@ -1220,7 +1224,7 @@ export class PiRuntimeService {
         return;
       }
       if ((await runtime.switchSession(session.path, { cwdOverride: projectPath }))?.cancelled) throw this.replacementCancelled('Session switch');
-    });
+    }, false);
   }
 
   async renameSession(sessionId: string, name: string): Promise<RuntimeState> {
@@ -1639,7 +1643,8 @@ export class PiRuntimeService {
     }
     if (event.type === 'message_end' && event.message.role === 'assistant') {
       const message = event.message as typeof event.message & { isError?: unknown; stopReason?: unknown };
-      if (message.isError === true || message.stopReason === 'error') slot.runFailed = true;
+      // A recovered parent turn supersedes an earlier provider or child failure.
+      slot.runFailed = message.isError === true || message.stopReason === 'error';
     }
 
     if (selected) {
@@ -1777,7 +1782,7 @@ export class PiRuntimeService {
     return session.isStreaming === true || this.sessionHasNonStreamingWork(session);
   }
 
-  private runReplacement(operation: (runtime: AgentSessionRuntime, slot: RuntimeSlot) => Promise<void>): Promise<RuntimeState> {
+  private runReplacement(operation: (runtime: AgentSessionRuntime, slot: RuntimeSlot) => Promise<void>, refreshSessionList = true): Promise<RuntimeState> {
     this.requireRuntimeSession();
     const replacementGeneration = this.replacementGeneration;
     const ownsGeneration = () => replacementGeneration === this.replacementGeneration;
@@ -1798,11 +1803,18 @@ export class PiRuntimeService {
         const currentSlot = this.selectedSlot;
         if (!currentSlot || currentSlot.disposed) throw this.replacementSuperseded();
         this.acknowledgeSession(currentSlot.runtime.session.sessionId);
-        try {
-          await this.refreshSessions(true);
-        } catch (error) {
-          if (!ownsGeneration()) throw this.replacementSuperseded();
-          this.emitSystemMessage(`The session list could not be refreshed: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+        if (refreshSessionList) {
+          try {
+            await this.refreshSessions(true);
+          } catch (error) {
+            if (!ownsGeneration()) throw this.replacementSuperseded();
+            this.emitSystemMessage(`The session list could not be refreshed: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+          }
+        } else {
+          // Switching does not mutate the persistent session index. Re-project
+          // the active/live flags synchronously and leave disk refreshes to the
+          // existing lifecycle refresh points.
+          this.mergeLiveSessionSummaries();
         }
         if (!ownsGeneration()) throw this.replacementSuperseded();
         this.status = this.models.length > 0 ? 'ready' : 'auth-required';

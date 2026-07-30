@@ -76,6 +76,41 @@ describe('Sidebar sessions', () => {
     await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
   });
 
+  it('updates the selected session shell immediately while the desktop history load is pending', async () => {
+    let finishSwitch: ((state: RuntimeState) => void) | undefined;
+    const initial = ready({ messages: [{ id: 'old', role: 'user', text: 'Old conversation', timestamp: 1 }] });
+    useRuntimeStore.getState().hydrateRuntime(initial);
+    const switched = ready({
+      sessionId: 's2',
+      sessionFile: '/sessions/s2.jsonl',
+      sessions: [session('s1', 'First', false), session('s2', 'Second', true)],
+      messages: [{ id: 'new', role: 'user', text: 'New conversation', timestamp: 2 }],
+    });
+    const switchSession = vi.fn(() => new Promise<RuntimeState>((resolve) => { finishSwitch = resolve; }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { switchSession } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /^Second/u }));
+
+    const pending = useRuntimeStore.getState();
+    expect(switchSession).toHaveBeenCalledWith('s2');
+    expect(pending.runtime.sessionId).toBe('s2');
+    expect(pending.runtime.sessions?.find((item) => item.id === 's2')?.active).toBe(true);
+    expect(pending.runtime.sessionOperation).toBe(true);
+    expect(pending.timelineOrder).toEqual([]);
+    expect(pending.messagesById.old).toBeUndefined();
+
+    act(() => useRuntimeStore.getState().applyEvents([{
+      type: 'state.changed', state: { ...initial, sessionOperation: true }, messagesIncluded: false, timestamp: 2,
+    }]));
+    expect(useRuntimeStore.getState().runtime.sessionId).toBe('s2');
+
+    await act(async () => { finishSwitch?.(switched); await Promise.resolve(); });
+    expect(useRuntimeStore.getState().runtime.sessionId).toBe('s2');
+    expect(useRuntimeStore.getState().messagesById.new?.text).toBe('New conversation');
+  });
+
   it('wraps every rendered session-row action in a tooltip trigger', () => {
     const { container } = render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
 

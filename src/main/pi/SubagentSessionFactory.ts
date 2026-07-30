@@ -12,7 +12,6 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type {
   PermissionLevel,
-  SubagentBudget,
   SubagentRole,
   SubagentSkillMode,
   SubagentUsage,
@@ -163,16 +162,6 @@ export function usageFromMessages(messages: readonly unknown[]): SubagentUsage {
     if (typeof item.totalTokens === 'number' && item.totalTokens >= 0) usage.contextTokens = Math.floor(item.totalTokens);
   }
   return usage;
-}
-
-export function budgetViolation(usage: SubagentUsage, budget: SubagentBudget | undefined): string | undefined {
-  if (!budget) return undefined;
-  if (budget.maxCostUsd !== undefined && usage.cost > budget.maxCostUsd) return `cost $${usage.cost.toFixed(6)} exceeded $${budget.maxCostUsd.toFixed(6)}`;
-  if (budget.maxInputTokens !== undefined && usage.input > budget.maxInputTokens) return `input tokens ${usage.input} exceeded ${budget.maxInputTokens}`;
-  if (budget.maxOutputTokens !== undefined && usage.output > budget.maxOutputTokens) return `output tokens ${usage.output} exceeded ${budget.maxOutputTokens}`;
-  if (budget.maxTotalTokens !== undefined && usage.input + usage.output + usage.cacheRead + usage.cacheWrite > budget.maxTotalTokens) return `total tokens exceeded ${budget.maxTotalTokens}`;
-  if (budget.maxTurns !== undefined && usage.turns > budget.maxTurns) return `turns ${usage.turns} exceeded ${budget.maxTurns}`;
-  return undefined;
 }
 
 export function finalAssistant(messages: readonly unknown[]): { text: string; stopReason?: string; error?: string } {

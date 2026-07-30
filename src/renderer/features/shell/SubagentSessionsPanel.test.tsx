@@ -135,6 +135,17 @@ describe('subagent session inspector', () => {
           { id: 'foundation', handle: 'foundation', displayName: 'Foundation', task: 'Build the foundation', status: 'completed', dependsOn: [], endedAt: 10 },
           { id: 'resume-me', handle: 'resume-me', displayName: 'Resume Worker', task: 'Resume after restart', status: 'interrupted', dependsOn: ['foundation'], error: 'Restarted' },
         ],
+        livenessReports: [{
+          id: 'workflow-restartable:adaptive-limit:1:9', trigger: 'adaptive-limit',
+          reason: 'Aggregate turns crossed an advisory threshold.',
+          evidence: [{ signal: 'turn-threshold', detail: 'Observed one turn.', count: 1 }],
+          recentProgress: ['Foundation completed.'],
+          counters: { turns: 1, completedNodes: 1, runningNodes: 0, pendingNodes: 0, totalNodes: 2, softTurnThreshold: 33 },
+          timing: { detectedAt: 9, startedAt: 1, updatedAt: 9 },
+          workflow: { id: 'workflow-restartable' },
+          checkpointSummary: 'One workflow node completed before restart.',
+          recommendedOptions: ['continue', 'steer', 'request-checkpoint', 'cancel'],
+        }],
         createdAt: 1, updatedAt: 10, error: 'Resume explicitly.',
       }],
     });
@@ -145,6 +156,7 @@ describe('subagent session inspector', () => {
     expect(within(workflows).getByText('paused')).toBeInTheDocument();
     expect(within(workflows).getByText('@foundation')).toBeInTheDocument();
     expect(within(workflows).getByText('@resume-me')).toHaveAttribute('data-status', 'interrupted');
+    expect(within(workflows).getByText('Workflow liveness checkpoint · adaptive-limit')).toBeInTheDocument();
   });
 
   it('discovers nested children, opens a controlled transcript, and deep-links from the parent tool', async () => {

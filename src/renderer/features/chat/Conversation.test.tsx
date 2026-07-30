@@ -684,6 +684,30 @@ describe('conversation components', () => {
     expect(screen.queryByRole('listbox', { name: 'Skills and commands' })).not.toBeInTheDocument();
   });
 
+  it('keeps multiple selected skills in one submitted composer message', async () => {
+    useRuntimeStore.setState({ runtime: ready({ commands: [
+      { name: 'skill:first', description: 'First workflow', source: 'skill' },
+      { name: 'skill:second', description: 'Second workflow', source: 'skill' },
+    ] }) });
+    const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+    const input = screen.getByLabelText('Message Pi');
+
+    await user.type(input, '/first');
+    await user.click(screen.getByRole('option', { name: /first/i }));
+    await user.type(input, '/second');
+    await user.click(screen.getByRole('option', { name: /second/i }));
+    await user.type(input, 'Fix the issue');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(prompt).toHaveBeenCalledWith({
+      text: '/skill:first /skill:second Fix the issue',
+      behavior: 'prompt',
+    });
+  });
+
   it('renders recognized mentions as inspector links without linking unknown handles', async () => {
     useRuntimeStore.getState().hydrateRuntime(ready({ subagents: [childRun] }));
     useRuntimeStore.getState().applyEvents([

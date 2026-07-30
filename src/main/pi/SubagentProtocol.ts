@@ -81,11 +81,11 @@ export const modelSelectionSchema = Type.Object({
 }, { additionalProperties: false });
 
 const budgetSchema = Type.Object({
-  maxCostUsd: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
-  maxInputTokens: Type.Optional(Type.Integer({ minimum: 1 })),
-  maxOutputTokens: Type.Optional(Type.Integer({ minimum: 1 })),
-  maxTotalTokens: Type.Optional(Type.Integer({ minimum: 1 })),
-  maxTurns: Type.Optional(Type.Integer({ minimum: 1 })),
+  maxCostUsd: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: 'Advisory cost checkpoint. Crossing it notifies the parent and execution continues.' })),
+  maxInputTokens: Type.Optional(Type.Integer({ minimum: 1, description: 'Advisory input-token checkpoint. Crossing it notifies the parent and execution continues.' })),
+  maxOutputTokens: Type.Optional(Type.Integer({ minimum: 1, description: 'Advisory output-token checkpoint. Crossing it notifies the parent and execution continues.' })),
+  maxTotalTokens: Type.Optional(Type.Integer({ minimum: 1, description: 'Advisory aggregate-token checkpoint. Crossing it notifies the parent and execution continues.' })),
+  maxTurns: Type.Optional(Type.Integer({ minimum: 1, description: 'Advisory adaptive turn checkpoint. Crossing it notifies the parent and execution continues.' })),
 }, { additionalProperties: false });
 
 const routingSchema = Type.Object({
@@ -111,8 +111,8 @@ export const taskOptions = {
   })),
   skillMode: Type.Optional(stringEnum(skillModes, 'all exposes every discovered skill, selected exposes only skills, none disables skills.', 'all')),
   preloadSkills: Type.Optional(Type.Boolean({ default: true, description: 'Preload the complete selected SKILL.md bodies into the child system context.' })),
-  timeoutSeconds: Type.Optional(Type.Number({ minimum: 0, description: 'Optional total wall-clock limit, including retries. Omit or use zero for no automatic runtime limit.' })),
-  idleTimeoutSeconds: Type.Optional(Type.Number({ minimum: 0, description: 'Optional no-observable-activity limit. Omit or use zero to disable it.' })),
+  timeoutSeconds: Type.Optional(Type.Number({ minimum: 0, description: 'Optional advisory runtime threshold, including retries. Crossing it notifies the parent and the child continues.' })),
+  idleTimeoutSeconds: Type.Optional(Type.Number({ minimum: 0, description: 'Optional advisory no-observable-activity threshold. Crossing it notifies the parent and the child continues.' })),
   mailboxTtlSeconds: Type.Optional(Type.Number({ minimum: 0, description: 'Keep a successful managed child session available for follow-ups. Managed launches default softly to 300 seconds when omitted; workflow nodes are opt-in. Zero disables retention and any positive duration is accepted.' })),
   notifyParent: Type.Optional(stringEnum(notificationModes, 'never sends nothing; next-turn queues model-visible context; immediate also triggers or queues a parent turn.', 'never')),
   budget: Type.Optional(budgetSchema),
@@ -190,7 +190,7 @@ export const manageParameters = Type.Union([
     message: Type.String({ minLength: 1 }),
     model: Type.Optional(modelSelectionSchema),
     thinkingLevel: Type.Optional(stringEnum(thinkingLevels, 'Optional retarget before the follow-up.')),
-    timeoutSeconds: Type.Optional(Type.Number({ minimum: 0, description: 'Optional limit for this follow-up turn. Omit or use zero for no automatic runtime limit.' })),
+    timeoutSeconds: Type.Optional(Type.Number({ minimum: 0, description: 'Optional advisory runtime threshold for this follow-up. Crossing it notifies the parent and the child continues.' })),
     extendMailboxTtlSeconds: Type.Optional(Type.Number({ minimum: 0 })),
   }, { additionalProperties: false }),
   Type.Object({ action: Type.Literal('close'), runIds: Type.Array(runTarget('Retained child targets to close.'), { minItems: 1 }) }, { additionalProperties: false }),

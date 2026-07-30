@@ -218,6 +218,43 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       });
     return true;
   };
+  const switchSession = (session: SessionSummary) => {
+    if (!('piDesktop' in window) || navigationBusyRef.current || actionBusyRef.current) return;
+    const store = useRuntimeStore.getState();
+    const origin = store.runtime;
+    const generation = store.beginSessionSwitch(session.id);
+    if (generation === null) return;
+    navigationBusyRef.current = true;
+    setNavigationBusy(true);
+    let pending: Promise<typeof origin>;
+    try {
+      pending = window.piDesktop.switchSession(session.id);
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    void pending
+      .then((state) => {
+        const latest = useRuntimeStore.getState();
+        if (!latest.completeSessionSwitch(generation, state)) latest.cancelSessionSwitch(generation, state);
+      })
+      .catch(async (error: unknown) => {
+        if (!mounted.current) return;
+        let rollback = origin;
+        if (typeof window.piDesktop.getRuntimeState === 'function') {
+          try { rollback = await window.piDesktop.getRuntimeState(); } catch { /* The click-time state is still a safe rollback. */ }
+        }
+        useRuntimeStore.getState().cancelSessionSwitch(generation, rollback);
+        showToast({
+          kind: 'error',
+          title: 'Switching session failed',
+          message: error instanceof Error ? error.message : 'The session action could not be completed.',
+        });
+      })
+      .finally(() => {
+        navigationBusyRef.current = false;
+        if (mounted.current) setNavigationBusy(false);
+      });
+  };
   const selectProject = () => {
     if (!('piDesktop' in window) || typeof window.piDesktop.selectProject !== 'function') return;
     invokeState('Project selection', async () => {
@@ -418,7 +455,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 ) : (
                   <>
                     <AppTooltip content={session.active ? `Current session: ${session.title}` : operationUnavailableReason ?? `Open ${session.title}${session.firstMessage ? `\n${session.firstMessage}` : ''}`} wrapTrigger triggerClassName="session-open-tooltip">
-                      <button className="session-open" type="button" disabled={session.active || replacementBusy} onClick={() => 'piDesktop' in window && invokeState('Switching session', () => window.piDesktop.switchSession(session.id), 'navigation')}>
+                      <button className="session-open" type="button" disabled={session.active || replacementBusy} onClick={() => switchSession(session)}>
                         <span>{session.parentSessionPath && <GitFork size={11} aria-label="Forked session" />}{session.parentSessionPath ? <span className="session-title-label icon-label">{session.title}</span> : session.title}</span>
                         <small>{session.parentSessionPath ? `Fork of ${sessionTitleByPath.get(session.parentSessionPath) ?? 'another session'} · ` : ''}{session.messageCount} messages · {new Date(session.modifiedAt).toLocaleDateString()}</small>
                       </button>

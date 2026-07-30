@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { PiEvent, SubagentRun } from '../../shared/contracts/ipc';
+import type { PiEvent, SubagentRun, SubagentWorkflowLivenessReport } from '../../shared/contracts/ipc';
 import { MAX_LIVE_TIMELINE_ENTITIES, MAX_LIVE_TOOL_OUTPUT, useRuntimeStore } from './runtimeStore';
 
 const reset = () => useRuntimeStore.setState({
@@ -252,8 +252,28 @@ describe('runtimeStore event reducer', () => {
       },
     }]);
 
+    const report: SubagentWorkflowLivenessReport = {
+      id: 'workflow-1:adaptive-limit:1:3',
+      trigger: 'adaptive-limit',
+      reason: 'Aggregate turns crossed an advisory threshold.',
+      evidence: [{ signal: 'turn-threshold', detail: 'Observed two turns.', count: 2 }],
+      recentProgress: ['Node a completed.'],
+      counters: { turns: 2, completedNodes: 1, runningNodes: 1, pendingNodes: 0, totalNodes: 2, softTurnThreshold: 34 },
+      timing: { detectedAt: 3, startedAt: 1, updatedAt: 2 },
+      workflow: { id: 'workflow-1' },
+      checkpointSummary: 'One node completed; one remains active.',
+      recommendedOptions: ['continue', 'steer', 'request-checkpoint', 'cancel'],
+    };
+    useRuntimeStore.getState().applyEvents([
+      { type: 'subagent.workflow.liveness', workflowId: 'workflow-1', report, timestamp: 3 },
+      { type: 'subagent.workflow.liveness', workflowId: 'workflow-1', report, timestamp: 3 },
+    ]);
+
     expect(useRuntimeStore.getState().runtime.subagentWorkflows).toEqual([
-      expect.objectContaining({ id: 'workflow-1', status: 'running', nodes: [expect.objectContaining({ id: 'node-a' })] }),
+      expect.objectContaining({
+        id: 'workflow-1', status: 'running', nodes: [expect.objectContaining({ id: 'node-a' })],
+        livenessReports: [expect.objectContaining({ id: report.id, trigger: 'adaptive-limit' })],
+      }),
     ]);
     expect(useRuntimeStore.getState().messageOrder).toEqual([]);
   });

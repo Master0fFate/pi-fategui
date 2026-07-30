@@ -344,6 +344,70 @@ export const subagentUsageSchema = z.object({
   contextTokens: z.number().int().nonnegative(),
   turns: z.number().int().nonnegative(),
 }).strict();
+export const subagentLivenessReportSchema = z.object({
+  id: z.string().min(1).max(160),
+  trigger: z.enum(['repetition', 'idle', 'runtime-limit', 'checkpoint', 'adaptive-limit', 'resource-limit']),
+  reason: z.string().min(1).max(2_000),
+  evidence: z.array(z.object({
+    signal: z.enum(['repeated-tool', 'repeated-error', 'idle-duration', 'runtime-duration', 'turn-threshold', 'checkpoint', 'cost-threshold', 'input-token-threshold', 'output-token-threshold', 'total-token-threshold']),
+    detail: z.string().min(1).max(1_000),
+    count: z.number().int().nonnegative().optional(),
+  }).strict()).min(1).max(12),
+  recentProgress: z.array(z.string().min(1).max(1_000)).max(8),
+  counters: z.object({
+    turns: z.number().int().nonnegative(),
+    activities: z.number().int().nonnegative(),
+    toolCalls: z.number().int().nonnegative(),
+    repeatedOccurrences: z.number().int().nonnegative(),
+    softTurnThreshold: z.number().int().positive().safe(),
+  }).strict(),
+  timing: z.object({
+    detectedAt: z.number().finite(),
+    startedAt: z.number().finite(),
+    lastActivityAt: z.number().finite(),
+    lastProgressAt: z.number().finite(),
+    idleForMs: z.number().int().nonnegative().safe().optional(),
+    cooldownMs: z.number().int().nonnegative().safe(),
+  }).strict(),
+  child: z.object({
+    runId: z.string().min(1).max(100),
+    handle: subagentHandleSchema,
+    displayName: subagentDisplayNameSchema,
+    role: subagentRoleSchema,
+    task: z.string().min(1),
+  }).strict(),
+  checkpointSummary: z.string().min(1).max(4_000),
+  recommendedOptions: z.array(z.enum(['continue', 'steer', 'request-checkpoint', 'cancel'])).min(1).max(4),
+}).strict();
+export const subagentWorkflowLivenessReportSchema = z.object({
+  id: z.string().min(1).max(160),
+  trigger: z.enum(['adaptive-limit', 'resource-limit']),
+  reason: z.string().min(1).max(2_000),
+  evidence: z.array(z.object({
+    signal: z.enum(['turn-threshold', 'cost-threshold', 'input-token-threshold', 'output-token-threshold', 'total-token-threshold']),
+    detail: z.string().min(1).max(1_000),
+    count: z.number().int().nonnegative().optional(),
+  }).strict()).min(1).max(12),
+  recentProgress: z.array(z.string().min(1).max(1_000)).max(8),
+  counters: z.object({
+    turns: z.number().int().nonnegative(),
+    completedNodes: z.number().int().nonnegative(),
+    runningNodes: z.number().int().nonnegative(),
+    pendingNodes: z.number().int().nonnegative(),
+    totalNodes: z.number().int().positive(),
+    softTurnThreshold: z.number().int().positive().safe(),
+  }).strict(),
+  timing: z.object({
+    detectedAt: z.number().finite(),
+    startedAt: z.number().finite(),
+    updatedAt: z.number().finite(),
+  }).strict(),
+  workflow: z.object({
+    id: z.string().min(1).max(100),
+  }).strict(),
+  checkpointSummary: z.string().min(1).max(4_000),
+  recommendedOptions: z.array(z.enum(['continue', 'steer', 'request-checkpoint', 'cancel'])).min(1).max(4),
+}).strict();
 export const subagentRunSchema = z.object({
   id: z.string().min(1).max(100),
   parentSessionId: z.string().min(1).max(500),
@@ -386,6 +450,7 @@ export const subagentRunSchema = z.object({
   omittedActivity: z.number().int().nonnegative(),
   transcriptTruncated: z.boolean(),
   usage: subagentUsageSchema,
+  livenessReports: z.array(subagentLivenessReportSchema).max(20).optional(),
 }).strict().superRefine((run, context) => {
   if (run.messages.length + run.tools.length > 120) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'Subagent activity exceeds its item limit.' });
@@ -436,6 +501,7 @@ export const subagentWorkflowSchema = z.object({
   budget: subagentBudgetSchema.optional(),
   usage: subagentUsageSchema,
   nodes: z.array(subagentWorkflowNodeSchema).min(1),
+  livenessReports: z.array(subagentWorkflowLivenessReportSchema).max(20).optional(),
   createdAt: z.number().finite(),
   updatedAt: z.number().finite(),
   endedAt: z.number().finite().optional(),
@@ -636,8 +702,10 @@ export const piEventSchema = z.discriminatedUnion('type', [
     usage: subagentUsageSchema.optional(),
   }),
   eventBaseSchema.extend({ type: z.literal('subagent.event'), runId: z.string().min(1).max(100), event: subagentChildEventSchema }),
+  eventBaseSchema.extend({ type: z.literal('subagent.liveness'), runId: z.string().min(1).max(100), report: subagentLivenessReportSchema }),
   eventBaseSchema.extend({ type: z.literal('subagent.completed'), run: subagentRunSchema }),
   eventBaseSchema.extend({ type: z.literal('subagent.workflow.updated'), workflow: subagentWorkflowSchema }),
+  eventBaseSchema.extend({ type: z.literal('subagent.workflow.liveness'), workflowId: z.string().min(1).max(100), report: subagentWorkflowLivenessReportSchema }),
 ]);
 
 export const piEventBatchSchema = z.array(piEventSchema).min(1).max(100);
@@ -822,6 +890,9 @@ export type SubagentNotification = z.infer<typeof subagentNotificationSchema>;
 export type SubagentBudget = z.infer<typeof subagentBudgetSchema>;
 export type SubagentMailbox = z.infer<typeof subagentMailboxSchema>;
 export type SubagentUsage = z.infer<typeof subagentUsageSchema>;
+export type SubagentLivenessReport = z.infer<typeof subagentLivenessReportSchema>;
+export type SubagentWorkflowLivenessReport = z.infer<typeof subagentWorkflowLivenessReportSchema>;
+export type SubagentParentLivenessReport = SubagentLivenessReport | SubagentWorkflowLivenessReport;
 export type SubagentRun = z.infer<typeof subagentRunSchema>;
 export type SubagentWorkflowNodeStatus = z.infer<typeof subagentWorkflowNodeStatusSchema>;
 export type SubagentWorkflowStatus = z.infer<typeof subagentWorkflowStatusSchema>;

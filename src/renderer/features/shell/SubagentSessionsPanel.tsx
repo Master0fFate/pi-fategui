@@ -80,8 +80,8 @@ function mailboxLabel(run: SubagentRun): string {
   return `available · ${seconds}s`;
 }
 
-function budgetLabel(run: SubagentRun): string {
-  if (!run.budget) return 'unbounded';
+function thresholdLabel(run: SubagentRun): string {
+  if (!run.budget) return 'none configured';
   return Object.entries(run.budget).map(([key, value]) => `${key.replace(/^max/u, '')}:${value}`).join(' · ');
 }
 
@@ -158,6 +158,7 @@ function RunDetail({ run }: { run: SubagentRun }) {
   const activities = useMemo(() => activitiesFor(run), [run]);
   const isActive = activeStatuses.has(run.status);
   const usage = run.usage;
+  const latestLiveness = run.livenessReports?.[run.livenessReports.length - 1];
   const handle = subagentHandle(run);
   const displayName = subagentDisplayName(run);
   return (
@@ -175,6 +176,14 @@ function RunDetail({ run }: { run: SubagentRun }) {
         <p>{run.task}</p>
       </div>
       <SubagentControls run={run} />
+      {latestLiveness ? (
+        <details className="subagent-boundary" open={isActive}>
+          <summary>Liveness checkpoint · {latestLiveness.trigger}</summary>
+          <p>{latestLiveness.reason}</p>
+          <pre>{latestLiveness.checkpointSummary}</pre>
+          <small>Child continued automatically · Parent options: {latestLiveness.recommendedOptions.join(', ')}</small>
+        </details>
+      ) : null}
       <dl className="subagent-meta">
         <div><dt>Profile</dt><dd title={`${run.agentSource}/${run.agentName}`}>{run.agentSource}/{run.agentName}</dd></div>
         <div><dt>Role</dt><dd>{run.role}</dd></div>
@@ -187,8 +196,8 @@ function RunDetail({ run }: { run: SubagentRun }) {
         <div><dt>Attempt</dt><dd>{run.attempt}/{run.maxAttempts}{run.routingModels.length > 1 ? ` · ${run.routingModels.length} routes` : ''}</dd></div>
         <div><dt>Mailbox</dt><dd>{mailboxLabel(run)}{run.mailbox.followUpCount ? ` · ${run.mailbox.followUpCount} follow-ups` : ''}</dd></div>
         {run.workflowId ? <div><dt>Workflow</dt><dd title={run.workflowId}>{run.workflowNodeId}{run.dependsOn.length ? ` · after ${run.dependsOn.join(', ')}` : ''}</dd></div> : null}
-        <div><dt>Budget</dt><dd title={budgetLabel(run)}>{budgetLabel(run)}</dd></div>
-        <div><dt>Runtime</dt><dd>{run.timeoutAt && run.startedAt ? `${formatSpan(run.timeoutAt - run.startedAt)} total` : 'no total timeout'}{run.idleTimeoutMs ? ` · ${formatSpan(run.idleTimeoutMs)} idle` : ' · no idle timeout'}</dd></div>
+        <div><dt>Advisory thresholds</dt><dd title={thresholdLabel(run)}>{thresholdLabel(run)}</dd></div>
+        <div><dt>Liveness</dt><dd>{run.timeoutAt && run.startedAt ? `${formatSpan(run.timeoutAt - run.startedAt)} runtime advisory` : 'no runtime advisory'}{run.idleTimeoutMs ? ` · ${formatSpan(run.idleTimeoutMs)} idle advisory` : ' · no idle advisory'}</dd></div>
         <div><dt>Usage</dt><dd>{usage.turns} {usage.turns === 1 ? 'turn' : 'turns'} · ↑{formatTokens(usage.input)} ↓{formatTokens(usage.output)}</dd></div>
         {usage.cost > 0 ? <div><dt>Cost</dt><dd>${usage.cost.toFixed(4)}</dd></div> : null}
       </dl>
@@ -314,6 +323,7 @@ function DelegationBranch({
     ? `${completed}/${workflow.nodes.length} nodes · up to ${workflow.maxConcurrency} parallel`
     : `${runs.length} ${runs.length === 1 ? 'agent' : 'agents'}${active ? ` · ${active} active` : ''}`;
   const Icon = workflow ? GitBranch : Wrench;
+  const latestWorkflowLiveness = workflow?.livenessReports?.[workflow.livenessReports.length - 1];
 
   return (
     <section className="agent-tree-branch" data-status={branchStatus} aria-label={workflow ? `Workflow ${workflow.id}` : `Delegation ${ordinal}`}>
@@ -322,6 +332,14 @@ function DelegationBranch({
         <span className="agent-tree-branch-copy"><strong>{label}</strong><small>{summary}</small></span>
         <span className="agent-tree-branch-state">{branchStatus}</span>
       </header>
+      {latestWorkflowLiveness ? (
+        <details className="subagent-boundary" open={workflow?.status === 'running'}>
+          <summary>Workflow liveness checkpoint · {latestWorkflowLiveness.trigger}</summary>
+          <p>{latestWorkflowLiveness.reason}</p>
+          <pre>{latestWorkflowLiveness.checkpointSummary}</pre>
+          <small>Workflow continued automatically · Parent options: {latestWorkflowLiveness.recommendedOptions.join(', ')}</small>
+        </details>
+      ) : null}
       <div className="agent-tree-children">{children}</div>
       {parentError ? <span className="subagent-parent-error">Parent delegation reported an error</span> : null}
     </section>

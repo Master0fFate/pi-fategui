@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   createBashToolDefinition,
@@ -864,6 +866,37 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('loads every skill tagged in the same prompt before handing it to Pi', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'fate-runtime-skills-'));
+    const firstPath = path.join(directory, 'first.md');
+    const secondPath = path.join(directory, 'second.md');
+    try {
+      writeFileSync(firstPath, '---\nname: first\ndescription: First skill\n---\n\nFirst workflow.');
+      writeFileSync(secondPath, '---\nname: second\ndescription: Second skill\n---\n\nSecond workflow.');
+      const fake = fixture();
+      const skills = [
+        { name: 'first', description: 'First skill', filePath: firstPath, baseDir: directory },
+        { name: 'second', description: 'Second skill', filePath: secondPath, baseDir: directory },
+      ];
+      Object.assign(fake.session.resourceLoader, { getSkills: () => ({ skills, diagnostics: [] }) });
+      const service = new PiRuntimeService(fake.adapter);
+      await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+      await service.prompt({ text: '/skill:first /skill:second Fix the issue', behavior: 'prompt' });
+      const promptText = fake.session.prompt.mock.calls[0]?.[0] ?? '';
+      expect(promptText).toContain(`<skill name="first" location="${firstPath}">`);
+      expect(promptText).toContain(`<skill name="second" location="${secondPath}">`);
+      expect(promptText).not.toContain('/skill:first');
+      expect(promptText).not.toContain('/skill:second');
+      expect(promptText).toMatch(/<\/skill>\n\nFix the issue$/u);
+      expect(service.getState(false).objective).toBe('/skill:first /skill:second Fix the issue');
+      fake.settle();
+      await service.dispose();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('lists, searches, creates, and switches persistent sessions through the SDK owner', async () => {
     const fake = fixture();
     const saved = {
@@ -884,9 +917,38 @@ describe('PiRuntimeService', () => {
     await service.switchSession('saved');
     const runtime = await fake.adapter.createRuntime('/project', {} as ModelRuntime);
     expect(runtime.switchSession).toHaveBeenCalledWith('/sessions/saved.jsonl', { cwdOverride: '/project' });
-    expect(repository.resolve).toHaveBeenCalledWith('/project', 'saved');
+    expect(repository.resolve).not.toHaveBeenCalled();
     await service.deleteSession('saved');
     expect(repository.delete).toHaveBeenCalledWith('/project', 'saved');
+    await service.dispose();
+  });
+
+  it('does not block a session switch on a redundant project-wide session-list refresh', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'saved', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/saved.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const never = new Promise<never>(() => undefined);
+    const repository = {
+      list: vi.fn()
+        .mockResolvedValueOnce([saved])
+        .mockImplementation(() => never),
+      resolve: vi.fn(() => never),
+      branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.runtime.switchSession.mockImplementationOnce(async () => {
+      fake.session.sessionId = saved.id;
+      fake.session.sessionFile = saved.path;
+      await fake.runtime.setRebindSession.mock.calls[0]![0](fake.session);
+      return { cancelled: false };
+    });
+
+    await expect(service.switchSession(saved.id)).resolves.toMatchObject({ sessionId: saved.id });
+    expect(repository.resolve).not.toHaveBeenCalled();
+    expect(repository.list).toHaveBeenCalledTimes(1);
     await service.dispose();
   });
 
@@ -984,6 +1046,33 @@ describe('PiRuntimeService', () => {
     first.emitSession({ type: 'agent_settled' });
     await vi.waitFor(() => expect(first.runtime.dispose).toHaveBeenCalledOnce());
     expect(service.getState(false)).toMatchObject({ sessionId: 'session-3', activeSessionRunning: false, runningSessionCount: 0 });
+    expect(service.getState(false).sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'session-1', attention: 'completed', active: false }),
+    ]));
+    await service.dispose();
+  });
+
+  it('marks a recovered background run completed after an earlier failure', async () => {
+    const first = fixture();
+    const second = fixture();
+    second.session.sessionId = 'session-2';
+    const adapter: PiSdkAdapter = {
+      ...first.adapter,
+      createRuntime: vi.fn()
+        .mockResolvedValueOnce(first.runtime as unknown as AgentSessionRuntime)
+        .mockResolvedValueOnce(second.runtime as unknown as AgentSessionRuntime),
+    };
+    const service = new PiRuntimeService(adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'recover this task', behavior: 'prompt' });
+    await service.newSession();
+
+    first.emitSession({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error' } });
+    first.emitSession({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Recovered and finished.' }], stopReason: 'stop' } });
+    first.settle();
+    first.emitSession({ type: 'agent_settled' });
+
+    await vi.waitFor(() => expect(first.runtime.dispose).toHaveBeenCalledOnce());
     expect(service.getState(false).sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'session-1', attention: 'completed', active: false }),
     ]));

@@ -5,11 +5,12 @@ import type {
   SubagentNotification,
   SubagentRun,
   SubagentUsage,
+  SubagentWorkflowLivenessReport,
   SubagentWorkflow as SubagentWorkflowView,
 } from '../../shared/contracts/ipc';
 import { allocateSubagentIdentity, ensureSubagentIdentity } from '../../shared/subagentIdentity';
 import { safeText } from './PiEventNormalizer';
-import { budgetViolation, emptyUsage, addUsage } from './SubagentSessionFactory';
+import { emptyUsage, addUsage } from './SubagentSessionFactory';
 import {
   deterministicWorkflowId,
   normalizeWorkflowStart,
@@ -44,6 +45,7 @@ export interface SubagentWorkflow {
   budget?: SubagentBudget;
   usage: SubagentUsage;
   nodes: SubagentWorkflowNode[];
+  livenessReports?: SubagentWorkflowLivenessReport[];
   createdAt: number;
   updatedAt: number;
   endedAt?: number;
@@ -69,7 +71,8 @@ interface WorkflowHost {
   runIdentity: (parentSessionId: string, runId: string) => { handle: string; displayName: string } | undefined;
   persist: (workflow: SubagentWorkflow) => void;
   changed: (workflow: SubagentWorkflowView) => void;
-  notify: (parentSessionId: string, mode: SubagentNotification, text: string, runIds: string[], workflowId: string) => Promise<void>;
+  notify: (parentSessionId: string, mode: SubagentNotification, text: string, runIds: string[], workflowId: string, livenessReport?: SubagentWorkflowLivenessReport) => Promise<void>;
+  liveness: (parentSessionId: string, workflowId: string, report: SubagentWorkflowLivenessReport) => void;
   settled: (parentSessionId: string) => void;
 }
 
@@ -84,6 +87,7 @@ function cloneWorkflow(workflow: SubagentWorkflow): SubagentWorkflow {
     ...workflow,
     usage: { ...workflow.usage },
     ...(workflow.budget ? { budget: { ...workflow.budget } } : {}),
+    ...(workflow.livenessReports ? { livenessReports: workflow.livenessReports.map((report) => structuredClone(report)) } : {}),
     nodes: workflow.nodes.map((node) => ({
       ...node,
       dependsOn: [...node.dependsOn],
@@ -124,6 +128,7 @@ export function workflowView(workflow: SubagentWorkflow): SubagentWorkflowView {
       ...(node.startedAt === undefined ? {} : { startedAt: node.startedAt }),
       ...(node.endedAt === undefined ? {} : { endedAt: node.endedAt }),
     })),
+    ...(workflow.livenessReports ? { livenessReports: workflow.livenessReports.map((report) => structuredClone(report)) } : {}),
     createdAt: workflow.createdAt,
     updatedAt: workflow.updatedAt,
     ...(workflow.endedAt === undefined ? {} : { endedAt: workflow.endedAt }),
@@ -382,18 +387,138 @@ export class SubagentWorkflowEngine {
   private async execute(workflow: SubagentWorkflow, modelRuntime: ModelRuntime, signal: AbortSignal): Promise<SubagentWorkflow> {
     const running = new Map<string, Promise<void>>();
     const nodesById = new Map(workflow.nodes.map((node) => [node.id, node]));
+    let softTurnThreshold = workflow.budget?.maxTurns;
+    const reportedResources = new Set<string>();
+    const reportSoftTurnThreshold = async () => {
+      if (softTurnThreshold === undefined || workflow.usage.turns <= softTurnThreshold) return;
+      const crossed = softTurnThreshold;
+      const completed = workflow.nodes.filter((node) => node.status === 'completed');
+      const runningNodes = workflow.nodes.filter((node) => node.status === 'running').length;
+      const pendingNodes = workflow.nodes.filter((node) => node.status === 'pending').length;
+      softTurnThreshold = workflow.usage.turns + (completed.length >= 3 ? 64 : 32);
+      const detectedAt = Date.now();
+      const recentProgress = completed.slice(-8).map((node) => `${node.displayName ?? node.id} completed.`);
+      const report: SubagentWorkflowLivenessReport = {
+        id: `${workflow.id}:adaptive-limit:${crossed}:${detectedAt}`,
+        trigger: 'adaptive-limit',
+        reason: `Aggregate workflow turns crossed the advisory ${crossed}-turn threshold. The workflow and its children continue while the parent decides.`,
+        evidence: [{
+          signal: 'turn-threshold',
+          detail: `Observed ${workflow.usage.turns} aggregate turns; the next adaptive checkpoint is ${softTurnThreshold}.`,
+          count: workflow.usage.turns,
+        }],
+        recentProgress,
+        counters: {
+          turns: workflow.usage.turns,
+          completedNodes: completed.length,
+          runningNodes,
+          pendingNodes,
+          totalNodes: workflow.nodes.length,
+          softTurnThreshold,
+        },
+        timing: { detectedAt, startedAt: workflow.createdAt, updatedAt: workflow.updatedAt },
+        workflow: { id: workflow.id },
+        checkpointSummary: [
+          `${completed.length}/${workflow.nodes.length} workflow nodes completed; ${runningNodes} running and ${pendingNodes} pending.`,
+          recentProgress.length ? `Recent progress:\n${recentProgress.map((item) => `- ${item}`).join('\n')}` : 'No completed-node progress is recorded yet.',
+          'This advisory did not pause, skip, or terminate any node.',
+        ].join('\n'),
+        recommendedOptions: ['continue', 'steer', 'request-checkpoint', 'cancel'],
+      };
+      workflow.livenessReports = [...(workflow.livenessReports ?? []), report].slice(-20);
+      workflow.updatedAt = detectedAt;
+      this.store(workflow);
+      this.host.liveness(workflow.parentSessionId, workflow.id, report);
+      const runIds = workflow.nodes.flatMap((node) => node.runId ? [node.runId] : []);
+      await this.host.notify(
+        workflow.parentSessionId,
+        'immediate',
+        [
+          `Workflow liveness report for ${workflow.id}. The workflow and its children continue running.`,
+          report.reason,
+          report.checkpointSummary,
+          `Parent options: ${report.recommendedOptions.join(', ')}.`,
+        ].join('\n\n'),
+        runIds,
+        workflow.id,
+        report,
+      ).catch(() => undefined);
+    };
+    const reportResourceThresholds = async () => {
+      const budget = workflow.budget;
+      if (!budget) return;
+      const totalTokens = workflow.usage.input + workflow.usage.output + workflow.usage.cacheRead + workflow.usage.cacheWrite;
+      const candidates: Array<{
+        key: string;
+        crossed: boolean;
+        signal: 'cost-threshold' | 'input-token-threshold' | 'output-token-threshold' | 'total-token-threshold';
+        detail: string;
+        count?: number;
+      }> = [
+        {
+          key: 'maxCostUsd', crossed: budget.maxCostUsd !== undefined && workflow.usage.cost > budget.maxCostUsd,
+          signal: 'cost-threshold', detail: `Observed aggregate cost $${workflow.usage.cost.toFixed(6)} crossed the advisory $${budget.maxCostUsd?.toFixed(6) ?? '0'} threshold.`,
+        },
+        {
+          key: 'maxInputTokens', crossed: budget.maxInputTokens !== undefined && workflow.usage.input > budget.maxInputTokens,
+          signal: 'input-token-threshold', detail: `Observed ${workflow.usage.input} aggregate input tokens crossed the advisory ${budget.maxInputTokens ?? 0} threshold.`, count: workflow.usage.input,
+        },
+        {
+          key: 'maxOutputTokens', crossed: budget.maxOutputTokens !== undefined && workflow.usage.output > budget.maxOutputTokens,
+          signal: 'output-token-threshold', detail: `Observed ${workflow.usage.output} aggregate output tokens crossed the advisory ${budget.maxOutputTokens ?? 0} threshold.`, count: workflow.usage.output,
+        },
+        {
+          key: 'maxTotalTokens', crossed: budget.maxTotalTokens !== undefined && totalTokens > budget.maxTotalTokens,
+          signal: 'total-token-threshold', detail: `Observed ${totalTokens} aggregate tokens crossed the advisory ${budget.maxTotalTokens ?? 0} threshold.`, count: totalTokens,
+        },
+      ];
+      const newlyCrossed = candidates.filter((candidate) => candidate.crossed && !reportedResources.has(candidate.key));
+      if (!newlyCrossed.length) return;
+      newlyCrossed.forEach((candidate) => reportedResources.add(candidate.key));
+      const detectedAt = Date.now();
+      const completed = workflow.nodes.filter((node) => node.status === 'completed');
+      const runningNodes = workflow.nodes.filter((node) => node.status === 'running').length;
+      const pendingNodes = workflow.nodes.filter((node) => node.status === 'pending').length;
+      const report: SubagentWorkflowLivenessReport = {
+        id: `${workflow.id}:resource-limit:${reportedResources.size}:${detectedAt}`,
+        trigger: 'resource-limit',
+        reason: 'One or more configured aggregate resource thresholds were crossed. They are advisory only: the workflow continues and the parent chooses any next step.',
+        evidence: newlyCrossed.map((candidate) => ({
+          signal: candidate.signal,
+          detail: candidate.detail,
+          ...(candidate.count === undefined ? {} : { count: candidate.count }),
+        })),
+        recentProgress: completed.slice(-8).map((node) => `${node.displayName ?? node.id} completed.`),
+        counters: {
+          turns: workflow.usage.turns,
+          completedNodes: completed.length,
+          runningNodes,
+          pendingNodes,
+          totalNodes: workflow.nodes.length,
+          softTurnThreshold: softTurnThreshold ?? Math.max(1, workflow.usage.turns + 32),
+        },
+        timing: { detectedAt, startedAt: workflow.createdAt, updatedAt: workflow.updatedAt },
+        workflow: { id: workflow.id },
+        checkpointSummary: `${completed.length}/${workflow.nodes.length} workflow nodes completed; ${runningNodes} running and ${pendingNodes} pending. This resource advisory did not pause, skip, or terminate any node.`,
+        recommendedOptions: ['continue', 'steer', 'request-checkpoint', 'cancel'],
+      };
+      workflow.livenessReports = [...(workflow.livenessReports ?? []), report].slice(-20);
+      workflow.updatedAt = detectedAt;
+      this.store(workflow);
+      this.host.liveness(workflow.parentSessionId, workflow.id, report);
+      const runIds = workflow.nodes.flatMap((node) => node.runId ? [node.runId] : []);
+      await this.host.notify(
+        workflow.parentSessionId,
+        'immediate',
+        [`Workflow liveness report for ${workflow.id}. The workflow and its children continue running.`, report.reason, report.checkpointSummary, `Parent options: ${report.recommendedOptions.join(', ')}.`].join('\n\n'),
+        runIds,
+        workflow.id,
+        report,
+      ).catch(() => undefined);
+    };
     try {
       while (workflow.nodes.some((node) => !terminalNode(node.status))) {
         if (signal.aborted) throw Object.assign(new Error(String(signal.reason || 'Workflow cancelled.')), { name: 'AbortError' });
-        const violation = budgetViolation(workflow.usage, workflow.budget);
-        if (violation) {
-          for (const node of workflow.nodes) {
-            if (node.status !== 'pending') continue;
-            node.status = 'skipped';
-            node.error = `Workflow budget stopped this node: ${violation}.`;
-            node.endedAt = Date.now();
-          }
-        }
 
         let launched = false;
         for (const node of workflow.nodes) {
@@ -433,7 +558,7 @@ export class SubagentWorkflowEngine {
             continue;
           }
           const task = completion
-            .then((run) => {
+            .then(async (run) => {
               if (run.result === undefined) delete node.result;
               else node.result = run.result;
               if (run.error === undefined) delete node.error;
@@ -443,6 +568,8 @@ export class SubagentWorkflowEngine {
               workflow.usage = addUsage(workflow.usage, run.usage);
               workflow.updatedAt = Date.now();
               this.store(workflow);
+              await reportSoftTurnThreshold();
+              await reportResourceThresholds();
             })
             .catch((error: unknown) => {
               node.status = signal.aborted ? 'cancelled' : 'error';
@@ -464,12 +591,10 @@ export class SubagentWorkflowEngine {
       await Promise.allSettled(running.values());
       if (signal.aborted) throw Object.assign(new Error(String(signal.reason || 'Workflow cancelled.')), { name: 'AbortError' });
       const failed = workflow.nodes.some((node) => node.status === 'error' || node.status === 'cancelled');
-      const budgetStopped = workflow.nodes.some((node) => node.status === 'skipped' && node.error?.startsWith('Workflow budget stopped this node:'));
-      workflow.status = failed || budgetStopped ? 'error' : 'completed';
+      workflow.status = failed ? 'error' : 'completed';
       workflow.endedAt = Date.now();
       workflow.updatedAt = workflow.endedAt;
       if (failed) workflow.error = 'One or more workflow nodes did not complete successfully.';
-      else if (budgetStopped) workflow.error = 'The aggregate workflow budget was exceeded before all nodes could run.';
       this.store(workflow);
       await this.notify(workflow);
       return cloneWorkflow(workflow);

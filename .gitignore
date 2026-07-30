@@ -23,4 +23,5 @@ playwright-report/
 .codeviewer-mcp.sqlite
 .claude/
 text.txt
+videos/
 NUL

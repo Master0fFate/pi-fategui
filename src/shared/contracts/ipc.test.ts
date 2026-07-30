@@ -183,6 +183,20 @@ describe('IPC contracts', () => {
     };
     expect(subagentWorkflowSchema.parse(workflow).nodes).toHaveLength(2);
     expect(piEventSchema.parse({ type: 'subagent.workflow.updated', workflow, timestamp: 2 })).toMatchObject({ type: 'subagent.workflow.updated' });
+    const workflowLiveness = {
+      id: 'workflow-1:adaptive-limit:1:3', trigger: 'adaptive-limit',
+      reason: 'Aggregate turns crossed an advisory threshold.',
+      evidence: [{ signal: 'turn-threshold', detail: 'Observed two turns.', count: 2 }],
+      recentProgress: ['Node a completed.'],
+      counters: { turns: 2, completedNodes: 1, runningNodes: 1, pendingNodes: 0, totalNodes: 2, softTurnThreshold: 34 },
+      timing: { detectedAt: 3, startedAt: 1, updatedAt: 2 },
+      workflow: { id: 'workflow-1' },
+      checkpointSummary: 'One node completed; one remains active.',
+      recommendedOptions: ['continue', 'steer', 'request-checkpoint', 'cancel'],
+    };
+    expect(subagentWorkflowSchema.parse({ ...workflow, livenessReports: [workflowLiveness] }).livenessReports).toHaveLength(1);
+    expect(piEventSchema.parse({ type: 'subagent.workflow.liveness', workflowId: 'workflow-1', report: workflowLiveness, timestamp: 3 }))
+      .toMatchObject({ type: 'subagent.workflow.liveness', workflowId: 'workflow-1' });
 
     const manyRuns = Array.from({ length: 60 }, (_, index) => ({ ...run, id: `subagent-${index}`, parentToolCallId: `tool-${index}` }));
     expect(subagentToolDetailsSchema.parse({ kind: 'fate-subagent', version: 3, runIds: manyRuns.map((item) => item.id), runs: manyRuns }).runs).toHaveLength(60);

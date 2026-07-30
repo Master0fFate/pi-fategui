@@ -51,8 +51,13 @@ interface RuntimeStore {
   lastError: AppError | null;
   sequence: number;
   activeCompactionId: string | null;
+  pendingSessionSwitch: { projectPath: string; sessionId: string; generation: number } | null;
+  sessionSwitchGeneration: number;
   setRuntime: (state: RuntimeState) => void;
   hydrateRuntime: (state: RuntimeState) => void;
+  beginSessionSwitch: (sessionId: string) => number | null;
+  completeSessionSwitch: (generation: number, state: RuntimeState) => boolean;
+  cancelSessionSwitch: (generation: number, state: RuntimeState) => boolean;
   applyEvents: (events: PiEvent[]) => void;
 }
 
@@ -239,6 +244,8 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   lastError: null,
   sequence: 0,
   activeCompactionId: null,
+  pendingSessionSwitch: null,
+  sessionSwitchGeneration: 0,
   setRuntime: (runtime) => set((current) => {
     const sameSession = current.runtime.sessionId !== null
       && current.runtime.sessionId === runtime.sessionId
@@ -261,6 +268,11 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         ...subagents,
         queue: runtime.queue ?? current.queue,
         lastError: runtime.error,
+        pendingSessionSwitch: current.pendingSessionSwitch
+          && current.pendingSessionSwitch.projectPath === runtime.project?.path
+          && current.pendingSessionSwitch.sessionId === runtime.sessionId
+          ? current.pendingSessionSwitch
+          : null,
       };
     }
     const projection = indexed(runtime.messages, runtime.tools);
@@ -278,6 +290,11 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       lastError: runtime.error,
       sequence: 0,
       activeCompactionId: null,
+      pendingSessionSwitch: current.pendingSessionSwitch
+        && current.pendingSessionSwitch.projectPath === runtime.project?.path
+        && current.pendingSessionSwitch.sessionId === runtime.sessionId
+        ? current.pendingSessionSwitch
+        : null,
     };
   }),
   hydrateRuntime: (runtime) => set(() => {
@@ -296,8 +313,103 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       lastError: runtime.error,
       sequence: 0,
       activeCompactionId: null,
+      pendingSessionSwitch: null,
     };
   }),
+  beginSessionSwitch: (sessionId) => {
+    let generation: number | null = null;
+    set((current) => {
+      const projectPath = current.runtime.project?.path;
+      const target = current.runtime.sessions?.find((session) => session.id === sessionId);
+      if (!projectPath || !target || target.active || current.pendingSessionSwitch) return current;
+      generation = current.sessionSwitchGeneration + 1;
+      const sessions = current.runtime.sessions?.map((session) => ({ ...session, active: session.id === sessionId }));
+      return {
+        runtime: {
+          ...current.runtime,
+          sessionId,
+          sessionFile: target.path,
+          streaming: target.attention === 'running',
+          activeSessionRunning: target.attention === 'running',
+          model: null,
+          pendingModel: null,
+          messages: [],
+          tools: [],
+          objective: undefined,
+          contextUsage: undefined,
+          queue: emptyQueue(),
+          extensionUi: { statuses: [], widgets: [], working: null, title: null },
+          sessions,
+          subagents: [],
+          subagentWorkflows: [],
+          branches: [],
+          forkPoints: [],
+          sessionOperation: true,
+          error: null,
+        },
+        ...indexed([]),
+        ...indexedSubagents(),
+        queue: emptyQueue(),
+        lastError: null,
+        sequence: 0,
+        activeCompactionId: null,
+        pendingSessionSwitch: { projectPath, sessionId, generation },
+        sessionSwitchGeneration: generation,
+      };
+    });
+    return generation;
+  },
+  completeSessionSwitch: (generation, runtime) => {
+    let completed = false;
+    set((current) => {
+      const pending = current.pendingSessionSwitch;
+      if (!pending || pending.generation !== generation || pending.projectPath !== runtime.project?.path || pending.sessionId !== runtime.sessionId) return current;
+      completed = true;
+      const projection = indexed(runtime.messages, runtime.tools);
+      const subagents = indexedSubagents(runtime.subagents);
+      return {
+        runtime: {
+          ...runtime,
+          messages: projection.messageOrder.flatMap((id) => projection.messagesById[id] ? [projection.messagesById[id]!] : []),
+          tools: projection.toolOrder.flatMap((id) => projection.toolsById[id] ? [projection.toolsById[id]!] : []),
+          subagents: subagents.subagentOrder.flatMap((id) => subagents.subagentsById[id] ? [subagents.subagentsById[id]!] : []),
+        },
+        ...projection,
+        ...subagents,
+        queue: runtime.queue ?? emptyQueue(),
+        lastError: runtime.error,
+        sequence: 0,
+        activeCompactionId: null,
+        pendingSessionSwitch: null,
+      };
+    });
+    return completed;
+  },
+  cancelSessionSwitch: (generation, runtime) => {
+    let cancelled = false;
+    set((current) => {
+      if (current.pendingSessionSwitch?.generation !== generation) return current;
+      cancelled = true;
+      const projection = indexed(runtime.messages, runtime.tools);
+      const subagents = indexedSubagents(runtime.subagents);
+      return {
+        runtime: {
+          ...runtime,
+          messages: projection.messageOrder.flatMap((id) => projection.messagesById[id] ? [projection.messagesById[id]!] : []),
+          tools: projection.toolOrder.flatMap((id) => projection.toolsById[id] ? [projection.toolsById[id]!] : []),
+          subagents: subagents.subagentOrder.flatMap((id) => subagents.subagentsById[id] ? [subagents.subagentsById[id]!] : []),
+        },
+        ...projection,
+        ...subagents,
+        queue: runtime.queue ?? emptyQueue(),
+        lastError: runtime.error,
+        sequence: 0,
+        activeCompactionId: null,
+        pendingSessionSwitch: null,
+      };
+    });
+    return cancelled;
+  },
   applyEvents: (events) => set((current) => {
     let runtime = current.runtime;
     let messagesById = current.messagesById;
@@ -317,6 +429,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     let lastError = current.lastError;
     let sequence = current.sequence;
     let activeCompactionId = current.activeCompactionId;
+    let pendingSessionSwitch = current.pendingSessionSwitch;
     let imagePayloadChanged = false;
 
     const setMessage = (id: string, message: RuntimeMessage) => {
@@ -400,6 +513,14 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       const merged = coalesceAdjacentStreamDelta(events, eventIndex);
       const event = merged.event;
       eventIndex = merged.lastIndex;
+      if (pendingSessionSwitch) {
+        const confirmsTarget = event.type === 'state.changed'
+          && event.messagesIncluded
+          && event.state.project?.path === pendingSessionSwitch.projectPath
+          && event.state.sessionId === pendingSessionSwitch.sessionId;
+        if (!confirmsTarget) continue;
+        pendingSessionSwitch = null;
+      }
       if (event.type === 'state.changed') {
         const sameSession = runtime.project?.path === event.state.project?.path
           && (runtime.sessionId === null ? messageOrder.length > 0 || toolOrder.length > 0 : runtime.sessionId === event.state.sessionId);
@@ -513,6 +634,15 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
             && Boolean(event.event.images?.length);
           setSubagent(applySubagentChildEvent(existing, event.event));
         }
+      } else if (event.type === 'subagent.liveness') {
+        const existing = subagentsById[event.runId];
+        if (existing && !(existing.livenessReports ?? []).some((report) => report.id === event.report.id)) {
+          setSubagent({
+            ...existing,
+            livenessReports: [...(existing.livenessReports ?? []), event.report].slice(-20),
+            updatedAt: Math.max(existing.updatedAt, event.timestamp),
+          });
+        }
       } else if (event.type === 'subagent.completed') {
         subagentImagePayloadChanged ||= Boolean(
           event.run.messages.some((message) => message.images?.length)
@@ -525,6 +655,20 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         if (index >= 0) workflows[index] = event.workflow;
         else workflows.push(event.workflow);
         runtime = { ...runtime, subagentWorkflows: workflows };
+      } else if (event.type === 'subagent.workflow.liveness') {
+        const workflows = [...(runtime.subagentWorkflows ?? [])];
+        const index = workflows.findIndex((workflow) => workflow.id === event.workflowId);
+        if (index >= 0) {
+          const workflow = workflows[index]!;
+          if (!(workflow.livenessReports ?? []).some((report) => report.id === event.report.id)) {
+            workflows[index] = {
+              ...workflow,
+              livenessReports: [...(workflow.livenessReports ?? []), event.report].slice(-20),
+              updatedAt: Math.max(workflow.updatedAt, event.timestamp),
+            };
+            runtime = { ...runtime, subagentWorkflows: workflows };
+          }
+        }
       } else if (event.type === 'queue.changed') {
         queue = reconcileQueue(queue, event.steering, event.followUp);
         runtime = { ...runtime, queue };
@@ -635,6 +779,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       runtime, messagesById, messageOrder, reasoningByMessageId, toolsById, toolOrder,
       subagentsById, subagentOrder,
       timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds, queue, lastError, sequence, activeCompactionId,
+      pendingSessionSwitch,
     };
   }),
 }));
