@@ -5,7 +5,7 @@ import type { PiDesktopApi, RuntimeState } from '../../../shared/contracts/ipc';
 import { AppToast } from '../../components/AppToast';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
-import { Composer } from './Composer';
+import { clearComposerSessionDrafts, Composer } from './Composer';
 
 const runtime: RuntimeState = {
   status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
@@ -48,6 +48,7 @@ describe('Composer voice input', () => {
   });
 
   afterEach(() => {
+    clearComposerSessionDrafts();
     Reflect.deleteProperty(window, 'piDesktop');
     Reflect.deleteProperty(navigator, 'mediaDevices');
     Reflect.deleteProperty(globalThis, 'MediaRecorder');

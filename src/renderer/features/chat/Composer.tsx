@@ -1,9 +1,9 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
-import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, Ellipsis, FileText, FolderOpen, GitFork, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
+import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, Ellipsis, FileText, FolderOpen, GitFork, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
 import { type ChangeEvent, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { PromptInput, QueueMutationInput } from '../../../shared/contracts/ipc';
+import type { FileEntry, PromptInput, QueueMutationInput } from '../../../shared/contracts/ipc';
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AppTooltip } from '../../components/AppTooltip';
 import { SelectControl } from '../../components/SelectControl';
@@ -11,6 +11,7 @@ import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { ContextWheel } from './ContextWheel';
 import { agentMentionContext, findAgentMentions, parseAgentStopCommand } from './agentMentions';
+import { fileTagContext, fileTagText, findFileTags } from './fileTags';
 import { findSlashCommands, slashCommandContext, slashCommandDescription, slashCommandLabel, type SlashCommand } from './slashCommands';
 
 interface Attachment {
@@ -36,6 +37,40 @@ const emptySessionDraft = (): SessionDraft => ({
   text: '', textRevision: 0, images: [], imagesRevision: 0, forkNotice: null,
   selectionStart: 0, selectionEnd: 0, scrollTop: 0,
 });
+
+// Keep unfinished identity-keyed drafts when the composer remounts within the renderer.
+const MAX_CACHED_SESSION_DRAFTS = 50;
+const MAX_CACHED_DRAFT_IMAGE_BYTES = 60_000_000;
+const sessionDraftsByIdentity = new Map<string, SessionDraft>();
+const sessionDraftListeners = new Set<(key: string, draft: SessionDraft) => void>();
+let cachedDraftImageBytes = 0;
+
+function draftImageBytes(draft: SessionDraft): number {
+  return draft.images.reduce((total, image) => total + image.bytes, 0);
+}
+
+function cacheSessionDraft(key: string, draft: SessionDraft, notify = true): void {
+  const previous = sessionDraftsByIdentity.get(key);
+  if (previous) cachedDraftImageBytes -= draftImageBytes(previous);
+  sessionDraftsByIdentity.delete(key);
+  sessionDraftsByIdentity.set(key, draft);
+  cachedDraftImageBytes += draftImageBytes(draft);
+  while (sessionDraftsByIdentity.size > MAX_CACHED_SESSION_DRAFTS || cachedDraftImageBytes > MAX_CACHED_DRAFT_IMAGE_BYTES) {
+    const oldestKey = sessionDraftsByIdentity.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    const evicted = sessionDraftsByIdentity.get(oldestKey);
+    sessionDraftsByIdentity.delete(oldestKey);
+    if (evicted) cachedDraftImageBytes -= draftImageBytes(evicted);
+  }
+  if (notify && sessionDraftsByIdentity.has(key)) {
+    for (const listener of sessionDraftListeners) listener(key, draft);
+  }
+}
+
+export function clearComposerSessionDrafts(): void {
+  sessionDraftsByIdentity.clear();
+  cachedDraftImageBytes = 0;
+}
 
 const sessionDraftKey = (projectPath: string | null, sessionId: string | null): string | null =>
   sessionId === null ? null : JSON.stringify([projectPath, sessionId]);
@@ -142,6 +177,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const [queueBusyId, setQueueBusyId] = useState<string | null>(null);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [selectedAgentIndex, setSelectedAgentIndex] = useState(0);
+  const [selectedFileIndex, setSelectedFileIndex] = useState(0);
+  const [fileSuggestionResult, setFileSuggestionResult] = useState<{ projectPath: string; query: string; entries: FileEntry[] } | null>(null);
+  const [fileTagDismissed, setFileTagDismissed] = useState(false);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [caretPosition, setCaretPosition] = useState(0);
@@ -154,17 +192,20 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const resizeCleanup = useRef<(() => void) | null>(null);
   const slashList = useRef<HTMLDivElement>(null);
   const agentList = useRef<HTMLDivElement>(null);
+  const fileTagList = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const activeRecording = useRef<ActiveRecording | null>(null);
   const draftRef = useRef(draft);
   const imagesRef = useRef(images);
   const draftRevision = useRef(0);
   const imagesRevision = useRef(0);
-  const sessionDrafts = useRef(new Map<string, SessionDraft>());
+  const sessionDrafts = useRef(sessionDraftsByIdentity);
   const activeDraftKey = useRef<string | null>(null);
   const pendingDraftSelection = useRef<{ key: string | null; text: string; start: number; end: number; scrollTop: number; focus?: boolean } | null>(null);
   const forkNoticeRef = useRef(forkNotice);
   const caretPositionRef = useRef(caretPosition);
+  const selectionEndRef = useRef(caretPosition);
+  const draftScrollTopRef = useRef(0);
   const submittingRef = useRef(false);
   const queueBusyRef = useRef(false);
   const modelBusyRef = useRef(false);
@@ -196,6 +237,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     sessionOperation: state.runtime.sessionOperation,
   })));
   const activeSessionDraftKey = sessionDraftKey(runtime.project?.path ?? null, runtime.sessionId);
+  const cachedActiveDraft = activeSessionDraftKey === null ? undefined : sessionDraftsByIdentity.get(activeSessionDraftKey);
+  const editorDraft = activeDraftKey.current === activeSessionDraftKey ? draft : cachedActiveDraft?.text ?? '';
   const queue = useRuntimeStore((state) => state.queue);
   const subagentOrder = useRuntimeStore((state) => state.subagentOrder);
   const queuedItems = queue.items ?? [];
@@ -234,29 +277,23 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   caretPositionRef.current = caretPosition;
 
   const saveActiveDraft = useCallback((key: string) => {
-    const input = textarea.current;
     const current = sessionDrafts.current.get(key) ?? emptySessionDraft();
-    sessionDrafts.current.set(key, {
+    cacheSessionDraft(key, {
       ...current,
       text: draftRef.current,
       textRevision: draftRevision.current,
       images: imagesRef.current,
       imagesRevision: imagesRevision.current,
       forkNotice: forkNoticeRef.current,
-      selectionStart: input?.selectionStart ?? caretPositionRef.current,
-      selectionEnd: input?.selectionEnd ?? caretPositionRef.current,
-      scrollTop: Math.max(0, input?.scrollTop ?? 0),
-    });
+      selectionStart: caretPositionRef.current,
+      selectionEnd: selectionEndRef.current,
+      scrollTop: draftScrollTopRef.current,
+    }, false);
   }, []);
   const updateDraftForKey = useCallback((key: string | null, next: string) => {
     if (key === null) return;
     const current = sessionDrafts.current.get(key) ?? emptySessionDraft();
-    const textRevision = current.textRevision + 1;
-    sessionDrafts.current.set(key, { ...current, text: next, textRevision });
-    if (activeDraftKey.current !== key) return;
-    draftRef.current = next;
-    draftRevision.current = textRevision;
-    setDraft(next);
+    cacheSessionDraft(key, { ...current, text: next, textRevision: current.textRevision + 1 });
   }, []);
   const updateDraft = useCallback((next: string) => {
     updateDraftForKey(activeDraftKey.current, next);
@@ -264,15 +301,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const updateImagesForKey = useCallback((key: string | null, update: Attachment[] | ((current: Attachment[]) => Attachment[])) => {
     if (key === null) return;
     const stored = sessionDrafts.current.get(key) ?? emptySessionDraft();
-    const current = activeDraftKey.current === key ? imagesRef.current : stored.images;
-    const next = typeof update === 'function' ? update(current) : update;
-    if (next === current) return;
-    const nextImagesRevision = stored.imagesRevision + 1;
-    sessionDrafts.current.set(key, { ...stored, images: next, imagesRevision: nextImagesRevision });
-    if (activeDraftKey.current !== key) return;
-    imagesRef.current = next;
-    imagesRevision.current = nextImagesRevision;
-    setImages(next);
+    const next = typeof update === 'function' ? update(stored.images) : update;
+    if (next === stored.images) return;
+    cacheSessionDraft(key, { ...stored, images: next, imagesRevision: stored.imagesRevision + 1 });
   }, []);
   const updateImages = useCallback((update: Attachment[] | ((current: Attachment[]) => Attachment[])) => {
     updateImagesForKey(activeDraftKey.current, update);
@@ -280,10 +311,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const updateForkNoticeForKey = useCallback((key: string | null, next: string | null) => {
     if (key === null) return;
     const current = sessionDrafts.current.get(key) ?? emptySessionDraft();
-    sessionDrafts.current.set(key, { ...current, forkNotice: next });
-    if (activeDraftKey.current !== key) return;
-    forkNoticeRef.current = next;
-    setForkNotice(next);
+    cacheSessionDraft(key, { ...current, forkNotice: next });
   }, []);
   const updateForkNotice = useCallback((next: string | null) => {
     updateForkNoticeForKey(activeDraftKey.current, next);
@@ -305,7 +333,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     return gesture;
   }, []);
 
-  const commandContext = slashCommandContext(draft, caretPosition);
+  const commandContext = slashCommandContext(editorDraft, caretPosition);
   const commandQuery = commandContext?.query ?? null;
   const commandAtPromptStart = commandContext?.commandPosition ?? false;
   const commandSuggestions = useMemo(
@@ -319,7 +347,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     ? Math.min(selectedCommandIndex, commandSuggestions.length - 1)
     : 0;
   const selectedCommand = commandSuggestions[activeCommandIndex];
-  const mentionContext = agentMentionContext(draft, caretPosition);
+  const mentionContext = agentMentionContext(editorDraft, caretPosition);
   const mentionQuery = mentionContext?.query ?? null;
   const agentSuggestions = useMemo(
     () => mentionQuery === null
@@ -335,6 +363,53 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     ? Math.min(selectedAgentIndex, agentSuggestions.length - 1)
     : 0;
   const selectedAgent = agentSuggestions[activeAgentIndex];
+  const resourceTagContext = fileTagContext(editorDraft, caretPosition);
+  const resourceSuggestions = fileSuggestionResult
+    && fileSuggestionResult.projectPath === runtime.project?.path
+    && fileSuggestionResult.query === resourceTagContext?.query
+    ? findFileTags(fileSuggestionResult.entries)
+    : [];
+  const resourceMenuOpen = !slashMenuOpen && !mentionMenuOpen && resourceTagContext !== null && resourceSuggestions.length > 0 && !fileTagDismissed;
+  const activeFileIndex = resourceSuggestions.length > 0 ? Math.min(selectedFileIndex, resourceSuggestions.length - 1) : 0;
+  const selectedFile = resourceSuggestions[activeFileIndex];
+
+  useLayoutEffect(() => {
+    const synchronize = (key: string, next: SessionDraft) => {
+      if (activeDraftKey.current !== key) return;
+      draftRef.current = next.text;
+      draftRevision.current = next.textRevision;
+      imagesRef.current = next.images;
+      imagesRevision.current = next.imagesRevision;
+      forkNoticeRef.current = next.forkNotice;
+      setDraft(next.text);
+      setImages(next.images);
+      setForkNotice(next.forkNotice);
+    };
+    sessionDraftListeners.add(synchronize);
+    return () => { sessionDraftListeners.delete(synchronize); };
+  }, []);
+
+  useEffect(() => {
+    if (!resourceTagContext || !runtime.project?.path || !('piDesktop' in window)) {
+      setFileSuggestionResult(null);
+      return;
+    }
+    const projectPath = runtime.project.path;
+    const query = resourceTagContext.query;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const result = query ? await window.piDesktop.searchFiles(query, 100) : await window.piDesktop.listFiles('');
+        if (!cancelled && useRuntimeStore.getState().runtime.project?.path === projectPath) {
+          setFileSuggestionResult({ projectPath, query, entries: result.entries });
+        }
+      } catch {
+        if (!cancelled) setFileSuggestionResult({ projectPath, query, entries: [] });
+      }
+    };
+    const timer = window.setTimeout(() => { void load(); }, query ? 100 : 0);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [resourceTagContext?.query, runtime.project?.path]);
 
   useLayoutEffect(() => {
     const previousKey = activeDraftKey.current;
@@ -345,7 +420,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       ? emptySessionDraft()
       : sessionDrafts.current.get(activeSessionDraftKey) ?? emptySessionDraft();
     if (activeSessionDraftKey !== null && !sessionDrafts.current.has(activeSessionDraftKey)) {
-      sessionDrafts.current.set(activeSessionDraftKey, next);
+      cacheSessionDraft(activeSessionDraftKey, next, false);
     }
     draftRef.current = next.text;
     draftRevision.current = next.textRevision;
@@ -353,6 +428,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     imagesRevision.current = next.imagesRevision;
     forkNoticeRef.current = next.forkNotice;
     caretPositionRef.current = next.selectionStart;
+    selectionEndRef.current = next.selectionEnd;
+    draftScrollTopRef.current = next.scrollTop;
     setDraft(next.text);
     setImages(next.images);
     setForkNotice(next.forkNotice);
@@ -361,6 +438,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     setComposerError(null);
     setSlashDismissed(false);
     setMentionDismissed(false);
+    setFileTagDismissed(false);
     const start = Math.min(next.text.length, next.selectionStart);
     pendingDraftSelection.current = {
       key: activeSessionDraftKey,
@@ -378,6 +456,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     if (pending.focus) input.focus({ preventScroll: true });
     input.setSelectionRange(pending.start, pending.end);
     input.scrollTop = pending.scrollTop;
+    caretPositionRef.current = pending.start;
+    selectionEndRef.current = pending.end;
+    draftScrollTopRef.current = pending.scrollTop;
     pendingDraftSelection.current = null;
   }, [activeSessionDraftKey, draft]);
 
@@ -459,11 +540,11 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
 
   useLayoutEffect(() => {
     autoSizeInput();
-  }, [autoSizeInput, draft]);
+  }, [autoSizeInput, editorDraft]);
 
   useLayoutEffect(() => {
     syncInputFades();
-  }, [draft, inputHeight, syncInputFades]);
+  }, [editorDraft, inputHeight, syncInputFades]);
 
   useEffect(() => {
     const workspace = composer.current?.closest<HTMLElement>('.welcome');
@@ -547,6 +628,10 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   }, [mentionContext?.start, mentionQuery]);
 
   useEffect(() => {
+    setSelectedFileIndex(0);
+  }, [resourceTagContext?.start, resourceTagContext?.query]);
+
+  useEffect(() => {
     if (!slashMenuOpen) return;
     const activeOption = slashList.current?.querySelector<HTMLElement>('[data-active="true"]');
     if (typeof activeOption?.scrollIntoView === 'function') activeOption.scrollIntoView({ block: 'nearest' });
@@ -557,6 +642,12 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     const activeOption = agentList.current?.querySelector<HTMLElement>('[data-active="true"]');
     if (typeof activeOption?.scrollIntoView === 'function') activeOption.scrollIntoView({ block: 'nearest' });
   }, [activeAgentIndex, mentionMenuOpen]);
+
+  useEffect(() => {
+    if (!resourceMenuOpen) return;
+    const activeOption = fileTagList.current?.querySelector<HTMLElement>('[data-active="true"]');
+    if (typeof activeOption?.scrollIntoView === 'function') activeOption.scrollIntoView({ block: 'nearest' });
+  }, [activeFileIndex, resourceMenuOpen]);
 
   const submit = async (behavior: PromptInput['behavior']) => {
     const runtimeNow = useRuntimeStore.getState().runtime;
@@ -573,7 +664,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       setComposerError(null);
     }
     const clearSubmittedDraft = () => {
-      if (!mounted.current || originDraftKey === null) return;
+      if (originDraftKey === null) return;
       const originDraft = sessionDrafts.current.get(originDraftKey);
       if (originDraft?.textRevision === submittedDraftRevision) {
         updateDraftForKey(originDraftKey, '');
@@ -684,8 +775,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const selectSlashCommand = (command: SlashCommand) => {
     if (!commandContext) return;
     const replaceStart = commandContext.commandPosition ? 0 : commandContext.start;
-    const before = draft.slice(0, replaceStart);
-    const after = draft.slice(commandContext.end);
+    const before = editorDraft.slice(0, replaceStart);
+    const after = editorDraft.slice(commandContext.end);
     const commandText = `/${command.name}`;
     const trailingSpace = after.length === 0 || !/^\s/u.test(after) ? ' ' : '';
     const insertion = `${commandText}${trailingSpace}`;
@@ -706,8 +797,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
 
   const selectAgentMention = (run: NonNullable<typeof selectedAgent>) => {
     if (!mentionContext) return;
-    const before = draft.slice(0, mentionContext.start);
-    const after = draft.slice(mentionContext.end);
+    const before = editorDraft.slice(0, mentionContext.start);
+    const after = editorDraft.slice(mentionContext.end);
     const mention = `@${subagentHandle(run)}`;
     const trailingSpace = after.length === 0 || !/^\s/u.test(after) ? ' ' : '';
     const insertion = `${mention}${trailingSpace}`;
@@ -726,13 +817,26 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     setMentionDismissed(true);
   };
 
+  const selectFileTag = (entry: NonNullable<typeof selectedFile>) => {
+    if (!resourceTagContext) return;
+    const before = editorDraft.slice(0, resourceTagContext.start);
+    const after = editorDraft.slice(resourceTagContext.end);
+    const insertion = `${fileTagText(entry.path)}${after.length === 0 || !/^\s/u.test(after) ? ' ' : ''}`;
+    const nextDraft = `${before}${insertion}${after}`;
+    const nextCaret = before.length + insertion.length;
+    pendingDraftSelection.current = { key: activeDraftKey.current, text: nextDraft, start: nextCaret, end: nextCaret, scrollTop: Math.max(0, textarea.current?.scrollTop ?? 0), focus: true };
+    updateDraft(nextDraft);
+    setCaretPosition(nextCaret);
+    setFileTagDismissed(true);
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return;
     const modifierPressed = event.metaKey || event.ctrlKey;
     const shouldSend = sendMessageWithModifier
       ? modifierPressed
       : !event.shiftKey && !event.altKey;
-    if (event.key === 'Enter' && shouldSend && parseAgentStopCommand(draft)) {
+    if (event.key === 'Enter' && shouldSend && parseAgentStopCommand(editorDraft)) {
       event.preventDefault();
       void submit(runtime.streaming ? 'followUp' : 'prompt');
       return;
@@ -756,6 +860,19 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         setMentionDismissed(true);
         return;
       }
+    }
+    if (resourceMenuOpen) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const offset = event.key === 'ArrowDown' ? 1 : -1;
+        setSelectedFileIndex((current) => (current + offset + resourceSuggestions.length) % resourceSuggestions.length);
+        return;
+      }
+      if ((event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.shiftKey) || event.key === 'Tab') {
+        if (selectedFile) { event.preventDefault(); selectFileTag(selectedFile); }
+        return;
+      }
+      if (event.key === 'Escape') { event.preventDefault(); setFileTagDismissed(true); return; }
     }
     if (slashMenuOpen) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -820,30 +937,21 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     setInputHeight(Math.min(maxInputHeight(), Math.max(MIN_COMPOSER_INPUT_HEIGHT, next)));
   };
 
-  const addReference = async () => {
+  const startResourceTag = () => {
     const input = textarea.current;
-    if (!input || !('piDesktop' in window)) return;
-    setComposerError(null);
-    try {
-      const relativePath = await window.piDesktop.selectProjectFile();
-      if (!relativePath || !mounted.current) return;
-      const reference = relativePath.includes(' ') ? `@"${relativePath}"` : `@${relativePath}`;
-      const currentDraft = draftRef.current;
-      const start = Math.min(currentDraft.length, input.selectionStart);
-      const end = Math.min(currentDraft.length, Math.max(start, input.selectionEnd));
-      const leadingSpace = start > 0 && !/\s/.test(currentDraft[start - 1] ?? '') ? ' ' : '';
-      const trailingSpace = end < currentDraft.length && !/\s/.test(currentDraft[end] ?? '') ? ' ' : '';
-      const insertion = `${leadingSpace}${reference}${trailingSpace}`;
-      updateDraft(`${currentDraft.slice(0, start)}${insertion}${currentDraft.slice(end)}`);
-      requestAnimationFrame(() => {
-        if (!mounted.current) return;
-        input.focus({ preventScroll: true });
-        const cursor = start + insertion.length;
-        input.setSelectionRange(cursor, cursor);
-      });
-    } catch (error) {
-      if (mounted.current) setComposerError(error instanceof Error ? error.message : 'Could not reference that project file.');
-    }
+    if (!input) return;
+    const currentDraft = draftRef.current;
+    const start = Math.min(currentDraft.length, input.selectionStart);
+    const end = Math.min(currentDraft.length, Math.max(start, input.selectionEnd));
+    const leadingSpace = start > 0 && !/\s/u.test(currentDraft[start - 1] ?? '') ? ' ' : '';
+    const trailingSpace = end < currentDraft.length && !/\s/u.test(currentDraft[end] ?? '') ? ' ' : '';
+    const insertion = `${leadingSpace}#${trailingSpace}`;
+    const nextDraft = `${currentDraft.slice(0, start)}${insertion}${currentDraft.slice(end)}`;
+    const nextCaret = start + leadingSpace.length + 1;
+    pendingDraftSelection.current = { key: activeDraftKey.current, text: nextDraft, start: nextCaret, end: nextCaret, scrollTop: Math.max(0, input.scrollTop), focus: true };
+    updateDraft(nextDraft);
+    setCaretPosition(nextCaret);
+    setFileTagDismissed(false);
   };
 
   const addImageFiles = useCallback((incoming: readonly File[]) => {
@@ -1337,6 +1445,20 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
 
   return (
     <div className="composer-wrap">
+      {resourceMenuOpen && resourceTagContext && (
+        <div className="slash-suggestions file-tag-suggestions" role="listbox" aria-label="Project resources" id="file-tag-suggestions">
+          <div className="slash-suggestions-heading"><span>Project resources</span><code>#{resourceTagContext.query}</code></div>
+          <div ref={fileTagList} className="slash-suggestions-list">
+            {resourceSuggestions.map((entry, index) => {
+              const Icon = entry.kind === 'directory' ? FolderOpen : FileText;
+              return <button id={`file-tag-option-${index}`} key={`${entry.kind}:${entry.path}`} type="button" role="option" aria-selected={index === activeFileIndex} data-active={index === activeFileIndex} onMouseEnter={() => setSelectedFileIndex(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => selectFileTag(entry)}>
+                <Icon size={14} aria-hidden="true" /><span className="slash-suggestion-copy icon-label"><strong>{fileTagText(entry.path)}</strong><small>{entry.kind === 'directory' ? 'Folder · includes descendant files' : 'Project file'}</small></span><em>{entry.kind === 'directory' ? 'folder' : 'file'}</em>
+              </button>;
+            })}
+          </div>
+          <div className="slash-suggestions-hints" aria-hidden="true"><span><b>↑↓</b> Navigate</span><span><b>Enter</b> Tag</span><span><b>Esc</b> Close</span></div>
+        </div>
+      )}
       {mentionMenuOpen && mentionContext && (
         <div className="slash-suggestions agent-suggestions" role="listbox" aria-label="Agent mentions" id="agent-suggestions">
           <div className="slash-suggestions-heading">
@@ -1481,21 +1603,34 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
             ref={textarea}
             id="pi-composer"
             aria-label="Message Pi"
-            aria-controls={mentionMenuOpen ? 'agent-suggestions' : slashMenuOpen ? 'slash-suggestions' : undefined}
-            aria-expanded={mentionMenuOpen || slashMenuOpen}
+            aria-controls={resourceMenuOpen ? 'file-tag-suggestions' : mentionMenuOpen ? 'agent-suggestions' : slashMenuOpen ? 'slash-suggestions' : undefined}
+            aria-expanded={resourceMenuOpen || mentionMenuOpen || slashMenuOpen}
             aria-autocomplete="list"
-            aria-activedescendant={mentionMenuOpen && agentSuggestions.length > 0
-              ? `agent-option-${activeAgentIndex}`
-              : slashMenuOpen && commandSuggestions.length > 0 ? `slash-option-${activeCommandIndex}` : undefined}
-            value={draft}
+            aria-activedescendant={resourceMenuOpen && resourceSuggestions.length > 0
+              ? `file-tag-option-${activeFileIndex}`
+              : mentionMenuOpen && agentSuggestions.length > 0
+                ? `agent-option-${activeAgentIndex}`
+                : slashMenuOpen && commandSuggestions.length > 0 ? `slash-option-${activeCommandIndex}` : undefined}
+            value={editorDraft}
             onChange={(event) => {
               updateDraft(event.target.value);
+              caretPositionRef.current = event.target.selectionStart;
+              selectionEndRef.current = event.target.selectionEnd;
+              draftScrollTopRef.current = Math.max(0, event.target.scrollTop);
               setCaretPosition(event.target.selectionStart);
               setSlashDismissed(false);
               setMentionDismissed(false);
+              setFileTagDismissed(false);
             }}
-            onSelect={(event) => setCaretPosition(event.currentTarget.selectionStart)}
-            onScroll={syncInputFades}
+            onSelect={(event) => {
+              caretPositionRef.current = event.currentTarget.selectionStart;
+              selectionEndRef.current = event.currentTarget.selectionEnd;
+              setCaretPosition(event.currentTarget.selectionStart);
+            }}
+            onScroll={(event) => {
+              draftScrollTopRef.current = Math.max(0, event.currentTarget.scrollTop);
+              syncInputFades();
+            }}
             onKeyDown={onKeyDown}
             onPaste={pasteImages}
             placeholder={connected ? runtime.streaming ? 'Ask for follow-up changes…' : 'Ask Pi about your project…' : 'Open and trust a project to begin…'}
@@ -1529,8 +1664,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                           <FolderOpen size={14} aria-hidden="true" /><span className="icon-label">{runtime.project?.name ?? 'Open project'}</span>
                         </button>
                       </AppTooltip>
-                      <button type="button" aria-label="Add file reference" disabled={!connected} onClick={() => { setUtilityMenuOpen(false); void addReference(); }}>
-                        <AtSign size={14} aria-hidden="true" /><span className="icon-label">File reference</span>
+                      <button type="button" aria-label="Tag project file or folder" disabled={!connected} onClick={() => { setUtilityMenuOpen(false); startResourceTag(); }}>
+                        <Hash size={14} aria-hidden="true" /><span className="icon-label">Project tag</span>
                       </button>
                       <button type="button" aria-label="Attach image" disabled={!imageCapable || images.length >= 4} onClick={() => { setUtilityMenuOpen(false); fileInput.current?.click(); }}>
                         <ImagePlus size={14} aria-hidden="true" /><span className="icon-label">Attach image</span>
@@ -1607,7 +1742,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
             <input ref={fileInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={attachImages} />
             {!compactToolbar && (
               <>
-                <AppTooltip content="Insert a project-relative file reference" wrapTrigger><button type="button" aria-label="Add file reference" disabled={!connected} onClick={() => void addReference()}><AtSign size={15} /><span className="icon-label">File</span></button></AppTooltip>
+                <AppTooltip content="Tag a project file or folder with #" wrapTrigger><button type="button" aria-label="Tag project file or folder" disabled={!connected} onClick={startResourceTag}><Hash size={15} /><span className="icon-label">Tag</span></button></AppTooltip>
                 <AppTooltip content={imageCapable ? 'Attach up to four images' : 'The model selected for the next message does not support images'} wrapTrigger><button type="button" aria-label="Attach image" disabled={!imageCapable || images.length >= 4} onClick={() => fileInput.current?.click()}><ImagePlus size={15} /><span className="icon-label">Image</span></button></AppTooltip>
                 {runtime.sessionCapabilities?.fork && forkPoint && <AppTooltip content={forkTooltip} wrapTrigger><button type="button" aria-label="Create new session from latest prompt" disabled={!canFork || forking} onClick={() => void forkConversation()}>{forking ? <LoaderCircle className="tool-spinner" size={15} /> : <GitFork size={15} />}<span className="icon-label">New from prompt</span></button></AppTooltip>}
               </>

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, RuntimeState, SubagentRun } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
-import { clampComposerInputHeight, Composer, uniqueAttachmentName } from './Composer';
+import { clampComposerInputHeight, clearComposerSessionDrafts, Composer, uniqueAttachmentName } from './Composer';
 import { ContextWheel } from './ContextWheel';
 import { AssistantMarkdown, ConversationTimeline, followsMessage, forkEntryForMessage, MessageRow } from './ConversationTimeline';
 import { isSafeMermaidSource } from './RichMessageContent';
@@ -45,6 +45,7 @@ const reset = () => {
 describe('conversation components', () => {
   beforeEach(reset);
   afterEach(() => {
+    clearComposerSessionDrafts();
     Reflect.deleteProperty(window, 'piDesktop');
     vi.restoreAllMocks();
   });
@@ -432,10 +433,17 @@ describe('conversation components', () => {
       x: 0, y: 0, top: 0, right: 500, bottom: 124, left: 0, width: 500, height: 124,
       toJSON: () => ({}),
     } as DOMRect);
-    const selectProjectFile = vi.fn(async () => 'README.md');
+    const listFiles = vi.fn(async () => ({
+      path: '',
+      entries: [
+        { path: 'README.md', name: 'README.md', kind: 'file' as const, symlink: false },
+        { path: 'src', name: 'src', kind: 'directory' as const, symlink: false },
+      ],
+      truncated: false,
+    }));
     Object.defineProperty(window, 'piDesktop', {
       configurable: true,
-      value: { selectProjectFile } as unknown as PiDesktopApi,
+      value: { listFiles } as unknown as PiDesktopApi,
     });
     const user = userEvent.setup();
     render(<Composer onOpenProject={vi.fn()} />);
@@ -447,10 +455,13 @@ describe('conversation components', () => {
     expect(await screen.findByRole('tooltip')).toHaveTextContent('Permission: Edit files');
     await user.click(screen.getByRole('button', { name: 'Open composer tools' }));
     const tools = screen.getByRole('dialog', { name: 'Composer tools' });
-    expect(within(tools).getByRole('button', { name: 'Add file reference' })).toBeInTheDocument();
-    await user.click(within(tools).getByRole('button', { name: 'Add file reference' }));
-    expect(selectProjectFile).toHaveBeenCalledOnce();
-    expect(screen.getByLabelText('Message Pi')).toHaveValue('@README.md');
+    expect(within(tools).getByRole('button', { name: 'Tag project file or folder' })).toBeInTheDocument();
+    await user.click(within(tools).getByRole('button', { name: 'Tag project file or folder' }));
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('#');
+    const resources = await screen.findByRole('listbox', { name: 'Project resources' });
+    expect(within(resources).getByRole('option', { name: /#README\.md.*project file/iu })).toBeInTheDocument();
+    expect(within(resources).getByRole('option', { name: /#src.*folder/iu })).toBeInTheDocument();
+    expect(listFiles).toHaveBeenCalledWith('');
     expect(screen.queryByRole('dialog', { name: 'Composer tools' })).not.toBeInTheDocument();
   });
 
@@ -458,7 +469,15 @@ describe('conversation components', () => {
     const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
     Object.defineProperty(window, 'piDesktop', {
       configurable: true,
-      value: { prompt, abort: vi.fn(), selectProjectFile: vi.fn(async () => 'src/example file.ts') } as unknown as PiDesktopApi,
+      value: {
+        prompt,
+        abort: vi.fn(),
+        listFiles: vi.fn(async () => ({
+          path: '',
+          entries: [{ path: 'src/example file.ts', name: 'example file.ts', kind: 'file' as const, symlink: false }],
+          truncated: false,
+        })),
+      } as unknown as PiDesktopApi,
     });
     const user = userEvent.setup();
     render(<Composer onOpenProject={vi.fn()} />);
@@ -469,10 +488,59 @@ describe('conversation components', () => {
     await user.click(screen.getByRole('option', { name: /review/i }));
     expect(screen.getByLabelText('Message Pi')).toHaveValue('/review ');
 
-    await user.click(screen.getByRole('button', { name: 'Add file reference' }));
-    expect(screen.getByLabelText('Message Pi')).toHaveValue('/review @"src/example file.ts"');
+    await user.click(screen.getByRole('button', { name: 'Tag project file or folder' }));
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('/review #');
+    await user.click(await screen.findByRole('option', { name: /#"src\/example file\.ts"/iu }));
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('/review #"src/example file.ts" ');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    expect(prompt).toHaveBeenCalledWith({ text: '/review @"src/example file.ts"', behavior: 'prompt' });
+    expect(prompt).toHaveBeenCalledWith({ text: '/review #"src/example file.ts"', behavior: 'prompt' });
+  });
+
+  it('autocompletes project files and folders with canonical # tags', async () => {
+    const searchFiles = vi.fn(async () => ({ entries: [
+      { path: 'src', name: 'src', kind: 'directory' as const, symlink: false },
+      { path: 'src/nested/view.tsx', name: 'view.tsx', kind: 'file' as const, symlink: false },
+    ], truncated: false }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { searchFiles, listFiles: vi.fn(async () => ({ entries: [], truncated: false })) } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+    const input = screen.getByLabelText('Message Pi');
+
+    await user.type(input, '#src');
+    const resources = await screen.findByRole('listbox', { name: 'Project resources' });
+    expect(within(resources).getByRole('option', { name: /#src.*folder.*descendant files/iu })).toBeInTheDocument();
+    await user.keyboard('{ArrowDown}{Enter}');
+    expect(input).toHaveValue('#src/nested/view.tsx ');
+    expect(searchFiles).toHaveBeenCalledWith('src', 100);
+  });
+
+  it('restores an Untitled session draft after a composer remount without sharing it', async () => {
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {} as PiDesktopApi });
+    const first = render(<Composer onOpenProject={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Message Pi'), { target: { value: 'Untitled session draft' } });
+    first.unmount();
+
+    render(<Composer onOpenProject={vi.fn()} />);
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('Untitled session draft');
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 'another-untitled-session' })));
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('');
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's1' })));
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('Untitled session draft');
+  });
+
+  it('clears an accepted draft even when the composer remounts while prompt admission is pending', async () => {
+    let acceptPrompt: ((value: { accepted: boolean; runId: string }) => void) | undefined;
+    const prompt = vi.fn(() => new Promise<{ accepted: boolean; runId: string }>((resolve) => { acceptPrompt = resolve; }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt } as unknown as PiDesktopApi });
+    const first = render(<Composer onOpenProject={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Message Pi'), { target: { value: 'Send once' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    first.unmount();
+
+    render(<Composer onOpenProject={vi.fn()} />);
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('Send once');
+    act(() => acceptPrompt?.({ accepted: true, runId: 'run-1' }));
+    await waitFor(() => expect(screen.getByLabelText('Message Pi')).toHaveValue(''));
   });
 
   it('autocompletes stable agent handles and executes only exact stop syntax directly', async () => {
@@ -575,10 +643,12 @@ describe('conversation components', () => {
 
     fireEvent.change(input, { target: { value: 'identical draft' } });
     input.setSelectionRange(1, 4);
+    fireEvent.select(input);
     act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's2' })));
     await waitFor(() => expect(input).toHaveValue(''));
     fireEvent.change(input, { target: { value: 'identical draft' } });
     input.setSelectionRange(6, 11);
+    fireEvent.select(input);
 
     act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's1' })));
     await waitFor(() => expect([input.selectionStart, input.selectionEnd]).toEqual([1, 4]));

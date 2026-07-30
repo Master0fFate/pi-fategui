@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -843,6 +843,29 @@ describe('PiRuntimeService', () => {
       { name: 'skill:vibesecurity', description: 'Defensive security review', source: 'skill' },
     ]);
     await service.dispose();
+  });
+
+  it('adds confined nested project resources to the transport prompt', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'fate-runtime-resources-'));
+    try {
+      mkdirSync(path.join(directory, 'src', 'nested'), { recursive: true });
+      writeFileSync(path.join(directory, 'src', 'main.ts'), 'main');
+      writeFileSync(path.join(directory, 'src', 'nested', 'view.tsx'), 'view');
+      const fake = fixture();
+      const service = new PiRuntimeService(fake.adapter);
+      await service.openProject({ path: directory, name: 'project', trusted: true });
+
+      await service.prompt({ text: 'Review #src', behavior: 'prompt' });
+      expect(fake.session.prompt).toHaveBeenCalledWith(
+        expect.stringContaining('- src/nested/view.tsx'),
+        expect.objectContaining({ preflightResult: expect.any(Function) }),
+      );
+      expect(fake.session.prompt.mock.calls[0]?.[0]).toContain('- src/main.ts');
+      fake.settle();
+      await service.dispose();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('promotes an inline skill before handing the prompt to Pi expansion', async () => {

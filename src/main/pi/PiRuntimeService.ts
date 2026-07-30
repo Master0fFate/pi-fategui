@@ -51,6 +51,7 @@ import { PiSessionRepository, sessionDisplayTitle } from './PiSessionRepository'
 import { PiSessionTitleGenerator, type SessionTitleGenerator } from './PiSessionTitleGenerator';
 import { activeToolsForPermission, createProjectConfinedTools, type ProjectToolAccess } from './PiToolPolicy';
 import { validatePromptImages } from './PiPromptImages';
+import { appendProjectResourceContext, hasProjectResourceTags } from './ProjectResourceTags';
 import { SubagentCoordinator } from './SubagentCoordinator';
 import { InMemorySessionPermissionStore, type SessionPermissionPersistence } from './SessionPermissionStore';
 
@@ -829,8 +830,16 @@ export class PiRuntimeService {
     }
     const initialization = this.initialization;
     const runId = randomUUID();
-    const promptText = expandMultipleSkillCommands(input.text, session.resourceLoader.getSkills().skills)
+    const commandPrompt = expandMultipleSkillCommands(input.text, session.resourceLoader.getSkills().skills)
       ?? promoteInlineResourceCommand(input.text, this.getCommands(session));
+    const includesProjectResources = hasProjectResourceTags(input.text);
+    const promptText = includesProjectResources
+      ? await appendProjectResourceContext(commandPrompt, this.project?.path ?? null, input.text)
+      : commandPrompt;
+    if (
+      includesProjectResources
+      && (initialization !== this.initialization || slot.disposed || this.selectedSlot !== slot || slot.runtime.session !== session)
+    ) throw this.replacementSuperseded();
     validatePromptImages(input.images);
     const images = input.images?.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType }));
     const queuedBehavior = session.isStreaming && input.behavior !== 'prompt' ? input.behavior : null;
