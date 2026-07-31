@@ -143,14 +143,42 @@ function inlineRasterSource(src: string): { data: string; mimeType: RuntimeImage
   return { data: src.slice(prefix[0].length), mimeType: mimeType as RuntimeImage['mimeType'] };
 }
 
+function isLocalImageReference(src: string): boolean {
+  const trimmed = src.trim();
+  return /^file:/iu.test(trimmed)
+    || /^[A-Za-z]:[\\/]/u.test(trimmed)
+    || (!/^[A-Za-z][A-Za-z\d+.-]*:/u.test(trimmed) && !/^[/\\]{2}/u.test(trimmed) && !trimmed.startsWith('#'));
+}
+
 function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string | undefined }) {
   const [open, setOpen] = useState(false);
   const [failed, setFailed] = useState(false);
   const [remoteAllowed, setRemoteAllowed] = useState(false);
+  const [localSource, setLocalSource] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const label = alt.trim() || 'Generated image';
-  const downloadable = src ? inlineRasterSource(src) : null;
+  const localReference = Boolean(src && isLocalImageReference(src));
+  const displaySource = localReference ? localSource ?? undefined : src;
+  const downloadable = displaySource ? inlineRasterSource(displaySource) : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    setFailed(false);
+    setLocalSource(null);
+    if (!localReference) return () => { cancelled = true; };
+    if (!src || !('piDesktop' in window) || typeof window.piDesktop.readLocalImage !== 'function') {
+      setFailed(true);
+      return () => { cancelled = true; };
+    }
+    void window.piDesktop.readLocalImage(src).then((image) => {
+      if (!cancelled) setLocalSource(`data:${image.mimeType};base64,${image.data}`);
+    }).catch(() => {
+      if (!cancelled) setFailed(true);
+    });
+    return () => { cancelled = true; };
+  }, [localReference, src]);
+
   const saveImage = async () => {
     if (!downloadable || saving) return;
     setSaving(true);
@@ -167,6 +195,9 @@ function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string |
   if (!src || failed) {
     return <span className="chat-image-error"><ImageOff size={16} /><span className="icon-label">Image unavailable{alt ? `: ${alt}` : ''}</span></span>;
   }
+  if (localReference && !displaySource) {
+    return <span className="chat-image-error" role="status"><ImageIcon size={16} /><span className="icon-label">Loading image: {label}</span></span>;
+  }
   if (/^https:/i.test(src) && !remoteAllowed) {
     return (
       <button className="chat-image-consent" type="button" onClick={() => setRemoteAllowed(true)} aria-label={`Load remote image: ${label}`}>
@@ -180,7 +211,7 @@ function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string |
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger asChild>
         <button className="chat-image-trigger" type="button" aria-label={`Expand image: ${label}`}>
-          <img src={src} alt={label} loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+          <img src={displaySource} alt={label} loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
           <span aria-hidden="true"><Expand size={14} /><span className="icon-label">View</span></span>
         </button>
       </Dialog.Trigger>
@@ -192,7 +223,7 @@ function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string |
           onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}
         >
           <Dialog.Title className="visually-hidden">{label}</Dialog.Title>
-          <img src={src} alt={label} referrerPolicy="no-referrer" />
+          <img src={displaySource} alt={label} referrerPolicy="no-referrer" />
           <footer><span>{label}</span><small>Click outside or press Esc to close</small></footer>
           {downloadable ? (
             <AppTooltip content={saved ? 'Image saved' : 'Save image as…'}>
@@ -214,15 +245,16 @@ function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string |
   );
 }
 
-function safeMarkdownUrl(url: string): string {
+function safeMarkdownUrl(url: string, key: string): string {
   const trimmed = url.trim();
   if (trimmed.startsWith('fate-agent:')) return trimmed;
   if (/^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(trimmed)) return trimmed.length <= MAX_INLINE_IMAGE_URL_LENGTH ? trimmed : '';
   if (/^blob:/i.test(trimmed) || trimmed.startsWith('#')) return trimmed;
+  if (key === 'src' && isLocalImageReference(trimmed)) return trimmed;
   try {
     const parsed = new URL(trimmed);
     if (parsed.protocol === 'https:' || parsed.protocol === 'mailto:') return parsed.toString();
-  } catch { /* Relative and scheme-relative resources are intentionally blocked. */ }
+  } catch { /* Relative and scheme-relative links are intentionally blocked. */ }
   return '';
 }
 

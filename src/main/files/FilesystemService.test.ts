@@ -222,6 +222,25 @@ describe('FilesystemService confinement', () => {
     expect(service.getRoot()).toBe(await fs.realpath(secondRoot));
   });
 
+  it('reads a referenced raster image outside the active project', async () => {
+    const root = await tempDirectory();
+    const outside = await tempDirectory();
+    const png = Buffer.alloc(24);
+    Buffer.from('89504e470d0a1a0a', 'hex').copy(png);
+    png.writeUInt32BE(1, 16);
+    png.writeUInt32BE(1, 20);
+    const imagePath = path.join(outside, 'chakra-video-section.png');
+    await fs.writeFile(imagePath, png);
+    const service = new FilesystemService();
+    await service.setRoot(root);
+
+    await expect(service.readLocalImage(imagePath)).resolves.toEqual({
+      data: png.toString('base64'),
+      mimeType: 'image/png',
+      alt: 'chakra-video-section.png',
+    });
+  });
+
   it('detects bounded raster previews by file signature while keeping SVG as text', async () => {
     const root = await tempDirectory();
     const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from('preview-bytes')]);

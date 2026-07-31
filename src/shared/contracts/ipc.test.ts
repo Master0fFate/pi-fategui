@@ -26,6 +26,7 @@ describe('IPC contracts', () => {
     expect(ipcChannels.systemGetInfo).toBe('system:get-info');
     expect(ipcChannels.runtimePrompt).toBe('runtime:prompt');
     expect(ipcChannels.projectReveal).toBe('project:reveal');
+    expect(ipcChannels.imageReadLocal).toBe('image:read-local');
     expect(ipcChannels.imageSaveAs).toBe('image:save-as');
     expect(ipcChannels.clipboardWriteText).toBe('clipboard:write-text');
     expect(ipcChannels.speechEnsureModel).toBe('speech:ensure-model');

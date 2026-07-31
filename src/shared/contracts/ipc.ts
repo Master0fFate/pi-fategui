@@ -14,6 +14,7 @@ export const ipcChannels = {
   projectSelect: 'project:select',
   projectSelectFile: 'project:select-file',
   projectReveal: 'project:reveal',
+  imageReadLocal: 'image:read-local',
   imageSaveAs: 'image:save-as',
   clipboardWriteText: 'clipboard:write-text',
   runtimeGetState: 'runtime:get-state',
@@ -262,6 +263,7 @@ export const runtimeImageSchema = z.object({
 });
 const boundedImageBase64Schema = z.string().min(4).max(20_000_000)
   .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u);
+export const localImageInputSchema = z.object({ path: z.string().trim().min(1).max(32_768) }).strict();
 export const imageSaveInputSchema = z.object({
   data: boundedImageBase64Schema,
   mimeType: runtimeImageSchema.shape.mimeType,
@@ -947,6 +949,7 @@ export interface PiDesktopApi {
   selectProject: () => Promise<RuntimeState>;
   selectProjectFile: () => Promise<string | null>;
   revealProject: () => Promise<z.infer<typeof revealProjectResultSchema>>;
+  readLocalImage: (path: string) => Promise<RuntimeImage>;
   saveImageAs: (input: ImageSaveInput) => Promise<ImageSaveResult>;
   writeClipboardText: (text: string) => Promise<void>;
   getRuntimeState: () => Promise<RuntimeState>;

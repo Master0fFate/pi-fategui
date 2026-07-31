@@ -32,6 +32,7 @@ import {
   ipcChannels,
   imageSaveInputSchema,
   imageSaveResultSchema,
+  localImageInputSchema,
   diagnosticsSchema,
   logListSchema,
   musicClearResultSchema,
@@ -50,6 +51,7 @@ import {
   promptInputSchema,
   queueMutationInputSchema,
   queueMutationResultSchema,
+  runtimeImageSchema,
   runtimeStateSchema,
   sessionEntryInputSchema,
   sessionIdInputSchema,
@@ -345,6 +347,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.projectReveal, async (_event, input) => {
     emptyInputSchema.parse(input);
     return revealProjectResultSchema.parse(await projects.revealCurrent());
+  });
+  handle(ipcChannels.imageReadLocal, async (_event, input) => {
+    const parsed = localImageInputSchema.parse(input);
+    return runtimeImageSchema.parse(await files.readLocalImage(parsed.path));
   });
   handle(ipcChannels.imageSaveAs, async (event, input) => {
     const parsed = imageSaveInputSchema.parse(input);

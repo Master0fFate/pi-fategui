@@ -29,6 +29,7 @@ import {
   ipcChannels,
   imageSaveInputSchema,
   imageSaveResultSchema,
+  localImageInputSchema,
   logListSchema,
   musicClearResultSchema,
   musicLoadInputSchema,
@@ -44,6 +45,7 @@ import {
   promptInputSchema,
   queueMutationInputSchema,
   queueMutationResultSchema,
+  runtimeImageSchema,
   runtimeStateSchema,
   sessionEntryInputSchema,
   sessionIdInputSchema,
@@ -119,6 +121,11 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async revealProject() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.projectReveal, emptyInputSchema.parse({}));
     return revealProjectResultSchema.parse(result);
+  },
+  async readLocalImage(path: string) {
+    const input = localImageInputSchema.parse({ path });
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.imageReadLocal, input);
+    return runtimeImageSchema.parse(result);
   },
   async saveImageAs(input: ImageSaveInput) {
     const parsed = imageSaveInputSchema.parse(input);

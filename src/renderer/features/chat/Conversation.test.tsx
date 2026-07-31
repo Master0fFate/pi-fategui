@@ -289,6 +289,16 @@ describe('conversation components', () => {
     expect(screen.getByRole('img', { name: 'Remote preview' })).toHaveAttribute('referrerpolicy', 'no-referrer');
   });
 
+  it('loads local images referenced by their on-device path', async () => {
+    const readLocalImage = vi.fn(async () => ({ data: 'iVBORw0KGgo=', mimeType: 'image/png' as const }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { readLocalImage } as unknown as PiDesktopApi });
+
+    render(<AssistantMarkdown text={'![SomaHue meditation video section](C:/elsewhere/chakra-video-section.png)'} />);
+
+    expect(await screen.findByRole('img', { name: 'SomaHue meditation video section' })).toHaveAttribute('src', 'data:image/png;base64,iVBORw0KGgo=');
+    expect(readLocalImage).toHaveBeenCalledWith('C:/elsewhere/chakra-video-section.png');
+  });
+
   it('renders structured image blocks returned by an image-capable model', () => {
     render(<AssistantMarkdown text="" images={[{ data: 'iVBORw0KGgo=', mimeType: 'image/png', alt: 'Generated concept' }]} />);
     expect(screen.getByRole('button', { name: 'Expand image: Generated concept' })).toBeInTheDocument();

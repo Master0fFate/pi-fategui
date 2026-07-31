@@ -1,8 +1,10 @@
 import { shell } from 'electron';
 import { promises as fs, type Dirent } from 'node:fs';
 import path from 'node:path';
-import type { FileEntry, FileList, FilePreview } from '../../shared/contracts/ipc';
+import { fileURLToPath } from 'node:url';
+import type { FileEntry, FileList, FilePreview, RuntimeImage } from '../../shared/contracts/ipc';
 import { PiDesktopError } from '../pi/errors';
+import { encodedImageSize, MAX_PROMPT_IMAGE_BYTES, MAX_PROMPT_IMAGE_DIMENSION, MAX_PROMPT_IMAGE_TOTAL_PIXELS } from '../pi/PiPromptImages';
 
 export const MAX_FILE_PREVIEW_BYTES = 1_048_576;
 const MAX_DIRECTORY_ENTRIES = 2_000;
@@ -529,6 +531,63 @@ export class FilesystemService {
       this.assertRootOperation(operation);
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
       throw error;
+    }
+  }
+
+  async readLocalImage(reference: string): Promise<RuntimeImage> {
+    let absolute: string;
+    if (/^file:/iu.test(reference)) {
+      let parsed: URL;
+      try {
+        parsed = new URL(reference);
+      } catch {
+        invalidPath('The local image URL is invalid.');
+      }
+      if (parsed.protocol !== 'file:' || parsed.hostname) invalidPath('Only local file URLs can be displayed.');
+      try {
+        absolute = fileURLToPath(parsed);
+      } catch {
+        invalidPath('The local image URL is invalid.');
+      }
+    } else {
+      const encodedPath = reference.split(/[?#]/u, 1)[0] ?? '';
+      let decodedPath: string;
+      try {
+        decodedPath = decodeURIComponent(encodedPath);
+      } catch {
+        invalidPath('The local image path is invalid.');
+      }
+      if (!decodedPath || decodedPath.includes('\0')) invalidPath('The local image path is invalid.');
+      if (/^[A-Za-z][A-Za-z\d+.-]*:/u.test(decodedPath) && !/^[A-Za-z]:[\\/]/u.test(decodedPath)) {
+        invalidPath('Only local image paths can be displayed.');
+      }
+      absolute = path.isAbsolute(decodedPath) ? path.normalize(decodedPath) : path.resolve(this.getRoot(), decodedPath);
+    }
+
+    const handle = await fs.open(absolute, 'r');
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) invalidPath('The local image path is not a file.');
+      if (stat.size <= 0 || stat.size > MAX_PROMPT_IMAGE_BYTES) invalidPath('Local images must be under 10 MB.');
+      const image = await handle.readFile();
+      const mimeType = rasterImageMimeType(image);
+      const dimensions = mimeType ? encodedImageSize(image, mimeType) : null;
+      if (
+        !mimeType
+        || !dimensions
+        || image.length <= 0
+        || image.length > MAX_PROMPT_IMAGE_BYTES
+        || dimensions.width <= 0
+        || dimensions.height <= 0
+        || dimensions.width > MAX_PROMPT_IMAGE_DIMENSION
+        || dimensions.height > MAX_PROMPT_IMAGE_DIMENSION
+        || dimensions.width * dimensions.height > MAX_PROMPT_IMAGE_TOTAL_PIXELS
+      ) {
+        invalidPath('The local image is malformed, unsupported, or too large to display safely.');
+      }
+      return { data: image.toString('base64'), mimeType, alt: path.basename(absolute) };
+    } finally {
+      await handle.close();
     }
   }
 
