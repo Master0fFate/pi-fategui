@@ -584,6 +584,9 @@ export class PiRuntimeService {
         slot.modifiedAt = new Date().toISOString();
       },
       notifyParent: async (parentSessionId, mode: SubagentNotification, text, runIds, workflowId, livenessReport?: SubagentParentLivenessReport) => {
+        // Liveness has a dedicated structured Pi event and inspector surface. Never
+        // enqueue it into the model loop, where delivery can outlive the child turn.
+        if (livenessReport) return;
         const slot = this.findLiveSlot(parentSessionId);
         if (!slot || slot.disposed || mode === 'never') return;
         const session = slot.runtime.session;
@@ -591,7 +594,7 @@ export class PiRuntimeService {
           customType: 'fate-subagent-notification',
           content: [{ type: 'text', text }],
           display: false,
-          details: { runIds, ...(workflowId ? { workflowId } : {}), ...(livenessReport ? { livenessReport } : {}) },
+          details: { runIds, ...(workflowId ? { workflowId } : {}) },
         }, {
           triggerTurn: mode === 'immediate',
           deliverAs: mode === 'immediate' && session.isStreaming ? 'followUp' : 'nextTurn',

@@ -71,7 +71,7 @@ interface WorkflowHost {
   runIdentity: (parentSessionId: string, runId: string) => { handle: string; displayName: string } | undefined;
   persist: (workflow: SubagentWorkflow) => void;
   changed: (workflow: SubagentWorkflowView) => void;
-  notify: (parentSessionId: string, mode: SubagentNotification, text: string, runIds: string[], workflowId: string, livenessReport?: SubagentWorkflowLivenessReport) => Promise<void>;
+  notify: (parentSessionId: string, mode: SubagentNotification, text: string, runIds: string[], workflowId: string) => Promise<void>;
   liveness: (parentSessionId: string, workflowId: string, report: SubagentWorkflowLivenessReport) => void;
   settled: (parentSessionId: string) => void;
 }
@@ -389,8 +389,11 @@ export class SubagentWorkflowEngine {
     const nodesById = new Map(workflow.nodes.map((node) => [node.id, node]));
     let softTurnThreshold = workflow.budget?.maxTurns;
     const reportedResources = new Set<string>();
-    const reportSoftTurnThreshold = async () => {
-      if (softTurnThreshold === undefined || workflow.usage.turns <= softTurnThreshold) return;
+    const hasLiveWork = () => workflow.status === 'running'
+      && !signal.aborted
+      && workflow.nodes.some((node) => !terminalNode(node.status));
+    const reportSoftTurnThreshold = () => {
+      if (!hasLiveWork() || softTurnThreshold === undefined || workflow.usage.turns <= softTurnThreshold) return;
       const crossed = softTurnThreshold;
       const completed = workflow.nodes.filter((node) => node.status === 'completed');
       const runningNodes = workflow.nodes.filter((node) => node.status === 'running').length;
@@ -429,24 +432,11 @@ export class SubagentWorkflowEngine {
       workflow.updatedAt = detectedAt;
       this.store(workflow);
       this.host.liveness(workflow.parentSessionId, workflow.id, report);
-      const runIds = workflow.nodes.flatMap((node) => node.runId ? [node.runId] : []);
-      await this.host.notify(
-        workflow.parentSessionId,
-        'immediate',
-        [
-          `Workflow liveness report for ${workflow.id}. The workflow and its children continue running.`,
-          report.reason,
-          report.checkpointSummary,
-          `Parent options: ${report.recommendedOptions.join(', ')}.`,
-        ].join('\n\n'),
-        runIds,
-        workflow.id,
-        report,
-      ).catch(() => undefined);
+      // Workflow liveness is inspector telemetry, never a queued model turn.
     };
-    const reportResourceThresholds = async () => {
+    const reportResourceThresholds = () => {
       const budget = workflow.budget;
-      if (!budget) return;
+      if (!hasLiveWork() || !budget) return;
       const totalTokens = workflow.usage.input + workflow.usage.output + workflow.usage.cacheRead + workflow.usage.cacheWrite;
       const candidates: Array<{
         key: string;
@@ -506,15 +496,7 @@ export class SubagentWorkflowEngine {
       workflow.updatedAt = detectedAt;
       this.store(workflow);
       this.host.liveness(workflow.parentSessionId, workflow.id, report);
-      const runIds = workflow.nodes.flatMap((node) => node.runId ? [node.runId] : []);
-      await this.host.notify(
-        workflow.parentSessionId,
-        'immediate',
-        [`Workflow liveness report for ${workflow.id}. The workflow and its children continue running.`, report.reason, report.checkpointSummary, `Parent options: ${report.recommendedOptions.join(', ')}.`].join('\n\n'),
-        runIds,
-        workflow.id,
-        report,
-      ).catch(() => undefined);
+      // Workflow liveness is inspector telemetry, never a queued model turn.
     };
     try {
       while (workflow.nodes.some((node) => !terminalNode(node.status))) {
@@ -558,7 +540,7 @@ export class SubagentWorkflowEngine {
             continue;
           }
           const task = completion
-            .then(async (run) => {
+            .then((run) => {
               if (run.result === undefined) delete node.result;
               else node.result = run.result;
               if (run.error === undefined) delete node.error;
@@ -568,8 +550,8 @@ export class SubagentWorkflowEngine {
               workflow.usage = addUsage(workflow.usage, run.usage);
               workflow.updatedAt = Date.now();
               this.store(workflow);
-              await reportSoftTurnThreshold();
-              await reportResourceThresholds();
+              reportSoftTurnThreshold();
+              reportResourceThresholds();
             })
             .catch((error: unknown) => {
               node.status = signal.aborted ? 'cancelled' : 'error';

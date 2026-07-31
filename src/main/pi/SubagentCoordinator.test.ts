@@ -54,6 +54,7 @@ function childFactory(options: { delay?: number; waitForAbort?: boolean; failPro
   }> = [];
   const prompts: string[] = [];
   const sessions: AgentSession[] = [];
+  const subscriberCallbacks: Array<(event: AgentSessionEvent) => void> = [];
   let failedPrompts = 0;
   const factory: SubagentChildSessionFactory = async (input) => {
     inputs.push({
@@ -80,7 +81,11 @@ function childFactory(options: { delay?: number; waitForAbort?: boolean; failPro
       get thinkingLevel() { return selectedThinking; },
       get isStreaming() { return streaming; },
       messages,
-      subscribe: (listener: (event: AgentSessionEvent) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+      subscribe: (listener: (event: AgentSessionEvent) => void) => {
+        listeners.add(listener);
+        subscriberCallbacks.push(listener);
+        return () => listeners.delete(listener);
+      },
       prompt: vi.fn(async (prompt: string) => {
         prompts.push(prompt);
         if (failedPrompts < (options.failPrompts ?? 0)) {
@@ -144,7 +149,7 @@ function childFactory(options: { delay?: number; waitForAbort?: boolean; failPro
     sessions.push(session);
     return session;
   };
-  return { factory, inputs, prompts, sessions, maximumConcurrent: () => maximumConcurrent };
+  return { factory, inputs, prompts, sessions, subscriberCallbacks, maximumConcurrent: () => maximumConcurrent };
 }
 
 function executeTool(
@@ -329,6 +334,7 @@ describe('SubagentCoordinator', () => {
       status: 'cancelled', model: { provider: 'test', id: 'model' }, thinkingLevel: 'low', controlCount: 3,
     });
     expect(final?.error).toContain('evidence is sufficient');
+    expect(children.sessions[0]?.dispose).toHaveBeenCalledOnce();
     expect(persisted).toHaveLength(1);
     expect(coordinator.hasActiveRuns('parent-1')).toBe(false);
 
@@ -456,6 +462,34 @@ describe('SubagentCoordinator', () => {
     expect(children.sessions[1]?.dispose).toHaveBeenCalledOnce();
   });
 
+  it('ignores late callbacks from a previous retained turn', async () => {
+    const parent = parentSession();
+    const children = childFactory({ delay: 20 });
+    const coordinator = new SubagentCoordinator({
+      resolveParent: () => ({ projectPath: '/project', session: parent, permissionLevel: 'full-access' }),
+      emit: () => undefined,
+    }, children.factory);
+    const modelRuntime = runtime();
+
+    const launched = await executeNamedTool(coordinator, modelRuntime, 'subagent_start', 'epoch-start', {
+      task: 'Complete an initial turn', mailboxTtlSeconds: 120,
+    });
+    const runId = (launched.details as SubagentToolDetails).runIds[0]!;
+    await vi.waitFor(() => expect(coordinator.getRuns('parent-1')[0]?.mailbox.state).toBe('available'));
+    const staleListener = children.subscriberCallbacks[0]!;
+
+    const following = executeNamedTool(coordinator, modelRuntime, 'subagent_manage', 'epoch-followup', {
+      action: 'followup', runId, message: 'Complete the retained follow-up', extendMailboxTtlSeconds: 120,
+    });
+    await vi.waitFor(() => expect(coordinator.getRuns('parent-1')[0]?.status).toBe('running'));
+    staleListener(sdkEvent({ type: 'tool_execution_start', toolCallId: 'stale-tool', toolName: 'bash', args: { command: 'echo stale' } }));
+    await following;
+    staleListener(sdkEvent({ type: 'tool_execution_end', toolCallId: 'stale-tool', toolName: 'bash', result: { content: [{ type: 'text', text: 'stale' }] }, isError: false }));
+
+    expect(coordinator.getRuns('parent-1')[0]?.tools.some((tool) => tool.name === 'bash')).toBe(false);
+    await executeNamedTool(coordinator, modelRuntime, 'subagent_manage', 'epoch-close', { action: 'close', runIds: [runId] });
+  });
+
   it('applies inspector controls by handle while keeping the handle immutable', async () => {
     const parent = parentSession();
     const children = childFactory();
@@ -499,6 +533,28 @@ describe('SubagentCoordinator', () => {
     expect(coordinator.getRuns('parent-1').every((run) => run.mailbox.state === 'closed')).toBe(true);
   });
 
+  it('ignores late callbacks from a discarded provider attempt', async () => {
+    const parent = parentSession();
+    const children = childFactory({ failPrompts: 1, waitForAbort: true });
+    const coordinator = new SubagentCoordinator({
+      resolveParent: () => ({ projectPath: '/project', session: parent, permissionLevel: 'full-access' }),
+      emit: () => undefined,
+    }, children.factory);
+    const controller = new AbortController();
+
+    const running = executeTool(coordinator, {
+      task: 'Retry after one provider failure', routing: { maxAttempts: 2 },
+    }, controller.signal);
+    await vi.waitFor(() => expect(children.sessions).toHaveLength(2));
+    children.subscriberCallbacks[0]!(sdkEvent({
+      type: 'tool_execution_start', toolCallId: 'stale-attempt-tool', toolName: 'bash', args: { command: 'echo stale' },
+    }));
+
+    expect(coordinator.getRuns('parent-1')[0]?.tools.some((tool) => tool.name === 'bash')).toBe(false);
+    controller.abort();
+    await expect(running).resolves.toMatchObject({ details: expect.any(Object) });
+  });
+
   it('applies ordered provider retries and treats resource thresholds as parent-supervised advisories', async () => {
     const parent = parentSession();
     const routedChildren = childFactory({ failPrompts: 5 });
@@ -537,15 +593,7 @@ describe('SubagentCoordinator', () => {
       status: 'completed',
       livenessReports: [expect.objectContaining({ trigger: 'resource-limit' })],
     });
-    expect(notifications).toEqual([expect.objectContaining({
-      trigger: 'resource-limit',
-      evidence: expect.arrayContaining([
-        expect.objectContaining({ signal: 'cost-threshold' }),
-        expect.objectContaining({ signal: 'input-token-threshold' }),
-        expect.objectContaining({ signal: 'output-token-threshold' }),
-        expect.objectContaining({ signal: 'total-token-threshold' }),
-      ]),
-    })]);
+    expect(notifications).toEqual([]);
     expect(emitted).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'subagent.liveness', report: expect.objectContaining({ trigger: 'resource-limit' }) }),
       expect.objectContaining({ type: 'subagent.event', event: expect.objectContaining({ type: 'context.compaction', phase: 'failed' }) }),
@@ -790,7 +838,7 @@ describe('SubagentCoordinator', () => {
     expect(lateChild.abort).toHaveBeenCalledOnce();
   });
 
-  it('reports an active runtime threshold to the parent without stopping the child', async () => {
+  it('emits an active runtime threshold as telemetry without queuing a parent turn', async () => {
     vi.useFakeTimers();
     const parent = parentSession();
     const children = childFactory({ waitForAbort: true });
@@ -799,9 +847,7 @@ describe('SubagentCoordinator', () => {
     const coordinator = new SubagentCoordinator({
       resolveParent: () => ({ projectPath: '/project', session: parent, permissionLevel: 'full-access' }),
       emit: (_parentId, event) => emitted.push(event),
-      notifyParent: async (_parentId, mode, text, _runIds, _workflowId, report) => {
-        expect(mode).toBe('immediate');
-        expect(text).toContain('still running');
+      notifyParent: async (_parentId, _mode, _text, _runIds, _workflowId, report) => {
         if (report && 'child' in report) notifications.push(report);
       },
     }, children.factory);
@@ -810,13 +856,14 @@ describe('SubagentCoordinator', () => {
     const running = executeTool(coordinator, { task: 'Continue after the advisory', timeoutSeconds: 30 }, controller.signal);
     await vi.waitFor(() => expect(children.maximumConcurrent()).toBe(1));
     await vi.advanceTimersByTimeAsync(30_000);
-    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+    await vi.waitFor(() => expect(coordinator.getRuns('parent-1')[0]?.livenessReports).toHaveLength(1));
 
-    expect(notifications[0]).toMatchObject({
+    expect(coordinator.getRuns('parent-1')[0]?.livenessReports?.[0]).toMatchObject({
       trigger: 'runtime-limit', child: { runId: expect.any(String), handle: 'agent-1' },
       evidence: [expect.objectContaining({ signal: 'runtime-duration' })],
       recommendedOptions: ['continue', 'steer', 'request-checkpoint', 'cancel'],
     });
+    expect(notifications).toEqual([]);
     expect(emitted.some((event) => event.type === 'subagent.liveness' && event.report.trigger === 'runtime-limit')).toBe(true);
     expect(coordinator.getRuns('parent-1')[0]).toMatchObject({ status: 'running', livenessReports: [expect.objectContaining({ trigger: 'runtime-limit' })] });
     expect(children.sessions[0]?.abort).not.toHaveBeenCalled();
@@ -824,6 +871,9 @@ describe('SubagentCoordinator', () => {
     controller.abort();
     const result = await running;
     expect((result.details as SubagentToolDetails).runs?.[0]?.status).toBe('cancelled');
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(coordinator.getRuns('parent-1')[0]?.livenessReports).toHaveLength(1);
+    expect(notifications).toEqual([]);
   });
 
   it('leaves runtime unrestricted by default and accepts multi-hour limits when explicitly requested', async () => {
@@ -858,7 +908,7 @@ describe('SubagentCoordinator', () => {
     await executeNamedTool(limited, runtime(), 'subagent_manage', 'cancel-six-hour-run', { action: 'cancel', runIds: [runId] });
   });
 
-  it('reports idle providers with cooldown and never terminates them', async () => {
+  it('reports idle providers as telemetry with cooldown and never terminates them', async () => {
     vi.useFakeTimers();
     const parent = parentSession();
     const children = childFactory({ waitForAbort: true });
@@ -875,21 +925,23 @@ describe('SubagentCoordinator', () => {
     }, controller.signal);
     await vi.waitFor(() => expect(children.maximumConcurrent()).toBe(1));
     await vi.advanceTimersByTimeAsync(15_000);
-    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+    await vi.waitFor(() => expect(coordinator.getRuns('parent-1')[0]?.livenessReports).toHaveLength(1));
 
-    expect(notifications[0]).toMatchObject({ trigger: 'idle', timing: { idleForMs: 15_000, cooldownMs: 300_000 } });
+    expect(coordinator.getRuns('parent-1')[0]?.livenessReports?.[0]).toMatchObject({ trigger: 'idle', timing: { idleForMs: 15_000, cooldownMs: 300_000 } });
+    expect(notifications).toEqual([]);
     expect(coordinator.getRuns('parent-1')[0]?.status).toBe('running');
     expect(children.sessions[0]?.abort).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(notifications).toHaveLength(2);
-    expect(notifications.map((report) => report.trigger)).toEqual(['idle', 'runtime-limit']);
+    const reports = coordinator.getRuns('parent-1')[0]?.livenessReports ?? [];
+    expect(reports).toHaveLength(2);
+    expect(reports.map((report) => report.trigger)).toEqual(['idle', 'runtime-limit']);
 
     controller.abort();
     const result = await running;
     expect((result.details as SubagentToolDetails).runs?.[0]?.status).toBe('cancelled');
   });
 
-  it('treats the former 28-turn budget failure as an adaptive report and continues', async () => {
+  it('treats the former 28-turn budget failure as adaptive telemetry and continues', async () => {
     const parent = parentSession();
     const children = childFactory({ waitForAbort: true, usageTurnsBeforeWait: 29 });
     const notifications: SubagentLivenessReport[] = [];
@@ -901,7 +953,8 @@ describe('SubagentCoordinator', () => {
     const controller = new AbortController();
 
     const running = executeTool(coordinator, { task: 'Work beyond the old turn cap', budget: { maxTurns: 28 } }, controller.signal);
-    await vi.waitFor(() => expect(notifications.some((report) => report.trigger === 'adaptive-limit')).toBe(true));
+    await vi.waitFor(() => expect(coordinator.getRuns('parent-1')[0]?.livenessReports?.some((report) => report.trigger === 'adaptive-limit')).toBe(true));
+    expect(notifications).toEqual([]);
     expect(coordinator.getRuns('parent-1')[0]).toMatchObject({ status: 'running', usage: { turns: 29 } });
     expect(children.sessions[0]?.abort).not.toHaveBeenCalled();
 
@@ -1059,19 +1112,21 @@ describe('SubagentCoordinator', () => {
       nodes: [
         { id: 'first', task: 'Complete first' },
         { id: 'second', task: 'Complete second', dependsOn: ['first'] },
+        { id: 'third', task: 'Continue after the checkpoint', dependsOn: ['second'] },
       ],
     });
     const workflowId = (started.details as { workflowIds: string[] }).workflowIds[0]!;
     await vi.waitFor(() => expect(coordinator.getWorkflowViews('parent-1')[0]?.status).toBe('completed'));
 
-    expect(children.prompts).toEqual(['Complete first', 'Complete second']);
+    expect(children.prompts).toEqual(['Complete first', 'Complete second', 'Continue after the checkpoint']);
     expect(coordinator.getWorkflowViews('parent-1')[0]).toMatchObject({
-      status: 'completed', usage: { turns: 2 }, nodes: [
+      status: 'completed', usage: { turns: 3 }, nodes: [
+        expect.objectContaining({ status: 'completed' }),
         expect.objectContaining({ status: 'completed' }),
         expect.objectContaining({ status: 'completed' }),
       ],
       livenessReports: [expect.objectContaining({
-        trigger: 'adaptive-limit', workflow: { id: workflowId }, counters: expect.objectContaining({ turns: 2, completedNodes: 2 }),
+        trigger: 'adaptive-limit', workflow: { id: workflowId }, counters: expect.objectContaining({ turns: 2, completedNodes: 2, pendingNodes: 1 }),
       })],
     });
     expect(events).toEqual(expect.arrayContaining([
@@ -1079,10 +1134,30 @@ describe('SubagentCoordinator', () => {
       expect.objectContaining({ type: 'subagent.workflow.updated', workflow: expect.objectContaining({ livenessReports: expect.any(Array) }) }),
     ]));
     expect(snapshots.some((workflow) => workflow.livenessReports?.some((report) => report.workflow.id === workflowId))).toBe(true);
-    expect(notifications).toEqual([expect.objectContaining({
-      mode: 'immediate', workflowId, text: expect.stringContaining('advisory'),
-      report: expect.objectContaining({ trigger: 'adaptive-limit', workflow: { id: workflowId } }),
-    })]);
+    expect(notifications).toEqual([]);
+  });
+
+  it('drops a workflow checkpoint detected only after the final node settles', async () => {
+    const parent = parentSession();
+    const children = childFactory();
+    const notifications = vi.fn(async () => undefined);
+    const coordinator = new SubagentCoordinator({
+      resolveParent: () => ({ projectPath: '/project', session: parent, permissionLevel: 'full-access' }),
+      emit: () => undefined,
+      notifyParent: notifications,
+    }, children.factory);
+
+    await executeNamedTool(coordinator, runtime(), 'subagent_workflow', 'workflow-terminal-checkpoint', {
+      action: 'start', maxConcurrency: 1, budget: { maxTurns: 1 },
+      nodes: [
+        { id: 'first', task: 'Complete first' },
+        { id: 'final', task: 'Complete last', dependsOn: ['first'] },
+      ],
+    });
+    await vi.waitFor(() => expect(coordinator.getWorkflowViews('parent-1')[0]?.status).toBe('completed'));
+
+    expect(coordinator.getWorkflowViews('parent-1')[0]?.livenessReports).toBeUndefined();
+    expect(notifications).not.toHaveBeenCalled();
   });
 
   it('reports aggregate resource thresholds without stopping nodes and preserves explicit parent cancellation', async () => {
@@ -1115,9 +1190,10 @@ describe('SubagentCoordinator', () => {
       livenessReports: [expect.objectContaining({ trigger: 'resource-limit' })],
     });
     expect(budgetChildren.prompts).toEqual(['Cross the advisory resource threshold', 'Continue after the advisory']);
-    expect(budgetNotifications).toEqual([expect.objectContaining({
+    expect(budgetWorkflow.livenessReports?.[0]).toMatchObject({
       trigger: 'resource-limit', evidence: [expect.objectContaining({ signal: 'cost-threshold' })],
-    })]);
+    });
+    expect(budgetNotifications).toEqual([]);
     expect(budgetEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'subagent.workflow.liveness', report: expect.objectContaining({ trigger: 'resource-limit' }) }),
     ]));

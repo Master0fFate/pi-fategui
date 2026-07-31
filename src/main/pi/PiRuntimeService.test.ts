@@ -772,6 +772,21 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('keeps liveness reports on the telemetry path instead of the parent model queue', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const coordinator = (service as unknown as {
+      subagents: { host: { notifyParent: (sessionId: string, mode: 'immediate', text: string, runIds: string[], workflowId: string | undefined, livenessReport: unknown) => Promise<void> } };
+    }).subagents;
+    fake.setStreaming(true);
+
+    await coordinator.host.notifyParent('session-1', 'immediate', 'Stale liveness checkpoint.', ['run-1'], undefined, { id: 'report-1' });
+
+    expect(fake.session.sendCustomMessage).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
   it('queues immediate child notifications as follow-ups while streaming and leaves next-turn notifications passive', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
