@@ -2133,14 +2133,16 @@ export class PiRuntimeService {
   private mergeSessionSummaries(persisted: readonly SessionSummary[], query = ''): SessionSummary[] {
     const selectedId = this.selectedSlot?.runtime.session.sessionId ?? null;
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    const summaries: SessionSummary[] = persisted.map((summary) => {
-      const attention = this.sessionAttention.get(summary.id);
-      return {
-        ...summary,
-        active: summary.id === selectedId,
-        attention: summary.id === selectedId ? null : attention ? attention.value : summary.attention ?? null,
-      };
-    });
+    const summaries: SessionSummary[] = persisted
+      .filter((summary) => summary.messageCount > 0)
+      .map((summary) => {
+        const attention = this.sessionAttention.get(summary.id);
+        return {
+          ...summary,
+          active: summary.id === selectedId,
+          attention: summary.id === selectedId ? null : attention ? attention.value : summary.attention ?? null,
+        };
+      });
     const indexById = new Map(summaries.map((summary, index) => [summary.id, index]));
     for (const [sessionId, attention] of this.sessionAttention) {
       if (attention.value === null || indexById.has(sessionId)) continue;
@@ -2153,7 +2155,12 @@ export class PiRuntimeService {
     const missingLive: SessionSummary[] = [];
     for (const slot of this.liveSlots) {
       if (slot.disposed) continue;
-      const live = this.liveSessionSummary(slot);
+      const session = slot.runtime.session;
+      const hasFirstPrompt = slot.firstTitleStarted || sessionHistory(session).some((message) => (
+        Boolean(message) && typeof message === 'object' && (message as { role?: unknown }).role === 'user'
+      ));
+      if (!hasFirstPrompt) continue;
+      const live = this.liveSessionSummary(slot, session);
       const index = indexById.get(live.id);
       if (index !== undefined) summaries[index] = { ...summaries[index]!, ...live };
       else if (!normalizedQuery || `${live.title}\n${live.firstMessage}`.toLocaleLowerCase().includes(normalizedQuery)) missingLive.push(live);

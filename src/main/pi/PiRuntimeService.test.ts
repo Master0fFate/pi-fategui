@@ -256,6 +256,7 @@ describe('PiRuntimeService', () => {
     );
     await service.openProject({ path: '/project', name: 'project', trusted: true });
 
+    expect(service.getState(false).sessions).toEqual([]);
     await expect(service.prompt({ text: 'Repair the Git workflow', behavior: 'prompt' })).resolves.toMatchObject({ accepted: true });
     expect(service.getState(false).sessions).toEqual([
       expect.objectContaining({ id: 'session-1', title: 'Repair the Git workflow', active: true }),
@@ -266,6 +267,71 @@ describe('PiRuntimeService', () => {
     expect(source.rename).not.toHaveBeenCalled();
     expect(service.getState(false).sessions?.[0]?.title).toBe('Repair Git workflow');
     fake.settle();
+    await service.dispose();
+  });
+
+  it('does not list or retain empty session placeholders across session changes', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'saved', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/saved.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const empty = {
+      id: 'empty', title: 'Untitled session', firstMessage: '(no messages)', path: '/sessions/empty.jsonl',
+      createdAt: '2025-01-03T00:00:00.000Z', modifiedAt: '2025-01-03T00:00:00.000Z', messageCount: 0, active: false,
+    };
+    const repository = {
+      list: vi.fn(async (_cwd: string, _activeId: string | null, query = '') => query ? [empty] : [empty, saved]),
+      resolve: vi.fn(async () => saved),
+      branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    const initial = await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as ((session: typeof fake.session) => Promise<void>) | undefined;
+
+    expect(initial.sessions?.map((session) => session.id)).toEqual(['saved']);
+    await expect(service.listSessions('untitled')).resolves.toEqual([]);
+    let draftNumber = 1;
+    fake.runtime.newSession.mockImplementation(async () => {
+      draftNumber += 1;
+      fake.session.sessionId = `draft-${draftNumber}`;
+      fake.session.sessionFile = `/sessions/draft-${draftNumber}.jsonl`;
+      fake.session.messages = [];
+      fake.agent.state.messages = fake.session.messages;
+      await rebind?.(fake.session);
+      return { cancelled: false };
+    });
+    await service.newSession();
+    const draft = await service.newSession();
+    expect(fake.runtime.newSession).toHaveBeenCalledTimes(2);
+    expect(draft.sessions?.map((session) => session.id)).toEqual(['saved']);
+
+    fake.runtime.switchSession.mockImplementationOnce(async () => {
+      fake.session.sessionId = saved.id;
+      fake.session.sessionFile = saved.path;
+      fake.session.messages = [
+        { role: 'user', content: saved.firstMessage, timestamp: 1 },
+        { role: 'assistant', content: 'Done', timestamp: 2 },
+      ];
+      fake.agent.state.messages = fake.session.messages;
+      await rebind?.(fake.session);
+      return { cancelled: false };
+    });
+    const switched = await service.switchSession(saved.id);
+    expect(switched.sessions).toEqual([expect.objectContaining({ id: saved.id, active: true })]);
+    expect(switched.sessions?.some((session) => session.title === 'Untitled session')).toBe(false);
+    await service.dispose();
+  });
+
+  it('keeps a rejected first prompt out of the session list', async () => {
+    const fake = fixture();
+    const source = { list: vi.fn(async () => []), rename: vi.fn() };
+    fake.session.prompt.mockImplementationOnce(async (_text, options) => { options.preflightResult(false); });
+    const service = new PiRuntimeService(fake.adapter, new PiSessionRepository(source));
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    await expect(service.prompt({ text: 'Do not save this', behavior: 'prompt' })).resolves.toMatchObject({ accepted: false });
+    expect(service.getState(false).sessions).toEqual([]);
     await service.dispose();
   });
 
@@ -1023,6 +1089,8 @@ describe('PiRuntimeService', () => {
   it('preserves the owning parent slot when a managed child outlives the main turn', async () => {
     const first = fixture();
     const second = fixture();
+    first.session.messages = [{ role: 'user', content: 'Delegate this work', timestamp: 1 }];
+    first.agent.state.messages = first.session.messages;
     second.session.sessionId = 'session-2';
     const createRuntime = vi.fn()
       .mockResolvedValueOnce(first.runtime as unknown as AgentSessionRuntime)
@@ -1150,6 +1218,11 @@ describe('PiRuntimeService', () => {
     second.session.sessionFile = '/sessions/two.jsonl';
     reopened.session.sessionId = 'session-1';
     reopened.session.sessionFile = '/sessions/one.jsonl';
+    reopened.session.messages = [
+      { role: 'user', content: 'keep running', timestamp: 1 },
+      { role: 'assistant', content: 'Previous result', timestamp: 2 },
+    ];
+    reopened.agent.state.messages = reopened.session.messages;
     const adapter: PiSdkAdapter = {
       ...first.adapter,
       createRuntime: vi.fn()
