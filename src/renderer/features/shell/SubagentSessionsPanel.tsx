@@ -13,6 +13,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { useMemo } from 'react';
+import type { AgentTeam, AgentTeamNode } from '../../../shared/contracts/multiAgent';
 import { Virtuoso } from 'react-virtuoso';
 import type {
   RuntimeMessage,
@@ -27,6 +28,7 @@ import { AssistantMarkdown, MessageImages } from '../chat/RichMessageContent';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { SubagentControls } from './SubagentControls';
+import { AgentTeamControls } from './AgentTeamControls';
 
 const activeStatuses = new Set<SubagentStatus>(['queued', 'running']);
 
@@ -346,6 +348,53 @@ function DelegationBranch({
   );
 }
 
+function teamNodeStatus(node: AgentTeamNode): SubagentStatus {
+  if (node.status === 'creating') return 'queued';
+  if (node.status === 'active') return 'running';
+  if (node.status === 'ready') return 'completed';
+  if (node.status === 'failed') return 'error';
+  if (node.status === 'interrupted') return 'interrupted';
+  return 'cancelled';
+}
+
+function AgentTeamNodeRow({ team, node }: { team: AgentTeam; node: AgentTeamNode }) {
+  const children = node.childIds.flatMap((id) => {
+    const child = team.nodes.find((candidate) => candidate.id === id);
+    return child ? [child] : [];
+  }).sort((left, right) => left.path.localeCompare(right.path));
+  const task = node.currentTaskId ? team.tasks.find((candidate) => candidate.id === node.currentTaskId) : undefined;
+  return (
+    <div className="agent-tree-node" data-depth={node.depth} role="treeitem" aria-level={node.depth + 1} aria-expanded={children.length ? true : undefined}>
+      <article className={`subagent-session-row subagent-session-row--${teamNodeStatus(node)}`}>
+        <div className="subagent-session-open" aria-label={`${node.displayName} Agent Team node ${node.status}`}>
+          <span className="subagent-status-mark"><StatusIcon status={teamNodeStatus(node)} /></span>
+          <span className="subagent-session-copy">
+            <span><strong>{node.displayName}</strong><code>@{node.handle}</code></span>
+            <small>{task?.summary ?? node.path}</small>
+            <span className="subagent-session-meta"><em>{node.status}{node.writer ? ' · writer' : ''}{node.unreadMessages ? ` · ${node.unreadMessages} unread` : ''}</em><small>{node.agentName} profile · {node.model.name}</small></span>
+          </span>
+        </div>
+        <AgentTeamControls node={node} />
+      </article>
+      {children.length ? <div className="agent-tree-children" role="group">{children.map((child) => <AgentTeamNodeRow key={child.id} team={team} node={child} />)}</div> : null}
+    </div>
+  );
+}
+
+function AgentTeamBranch({ team }: { team: AgentTeam }) {
+  const root = team.nodes.find((node) => node.id === team.rootNodeId);
+  const children = root?.childIds.flatMap((id) => {
+    const child = team.nodes.find((candidate) => candidate.id === id);
+    return child ? [child] : [];
+  }).sort((left, right) => left.path.localeCompare(right.path)) ?? [];
+  return (
+    <section className="agent-tree-branch" data-status={team.status} aria-label={`Agent Team V2 ${team.id}`}>
+      <header className="agent-tree-branch-heading"><span className="agent-tree-branch-mark"><GitBranch size={12} /></span><span className="agent-tree-branch-copy"><strong>Agent Team V2</strong><small>{team.nodes.length - 1}/{team.limits.maxNodes} nodes · {team.activeTurns}/{team.limits.maxActiveTurns} active{team.writerNodeId ? ' · writer leased' : ''}</small></span><span className="agent-tree-branch-state">{team.status}</span></header>
+      <div className="agent-tree-children" role="tree">{children.map((node) => <AgentTeamNodeRow key={node.id} team={team} node={node} />)}</div>
+    </section>
+  );
+}
+
 export function SubagentSessionsPanel() {
   const runtime = useRuntimeStore((state) => state.runtime);
   const order = useRuntimeStore((state) => state.subagentOrder);
@@ -357,6 +406,7 @@ export function SubagentSessionsPanel() {
 
   const runs = order.flatMap((id) => runsById[id] ? [runsById[id]!] : []).reverse();
   const workflows = [...(runtime.subagentWorkflows ?? [])].reverse();
+  const agentTeams = runtime.agentTeams ?? [];
   const groups = new Map<string, SubagentRun[]>();
   for (const run of runs) groups.set(run.parentToolCallId, [...(groups.get(run.parentToolCallId) ?? []), run]);
   const workflowToolIds = new Set(workflows.map((workflow) => workflow.parentToolCallId));
@@ -371,19 +421,22 @@ export function SubagentSessionsPanel() {
       const run = node.runId ? runsById[node.runId] : undefined;
       return run ? activeStatuses.has(run.status) : node.status === 'running' || node.status === 'pending';
     }).length;
-  const hasChildren = runs.length > 0 || workflows.length > 0;
+  const teamAgents = agentTeams.reduce((total, team) => total + Math.max(0, team.nodes.length - 1), 0);
+  const teamActive = agentTeams.reduce((total, team) => total + team.activeTurns, 0);
+  const hasChildren = runs.length > 0 || workflows.length > 0 || agentTeams.length > 0;
 
   return (
     <section className={`subagent-sessions${hasChildren ? ' subagent-sessions--has-children' : ''}`} aria-label="Agent sessions">
       <div className="agent-tree-root">
         <span className="agent-tree-root-mark"><Bot size={15} aria-hidden="true" /></span>
         <span className="agent-tree-root-copy"><strong>Main agent</strong><small>{activeSession?.title ?? runtime.objective ?? 'Current Pi session'}</small></span>
-        {hasChildren ? <span className="agent-tree-overview">{totalAgents} {totalAgents === 1 ? 'agent' : 'agents'}{activeAgents ? ` · ${activeAgents} active` : ''}</span> : null}
+        {hasChildren ? <span className="agent-tree-overview">{totalAgents + teamAgents} {totalAgents + teamAgents === 1 ? 'agent' : 'agents'}{activeAgents + teamActive ? ` · ${activeAgents + teamActive} active` : ''}</span> : null}
       </div>
       {!hasChildren ? (
         <div className="inspector-empty subagent-empty"><MessagesSquare size={24} /><strong>No child sessions</strong><p>Managed child sessions and workflow graphs appear here when the parent launches them.</p></div>
       ) : (
         <div className="agent-tree-forest" aria-label={workflows.length ? 'Subagent workflows' : undefined}>
+          {agentTeams.map((team) => <AgentTeamBranch key={team.id} team={team} />)}
           {workflows.map((workflow, index) => (
             <DelegationBranch
               key={workflow.id}

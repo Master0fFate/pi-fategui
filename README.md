@@ -127,15 +127,25 @@ Fate UI starts Pi in project-confined **Edit files** mode.
 
 Opening another project resets the active Pi permission level. The manual terminal remains visibly separate from Pi-generated tool activity.
 
-## Managed subagents
+## Agent orchestration
 
-Top-level Pi sessions expose five Fate-owned tools: `subagent` for blocking delegation, `subagent_start` for background children, `subagent_manage` for lifecycle controls and follow-ups, `subagent_workflow` for dependency graphs, and `subagent_catalog` for models, profiles, skills, and capabilities.
+Fate UI supports two exclusive orchestration surfaces, selected under **Settings → Agent** and applied when the project is reopened. A model never sees both surfaces in one runtime.
 
-Each child receives a stable handle such as `@auth-reviewer-1`. Type `@` to autocomplete handles or use commands such as `@stop @auth-reviewer-1`. The conversation shows compact run status while the **Agents** inspector provides transcripts, tool activity, reasoning, usage, workflow graphs, and controls.
+### Agent Teams V2 (beta)
 
-Children run in isolated Pi SDK sessions and may select their own model, thinking level, profile, role, permission, tools, skills, retries, fallbacks, timeouts, mailbox, notifications, and budgets. Their authority cannot exceed the parent session, provider credentials remain in the main process, and children cannot recursively launch Fate subagents. Cross-agent transfers must fit the receiving model's context window.
+Agent Teams V2 is Fate's provider-neutral recursive control plane. It exposes `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents`, plus `subagent_catalog` for authenticated model/profile/skill discovery. A root can create children, and children can create grandchildren. Every node has an immutable ID and canonical path such as `/root/reviewer/tester`; final results route to the direct parent.
 
-Concurrency defaults to four only when unspecified; explicit child counts and workflow concurrency are honored without a harness-imposed ceiling. Managed sessions may retain mailboxes for follow-ups, and workflows persist with the parent session. Recovered active workflows pause until explicitly resumed.
+V2 separates long-lived nodes, individual task turns, messages, and durable events. Child Pi conversations persist under `~/.pi/fateGUI/agent-teams/`; after restart, in-flight work is reported honestly as interrupted and retained context can be resumed with a follow-up. Inter-agent messages are locally inspectable plaintext and use ordinary Pi custom messages rather than provider-specific encrypted payloads.
+
+Hard MVP limits are enforced in the main process: depth 2, 16 non-root nodes, three concurrent non-root turns, 32 KiB UTF-8 per message, 256 messages, waits up to five minutes, and one write-capable child turn at a time. Descendant permission and ordinary tools can only narrow the immediate caller's authority. All agents share the project working tree; parallel writers are intentionally unavailable until worktree isolation exists.
+
+The **Agents** inspector renders the recursive tree, task state, profile/model, usage, unread mail, writer ownership, and human message/follow-up/interrupt/close controls. Project/session clone, fork, import, and compaction remain blocked while reusable V2 work exists.
+
+### Legacy subagents
+
+Legacy mode preserves the five existing Fate tools: `subagent` for blocking delegation, `subagent_start` for background children, `subagent_manage` for lifecycle controls and follow-ups, `subagent_workflow` for deterministic dependency graphs, and `subagent_catalog` for models, profiles, skills, and capabilities. Historical snapshots remain readable and render as direct root children.
+
+Each legacy child receives a stable handle such as `@auth-reviewer-1`. Type `@` to autocomplete handles or use commands such as `@stop @auth-reviewer-1`. Legacy children run in isolated Pi SDK sessions and may select their own model, thinking level, profile, role, permission, tools, skills, retries, fallbacks, timeouts, mailbox, notifications, and budgets, but they do not recursively launch agents.
 
 Reusable Markdown profiles are loaded from `~/.pi/agent/agents/*.md` and, in trusted projects, `.pi/agents/*.md`. Profiles support a small frontmatter set for fields such as name, description, role, tools, and model.
 

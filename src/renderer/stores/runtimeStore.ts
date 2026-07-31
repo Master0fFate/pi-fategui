@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { AppError, PiEvent, RuntimeMessage, RuntimeState, RuntimeTool, SubagentRun } from '../../shared/contracts/ipc';
+import type { AgentTeam, AgentTeamEnvelope, AgentTeamNode, AgentTeamTask } from '../../shared/contracts/multiAgent';
 import { applySubagentChildEvent, boundSubagentRun, boundSubagentRuns } from '../../shared/subagents';
 
 type RuntimeQueue = NonNullable<RuntimeState['queue']>;
@@ -43,6 +44,11 @@ interface RuntimeStore {
   toolOrder: string[];
   subagentsById: Record<string, SubagentRun>;
   subagentOrder: string[];
+  agentTeamsById: Record<string, AgentTeam>;
+  agentTeamOrder: string[];
+  agentNodesById: Record<string, AgentTeamNode>;
+  agentTasksById: Record<string, AgentTeamTask>;
+  agentEnvelopesById: Record<string, AgentTeamEnvelope>;
   timelineById: Record<string, TimelineEntity>;
   timelineOrder: string[];
   visibleTimelineOrder: string[];
@@ -150,6 +156,16 @@ function indexedSubagents(runs: SubagentRun[] = []) {
   };
 }
 
+function indexedAgentTeams(teams: AgentTeam[] = []) {
+  return {
+    agentTeamsById: Object.fromEntries(teams.map((team) => [team.id, team])),
+    agentTeamOrder: teams.map((team) => team.id),
+    agentNodesById: Object.fromEntries(teams.flatMap((team) => team.nodes.map((node) => [node.id, node]))),
+    agentTasksById: Object.fromEntries(teams.flatMap((team) => team.tasks.map((task) => [task.id, task]))),
+    agentEnvelopesById: Object.fromEntries(teams.flatMap((team) => team.envelopes.map((envelope) => [envelope.id, envelope]))),
+  };
+}
+
 function indexed(messages: RuntimeMessage[], tools: RuntimeTool[] = []) {
   let messagesById = Object.fromEntries(messages.map((message) => [message.id, message]));
   let messageOrder = messages.map((message) => message.id);
@@ -240,6 +256,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   runtime: disconnected,
   ...indexed([]),
   ...indexedSubagents(),
+  ...indexedAgentTeams(),
   queue: emptyQueue(),
   lastError: null,
   sequence: 0,
@@ -257,6 +274,13 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         subagentsById: current.subagentsById,
         subagentOrder: current.subagentOrder,
       };
+      const agentTeams = runtime.agentTeams ? indexedAgentTeams(runtime.agentTeams) : {
+        agentTeamsById: current.agentTeamsById,
+        agentTeamOrder: current.agentTeamOrder,
+        agentNodesById: current.agentNodesById,
+        agentTasksById: current.agentTasksById,
+        agentEnvelopesById: current.agentEnvelopesById,
+      };
       return {
         runtime: {
           ...current.runtime,
@@ -264,8 +288,10 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           messages: current.runtime.messages,
           ...(current.runtime.tools ? { tools: current.runtime.tools } : {}),
           subagents: subagents.subagentOrder.flatMap((id) => subagents.subagentsById[id] ? [subagents.subagentsById[id]!] : []),
+          agentTeams: agentTeams.agentTeamOrder.flatMap((id) => agentTeams.agentTeamsById[id] ? [agentTeams.agentTeamsById[id]!] : []),
         },
         ...subagents,
+        ...agentTeams,
         queue: runtime.queue ?? current.queue,
         lastError: runtime.error,
         pendingSessionSwitch: current.pendingSessionSwitch
@@ -277,15 +303,18 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     }
     const projection = indexed(runtime.messages, runtime.tools);
     const subagents = indexedSubagents(runtime.subagents);
+    const agentTeams = indexedAgentTeams(runtime.agentTeams);
     return {
       runtime: {
         ...runtime,
         messages: projection.messageOrder.flatMap((id) => projection.messagesById[id] ? [projection.messagesById[id]!] : []),
         tools: projection.toolOrder.flatMap((id) => projection.toolsById[id] ? [projection.toolsById[id]!] : []),
         subagents: subagents.subagentOrder.flatMap((id) => subagents.subagentsById[id] ? [subagents.subagentsById[id]!] : []),
+        agentTeams: agentTeams.agentTeamOrder.flatMap((id) => agentTeams.agentTeamsById[id] ? [agentTeams.agentTeamsById[id]!] : []),
       },
       ...projection,
       ...subagents,
+      ...agentTeams,
       queue: runtime.queue ?? emptyQueue(),
       lastError: runtime.error,
       sequence: 0,
@@ -300,15 +329,18 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   hydrateRuntime: (runtime) => set(() => {
     const projection = indexed(runtime.messages, runtime.tools);
     const subagents = indexedSubagents(runtime.subagents);
+    const agentTeams = indexedAgentTeams(runtime.agentTeams);
     return {
       runtime: {
         ...runtime,
         messages: projection.messageOrder.flatMap((id) => projection.messagesById[id] ? [projection.messagesById[id]!] : []),
         tools: projection.toolOrder.flatMap((id) => projection.toolsById[id] ? [projection.toolsById[id]!] : []),
         subagents: subagents.subagentOrder.flatMap((id) => subagents.subagentsById[id] ? [subagents.subagentsById[id]!] : []),
+        agentTeams: agentTeams.agentTeamOrder.flatMap((id) => agentTeams.agentTeamsById[id] ? [agentTeams.agentTeamsById[id]!] : []),
       },
       ...projection,
       ...subagents,
+      ...agentTeams,
       queue: runtime.queue ?? emptyQueue(),
       lastError: runtime.error,
       sequence: 0,
@@ -342,6 +374,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           sessions,
           subagents: [],
           subagentWorkflows: [],
+          agentTeams: [],
           branches: [],
           forkPoints: [],
           sessionOperation: true,
@@ -349,6 +382,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         },
         ...indexed([]),
         ...indexedSubagents(),
+        ...indexedAgentTeams(),
         queue: emptyQueue(),
         lastError: null,
         sequence: 0,
@@ -367,15 +401,18 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       completed = true;
       const projection = indexed(runtime.messages, runtime.tools);
       const subagents = indexedSubagents(runtime.subagents);
+      const agentTeams = indexedAgentTeams(runtime.agentTeams);
       return {
         runtime: {
           ...runtime,
           messages: projection.messageOrder.flatMap((id) => projection.messagesById[id] ? [projection.messagesById[id]!] : []),
           tools: projection.toolOrder.flatMap((id) => projection.toolsById[id] ? [projection.toolsById[id]!] : []),
           subagents: subagents.subagentOrder.flatMap((id) => subagents.subagentsById[id] ? [subagents.subagentsById[id]!] : []),
+          agentTeams: agentTeams.agentTeamOrder.flatMap((id) => agentTeams.agentTeamsById[id] ? [agentTeams.agentTeamsById[id]!] : []),
         },
         ...projection,
         ...subagents,
+        ...agentTeams,
         queue: runtime.queue ?? emptyQueue(),
         lastError: runtime.error,
         sequence: 0,
@@ -392,15 +429,18 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       cancelled = true;
       const projection = indexed(runtime.messages, runtime.tools);
       const subagents = indexedSubagents(runtime.subagents);
+      const agentTeams = indexedAgentTeams(runtime.agentTeams);
       return {
         runtime: {
           ...runtime,
           messages: projection.messageOrder.flatMap((id) => projection.messagesById[id] ? [projection.messagesById[id]!] : []),
           tools: projection.toolOrder.flatMap((id) => projection.toolsById[id] ? [projection.toolsById[id]!] : []),
           subagents: subagents.subagentOrder.flatMap((id) => subagents.subagentsById[id] ? [subagents.subagentsById[id]!] : []),
+          agentTeams: agentTeams.agentTeamOrder.flatMap((id) => agentTeams.agentTeamsById[id] ? [agentTeams.agentTeamsById[id]!] : []),
         },
         ...projection,
         ...subagents,
+        ...agentTeams,
         queue: runtime.queue ?? emptyQueue(),
         lastError: runtime.error,
         sequence: 0,
@@ -419,6 +459,11 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     let toolOrder = current.toolOrder;
     let subagentsById = current.subagentsById;
     let subagentOrder = current.subagentOrder;
+    let agentTeamsById = current.agentTeamsById;
+    let agentTeamOrder = current.agentTeamOrder;
+    let agentNodesById = current.agentNodesById;
+    let agentTasksById = current.agentTasksById;
+    let agentEnvelopesById = current.agentEnvelopesById;
     let subagentsChanged = false;
     let subagentImagePayloadChanged = false;
     let timelineById = current.timelineById;
@@ -528,6 +573,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           runtime = event.state;
           ({ messagesById, messageOrder, reasoningByMessageId, toolsById, toolOrder, timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds } = indexed(event.state.messages, event.state.tools));
           ({ subagentsById, subagentOrder } = indexedSubagents(event.state.subagents));
+          ({ agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById } = indexedAgentTeams(event.state.agentTeams));
           subagentsChanged = true;
           activeCompactionId = null;
           queue = event.state.queue ?? emptyQueue();
@@ -536,6 +582,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
             ({ subagentsById, subagentOrder } = indexedSubagents(event.state.subagents));
             subagentsChanged = true;
           }
+          if (event.state.agentTeams) ({ agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById } = indexedAgentTeams(event.state.agentTeams));
           runtime = {
             ...runtime,
             ...event.state,
@@ -649,6 +696,9 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           || event.run.tools.some((tool) => tool.images?.length),
         );
         setSubagent(event.run);
+      } else if (event.type === 'agent-team.updated') {
+        ({ agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById } = indexedAgentTeams([event.team]));
+        runtime = { ...runtime, agentTeams: [event.team] };
       } else if (event.type === 'subagent.workflow.updated') {
         const workflows = [...(runtime.subagentWorkflows ?? [])];
         const index = workflows.findIndex((workflow) => workflow.id === event.workflow.id);
@@ -778,6 +828,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     return {
       runtime, messagesById, messageOrder, reasoningByMessageId, toolsById, toolOrder,
       subagentsById, subagentOrder,
+      agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById,
       timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds, queue, lastError, sequence, activeCompactionId,
       pendingSessionSwitch,
     };

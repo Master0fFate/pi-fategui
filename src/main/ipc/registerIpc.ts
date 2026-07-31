@@ -82,6 +82,7 @@ import {
   type AppInfo,
   type RuntimeImage,
 } from '../../shared/contracts/ipc';
+import { agentTeamControlInputSchema } from '../../shared/contracts/multiAgent';
 import { normalizeError, PiDesktopError } from '../pi/errors';
 import { encodedImageSize, MAX_PROMPT_IMAGE_BYTES, MAX_PROMPT_IMAGE_DIMENSION, MAX_PROMPT_IMAGE_TOTAL_PIXELS } from '../pi/PiPromptImages';
 import type { FilesystemService } from '../files/FilesystemService';
@@ -129,7 +130,7 @@ export interface IpcServices {
 interface ProjectActivationServices {
   runtime: Pick<PiRuntimeService, 'getState' | 'openProject' | 'closeProject'>;
   files: Pick<FilesystemService, 'getRootOrNull' | 'setRoot' | 'clearRoot'>;
-  settings: { load: () => Promise<Pick<Awaited<ReturnType<SettingsService['load']>>, 'thinkingLevel' | 'defaultModel'>> };
+  settings: { load: () => Promise<Pick<Awaited<ReturnType<SettingsService['load']>>, 'thinkingLevel' | 'defaultModel'> & Partial<Pick<Awaited<ReturnType<SettingsService['load']>>, 'agentTeamMode'>>> };
   terminal: Pick<TerminalService, 'disposeProjectTerminals'>;
   logs: Pick<AppLogService, 'write'>;
 }
@@ -224,7 +225,7 @@ export async function activatePreparedProject(
     rootAttempted = true;
     await files.setRoot(activation.project.path);
     runtimeAttempted = true;
-    activatedState = await runtime.openProject(activation.project, { thinkingLevel: defaults.thinkingLevel, defaultModel: defaults.defaultModel });
+    activatedState = await runtime.openProject(activation.project, { thinkingLevel: defaults.thinkingLevel, defaultModel: defaults.defaultModel, ...(defaults.agentTeamMode ? { agentTeamMode: defaults.agentTeamMode } : {}) });
     if (activatedState.status === 'error') throw new PiDesktopError(activatedState.error ?? { code: 'PI_RUNTIME_ERROR', message: 'Pi failed to activate the project.', retryable: true });
     await activation.commit();
   } catch (error) {
@@ -232,7 +233,7 @@ export async function activatePreparedProject(
     if (runtimeAttempted) {
       try {
         const restored = previousProject
-          ? await runtime.openProject(previousProject, { thinkingLevel: defaults.thinkingLevel, defaultModel: defaults.defaultModel })
+          ? await runtime.openProject(previousProject, { thinkingLevel: defaults.thinkingLevel, defaultModel: defaults.defaultModel, ...(defaults.agentTeamMode ? { agentTeamMode: defaults.agentTeamMode } : {}) })
           : await runtime.closeProject();
         if (restored.status === 'error') throw new PiDesktopError(restored.error ?? { code: 'PI_RUNTIME_ERROR', message: 'Pi failed to restore the previous project.', retryable: true });
       } catch (rollbackError) {
@@ -399,6 +400,9 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   });
   handle(ipcChannels.runtimeControlSubagent, async (_event, input) => runRuntimeMutation('controlling a child agent', async () => (
     runtimeStateSchema.parse(await runtime.controlSubagent(subagentControlInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.runtimeControlAgentTeam, async (_event, input) => runRuntimeMutation('controlling an Agent Team node', async () => (
+    runtimeStateSchema.parse(await runtime.controlAgentTeam(agentTeamControlInputSchema.parse(input)))
   )));
   handle(ipcChannels.runtimeSetModel, async (_event, input) => {
     const parsed = setModelInputSchema.parse(input);

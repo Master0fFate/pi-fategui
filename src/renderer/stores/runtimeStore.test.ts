@@ -1,17 +1,33 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { PiEvent, SubagentRun, SubagentWorkflowLivenessReport } from '../../shared/contracts/ipc';
+import { createTeamRuntime, projectTeam } from '../../main/pi/multi-agent/AgentTeamStore';
 import { MAX_LIVE_TIMELINE_ENTITIES, MAX_LIVE_TOOL_OUTPUT, useRuntimeStore } from './runtimeStore';
 
 const reset = () => useRuntimeStore.setState({
   runtime: { status: 'disconnected', project: null, sessionId: null, sessionFile: null, streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null },
   messagesById: {}, messageOrder: [], reasoningByMessageId: {}, toolsById: {}, toolOrder: [],
   subagentsById: {}, subagentOrder: [],
+  agentTeamsById: {}, agentTeamOrder: [], agentNodesById: {}, agentTasksById: {}, agentEnvelopesById: {},
   timelineById: {}, timelineOrder: [], visibleTimelineOrder: [], visibleTimelineIds: new Set(), queue: { steering: 0, followUp: 0, items: [] }, lastError: null,
   sequence: 0, activeCompactionId: null,
 });
 
 describe('runtimeStore event reducer', () => {
   beforeEach(reset);
+
+  it('normalizes Agent Team V2 projections and replaces them atomically on events', () => {
+    const runtime = createTeamRuntime('session', { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 }, 'high', 'read-only');
+    const team = projectTeam(runtime);
+    useRuntimeStore.getState().applyEvents([{ type: 'agent-team.updated', team, timestamp: 1 }]);
+    const state = useRuntimeStore.getState();
+    expect(state.agentTeamOrder).toEqual([team.id]);
+    expect(state.agentTeamsById[team.id]).toEqual(team);
+    expect(state.agentNodesById[team.rootNodeId]?.path).toBe('/root');
+    expect(state.runtime.agentTeams).toEqual([team]);
+
+    reset();
+    expect(useRuntimeStore.getState().agentTeamOrder).toEqual([]);
+  });
 
   it('updates only the streamed message entity across a batched delta', () => {
     useRuntimeStore.getState().applyEvents([

@@ -91,6 +91,7 @@ import {
   type WindowControlAction,
   type WindowState,
 } from '../shared/contracts/ipc';
+import { agentTeamControlInputSchema, type AgentTeamControlInput } from '../shared/contracts/multiAgent';
 
 export const piDesktopApi: PiDesktopApi = Object.freeze({
   async getAppInfo() {
@@ -151,6 +152,10 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   },
   async controlSubagent(input: SubagentControlInput) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeControlSubagent, subagentControlInputSchema.parse(input));
+    return runtimeStateSchema.parse(result);
+  },
+  async controlAgentTeam(input: AgentTeamControlInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeControlAgentTeam, agentTeamControlInputSchema.parse(input));
     return runtimeStateSchema.parse(result);
   },
   async setModel(provider: string, id: string) {

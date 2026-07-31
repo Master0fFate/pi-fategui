@@ -494,7 +494,7 @@ export class SubagentCoordinator {
     });
   }
 
-  private createCatalogTool(modelRuntime: ModelRuntime): ToolDefinition {
+  createCatalogTool(modelRuntime: ModelRuntime): ToolDefinition {
     return defineTool<typeof catalogParameters, CatalogDetails>({
       name: 'subagent_catalog',
       label: 'Subagent catalog',

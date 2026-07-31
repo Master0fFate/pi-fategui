@@ -131,6 +131,27 @@ describe('PiRuntimeService', () => {
     expect(() => assertOwnedToolDefinitions({ getToolDefinition: () => ({ name: 'subagent' }) } as never, [owned])).toThrow(/extension replaced Fate UI's owned subagent tool/u);
   });
 
+  it('activates one orchestration protocol surface while registering both for restored sessions', async () => {
+    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents'];
+    const legacy = fixture();
+    const legacyService = new PiRuntimeService(legacy.adapter);
+    await legacyService.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'medium', defaultModel: null, agentTeamMode: 'legacy' });
+    const legacyTools = (legacy.adapter.createRuntime as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as ToolDefinition[];
+    expect(legacyTools.map((tool) => tool.name)).toEqual(allNames);
+    expect(legacy.session.getActiveToolNames()).toEqual(expect.arrayContaining(['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog']));
+    expect(legacy.session.getActiveToolNames()).not.toContain('spawn_agent');
+    await legacyService.dispose();
+
+    const v2 = fixture();
+    const v2Service = new PiRuntimeService(v2.adapter);
+    await v2Service.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'max', defaultModel: null, agentTeamMode: 'v2' });
+    const v2Tools = (v2.adapter.createRuntime as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as ToolDefinition[];
+    expect(v2Tools.map((tool) => tool.name)).toEqual(allNames);
+    expect(v2.session.getActiveToolNames()).toEqual(expect.arrayContaining(['spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'subagent_catalog']));
+    expect(v2.session.getActiveToolNames()).not.toContain('subagent_start');
+    await v2Service.dispose();
+  });
+
   it('loads enabled global extensions but excludes executable project extensions', () => {
     expect(selectUserExtensionPaths([
       { path: '/global/parallax.ts', enabled: true, metadata: { scope: 'user' } },
@@ -174,7 +195,7 @@ describe('PiRuntimeService', () => {
       options.onData(Buffer.from('ok'));
       return { exitCode: 0 };
     });
-    const bash = createBashToolDefinition('/project', { operations: { exec } });
+    const bash = createBashToolDefinition('/project', { operations: { exec }, exposeSessionEnvironment: false });
     await bash.execute('bash', { command: 'echo ok' }, undefined, undefined, {} as never);
 
     expect(writeFile).toHaveBeenCalledOnce();
@@ -722,19 +743,19 @@ describe('PiRuntimeService', () => {
     const initial = await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     expect(initial.permissionLevel).toBe('full-access');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen', 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog']);
 
     const readOnly = await service.setPermissionLevel('read-only');
     expect(readOnly.permissionLevel).toBe('read-only');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog']);
 
     const fullAccess = await service.setPermissionLevel('full-access');
     expect(fullAccess.permissionLevel).toBe('full-access');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', 'write', 'edit', 'bash']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'write', 'edit', 'bash']);
 
     const editable = await service.setPermissionLevel('edit');
     expect(editable.permissionLevel).toBe('edit');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', 'write', 'edit']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'write', 'edit']);
     await service.dispose();
   });
 

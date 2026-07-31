@@ -33,7 +33,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { enumerateMicrophones, microphoneAccessError, requestMicrophoneDevices, type MicrophoneDevice } from './microphoneDevices';
 
 const fallback: AppSettings = {
-  appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true,
+  appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true,
   terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight',
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
   speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
@@ -405,6 +405,7 @@ export function SettingsDialog() {
                     <div className="settings-model-meta">{selectedModel ? <><span>{selectedModel.reasoning ? 'Reasoning' : 'Standard'}</span><span>{Math.round(selectedModel.contextWindow / 1000)}k context</span>{selectedModel.supportsImages && <span>Images</span>}</> : <span>Pi chooses the active provider and model.</span>}</div>
                   </div>
                   <div className="settings-select-row"><div><strong>Thinking level</strong><small>Initial reasoning effort when a project starts without an active session.</small></div><SelectControl label="Default thinking level" value={settings.thinkingLevel} className="settings-thinking-select" options={['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((level) => ({ value: level, label: level === 'xhigh' ? 'Extra high' : `${level[0]?.toUpperCase() ?? ''}${level.slice(1)}` }))} onValueChange={(value) => setSettings({ ...settings, thinkingLevel: value as AppSettings['thinkingLevel'] })} /></div>
+                  <div className="settings-select-row"><div><strong>Agent orchestration</strong><small>Agent Teams V2 enables recursive child/grandchild delegation with durable context and hard safety limits. Applies when the project is reopened.</small></div><SelectControl label="Agent orchestration mode" value={settings.agentTeamMode} options={[{ value: 'legacy', label: 'Legacy subagents', detail: 'Flat managed agents and deterministic workflows' }, { value: 'v2', label: 'Agent Teams V2 (beta)', detail: 'Recursive provider-neutral teams' }]} onValueChange={(value) => setSettings({ ...settings, agentTeamMode: value as AppSettings['agentTeamMode'] })} /></div>
                 </div>
               )}
 

@@ -53,7 +53,9 @@ export function Inspector({ onCollapse }: InspectorProps) {
   const activeChildren = useRuntimeStore((state) => state.subagentOrder.reduce((count, id) => {
     const status = state.subagentsById[id]?.status;
     return count + (status === 'queued' || status === 'running' ? 1 : 0);
-  }, 0) + (state.runtime.subagentWorkflows ?? []).filter((workflow) => workflow.status === 'running').length);
+  }, 0)
+    + (state.runtime.subagentWorkflows ?? []).filter((workflow) => workflow.status === 'running').length
+    + (state.runtime.agentTeams ?? []).reduce((count, team) => count + team.activeTurns, 0));
   const activeTab = useUiStore((state) => state.inspectorTab);
   const setActiveTab = useUiStore((state) => state.setInspectorTab);
   return (

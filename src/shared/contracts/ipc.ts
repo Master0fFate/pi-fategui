@@ -5,6 +5,7 @@ import {
   SUBAGENT_HANDLE_PATTERN,
 } from '../subagentIdentity';
 import { themeCatalogSchema, type ThemeDefinition } from '../themes';
+import { agentTeamSchema, agentTeamControlInputSchema, type AgentTeamControlInput } from './multiAgent';
 
 export const ipcChannels = {
   systemGetInfo: 'system:get-info',
@@ -21,6 +22,7 @@ export const ipcChannels = {
   runtimePrompt: 'runtime:prompt',
   runtimeAbort: 'runtime:abort',
   runtimeControlSubagent: 'runtime:control-subagent',
+  runtimeControlAgentTeam: 'runtime:control-agent-team',
   runtimeSetModel: 'runtime:set-model',
   runtimeSetThinking: 'runtime:set-thinking',
   runtimeSetPermission: 'runtime:set-permission',
@@ -637,6 +639,7 @@ export const runtimeStateSchema = z.object({
   sessions: z.array(sessionSummarySchema).max(1_000).optional(),
   subagents: z.array(subagentRunSchema).optional(),
   subagentWorkflows: z.array(subagentWorkflowSchema).optional(),
+  agentTeams: z.array(agentTeamSchema).max(1).optional(),
   branches: z.array(sessionBranchSchema).max(5_000).optional(),
   forkPoints: z.array(forkPointSchema).max(2_000).optional(),
   sessionCapabilities: sessionCapabilitiesSchema.optional(),
@@ -708,6 +711,7 @@ export const piEventSchema = z.discriminatedUnion('type', [
   eventBaseSchema.extend({ type: z.literal('subagent.completed'), run: subagentRunSchema }),
   eventBaseSchema.extend({ type: z.literal('subagent.workflow.updated'), workflow: subagentWorkflowSchema }),
   eventBaseSchema.extend({ type: z.literal('subagent.workflow.liveness'), workflowId: z.string().min(1).max(100), report: subagentWorkflowLivenessReportSchema }),
+  eventBaseSchema.extend({ type: z.literal('agent-team.updated'), team: agentTeamSchema }),
 ]);
 
 export const piEventBatchSchema = z.array(piEventSchema).min(1).max(100);
@@ -808,6 +812,7 @@ export const appSettingsSchema = z.object({
   appearance: z.enum(['dark', 'system']),
   defaultModel: z.string().max(500).nullable(),
   thinkingLevel: thinkingLevelSchema,
+  agentTeamMode: z.enum(['legacy', 'v2']).default('legacy'),
   confirmRiskyCommands: z.boolean(),
   terminalShell: z.string().max(4_096).nullable(),
   reduceMotion: z.boolean(),
@@ -956,6 +961,7 @@ export interface PiDesktopApi {
   prompt: (input: PromptInput) => Promise<PromptAcceptance>;
   abort: () => Promise<{ aborted: boolean }>;
   controlSubagent: (input: SubagentControlInput) => Promise<RuntimeState>;
+  controlAgentTeam: (input: AgentTeamControlInput) => Promise<RuntimeState>;
   setModel: (provider: string, id: string) => Promise<RuntimeState>;
   setThinkingLevel: (level: ThinkingLevel) => Promise<RuntimeState>;
   setPermissionLevel: (level: PermissionLevel) => Promise<RuntimeState>;

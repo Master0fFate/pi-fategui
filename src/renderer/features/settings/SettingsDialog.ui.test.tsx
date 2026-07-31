@@ -9,6 +9,7 @@ const settings: AppSettings = {
   appearance: 'dark',
   defaultModel: null,
   thinkingLevel: 'medium',
+  agentTeamMode: 'legacy',
   confirmRiskyCommands: true,
   terminalShell: null,
   reduceMotion: false,
