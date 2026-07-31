@@ -11,7 +11,7 @@ Run Pi in a focused graphical workspace—with durable conversations, transparen
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-252a38.svg)](#installation)
 [![Electron](https://img.shields.io/badge/Electron-43-47848f.svg)](https://www.electronjs.org/)
 
-[Download](#installation) · [Features](#why-fate-ui) · [Development](#local-development) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
+[Latest beta: v0.4.1-beta1](https://github.com/Master0fFate/pi-fategui/releases/tag/v0.4.1-beta1) · [Installation](#installation) · [Features](#why-fate-ui) · [Development](#local-development) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
