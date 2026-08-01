@@ -86,7 +86,16 @@ jobs:
         run: xvfb-run -a pnpm verify
       - name: Build and smoke unpacked package
         if: runner.os != 'Linux'
-        run: pnpm package
+        shell: bash
+        run: bash scripts/ci-package.sh
+      - name: Upload package debug logs
+        if: failure() && runner.os != 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fate-ui-${{ matrix.platform }}-${{ matrix.arch }}-package-logs
+          path: release-package-attempt-*.log
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Build and smoke unpacked package on Linux display
         if: runner.os == 'Linux'
         run: xvfb-run -a pnpm package

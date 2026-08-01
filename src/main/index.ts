@@ -245,7 +245,11 @@ app.whenReady().then(async () => {
       mediaTypes: ['audio'],
     })
   ));
-  if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('microphone') === 'not-determined') {
+  if (
+    process.platform === 'darwin'
+    && process.env.PI_DESKTOP_SMOKE !== '1'
+    && systemPreferences.getMediaAccessStatus('microphone') === 'not-determined'
+  ) {
     try {
       const granted = await systemPreferences.askForMediaAccess('microphone');
       if (!granted) logs.write('warn', 'microphone', 'Microphone permission was denied in macOS System Settings.');

@@ -10,7 +10,14 @@ function findExecutable() {
   const candidates = process.platform === 'win32'
     ? ['win-unpacked/fate-ui.exe', 'win-unpacked/Fate UI.exe']
     : process.platform === 'darwin'
-      ? ['mac/Fate UI.app/Contents/MacOS/fate-ui', 'mac-arm64/Fate UI.app/Contents/MacOS/fate-ui']
+      ? [
+          'mac/Fate UI.app/Contents/MacOS/fate-ui',
+          'mac/Fate UI.app/Contents/MacOS/Fate UI',
+          'mac-arm64/Fate UI.app/Contents/MacOS/fate-ui',
+          'mac-arm64/Fate UI.app/Contents/MacOS/Fate UI',
+          'mac-x64/Fate UI.app/Contents/MacOS/fate-ui',
+          'mac-x64/Fate UI.app/Contents/MacOS/Fate UI',
+        ]
       : ['linux-unpacked/fate-ui', 'linux-unpacked/pi-desktop'];
   for (const candidate of candidates) {
     const executable = path.join(release, candidate);
@@ -48,22 +55,32 @@ if (!packagedFiles.some((entry) => entry.endsWith('/node_modules/@earendil-works
   throw new Error('The packaged application does not contain the embedded Pi coding-agent runtime.');
 }
 
+if (process.platform !== 'win32') accessSync(executable, constants.X_OK);
+
+const timeoutMs = Number(process.env.PACKAGED_SMOKE_TIMEOUT_MS ?? '120000');
 const child = spawn(executable, [], {
   cwd: root,
   env: { ...process.env, PI_DESKTOP_SMOKE: '1', PI_OFFLINE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let output = '';
+let timedOut = false;
 child.stdout.on('data', (chunk) => { output += chunk; process.stdout.write(chunk); });
 child.stderr.on('data', (chunk) => { output += chunk; process.stderr.write(chunk); });
-const timeout = setTimeout(() => child.kill('SIGKILL'), 30_000);
-const exitCode = await new Promise((resolve, reject) => {
+const timeout = setTimeout(() => {
+  timedOut = true;
+  child.kill('SIGKILL');
+}, Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 120_000);
+const [exitCode, exitSignal] = await new Promise((resolve, reject) => {
   child.once('error', reject);
-  child.once('exit', resolve);
+  child.once('exit', (code, signal) => {
+    resolve([code, signal]);
+  });
 });
 clearTimeout(timeout);
-if (!output.includes('PI_DESKTOP_SPEECH_OK')) throw new Error(`Packaged speech runtime did not initialize (exit ${exitCode}).`);
-if (!output.includes('PI_DESKTOP_YT_DLP_OK')) throw new Error(`Packaged yt-dlp runtime did not initialize (exit ${exitCode}).`);
-if (!output.includes('PI_DESKTOP_SMOKE_OK')) throw new Error(`Packaged smoke marker was not observed (exit ${exitCode}).`);
-if (exitCode !== 0) throw new Error(`Packaged application exited with code ${exitCode}.`);
+if (timedOut) throw new Error(`Packaged smoke test timed out after ${timeoutMs} ms.`);
+if (!output.includes('PI_DESKTOP_SPEECH_OK')) throw new Error(`Packaged speech runtime did not initialize (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
+if (!output.includes('PI_DESKTOP_YT_DLP_OK')) throw new Error(`Packaged yt-dlp runtime did not initialize (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
+if (!output.includes('PI_DESKTOP_SMOKE_OK')) throw new Error(`Packaged smoke marker was not observed (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
+if (exitCode !== 0 || exitSignal) throw new Error(`Packaged application exited unexpectedly (exit ${exitCode}, signal ${exitSignal ?? 'none'}).`);
 console.log('PI_DESKTOP_PACKAGED_SMOKE_OK');
