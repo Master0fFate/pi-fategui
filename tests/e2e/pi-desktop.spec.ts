@@ -222,6 +222,29 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(agents.getByRole('button', { name: 'Open Auth Reviewer (@auth-reviewer-1) child session: Cancelled' })).toBeVisible();
     await expect(page.getByRole('article', { name: 'subagent_start tool stopped' })).toBeAttached();
 
+    await composerInput.fill('__FATE_V2_AGENT_FIXTURE__');
+    await page.getByRole('button', { name: 'Send message' }).click();
+    const v2Team = agents.getByLabel('Agent Team V2 e2e-agent-team');
+    await expect(v2Team).toBeVisible();
+    await expect(v2Team).toContainText('2/16 nodes · 1/3 active · writer leased');
+    await expect(agents.getByLabel('Reviewer Agent Team node active')).toContainText('Review the Agent Teams V2 flow');
+    await expect(agents.getByLabel('Verifier Agent Team node ready')).toBeVisible();
+    await agents.getByRole('button', { name: 'Message /root/reviewer', exact: true }).click();
+    await agents.getByPlaceholder('Queue information without waking the agent…').fill('Check the integration boundary.');
+    await agents.getByRole('button', { name: 'Send' }).click();
+    await expect(agents.getByLabel('Reviewer Agent Team node active')).toContainText('1 unread');
+    await agents.getByRole('button', { name: 'Interrupt /root/reviewer', exact: true }).click();
+    await expect(agents.getByLabel('Reviewer Agent Team node interrupted')).toBeVisible();
+    await agents.getByRole('button', { name: 'Follow up /root/reviewer', exact: true }).click();
+    await agents.getByPlaceholder('Assign a new task using the retained context…').fill('Run the final verification.');
+    await agents.getByRole('button', { name: 'Send' }).click();
+    await expect(agents.getByRole('button', { name: 'Interrupt /root/reviewer', exact: true })).toBeVisible();
+    await agents.getByRole('button', { name: 'Interrupt /root/reviewer', exact: true }).click();
+    await expect(agents.getByLabel('Reviewer Agent Team node interrupted')).toBeVisible();
+    await agents.getByRole('button', { name: 'Close /root/reviewer', exact: true }).click();
+    await expect(agents.getByLabel('Reviewer Agent Team node closed')).toBeVisible();
+    await expect(agents.getByLabel('Verifier Agent Team node closed')).toBeVisible();
+
     await composerInput.fill('@test');
     const agentMentions = page.getByRole('listbox', { name: 'Agent mentions' });
     await expect(agentMentions.getByRole('option')).toContainText('@test-runner-1');

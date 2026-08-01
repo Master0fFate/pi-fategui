@@ -1,4 +1,5 @@
 import type { PermissionLevel, PiEvent, ProjectState, PromptAcceptance, PromptInput, QueuedMessage, QueueMutationInput, QueueMutationResult, RuntimeState, SessionSummary, SubagentControlInput, SubagentRun, ThinkingLevel } from '../../src/shared/contracts/ipc';
+import type { AgentTeam, AgentTeamControlInput } from '../../src/shared/contracts/multiAgent';
 
 const model = { provider: 'test', id: 'deterministic', name: 'Deterministic Test Model', reasoning: true, contextWindow: 100_000, supportsImages: true };
 const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
@@ -19,6 +20,26 @@ function agentFixture(id: string, handle: string, displayName: string, task: str
   };
 }
 
+function agentTeamFixture(): AgentTeam {
+  const now = Date.now();
+  const teamId = 'e2e-agent-team';
+  const rootId = 'e2e-team-root';
+  const reviewerId = 'e2e-team-reviewer';
+  const verifierId = 'e2e-team-verifier';
+  return {
+    id: teamId, rootSessionId: 'e2e-session-1', protocolVersion: 2, status: 'active', rootNodeId: rootId,
+    limits: { maxDepth: 2, maxNodes: 16, maxActiveTurns: 3, maxMessages: 256, maxMessageBytes: 32 * 1024 }, activeTurns: 1, writerNodeId: reviewerId, usage: { ...emptyUsage },
+    nodes: [
+      { id: rootId, teamId, parentNodeId: null, path: '/root', handle: 'root', displayName: 'Main agent', depth: 0, role: 'root', agentName: 'direct', permissionLevel: 'full-access', enabledTools: ['read'], model, thinkingLevel: 'medium', status: 'active', childIds: [reviewerId], unreadMessages: 0, writer: false, usage: { ...emptyUsage }, createdAt: now, updatedAt: now },
+      { id: reviewerId, teamId, parentNodeId: rootId, path: '/root/reviewer', handle: 'reviewer', displayName: 'Reviewer', depth: 1, role: 'reviewer', agentName: 'direct', permissionLevel: 'edit', enabledTools: ['read', 'grep', 'edit'], model, thinkingLevel: 'high', status: 'active', currentTaskId: 'e2e-team-review-task', childIds: [verifierId], unreadMessages: 0, writer: true, usage: { ...emptyUsage, turns: 1 }, createdAt: now, updatedAt: now },
+      { id: verifierId, teamId, parentNodeId: reviewerId, path: '/root/reviewer/verifier', handle: 'verifier', displayName: 'Verifier', depth: 2, role: 'verifier', agentName: 'direct', permissionLevel: 'read-only', enabledTools: ['read', 'grep'], model, thinkingLevel: 'medium', status: 'ready', childIds: [], unreadMessages: 0, writer: false, usage: { ...emptyUsage, turns: 1 }, createdAt: now, updatedAt: now },
+    ],
+    tasks: [{ id: 'e2e-team-review-task', teamId, assigneeNodeId: reviewerId, requesterNodeId: rootId, inputEnvelopeId: 'e2e-team-review-envelope', summary: 'Review the Agent Teams V2 flow', status: 'running', createdAt: now, startedAt: now }],
+    envelopes: [{ id: 'e2e-team-review-envelope', teamId, sequence: 1, kind: 'NEW_TASK', authorNodeId: rootId, recipientNodeId: reviewerId, taskId: 'e2e-team-review-task', content: 'Review the Agent Teams V2 flow', triggerTurn: true, state: 'consumed', createdAt: now, deliveredAt: now }],
+    operationReceipts: [], timeline: [{ id: 'e2e-team-created', sequence: 1, type: 'team.created', summary: 'Agent Team V2 test fixture created.', timestamp: now }], createdAt: now, updatedAt: now,
+  };
+}
+
 export class FakePiRuntimeService {
   private project: ProjectState | null = null;
   private activeSession = 'e2e-session-1';
@@ -28,6 +49,7 @@ export class FakePiRuntimeService {
   private queueSequence = 0;
   private profileSequence = 0;
   private subagents: SubagentRun[] = [];
+  private agentTeams: AgentTeam[] = [];
   private readonly sessionPermissions = new Map<string, PermissionLevel>();
   private sink: (events: PiEvent[]) => void = () => undefined;
   private readonly sessions: SessionSummary[] = [
@@ -58,7 +80,7 @@ export class FakePiRuntimeService {
         items: this.queuedMessages.map((item) => ({ ...item, ...(item.images ? { images: item.images.map((image) => ({ ...image })) } : {}) })),
       },
       sessions: this.sessions.map((session) => ({ ...session, active: session.id === this.activeSession })),
-      subagents: this.activeSession === 'e2e-session-1' ? this.subagents : [], branches: [],
+      subagents: this.activeSession === 'e2e-session-1' ? this.subagents : [], agentTeams: this.activeSession === 'e2e-session-1' ? this.agentTeams : [], branches: [],
       forkPoints: [], sessionCapabilities: { fork: true, clone: true, import: true, compact: true }, sessionOperation: false, error: null,
     };
   }
@@ -94,6 +116,11 @@ export class FakePiRuntimeService {
         ...this.subagents.map((run) => ({ type: 'subagent.started' as const, run, timestamp })),
         { type: 'tool.completed', toolCallId: 'e2e-agent-fixture', name: 'subagent_start', output: 'Started @auth-reviewer-1 and @test-runner-1.', subagentRunIds: runIds, error: false, timestamp: timestamp + 1 },
       ]);
+      this.emitState();
+      return { accepted: true, runId };
+    }
+    if (input.text === '__FATE_V2_AGENT_FIXTURE__') {
+      this.agentTeams = [agentTeamFixture()];
       this.emitState();
       return { accepted: true, runId };
     }
@@ -143,6 +170,34 @@ export class FakePiRuntimeService {
         };
       }
     }
+    this.emitState();
+    return this.getState();
+  }
+  async controlAgentTeam(input: AgentTeamControlInput): Promise<RuntimeState> {
+    const team = this.agentTeams[0];
+    const index = team?.nodes.findIndex((node) => node.id === input.target) ?? -1;
+    if (!team || index < 0) throw new Error(`Unknown Agent Team node ${input.target}.`);
+    const now = Date.now();
+    const node = team.nodes[index]!;
+    const followUp = input.action === 'followUp' || input.action === 'resume';
+    if (followUp && node.parentNodeId !== team.rootNodeId) throw new Error('Follow-up work may target only a direct child.');
+    const next = input.action === 'message'
+      ? { ...node, unreadMessages: node.unreadMessages + 1, updatedAt: now }
+      : followUp
+        ? { ...node, status: 'active' as const, writer: node.permissionLevel !== 'read-only', updatedAt: now }
+        : input.action === 'interrupt'
+          ? { ...node, status: 'interrupted' as const, writer: false, currentTaskId: undefined, updatedAt: now }
+          : { ...node, status: 'closed' as const, writer: false, currentTaskId: undefined, updatedAt: now };
+    const nodes = team.nodes.map((candidate, candidateIndex) => input.action === 'close' && (candidate.id === node.id || candidate.path.startsWith(`${node.path}/`))
+      ? { ...candidate, status: 'closed' as const, writer: false, currentTaskId: undefined, updatedAt: now }
+      : candidateIndex === index ? next : candidate);
+    this.agentTeams = [{
+      ...team,
+      nodes,
+      activeTurns: nodes.filter((candidate) => candidate.id !== team.rootNodeId && candidate.status === 'active').length,
+      writerNodeId: nodes.find((candidate) => candidate.writer && candidate.status === 'active')?.id ?? null,
+      updatedAt: now,
+    }];
     this.emitState();
     return this.getState();
   }

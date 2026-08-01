@@ -648,7 +648,7 @@ describe('SubagentCoordinator', () => {
 
   it('executes arbitrary dependency graphs with opt-in fan-in context and workflow notifications', async () => {
     const parent = parentSession();
-    const children = childFactory();
+    const children = childFactory({ holdUntilConcurrent: 2 });
     const notifications: Array<{ mode: string; workflowId?: string }> = [];
     const coordinator = new SubagentCoordinator({
       resolveParent: () => ({ projectPath: '/project', session: parent, permissionLevel: 'full-access' }),

@@ -126,8 +126,15 @@ jobs:
             $launcher = Join-Path $installDirectory 'fate.cmd'
             if (-not (Test-Path -Path $executable -PathType Leaf)) { throw "Installed executable was not found at $executable." }
             if (-not (Test-Path -Path $launcher -PathType Leaf)) { throw "Installed CLI launcher was not found at $launcher." }
-            node scripts/smoke-executable.mjs $executable
-            if ($LASTEXITCODE -ne 0) { throw "Installed application smoke exited with code $LASTEXITCODE." }
+            $bundledYtDlp = Join-Path $installDirectory 'resources\yt-dlp.exe'
+            if (-not (Test-Path -Path $bundledYtDlp -PathType Leaf)) { throw "Installed bundled yt-dlp was not found at $bundledYtDlp." }
+            for ($attempt = 1; $attempt -le 3; $attempt += 1) {
+              node scripts/smoke-executable.mjs $executable
+              if ($LASTEXITCODE -eq 0) { break }
+              if ($attempt -eq 3) { throw "Installed application smoke failed after $attempt attempts with code $LASTEXITCODE." }
+              Write-Warning "Installed application smoke attempt $attempt failed; retrying after Windows finishes initializing the newly installed bundled executable."
+              Start-Sleep -Seconds 5
+            }
           } finally {
             if (Test-Path -Path $uninstaller -PathType Leaf) {
               $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
