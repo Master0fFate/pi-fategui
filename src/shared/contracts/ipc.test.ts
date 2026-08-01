@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, piEventBatchSchema, piEventSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, subagentControlInputSchema, subagentRunSchema, subagentToolDetailsSchema, subagentWorkflowSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, windowStateSchema } from './ipc';
+import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, openUpdateDownloadResultSchema, piEventBatchSchema, piEventSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, subagentControlInputSchema, subagentRunSchema, subagentToolDetailsSchema, subagentWorkflowSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, updateCheckResultSchema, windowStateSchema } from './ipc';
 
 describe('IPC contracts', () => {
   it('accepts only an empty object for system info input', () => {
@@ -30,7 +30,21 @@ describe('IPC contracts', () => {
     expect(ipcChannels.imageSaveAs).toBe('image:save-as');
     expect(ipcChannels.clipboardWriteText).toBe('clipboard:write-text');
     expect(ipcChannels.speechEnsureModel).toBe('speech:ensure-model');
+    expect(ipcChannels.updatesCheck).toBe('updates:check');
+    expect(ipcChannels.updatesOpenDownload).toBe('updates:open-download');
     expect(new Set(Object.values(ipcChannels)).size).toBe(Object.values(ipcChannels).length);
+  });
+
+  it('validates bounded update results and download confirmation', () => {
+    expect(updateCheckResultSchema.parse({
+      status: 'current',
+      message: 'FateGUI is up to date. Installed version: 1.4.0',
+      installedVersion: '1.4.0',
+      productionVersion: '1.4.0',
+    })).toMatchObject({ status: 'current' });
+    expect(openUpdateDownloadResultSchema.parse({ opened: true })).toEqual({ opened: true });
+    expect(() => updateCheckResultSchema.parse({ status: 'unknown', message: 'Nope' })).toThrow();
+    expect(() => openUpdateDownloadResultSchema.parse({ opened: false })).toThrow();
   });
 
   it('keeps project reveal pathless and validates its typed result', () => {

@@ -37,6 +37,7 @@ import {
   musicStatusSchema,
   musicStreamResultSchema,
   musicTrackInputSchema,
+  openUpdateDownloadResultSchema,
   piEventBatchSchema,
   openFileResultSchema,
   projectFileReferenceSchema,
@@ -71,6 +72,7 @@ import {
   terminalResizeInputSchema,
   terminalWriteInputSchema,
   themeCatalogSchema,
+  updateCheckResultSchema,
   windowControlInputSchema,
   windowStateSchema,
   diagnosticsSchema,
@@ -285,6 +287,14 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async setSettings(settings: AppSettings) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.settingsSet, appSettingsSchema.parse(settings));
     return appSettingsSchema.parse(result);
+  },
+  async checkForUpdates() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.updatesCheck, emptyInputSchema.parse({}));
+    return updateCheckResultSchema.parse(result);
+  },
+  async openUpdateDownload() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.updatesOpenDownload, emptyInputSchema.parse({}));
+    openUpdateDownloadResultSchema.parse(result);
   },
   async getThemes() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.themesGet, emptyInputSchema.parse({}));

@@ -128,6 +128,10 @@ jobs:
             if (-not (Test-Path -Path $launcher -PathType Leaf)) { throw "Installed CLI launcher was not found at $launcher." }
             $bundledYtDlp = Join-Path $installDirectory 'resources\yt-dlp.exe'
             if (-not (Test-Path -Path $bundledYtDlp -PathType Leaf)) { throw "Installed bundled yt-dlp was not found at $bundledYtDlp." }
+            $installedVersionFile = Join-Path $installDirectory 'resources\PRODVER'
+            if (-not (Test-Path -Path $installedVersionFile -PathType Leaf)) { throw "Installed PRODVER was not found at $installedVersionFile." }
+            $installedVersion = [System.IO.File]::ReadAllText($installedVersionFile)
+            if ($installedVersion -cne $version) { throw "Installed PRODVER '$installedVersion' does not match '$version'." }
             for ($attempt = 1; $attempt -le 3; $attempt += 1) {
               node scripts/smoke-executable.mjs $executable
               if ($LASTEXITCODE -eq 0) { break }
@@ -190,6 +194,7 @@ jobs:
           sudo installer -pkg "$pkg" -target /
           pkgutil --pkg-info dev.pi.desktop
           test -x "$installed_app/Contents/MacOS/fate-ui"
+          test "$(cat "$installed_app/Contents/Resources/PRODVER")" = "$version"
           launcher_target="$installed_app/Contents/Resources/cli/fate"
           if [ ! -L "$installed_launcher" ]; then
             ls -ld "$installed_launcher" || true
@@ -219,6 +224,7 @@ jobs:
           trap 'sudo apt-get purge -y "$package_name" >/dev/null 2>&1 || true' EXIT
           sudo apt-get install -y "./$deb"
           test -x '/opt/Fate UI/fate-ui'
+          test "$(cat '/opt/Fate UI/resources/PRODVER')" = "$version"
           test -x /usr/bin/fate
           xvfb-run -a node scripts/smoke-executable.mjs /usr/bin/fate "$GITHUB_WORKSPACE"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

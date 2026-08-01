@@ -25,7 +25,8 @@
     "build:main": "vite build --config vite.main.config.ts",
     "build:preload": "vite build --config vite.preload.config.ts",
     "build:renderer": "vite build --config vite.renderer.config.ts",
-    "build": "pnpm clean && pnpm build:main && pnpm build:preload && pnpm build:renderer",
+    "verify:version": "node scripts/verify-version.mjs",
+    "build": "pnpm verify:version && pnpm clean && pnpm build:main && pnpm build:preload && pnpm build:renderer",
     "verify:speech-runtime": "node scripts/verify-speech-runtime.mjs",
     "prepare:yt-dlp": "node scripts/prepare-yt-dlp.mjs",
     "typecheck": "tsc --noEmit",
@@ -110,6 +111,10 @@
     "npmRebuild": false,
     "afterPack": "./scripts/verify-packaged-native-deps.mjs",
     "extraResources": [
+      {
+        "from": "PRODVER",
+        "to": "PRODVER"
+      },
       {
         "from": "build/vendor/yt-dlp",
         "to": ".",

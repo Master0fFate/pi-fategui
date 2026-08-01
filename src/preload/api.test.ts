@@ -31,4 +31,25 @@ describe('preload desktop bridge', () => {
 
     await expect(piDesktopApi.writeClipboardText('Copied response')).rejects.toThrow();
   });
+
+  it('checks for updates through the pathless typed IPC channel', async () => {
+    electron.invoke.mockResolvedValueOnce({
+      status: 'available',
+      message: 'Update available. Click to download.',
+      installedVersion: '1.9.0',
+      productionVersion: '1.10.0',
+    });
+
+    await expect(piDesktopApi.checkForUpdates()).resolves.toMatchObject({ status: 'available' });
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.updatesCheck, {});
+  });
+
+  it('opens downloads only after validating main-process confirmation', async () => {
+    electron.invoke.mockResolvedValueOnce({ opened: true });
+    await expect(piDesktopApi.openUpdateDownload()).resolves.toBeUndefined();
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.updatesOpenDownload, {});
+
+    electron.invoke.mockResolvedValueOnce({ opened: false });
+    await expect(piDesktopApi.openUpdateDownload()).rejects.toThrow();
+  });
 });

@@ -43,6 +43,7 @@ import {
   musicStreamResultSchema,
   musicStreamSchema,
   musicTrackInputSchema,
+  openUpdateDownloadResultSchema,
   piEventBatchSchema,
   openFileResultSchema,
   projectFileReferenceSchema,
@@ -77,6 +78,7 @@ import {
   terminalResizeInputSchema,
   terminalWriteInputSchema,
   themeCatalogSchema,
+  updateCheckResultSchema,
   windowControlInputSchema,
   windowStateSchema,
   type AppInfo,
@@ -94,6 +96,7 @@ import type { TerminalService } from '../terminal/TerminalService';
 import type { AppLogService } from '../logging/AppLogService';
 import type { MusicService } from '../music/MusicService';
 import type { SpeechService } from '../speech/SpeechService';
+import type { UpdateService } from '../updates/UpdateService';
 import { isTrustedRendererUrl, type TrustedRendererPolicy } from '../security/trustedRenderer';
 
 const imageSaveFormats: Record<RuntimeImage['mimeType'], { extension: string; name: string }> = {
@@ -124,6 +127,7 @@ export interface IpcServices {
   logs: AppLogService;
   music: Pick<MusicService, 'getStatus' | 'load' | 'resolveTrack' | 'clearQueue' | 'reset'>;
   speech: Pick<SpeechService, 'setEventSink' | 'getStatus' | 'download' | 'cancelDownload' | 'remove' | 'transcribe' | 'cancel'>;
+  updates: Pick<UpdateService, 'check' | 'openDownload'>;
   rendererPolicy: TrustedRendererPolicy;
 }
 
@@ -278,7 +282,7 @@ function register(channel: string, rendererPolicy: TrustedRendererPolicy, handle
   });
 }
 
-export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, rendererPolicy }: IpcServices) {
+export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, updates, rendererPolicy }: IpcServices) {
   runtime.setEventSink((events) => {
     const batch = piEventBatchSchema.parse(events);
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeEvents, batch);
@@ -563,6 +567,15 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     const saved = appSettingsSchema.parse(await settings.set(appSettingsSchema.parse(input)));
     if (!saved.musicPlayerEnabled) music.reset();
     return saved;
+  });
+  handle(ipcChannels.updatesCheck, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    return updateCheckResultSchema.parse(await updates.check());
+  });
+  handle(ipcChannels.updatesOpenDownload, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    await updates.openDownload();
+    return openUpdateDownloadResultSchema.parse({ opened: true });
   });
   handle(ipcChannels.themesGet, async (_event, input) => {
     emptyInputSchema.parse(input);

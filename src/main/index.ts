@@ -17,6 +17,7 @@ import { createTrustedRendererPolicy, isExternalHttpsUrl, isTrustedAudioPermissi
 import { SettingsService } from './settings/SettingsService';
 import { SpeechService } from './speech/SpeechService';
 import { TerminalService } from './terminal/TerminalService';
+import { UpdateService } from './updates/UpdateService';
 import { WindowStateService, type WindowPlacement } from './windowState';
 import { installWindowZoomShortcuts } from './windowZoom';
 import { appCommandSchema, ipcChannels, windowStateSchema, type AppCommand } from '../shared/contracts/ipc';
@@ -53,6 +54,9 @@ const projects = new ProjectService();
 const files = new FilesystemService();
 const git = new GitService(files);
 const settings = new SettingsService(logs);
+const updates = new UpdateService(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'PRODVER'), {
+  openExternal: (url) => shell.openExternal(url),
+});
 const windowState = new WindowStateService(logs);
 const music = new MusicService();
 const speech = new SpeechService(logs);
@@ -257,7 +261,7 @@ app.whenReady().then(async () => {
       logs.write('warn', 'microphone', `macOS microphone permission could not be requested: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, rendererPolicy });
+  const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, updates, rendererPolicy });
   projectPathOpener = mainCommands.openProjectPath;
   installMenu();
   mainWindow = createWindow();

@@ -58,6 +58,10 @@ const speech = {
   transcribe: async () => ({ text: 'voice test', language: 'en', backend: 'E2E CPU', accelerated: false }),
   cancel: () => false,
 } as unknown as SpeechService;
+const updates = {
+  check: async () => ({ status: 'current' as const, message: 'FateGUI is up to date.' }),
+  openDownload: async () => undefined,
+};
 const terminal = {
   setEventSink: (_sink: (ownerId: number, event: TerminalEvent) => void) => undefined,
   create: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', shell: 'test-shell', cwd: projectPath }),
@@ -78,6 +82,7 @@ app.whenReady().then(() => {
     logs,
     music,
     speech,
+    updates,
     rendererPolicy: createTrustedRendererPolicy(rendererPath),
   });
   window = new BrowserWindow({

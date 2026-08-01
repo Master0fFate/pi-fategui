@@ -45,6 +45,8 @@ export const ipcChannels = {
   terminalEvents: 'terminal:events',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
+  updatesCheck: 'updates:check',
+  updatesOpenDownload: 'updates:open-download',
   themesGet: 'themes:get',
   speechGetStatus: 'speech:get-status',
   speechEnsureModel: 'speech:ensure-model',
@@ -808,6 +810,14 @@ export const speechDownloadProgressSchema = z.object({
 }).strict();
 export const speechCancelResultSchema = z.object({ cancelled: z.boolean() }).strict();
 
+export const updateCheckResultSchema = z.object({
+  status: z.enum(['local-unreadable', 'local-invalid', 'remote-unavailable', 'remote-invalid', 'current', 'available', 'development']),
+  message: z.string().min(1).max(300),
+  installedVersion: z.string().min(1).max(100).optional(),
+  productionVersion: z.string().min(1).max(100).optional(),
+}).strict();
+export const openUpdateDownloadResultSchema = z.object({ opened: z.literal(true) }).strict();
+
 export const appSettingsSchema = z.object({
   appearance: z.enum(['dark', 'system']),
   defaultModel: z.string().max(500).nullable(),
@@ -936,6 +946,7 @@ export type GitOperation = z.infer<typeof gitOperationSchema>;
 export type GitOperationResult = z.infer<typeof gitOperationResultSchema>;
 export type TerminalEvent = z.infer<typeof terminalEventSchema>;
 export type AppSettings = z.infer<typeof appSettingsSchema>;
+export type UpdateCheckResult = z.infer<typeof updateCheckResultSchema>;
 export type MusicStatus = z.infer<typeof musicStatusSchema>;
 export type MusicTrack = z.infer<typeof musicTrackSchema>;
 export type MusicQueue = z.infer<typeof musicQueueSchema>;
@@ -995,6 +1006,8 @@ export interface PiDesktopApi {
   closeTerminal: (id: string) => Promise<void>;
   getSettings: () => Promise<AppSettings>;
   setSettings: (settings: AppSettings) => Promise<AppSettings>;
+  checkForUpdates: () => Promise<UpdateCheckResult>;
+  openUpdateDownload: () => Promise<void>;
   getThemes: () => Promise<ThemeDefinition[]>;
   getSpeechStatus: () => Promise<SpeechStatus>;
   ensureSpeechModel: (modelId: SpeechModelId) => Promise<void>;

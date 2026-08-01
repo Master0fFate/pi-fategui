@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AppSettings, PiDesktopApi, SpeechDownloadProgress, SpeechStatus } from '../../../shared/contracts/ipc';
+import type { AppSettings, PiDesktopApi, SpeechDownloadProgress, SpeechStatus, UpdateCheckResult } from '../../../shared/contracts/ipc';
 import { useUiStore } from '../../stores/uiStore';
 import { SettingsDialog } from './SettingsDialog';
 
@@ -35,20 +35,29 @@ const speechStatus: SpeechStatus = {
 };
 
 function installBridge(setSettings: (value: AppSettings) => Promise<AppSettings>, loadedSettings: AppSettings = settings) {
+  const bridge = {
+    getSettings: vi.fn(async () => loadedSettings),
+    setSettings,
+    getDiagnostics: vi.fn(async () => null),
+    getLogs: vi.fn(async () => []),
+    getSpeechStatus: vi.fn(async () => speechStatus),
+    downloadSpeechModel: vi.fn(async () => speechStatus),
+    cancelSpeechModelDownload: vi.fn(async () => true),
+    removeSpeechModel: vi.fn(async () => speechStatus),
+    onSpeechDownload: vi.fn((listener: (progress: SpeechDownloadProgress) => void) => { speechListener = listener; return () => { speechListener = null; }; }),
+    checkForUpdates: vi.fn<() => Promise<UpdateCheckResult>>(async () => ({
+      status: 'current',
+      message: 'FateGUI is up to date. Installed version: 1.4.0',
+      installedVersion: '1.4.0',
+      productionVersion: '1.4.0',
+    })),
+    openUpdateDownload: vi.fn(async () => undefined),
+  };
   Object.defineProperty(window, 'piDesktop', {
     configurable: true,
-    value: {
-      getSettings: vi.fn(async () => loadedSettings),
-      setSettings,
-      getDiagnostics: vi.fn(async () => null),
-      getLogs: vi.fn(async () => []),
-      getSpeechStatus: vi.fn(async () => speechStatus),
-      downloadSpeechModel: vi.fn(async () => speechStatus),
-      cancelSpeechModelDownload: vi.fn(async () => true),
-      removeSpeechModel: vi.fn(async () => speechStatus),
-      onSpeechDownload: vi.fn((listener: (progress: SpeechDownloadProgress) => void) => { speechListener = listener; return () => { speechListener = null; }; }),
-    } as unknown as PiDesktopApi,
+    value: bridge as unknown as PiDesktopApi,
   });
+  return bridge;
 }
 
 beforeEach(() => {
@@ -113,6 +122,43 @@ describe('SettingsDialog feedback', () => {
     expect(screen.getByText(/Fallbacks for the first Pi session opened in a project/)).toBeInTheDocument();
     expect(screen.getByText(/Initial reasoning effort when a project starts without an active session/)).toBeInTheDocument();
     expect(screen.queryByText('Sets the default reasoning effort for new sessions.')).not.toBeInTheDocument();
+  });
+
+  it('checks for updates only on click and reports the installed version', async () => {
+    const bridge = installBridge(vi.fn(async (value) => value));
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+
+    await screen.findByRole('combobox', { name: 'Interface font' });
+    expect(bridge.checkForUpdates).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Check for Updates' }));
+
+    expect(bridge.checkForUpdates).toHaveBeenCalledOnce();
+    expect(await screen.findByRole('status')).toHaveTextContent('FateGUI is up to date. Installed version: 1.4.0');
+  });
+
+  it('prevents duplicate checks and opens the releases page only from an available-update result', async () => {
+    const bridge = installBridge(vi.fn(async (value) => value));
+    let finishCheck: ((result: Awaited<ReturnType<PiDesktopApi['checkForUpdates']>>) => void) | undefined;
+    bridge.checkForUpdates.mockImplementationOnce(() => new Promise((resolve) => { finishCheck = resolve; }));
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+
+    const check = await screen.findByRole('button', { name: 'Check for Updates' });
+    await user.click(check);
+    expect(check).toBeDisabled();
+    await user.click(check);
+    expect(bridge.checkForUpdates).toHaveBeenCalledOnce();
+
+    finishCheck?.({
+      status: 'available',
+      message: 'Update available. Click to download.',
+      installedVersion: '0.4.1-beta1',
+      productionVersion: '0.4.1-beta2',
+    });
+    const download = await screen.findByRole('button', { name: 'Update available. Click to download.' });
+    await user.click(download);
+    expect(bridge.openUpdateDownload).toHaveBeenCalledOnce();
   });
 
   it('defers diagnostics and logs until the System section is opened', async () => {

@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, readdirSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { listPackage } from '@electron/asar';
@@ -42,6 +42,11 @@ if (!executable) throw new Error(`No packaged Pi Desktop executable found under 
 const resources = process.platform === 'darwin'
   ? path.resolve(executable, '../../Resources')
   : path.join(path.dirname(executable), 'resources');
+const expectedVersion = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+const installedVersionFile = path.join(resources, 'PRODVER');
+if (!existsSync(installedVersionFile)) throw new Error(`Packaged PRODVER was not found at ${installedVersionFile}`);
+const installedVersion = readFileSync(installedVersionFile, 'utf8');
+if (installedVersion !== expectedVersion) throw new Error(`Packaged PRODVER ${JSON.stringify(installedVersion)} does not match ${expectedVersion}.`);
 const unpackedPty = path.join(resources, 'app.asar.unpacked', 'node_modules', 'node-pty');
 if (!existsSync(unpackedPty)) throw new Error(`Packaged node-pty was not unpacked at ${unpackedPty}`);
 const cliLauncher = process.platform === 'win32'

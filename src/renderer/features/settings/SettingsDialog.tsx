@@ -21,7 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AppSettings, Diagnostics, LogEntry, ModelInfo, SpeechDownloadProgress, SpeechModelId, SpeechStatus } from '../../../shared/contracts/ipc';
+import type { AppSettings, Diagnostics, LogEntry, ModelInfo, SpeechDownloadProgress, SpeechModelId, SpeechStatus, UpdateCheckResult } from '../../../shared/contracts/ipc';
 import type { ThemeDefinition } from '../../../shared/themes';
 import { applyVisualSettings } from '../../appearance';
 import { AppTooltip } from '../../components/AppTooltip';
@@ -90,6 +90,8 @@ export function SettingsDialog() {
   const [status, setStatus] = useState<string | null>(null);
   const [toast, setToast] = useState<SettingsToast | null>(null);
   const [saving, setSaving] = useState(false);
+  const [checkingForUpdates, setCheckingForUpdates] = useState(false);
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [speechStatus, setSpeechStatus] = useState<SpeechStatus | null>(null);
   const [speechBusy, setSpeechBusy] = useState<SpeechModelId | null>(null);
   const [speechProgress, setSpeechProgress] = useState<SpeechDownloadProgress | null>(null);
@@ -100,6 +102,7 @@ export function SettingsDialog() {
   const [inputDevicesLoading, setInputDevicesLoading] = useState(false);
   const settingsScroll = useRef<HTMLDivElement>(null);
   const systemLoadStarted = useRef(false);
+  const updateCheckPending = useRef(false);
 
   useEffect(() => {
     if (!open || !('piDesktop' in window)) return;
@@ -107,6 +110,7 @@ export function SettingsDialog() {
     setSettingsLoaded(false);
     setDiagnostics(null); setDiagnosticsError(null);
     setLogs([]); setLogsError(null); setStatus(null); setToast(null);
+    setUpdateResult(null);
     systemLoadStarted.current = false;
     setSystemLoading(false);
     setSpeechStatus(null); setSpeechStatusError(null);
@@ -260,6 +264,37 @@ export function SettingsDialog() {
       });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const checkForUpdates = async () => {
+    if (!('piDesktop' in window) || updateCheckPending.current || typeof window.piDesktop.checkForUpdates !== 'function') return;
+    updateCheckPending.current = true;
+    setCheckingForUpdates(true);
+    setUpdateResult(null);
+    try {
+      setUpdateResult(await window.piDesktop.checkForUpdates());
+    } catch {
+      setUpdateResult({
+        status: 'remote-unavailable',
+        message: 'Unable to check for updates. Please check your internet connection and try again.',
+      });
+    } finally {
+      updateCheckPending.current = false;
+      setCheckingForUpdates(false);
+    }
+  };
+
+  const openUpdateDownload = async () => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.openUpdateDownload !== 'function') return;
+    try {
+      await window.piDesktop.openUpdateDownload();
+    } catch (error) {
+      setToast({
+        kind: 'error',
+        title: 'Could not open releases',
+        message: error instanceof Error ? error.message : 'Open the Fate UI releases page in your browser and try again.',
+      });
     }
   };
 
@@ -492,7 +527,18 @@ export function SettingsDialog() {
             </div>
           )}
 
-          <footer><span aria-live="polite">{status ?? (settingsLoaded ? 'Changes apply after saving.' : 'Loading settings…')}</span><button type="button" className="primary-button" aria-busy={saving} disabled={!settingsLoaded || saving} onClick={() => void save()}><Save size={14} /><span className="icon-label">Save changes</span></button></footer>
+          <footer>
+            <div className="settings-footer-status" aria-live="polite">
+              <span>{status ?? (settingsLoaded ? 'Changes apply after saving.' : 'Loading settings…')}</span>
+              {updateResult && (updateResult.status === 'available'
+                ? <button type="button" className="update-download-link" onClick={() => void openUpdateDownload()}>{updateResult.message}</button>
+                : <span className="update-check-result" role="status">{updateResult.message}</span>)}
+            </div>
+            <div className="settings-footer-actions">
+              <button type="button" className="update-check-link" aria-busy={checkingForUpdates} disabled={checkingForUpdates} onClick={() => void checkForUpdates()}>{checkingForUpdates ? 'Checking for updates…' : 'Check for Updates'}</button>
+              <button type="button" className="primary-button" aria-busy={saving} disabled={!settingsLoaded || saving} onClick={() => void save()}><Save size={14} /><span className="icon-label">Save changes</span></button>
+            </div>
+          </footer>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

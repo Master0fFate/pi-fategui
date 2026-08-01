@@ -16,6 +16,10 @@ function option(args, name, fallback) {
 async function packageVersion() {
   const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
   if (typeof manifest.version !== 'string' || !manifest.version) throw new Error('package.json has no valid version.');
+  const productionVersion = await readFile(path.join(root, 'PRODVER'), 'utf8');
+  if (productionVersion !== manifest.version) {
+    throw new Error(`PRODVER (${JSON.stringify(productionVersion)}) does not exactly match package version ${manifest.version}.`);
+  }
   return manifest.version;
 }
 
