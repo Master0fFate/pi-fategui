@@ -7,7 +7,7 @@ import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { clampComposerInputHeight, clearComposerSessionDrafts, Composer, uniqueAttachmentName } from './Composer';
 import { ContextWheel } from './ContextWheel';
-import { AssistantMarkdown, ConversationTimeline, followsMessage, forkEntryForMessage, MessageRow } from './ConversationTimeline';
+import { AssistantMarkdown, coalesceSubagentWaitPolls, ConversationTimeline, followsMessage, forkEntryForMessage, MessageRow } from './ConversationTimeline';
 import { isSafeMermaidSource } from './RichMessageContent';
 import { ToolCard } from './ToolCard';
 
@@ -327,6 +327,45 @@ describe('conversation components', () => {
     render(<div style={{ height: 600 }}><ConversationTimeline /></div>);
     expect(screen.queryByText('Pi')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Conversation timeline')).toHaveAttribute('data-visible-entry-count', '2');
+  });
+
+  it('coalesces adjacent subagent wait polls in the timeline without dropping runtime history', () => {
+    useRuntimeStore.getState().applyEvents([
+      { type: 'tool.started', toolCallId: 'wait-1', name: 'subagent_manage', input: '{"action":"wait","runIds":["@review-1"],"until":"activity","timeoutSeconds":10}', timestamp: 1 },
+      { type: 'tool.completed', toolCallId: 'wait-1', name: 'subagent_manage', output: 'Still running', error: false, timestamp: 2 },
+      { type: 'tool.started', toolCallId: 'wait-2', name: 'subagent_manage', input: '{"action":"wait","runIds":["@review-1"],"until":"activity","timeoutSeconds":30}', timestamp: 3 },
+      { type: 'tool.completed', toolCallId: 'wait-2', name: 'subagent_manage', output: 'Still running', error: false, timestamp: 4 },
+      { type: 'tool.started', toolCallId: 'wait-3', name: 'subagent_manage', input: '{"action":"wait","runIds":["@review-1"],"until":"all","timeoutSeconds":1200}', timestamp: 5 },
+    ]);
+    const state = useRuntimeStore.getState();
+    const display = coalesceSubagentWaitPolls(state.visibleTimelineOrder, state.timelineById, state.toolsById);
+
+    expect(state.toolOrder).toEqual(['wait-1', 'wait-2', 'wait-3']);
+    expect(state.visibleTimelineOrder).toHaveLength(3);
+    expect(display).toEqual({ order: ['tool:wait-3'], waitPollCountById: { 'tool:wait-3': 3 } });
+
+    render(<div style={{ height: 600 }}><ConversationTimeline /></div>);
+    expect(screen.getByLabelText('Conversation timeline')).toHaveAttribute('data-visible-entry-count', '1');
+
+    render(<ToolCard toolCallId="wait-3" waitPollCount={3} />);
+    expect(screen.getAllByRole('article', { name: /subagent_manage tool/iu })).toHaveLength(1);
+    expect(screen.getByText('3 wait polls · Running')).toBeInTheDocument();
+  });
+
+  it('keeps failed, differently targeted, and interrupted waits visible', () => {
+    useRuntimeStore.getState().applyEvents([
+      { type: 'tool.started', toolCallId: 'wait-a', name: 'subagent_manage', input: '{"action":"wait","runIds":["@review-1"]}', timestamp: 1 },
+      { type: 'tool.completed', toolCallId: 'wait-a', name: 'subagent_manage', output: 'Wait failed', error: true, timestamp: 2 },
+      { type: 'tool.started', toolCallId: 'wait-b', name: 'subagent_manage', input: '{"action":"wait","runIds":["@review-1"]}', timestamp: 3 },
+      { type: 'tool.started', toolCallId: 'wait-c', name: 'subagent_manage', input: '{"action":"wait","runIds":["@review-2"]}', timestamp: 4 },
+      { type: 'tool.started', toolCallId: 'status', name: 'subagent_manage', input: '{"action":"status","runIds":["@review-2"]}', timestamp: 5 },
+      { type: 'tool.started', toolCallId: 'wait-d', name: 'subagent_manage', input: '{"action":"wait","runIds":["@review-2"]}', timestamp: 6 },
+    ]);
+    const state = useRuntimeStore.getState();
+
+    expect(coalesceSubagentWaitPolls(state.visibleTimelineOrder, state.timelineById, state.toolsById).order).toEqual([
+      'tool:wait-a', 'tool:wait-b', 'tool:wait-c', 'tool:status', 'tool:wait-d',
+    ]);
   });
 
   it('keeps tool calls compact while exposing details and status on the icon', async () => {

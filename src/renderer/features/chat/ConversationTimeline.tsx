@@ -1,10 +1,10 @@
 import { Brain, Check, CircleAlert, Copy, GitFork, PackageCheck, PackageOpen, Plug, RotateCcw } from 'lucide-react';
-import { memo, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { useShallow } from 'zustand/react/shallow';
 import { AppTooltip } from '../../components/AppTooltip';
 import { writeClipboardText } from '../../lib/clipboard';
-import { useRuntimeStore } from '../../stores/runtimeStore';
+import { type TimelineEntity, type ToolExecution, useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { MentionText } from './AgentMention';
 import { AssistantMarkdown } from './RichMessageContent';
@@ -209,15 +209,63 @@ export function followsMessage(previousEntry: { kind: string } | undefined): boo
   return previousEntry?.kind === 'message';
 }
 
+interface CoalescedTimeline {
+  order: string[];
+  waitPollCountById: Record<string, number>;
+}
+
+function subagentWaitTarget(tool: ToolExecution | undefined): string | null {
+  if (!tool || tool.name !== 'subagent_manage' || tool.status === 'error') return null;
+  try {
+    const input = JSON.parse(tool.input) as Record<string, unknown>;
+    if (input.action !== 'wait') return null;
+    const targets = Array.isArray(input.runIds) ? input.runIds : Array.isArray(input.runs) ? input.runs : null;
+    if (!targets?.length || targets.some((target) => typeof target !== 'string')) return null;
+    return JSON.stringify([...targets].sort());
+  } catch {
+    return null;
+  }
+}
+
+export function coalesceSubagentWaitPolls(
+  order: readonly string[],
+  timelineById: Record<string, TimelineEntity>,
+  toolsById: Record<string, ToolExecution>,
+): CoalescedTimeline {
+  const coalesced: string[] = [];
+  const waitPollCountById: Record<string, number> = {};
+  let activeTarget: string | null = null;
+  let activeCount = 0;
+
+  for (const id of order) {
+    const entry = timelineById[id];
+    const target = entry?.kind === 'tool' ? subagentWaitTarget(toolsById[entry.toolCallId]) : null;
+    if (target !== null && target === activeTarget) {
+      const previousId = coalesced.at(-1)!;
+      coalesced[coalesced.length - 1] = id;
+      delete waitPollCountById[previousId];
+      activeCount += 1;
+      waitPollCountById[id] = activeCount;
+      continue;
+    }
+
+    coalesced.push(id);
+    activeTarget = target;
+    activeCount = target === null ? 0 : 1;
+  }
+
+  return { order: coalesced, waitPollCountById };
+}
+
 const scrollerIsAtBottom = (scroller: HTMLElement) =>
   scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= BOTTOM_THRESHOLD_PX;
 
-const TimelineRow = memo(function TimelineRow({ id }: { id: string }) {
+const TimelineRow = memo(function TimelineRow({ id, waitPollCount }: { id: string; waitPollCount?: number | undefined }) {
   const entry = useRuntimeStore((state) => state.timelineById[id]);
   if (!entry) return null;
   if (entry.kind === 'message') return <MessageRow messageId={entry.messageId} />;
   if (entry.kind === 'reasoning') return <ReasoningRow messageId={entry.messageId} />;
-  if (entry.kind === 'tool') return <ToolCard toolCallId={entry.toolCallId} />;
+  if (entry.kind === 'tool') return <ToolCard toolCallId={entry.toolCallId} waitPollCount={waitPollCount} />;
   if (entry.kind === 'error') {
     return (
       <div className="timeline-notice timeline-notice--error" role="alert">
@@ -238,6 +286,11 @@ export function ConversationTimeline() {
   const order = useRuntimeStore((state) => state.timelineOrder);
   const visibleOrder = useRuntimeStore((state) => state.visibleTimelineOrder);
   const timelineById = useRuntimeStore((state) => state.timelineById);
+  const toolsById = useRuntimeStore((state) => state.toolsById);
+  const { order: displayOrder, waitPollCountById } = useMemo(
+    () => coalesceSubagentWaitPolls(visibleOrder, timelineById, toolsById),
+    [timelineById, toolsById, visibleOrder],
+  );
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
   const hasHistoricalTimeline = useRuntimeStore((state) => state.runtime.messages.length > 0 || Boolean(state.runtime.tools?.length));
@@ -467,16 +520,16 @@ export function ConversationTimeline() {
   };
 
   return (
-    <div className="conversation" aria-label="Conversation timeline" aria-live="polite" data-entry-count={order.length} data-visible-entry-count={visibleOrder.length}>
+    <div className="conversation" aria-label="Conversation timeline" aria-live="polite" data-entry-count={order.length} data-visible-entry-count={displayOrder.length}>
       <Virtuoso
         key={timelineSessionKey ?? 'no-session'}
         ref={virtuosoRef}
         className="conversation-virtuoso"
-        data={visibleOrder}
+        data={displayOrder}
         computeItemKey={(_index, id) => id}
         itemContent={(index, id) => {
-          const previousEntry = index > 0 ? timelineById[visibleOrder[index - 1] ?? ''] : undefined;
-          return <div className="timeline-row" data-entry-kind={timelineById[id]?.kind} data-follows-message={followsMessage(previousEntry) || undefined}><TimelineRow id={id} /></div>;
+          const previousEntry = index > 0 ? timelineById[displayOrder[index - 1] ?? ''] : undefined;
+          return <div className="timeline-row" data-entry-kind={timelineById[id]?.kind} data-follows-message={followsMessage(previousEntry) || undefined}><TimelineRow id={id} waitPollCount={waitPollCountById[id]} /></div>;
         }}
         components={{ Footer: ConversationFooter }}
         scrollerRef={bindScroller}
