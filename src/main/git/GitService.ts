@@ -82,6 +82,51 @@ function trustedGitExecutable(): string {
   throw new Error('A trusted Git executable could not be located outside the project directory.');
 }
 
+function executeWithoutWorkTree(root: string, args: string[], maxBuffer = MAX_GIT_OUTPUT, environment = gitEnvironment()): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const executable = trustedGitExecutable();
+    const executableRelative = path.relative(root, executable);
+    if (executableRelative === '' || (executableRelative !== '..' && !executableRelative.startsWith(`..${path.sep}`) && !path.isAbsolute(executableRelative))) {
+      reject(new Error('Refusing to execute Git from inside the untrusted project directory.'));
+      return;
+    }
+    execFile(executable, args, { cwd: root, env: environment, encoding: 'buffer', maxBuffer, timeout: MAX_GIT_RUNTIME_MS, windowsHide: true }, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
+    });
+  });
+}
+
+async function validateSelectedRoot(root: string): Promise<void> {
+  const output = await executeWithoutWorkTree(root, [...SAFE_GIT_CONFIG, 'rev-parse', '--show-toplevel'], 32_768);
+  const topLevel = output.toString('utf8').trim();
+  const canonicalTopLevel = topLevel ? path.normalize(realpathSync(topLevel)) : '';
+  if (!canonicalTopLevel || canonicalTopLevel !== path.normalize(root)) {
+    throw new Error(`The selected project is not the Git worktree root. Open the repository root instead: ${canonicalTopLevel || topLevel}`);
+  }
+}
+
+async function inheritedLineEndingConfig(root: string): Promise<string[]> {
+  const readAutoCrlf = async (args: string[], environment = gitEnvironment()): Promise<string | null> => {
+    try {
+      const value = (await executeWithoutWorkTree(root, args, 16_384, environment)).toString('utf8').trim().toLowerCase();
+      if (['true', 'yes', 'on', '1', ''].includes(value)) return 'true';
+      if (['false', 'no', 'off', '0'].includes(value)) return 'false';
+      if (value === 'input') return value;
+      throw new Error('Git core.autocrlf has an unsupported value.');
+    } catch (error) {
+      const code = (error as ExecFailure).code;
+      if (typeof code === 'number' && code !== 0) return null;
+      throw error;
+    }
+  };
+  if (await readAutoCrlf(['config', '--includes', '--get', 'core.autocrlf'])) return [];
+  const systemEnvironment = gitEnvironment();
+  delete systemEnvironment.GIT_CONFIG_NOSYSTEM;
+  const systemValue = await readAutoCrlf(['config', '--system', '--includes', '--get', 'core.autocrlf'], systemEnvironment);
+  return systemValue ? ['-c', `core.autocrlf=${systemValue}`] : [];
+}
+
 function execute(root: string, args: string[], maxBuffer = MAX_GIT_OUTPUT, additionalConfig: readonly string[] = []): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const executable = trustedGitExecutable();
@@ -624,9 +669,8 @@ export class GitService {
     let statusOutput: string;
     let stats = new Map<string, Numstat>();
     try {
-      const topLevel = (await execute(root, ['rev-parse', '--show-toplevel'], 32_768)).toString('utf8').trim();
-      if (!topLevel || path.normalize(realpathSync(topLevel)) !== path.normalize(root)) throw new Error('Git worktree does not match the selected project root.');
-      const filterConfig = await safeFilterConfig(root);
+      await validateSelectedRoot(root);
+      const filterConfig = [...await inheritedLineEndingConfig(root), ...await safeFilterConfig(root)];
       statusOutput = (await execute(root, ['status', '--porcelain=v1', '-z', '--branch', '--untracked-files=all', '--ignore-submodules=all'], MAX_GIT_OUTPUT, filterConfig)).toString('utf8');
       try {
         const numstat = await execute(root, ['diff', '--numstat', '-z', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', 'HEAD', '--'], MAX_GIT_OUTPUT, filterConfig);
@@ -687,6 +731,7 @@ export class GitService {
 
   async worktrees(): Promise<GitWorktree[]> {
     const root = this.files.getRoot();
+    await validateSelectedRoot(root);
     const output = await execute(root, ['worktree', 'list', '--porcelain', '-z'], 1_000_000);
     const parsed = parseGitWorktrees(output.toString('utf8'), root);
     const result: GitWorktree[] = [];
@@ -722,6 +767,7 @@ export class GitService {
     const hooksDirectory = await fs.mkdtemp(path.join(tmpdir(), 'fate-ui-git-hooks-'));
     const filterConfig = await safeFilterConfig(root);
     const worktreeConfig = [
+      ...await inheritedLineEndingConfig(root),
       ...filterConfig,
       '-c', `core.hooksPath=${hooksDirectory}`,
       '-c', 'protocol.allow=never',
@@ -819,10 +865,10 @@ export class GitService {
   history(): Promise<GitHistory> {
     const root = this.files.getRoot();
     if (this.historyRequest?.root === root) return this.historyRequest.promise;
-    const promise = Promise.all([
+    const promise = validateSelectedRoot(root).then(() => Promise.all([
       execute(root, ['log', '-z', '--all', '--topo-order', '--date-order', `-${MAX_HISTORY_COMMITS + 1}`, '--decorate=full', '--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%D'], MAX_GIT_OUTPUT),
       execute(root, ['rev-parse', '--verify', 'HEAD'], 16_384).catch(() => Buffer.alloc(0)),
-    ]).then(([log, headOutput]) => {
+    ])).then(([log, headOutput]) => {
       const parsed = parseGitHistory(log.toString('utf8'), MAX_HISTORY_COMMITS + 1);
       const head = headOutput.toString('utf8').trim();
       return {
@@ -847,6 +893,7 @@ export class GitService {
     const key = `${root}\0${hash}`;
     const cached = this.commitDetailsCache.get(key);
     if (cached) return cached;
+    await validateSelectedRoot(root);
     const [summaryOutput, numstatOutput, nameStatusOutput, remoteOutput] = await Promise.all([
       execute(root, ['show', '-s', '-z', '--decorate=full', '--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%D', hash], 256_000),
       execute(root, ['show', '--format=', '--numstat', '-z', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', '-M', hash, '--'], MAX_GIT_OUTPUT),
@@ -876,7 +923,7 @@ export class GitService {
     const root = this.files.getRoot();
     const status = await this.readStatus(root);
     if (!status.repository) return { patch: '', truncated: false };
-    const filterConfig = await safeFilterConfig(root);
+    const filterConfig = [...await inheritedLineEndingConfig(root), ...await safeFilterConfig(root)];
     let tracked = '';
     let trackedOverflow = false;
     try {
@@ -932,6 +979,7 @@ export class GitService {
       const credentialConfig = await trustedCredentialConfig(root);
       const ssh = trustedSshExecutable();
       const networkConfig = [
+        ...await inheritedLineEndingConfig(root),
         ...(await safeFilterConfig(root)),
         '-c', `core.hooksPath=${hooksDirectory}`,
         '-c', 'protocol.allow=never',
@@ -979,6 +1027,7 @@ export class GitService {
   async diff(relativePath: string): Promise<GitDiff> {
     await this.files.confinePath(relativePath);
     const root = this.files.getRoot();
+    await validateSelectedRoot(root);
     const generation = this.statusGeneration;
     const key = `${root}\0${generation}\0${relativePath}`;
     const cached = this.diffCache.get(key);

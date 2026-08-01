@@ -149,6 +149,32 @@ describe('GitService', () => {
     ]);
   });
 
+  it('rejects a repository subdirectory before Git can treat it as the work tree', async () => {
+    const root = await repository();
+    const nested = path.join(root, 'nested');
+    await fs.mkdir(nested);
+    await fs.writeFile(path.join(root, 'tracked.txt'), 'repository root\n');
+    await fs.writeFile(path.join(nested, 'nested.txt'), 'nested project\n');
+    await run('git', ['add', '.'], { cwd: root });
+    await run('git', ['commit', '-m', 'initial'], { cwd: root });
+
+    const files = new FilesystemService();
+    await files.setRoot(nested);
+    const error = await new GitService(files).status().catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('Open the repository root instead:');
+    expect((error as Error).message).toContain(await fs.realpath(root));
+    await expect(run('git', ['status', '--porcelain'], { cwd: root })).resolves.toMatchObject({ stdout: '' });
+  });
+
+  it('accepts Git boolean aliases for inherited line-ending configuration', async () => {
+    const root = await repository();
+    await run('git', ['config', 'core.autocrlf', 'yes'], { cwd: root });
+    const files = new FilesystemService();
+    await files.setRoot(root);
+    await expect(new GitService(files).status()).resolves.toMatchObject({ repository: true });
+  });
+
   it('disables repository-configured fsmonitor programs during automatic inspection', async () => {
     const root = await repository();
     const marker = path.join(root, 'fsmonitor-ran');
@@ -180,15 +206,16 @@ describe('GitService', () => {
     // The index still carries filter=evil after the worktree attributes file is
     // removed. Automatic inspection must sanitize that indexed driver too.
     await fs.rm(path.join(root, '.gitattributes'));
-    const outsideWorktree = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-desktop-git-worktree-'));
-    temporary.push(outsideWorktree);
-    await run('git', ['config', 'core.worktree', outsideWorktree], { cwd: root });
-
     const files = new FilesystemService();
     await files.setRoot(root);
     await new GitService(files).status();
     await expect(fs.stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.stat(filterMarker)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const outsideWorktree = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-desktop-git-worktree-'));
+    temporary.push(outsideWorktree);
+    await run('git', ['config', 'core.worktree', outsideWorktree], { cwd: root });
+    await expect(new GitService(files).status()).rejects.toThrow('Open the repository root instead:');
   }, 20_000);
 
   it('does not enter dirty submodules during automatic status inspection', async () => {
@@ -307,7 +334,8 @@ describe('GitService', () => {
     const files = new FilesystemService();
     await files.setRoot(root);
     const isolated = await new GitService(files, managedRoot).createWorktree('safe checkout');
-    await expect(fs.readFile(path.join(isolated.path, 'tracked.txt'), 'utf8')).resolves.toBe('value\n');
+    const checkedOut = await fs.readFile(path.join(isolated.path, 'tracked.txt'), 'utf8');
+    expect(checkedOut.replace(/\r\n/gu, '\n')).toBe('value\n');
     await expect(fs.stat(path.join(isolated.path, 'filter-ran'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.stat(path.join(isolated.path, 'post-checkout-ran'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -454,7 +482,8 @@ describe('GitService', () => {
     await run('git', ['commit', '-m', 'third'], { cwd: updater });
     await run('git', ['push', 'origin', 'release'], { cwd: updater });
     await expect(git.runOperation('pull')).resolves.toMatchObject({ operation: 'pull' });
-    await expect(fs.readFile(path.join(root, 'tracked.txt'), 'utf8')).resolves.toBe('three\n');
+    const pulled = await fs.readFile(path.join(root, 'tracked.txt'), 'utf8');
+    expect(pulled.replace(/\r\n/gu, '\n')).toBe('three\n');
   }, 60_000);
 
   it('rejects fetches without remotes and unsafe local remote protocols without running repository hooks', async () => {
