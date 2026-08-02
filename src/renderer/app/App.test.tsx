@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
 import { useRuntimeStore } from '../stores/runtimeStore';
-import { useUiStore } from '../stores/uiStore';
+import { LEFT_MAX, LEFT_MIN, RIGHT_MAX, RIGHT_MIN, useUiStore } from '../stores/uiStore';
 import { App, reconcileHydrationEvents } from './App';
 
 describe('first-launch shell', () => {
@@ -240,6 +240,49 @@ describe('first-launch shell', () => {
     sidebarHandle.focus();
     await user.keyboard('{ArrowRight}');
     expect(sidebarHandle).toHaveAttribute('aria-valuenow', '276');
+  });
+
+  it('keeps pointer and keyboard resizing within pane limits while preserving the center minimum', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const shell = document.querySelector<HTMLElement>('.app-shell');
+    expect(shell?.style.gridTemplateColumns).toContain('min(264px, 27vw) 6px minmax(340px, 1fr) 6px min(332px, 31vw)');
+    const pointer = (type: 'pointerdown' | 'pointermove' | 'pointerup', pointerId: number, clientX: number) => {
+      const event = new Event(type, { bubbles: true });
+      Object.defineProperties(event, { pointerId: { value: pointerId }, clientX: { value: clientX } });
+      return event;
+    };
+
+    const sidebarHandle = screen.getByRole('separator', { name: 'Resize sidebar' });
+    expect(sidebarHandle).toHaveAttribute('aria-valuenow', '264');
+    expect(sidebarHandle).toHaveAttribute('aria-valuemin', String(LEFT_MIN));
+    expect(sidebarHandle).toHaveAttribute('aria-valuemax', String(LEFT_MAX));
+    fireEvent(sidebarHandle, pointer('pointerdown', 1, 100));
+    fireEvent(sidebarHandle, pointer('pointermove', 1, 1_000));
+    fireEvent(sidebarHandle, pointer('pointerup', 1, 1_000));
+    expect(sidebarHandle).toHaveAttribute('aria-valuenow', String(LEFT_MAX));
+
+    const inspectorHandle = screen.getByRole('separator', { name: 'Resize inspector' });
+    expect(inspectorHandle).toHaveAttribute('aria-valuenow', '332');
+    expect(inspectorHandle).toHaveAttribute('aria-valuemin', String(RIGHT_MIN));
+    expect(inspectorHandle).toHaveAttribute('aria-valuemax', String(RIGHT_MAX));
+    fireEvent(inspectorHandle, pointer('pointerdown', 2, 1_000));
+    fireEvent(inspectorHandle, pointer('pointermove', 2, 0));
+    fireEvent(inspectorHandle, pointer('pointerup', 2, 0));
+    expect(inspectorHandle).toHaveAttribute('aria-valuenow', String(RIGHT_MAX));
+
+    act(() => {
+      useUiStore.getState().setLeftWidth(264);
+      useUiStore.getState().setRightWidth(332);
+    });
+    sidebarHandle.focus();
+    for (let index = 0; index < 20; index += 1) await user.keyboard('{ArrowRight}');
+    expect(sidebarHandle).toHaveAttribute('aria-valuenow', String(LEFT_MAX));
+    inspectorHandle.focus();
+    for (let index = 0; index < 20; index += 1) await user.keyboard('{ArrowLeft}');
+    expect(inspectorHandle).toHaveAttribute('aria-valuenow', String(RIGHT_MAX));
+
+    expect(shell?.style.gridTemplateColumns).toContain(`min(${LEFT_MAX}px, 27vw) 6px minmax(340px, 1fr) 6px min(${RIGHT_MAX}px, 31vw)`);
   });
 
   it('buffers live events until startup state hydration completes', async () => {

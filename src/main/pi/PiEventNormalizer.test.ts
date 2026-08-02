@@ -73,6 +73,23 @@ describe('PiEventNormalizer', () => {
     expect(longTool && 'output' in longTool ? longTool.output.length : 0).toBeLessThan(65_000);
   });
 
+  it('carries direct-path provenance through start, update, and completion without parsing output', () => {
+    const normalizer = new PiEventNormalizer(
+      () => 'run-1',
+      'attempt-1:',
+      () => ({ kind: 'legacy', runId: 'run-1', parentToolCallId: 'parent-tool' }),
+    );
+    const started = normalizer.normalize(event({ type: 'tool_execution_start', toolCallId: 'edit-1', toolName: 'edit', args: { path: 'src/app.ts' } }))[0];
+    const updated = normalizer.normalize(event({ type: 'tool_execution_update', toolCallId: 'edit-1', toolName: 'edit', args: {}, partialResult: 'edited /outside/path' }))[0];
+    const completed = normalizer.normalize(event({ type: 'tool_execution_end', toolCallId: 'edit-1', toolName: 'edit', result: 'wrote ../secret', isError: false }))[0];
+    expect(started).toMatchObject({ toolCallId: 'attempt-1:edit-1', provenance: { actor: { kind: 'legacy', runId: 'run-1', parentToolCallId: 'parent-tool' }, affectedPaths: [{ path: 'src/app.ts', operation: 'edit' }] } });
+    expect(updated).toMatchObject({ provenance: started && 'provenance' in started ? started.provenance : undefined });
+    expect(completed).toMatchObject({ provenance: started && 'provenance' in started ? started.provenance : undefined });
+
+    const shell = normalizer.normalize(event({ type: 'tool_execution_start', toolCallId: 'bash-1', toolName: 'bash', args: { command: 'cat src/app.ts', path: 'src/app.ts' } }))[0];
+    expect(shell && 'provenance' in shell ? shell.provenance : undefined).toBeUndefined();
+  });
+
   it('preserves attached and tool-generated images in live events', () => {
     const normalizer = new PiEventNormalizer(() => 'run-1');
     const userMessage = { role: 'user', content: [{ type: 'text', text: 'Inspect this' }, { type: 'image', data: 'dXNlcg==', mimeType: 'image/png' }] };

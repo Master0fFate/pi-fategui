@@ -1,6 +1,7 @@
 import type { AgentSession, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
 import type { AgentTeam, AgentTeamEnvelope, AgentTeamNode, AgentTeamTask } from '../../../shared/contracts/multiAgent';
+import type { ToolProvenance } from '../../../shared/contracts/provenance';
 import type { ChildToolName } from '../SubagentProtocol';
 import type { SelectedSubagentSkill } from '../SubagentSkills';
 import type { TurnLease } from './AgentTeamScheduler';
@@ -10,6 +11,7 @@ export interface AgentNodeRuntime {
   sessionFile?: string;
   sessionDirectory: string;
   unsubscribe?: () => void;
+  toolProvenanceByCall: Map<string, ToolProvenance>;
   lease?: TurnLease;
   turn?: Promise<void>;
   controlQueue: Promise<void>;

@@ -36,6 +36,9 @@ interface WorkspaceStore {
   commitDetailsLoading: Set<string>;
   selectedCommit: string | null;
   selectedChange: string | null;
+  reviewedPaths: Set<string>;
+  reviewPathRequest: { projectPath: string; path: string; nonce: number } | null;
+  reviewNotice: string | null;
   diff: GitDiff | null;
   diffLoading: boolean;
   combinedDiff: GitCombinedDiff | null;
@@ -56,6 +59,9 @@ interface WorkspaceStore {
   loadCombinedDiff: () => Promise<void>;
   runGitOperation: (operation: GitOperation) => Promise<GitOperationResult>;
   selectChange: (path: string) => Promise<void>;
+  toggleReviewed: (path: string) => void;
+  requestReviewPath: (projectPath: string, path: string, nonce: number) => void;
+  resolveReviewPath: () => Promise<void>;
 }
 
 function messageOf(error: unknown): string {
@@ -124,6 +130,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   commitDetailsLoading: new Set(),
   selectedCommit: null,
   selectedChange: null,
+  reviewedPaths: new Set(),
+  reviewPathRequest: null,
+  reviewNotice: null,
   diff: null,
   diffLoading: false,
   combinedDiff: null,
@@ -141,7 +150,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         query: '', searchResults: [], searchTruncated: false, searching: false, selectedFile: null, preview: null,
         previewLoading: false, git: null, gitLoading: false, gitOperation: null, worktrees: [], worktreesLoading: false,
         history: null, historyLoading: false, commitDetails: {}, commitDetailsLoading: new Set(), selectedCommit: null,
-        selectedChange: null, diff: null, diffLoading: false, combinedDiff: null, combinedDiffLoading: false, error: null,
+        selectedChange: null, reviewedPaths: new Set(), reviewPathRequest: null, reviewNotice: null,
+        diff: null, diffLoading: false, combinedDiff: null, combinedDiffLoading: false, error: null,
       });
     }
     if (!projectPath || !surface || !('piDesktop' in window)) return;
@@ -169,9 +179,31 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       set({ gitLoading: true });
       try {
         const git = await desktop.getGitStatus();
-        if (isCurrentGitGeneration(expected, generation) && requestSequence === gitStatusRequestSequence) set({ git, gitLoading: false });
+        if (isCurrentGitGeneration(expected, generation) && requestSequence === gitStatusRequestSequence) {
+          const paths = new Set(git.changes.map((change) => change.path));
+          const selectedChange = get().selectedChange;
+          const hasChanges = git.repository && git.changes.length > 0;
+          set({
+            git,
+            gitLoading: false,
+            reviewedPaths: hasChanges ? new Set([...get().reviewedPaths].filter((path) => paths.has(path))) : new Set(),
+            reviewNotice: null,
+            ...(hasChanges ? {} : { reviewPathRequest: null }),
+            ...(selectedChange && paths.has(selectedChange) ? {} : { selectedChange: null, diff: null, diffLoading: false }),
+          });
+          if (hasChanges) void get().resolveReviewPath();
+        }
       } catch (error) {
-        if (isCurrentGitGeneration(expected, generation) && requestSequence === gitStatusRequestSequence) set({ gitLoading: false, error: messageOf(error) });
+        if (isCurrentGitGeneration(expected, generation) && requestSequence === gitStatusRequestSequence) set({
+          gitLoading: false,
+          error: messageOf(error),
+          selectedChange: null,
+          reviewedPaths: new Set(),
+          reviewPathRequest: null,
+          reviewNotice: null,
+          diff: null,
+          diffLoading: false,
+        });
       }
     }
   },
@@ -269,6 +301,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       commitDetailsLoading: new Set(),
       selectedCommit: null,
       selectedChange: null,
+      reviewedPaths: new Set(),
+      reviewPathRequest: null,
+      reviewNotice: null,
       diff: null,
       diffLoading: false,
       combinedDiff: null,
@@ -374,6 +409,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
           commitDetailsLoading: new Set(),
           selectedCommit: null,
           selectedChange: null,
+          reviewedPaths: new Set(),
+          reviewPathRequest: null,
+          reviewNotice: null,
           diff: null,
           diffLoading: false,
           combinedDiff: null,
@@ -387,13 +425,42 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     }
   },
 
+  toggleReviewed: (path) => {
+    if (!get().git?.changes.some((change) => change.path === path)) return;
+    const reviewedPaths = new Set(get().reviewedPaths);
+    if (reviewedPaths.has(path)) reviewedPaths.delete(path);
+    else reviewedPaths.add(path);
+    set({ reviewedPaths });
+  },
+
+  requestReviewPath: (projectPath, path, nonce) => {
+    if (get().projectPath !== projectPath) return;
+    set({ reviewPathRequest: { projectPath, path, nonce }, reviewNotice: null });
+    void get().resolveReviewPath();
+  },
+
+  resolveReviewPath: async () => {
+    const request = get().reviewPathRequest;
+    const git = get().git;
+    if (!request || !git || get().projectPath !== request.projectPath) return;
+    const change = git.changes.find((candidate) => candidate.path === request.path || candidate.oldPath === request.path);
+    if (!change) {
+      if (get().reviewPathRequest?.nonce === request.nonce) {
+        set({ reviewPathRequest: null, reviewNotice: `${request.path} is no longer in the current change list.` });
+      }
+      return;
+    }
+    if (get().reviewPathRequest?.nonce === request.nonce) set({ reviewPathRequest: null, reviewNotice: null });
+    await get().selectChange(change.path);
+  },
+
   selectChange: async (path) => {
     const expectedProject = get().projectPath;
     if (!expectedProject) return;
     const generation = gitGeneration;
     const requestSequence = ++fileDiffRequestSequence;
     combinedDiffRequestSequence += 1;
-    set({ selectedChange: path, diff: null, diffLoading: true, combinedDiff: null, combinedDiffLoading: false, error: null });
+    set({ selectedChange: path, diff: null, diffLoading: true, combinedDiff: null, combinedDiffLoading: false, error: null, reviewNotice: null });
     try {
       const diff = await window.piDesktop.getGitDiff(path);
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === fileDiffRequestSequence && get().selectedChange === path) set({ diff, diffLoading: false });

@@ -303,12 +303,30 @@ export function ConversationTimeline() {
   const draggedPointerIdRef = useRef<number | null>(null);
   const dragOffsetRef = useRef(0);
   const pinnedToBottomRef = useRef(false);
+  const flightDeckJump = useUiStore((state) => state.flightDeckJump);
+  const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
+  const showToast = useUiStore((state) => state.showToast);
   const userScrollIntentRef = useRef(false);
   const userScrollIntentFrameRef = useRef<number | null>(null);
   const followFrameRef = useRef<number | null>(null);
   const scrollbarFrameRef = useRef<number | null>(null);
   const [scrollerElement, setScrollerElement] = useState<HTMLElement | null>(null);
   const [scrollbarMetrics, setScrollbarMetrics] = useState<ScrollbarMetrics | null>(null);
+
+  useLayoutEffect(() => {
+    if (!flightDeckJump || flightDeckJump.projectPath !== projectPath || flightDeckJump.sessionId !== sessionId) return;
+    const targetId = flightDeckJump.target.kind === 'message'
+      ? flightDeckJump.target.timelineId ?? `message:${flightDeckJump.target.messageId}`
+      : flightDeckJump.target.kind === 'error' ? flightDeckJump.target.timelineId : null;
+    if (!targetId) return;
+    const index = displayOrder.indexOf(targetId);
+    if (index >= 0) {
+      virtuosoRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' });
+    } else {
+      showToast({ kind: 'info', title: 'Activity not retained', message: 'That conversation activity is no longer available in the bounded timeline.' });
+    }
+    clearFlightDeckJump(flightDeckJump.nonce);
+  }, [clearFlightDeckJump, displayOrder, flightDeckJump, projectPath, sessionId, showToast]);
 
   const readScrollbarMetrics = useCallback(() => {
     const scroller = scrollerRef.current;

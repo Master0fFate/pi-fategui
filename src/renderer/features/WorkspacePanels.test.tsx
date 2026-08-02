@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi } from '../../shared/contracts/ipc';
 import { useWorkspaceStore } from '../stores/workspaceStore';
-import { buildCommitGraphRows, ChangeRow, ChangesPanel } from './diffs/ChangesPanel';
+import { buildCommitGraphRows, ChangeRow, ChangesPanel, isReviewTypingTarget, reviewNavigationIndex } from './diffs/ChangesPanel';
 import { FilesPanel } from './files/FilesPanel';
 import { ResourcesPanel } from './resources/ResourcesPanel';
 import { useRuntimeStore } from '../stores/runtimeStore';
@@ -18,7 +18,8 @@ const reset = () => useWorkspaceStore.setState({
   query: '', searchResults: [], searchTruncated: false, searching: false, selectedFile: null, preview: null,
   previewLoading: false, git: null, gitLoading: false, gitOperation: null, worktrees: [], worktreesLoading: false,
   history: null, historyLoading: false, commitDetails: {}, commitDetailsLoading: new Set(), selectedCommit: null,
-  selectedChange: null, diff: null, diffLoading: false, combinedDiff: null, combinedDiffLoading: false, error: null,
+  selectedChange: null, reviewedPaths: new Set(), reviewPathRequest: null, reviewNotice: null,
+  diff: null, diffLoading: false, combinedDiff: null, combinedDiffLoading: false, error: null,
 });
 
 describe('workspace inspector panels', () => {
@@ -29,6 +30,79 @@ describe('workspace inspector panels', () => {
   afterEach(() => {
     Reflect.deleteProperty(window, 'piDesktop');
     Reflect.deleteProperty(navigator, 'clipboard');
+  });
+
+  it('keeps review navigation bounded and does not classify typing targets as shortcuts', () => {
+    expect(reviewNavigationIndex('ArrowDown', 0, 3)).toBe(1);
+    expect(reviewNavigationIndex('j', 2, 3)).toBe(2);
+    expect(reviewNavigationIndex('k', 0, 3)).toBe(0);
+    expect(reviewNavigationIndex('Home', 2, 3)).toBe(0);
+    expect(reviewNavigationIndex('End', 0, 3)).toBe(2);
+    const input = document.createElement('input');
+    const editable = document.createElement('div');
+    editable.contentEditable = 'true';
+    const monaco = document.createElement('div');
+    monaco.className = 'monaco-editor';
+    const monacoChild = document.createElement('div');
+    monaco.append(monacoChild);
+    expect(isReviewTypingTarget(input)).toBe(true);
+    expect(isReviewTypingTarget(editable)).toBe(true);
+    expect(isReviewTypingTarget(monacoChild)).toBe(true);
+    expect(isReviewTypingTarget(document.createElement('button'))).toBe(false);
+  });
+
+  it('does not navigate Review Runway from modifiers or typing/editor descendants', () => {
+    const getGitDiff = vi.fn(async (path: string) => ({ path, state: 'text' as const, original: '', modified: '', language: 'typescript', openable: true }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { getGitDiff } as unknown as PiDesktopApi });
+    useWorkspaceStore.setState({
+      selectedChange: 'src/a.ts',
+      git: {
+        repository: true, branch: 'main', upstream: null, pushTarget: null, ahead: 0, behind: 0, additions: 2, deletions: 0, truncated: false,
+        changes: [
+          { path: 'src/a.ts', indexStatus: ' ', workTreeStatus: 'M', additions: 1, deletions: 0, binary: false },
+          { path: 'src/b.ts', indexStatus: ' ', workTreeStatus: 'M', additions: 1, deletions: 0, binary: false },
+        ],
+      },
+    });
+    render(<ChangesPanel />);
+    const runway = screen.getByLabelText('Changed files', { selector: '[data-review-runway="true"]' });
+    for (const modifier of [{ altKey: true }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) {
+      fireEvent.keyDown(runway, { key: 'j', ...modifier });
+    }
+
+    const input = document.createElement('input');
+    const textarea = document.createElement('textarea');
+    const select = document.createElement('select');
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    const monaco = document.createElement('div');
+    monaco.className = 'monaco-editor';
+    const monacoChild = document.createElement('span');
+    monaco.append(monacoChild);
+    for (const target of [input, textarea, select, editable, monacoChild]) {
+      runway.append(target === monacoChild ? monaco : target);
+      fireEvent.keyDown(target, { key: 'j' });
+    }
+
+    expect(getGitDiff).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Previous changed file' })).toBeDisabled();
+    expect(useWorkspaceStore.getState().selectedChange).toBe('src/a.ts');
+  });
+
+  it('resolves review requests only through the current Git change list and supports renamed origins', async () => {
+    const getGitDiff = vi.fn(async (path: string) => ({ path, state: 'text' as const, original: '', modified: '', language: 'typescript', openable: true }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { getGitDiff } as unknown as PiDesktopApi });
+    useWorkspaceStore.setState({ git: {
+      repository: true, branch: 'main', upstream: null, pushTarget: null, ahead: 0, behind: 0, additions: 1, deletions: 1, truncated: false,
+      changes: [{ path: 'src/new.ts', oldPath: 'src/old.ts', indexStatus: 'R', workTreeStatus: ' ', additions: 1, deletions: 1, binary: false }],
+    } });
+    useWorkspaceStore.getState().requestReviewPath('C:/project', 'src/old.ts', 1);
+    await vi.waitFor(() => expect(getGitDiff).toHaveBeenCalledWith('src/new.ts'));
+    expect(useWorkspaceStore.getState()).toMatchObject({ selectedChange: 'src/new.ts', reviewPathRequest: null, reviewNotice: null });
+
+    useWorkspaceStore.getState().requestReviewPath('C:/project', '../secret', 2);
+    expect(getGitDiff).toHaveBeenCalledTimes(1);
+    expect(useWorkspaceStore.getState().reviewNotice).toContain('no longer in the current change list');
   });
 
   it('loads only the inspector surface that is actually visible', async () => {
@@ -46,6 +120,30 @@ describe('workspace inspector panels', () => {
     expect(getGitStatus).toHaveBeenCalledOnce();
   });
 
+  it('drops stale review state when Git initializes clean, non-repository, or errors', async () => {
+    const stale = () => useWorkspaceStore.setState({
+      git: null, selectedChange: 'stale.ts', reviewedPaths: new Set(['stale.ts']),
+      reviewPathRequest: { projectPath: 'C:/project', path: 'stale.ts', nonce: 1 }, reviewNotice: 'stale',
+      diff: { path: 'stale.ts', state: 'text', original: '', modified: '', language: 'typescript', openable: true },
+    });
+    stale();
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {
+      getGitStatus: vi.fn(async () => ({ repository: false, branch: '', upstream: null, pushTarget: null, ahead: 0, behind: 0, changes: [], additions: 0, deletions: 0, truncated: false })),
+    } as unknown as PiDesktopApi });
+    await useWorkspaceStore.getState().initialize('C:/project', 'changes');
+    expect(useWorkspaceStore.getState()).toMatchObject({ selectedChange: null, reviewPathRequest: null, reviewNotice: null, diff: null });
+    expect(useWorkspaceStore.getState().reviewedPaths.size).toBe(0);
+
+    reset();
+    stale();
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {
+      getGitStatus: vi.fn(async () => { throw new Error('Git failed'); }),
+    } as unknown as PiDesktopApi });
+    await useWorkspaceStore.getState().initialize('C:/project', 'changes');
+    expect(useWorkspaceStore.getState()).toMatchObject({ selectedChange: null, reviewPathRequest: null, reviewNotice: null, diff: null, error: 'Git failed' });
+    expect(useWorkspaceStore.getState().reviewedPaths.size).toBe(0);
+  });
+
   it('does not send an empty search request before a project is open', async () => {
     const searchFiles = vi.fn(async () => ({ entries: [], truncated: false }));
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { searchFiles } as unknown as PiDesktopApi });
@@ -61,12 +159,30 @@ describe('workspace inspector panels', () => {
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { getGitStatus } as unknown as PiDesktopApi });
     useWorkspaceStore.setState({
       selectedChange: 'stale.ts',
+      reviewedPaths: new Set(['stale.ts']),
+      reviewPathRequest: { projectPath: 'C:/project', path: 'stale.ts', nonce: 4 },
+      reviewNotice: 'stale notice',
       diff: { path: 'stale.ts', state: 'text', original: 'old', modified: 'new', language: 'typescript', openable: true },
     });
 
     const refresh = useWorkspaceStore.getState().refreshGit();
-    expect(useWorkspaceStore.getState()).toMatchObject({ selectedChange: null, diff: null, diffLoading: false });
+    expect(useWorkspaceStore.getState()).toMatchObject({ selectedChange: null, diff: null, diffLoading: false, reviewPathRequest: null, reviewNotice: null });
+    expect(useWorkspaceStore.getState().reviewedPaths.size).toBe(0);
     await refresh;
+  });
+
+  it('clears review state when a Git operation replaces the change list', async () => {
+    const status = { repository: true, branch: 'main', upstream: null, pushTarget: null, ahead: 0, behind: 0, changes: [], additions: 0, deletions: 0, truncated: false };
+    const runGitOperation = vi.fn(async () => ({ operation: 'fetch' as const, status, message: 'Fetched' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { runGitOperation } as unknown as PiDesktopApi });
+    useWorkspaceStore.setState({
+      git: { ...status, changes: [{ path: 'stale.ts', indexStatus: ' ', workTreeStatus: 'M', additions: 1, deletions: 0, binary: false }] },
+      selectedChange: 'stale.ts', reviewedPaths: new Set(['stale.ts']),
+      reviewPathRequest: { projectPath: 'C:/project', path: 'stale.ts', nonce: 1 }, reviewNotice: 'stale',
+    });
+    await useWorkspaceStore.getState().runGitOperation('fetch');
+    expect(useWorkspaceStore.getState()).toMatchObject({ selectedChange: null, reviewPathRequest: null, reviewNotice: null });
+    expect(useWorkspaceStore.getState().reviewedPaths.size).toBe(0);
   });
 
   it('keeps a stable view toggle and loads branch history on demand', async () => {

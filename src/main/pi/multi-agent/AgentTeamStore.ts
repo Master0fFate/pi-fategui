@@ -148,7 +148,7 @@ export function appendTimeline(
   runtime: AgentTeamRuntime,
   type: AgentTeamTimelineEvent['type'],
   summary: string,
-  refs: Pick<AgentTeamTimelineEvent, 'nodeId' | 'taskId' | 'envelopeId'> = {},
+  refs: Pick<AgentTeamTimelineEvent, 'nodeId' | 'taskId' | 'envelopeId' | 'toolCallId' | 'toolName' | 'messageId' | 'provenance'> = {},
   timestamp = Date.now(),
 ): void {
   runtime.sequence += 1;

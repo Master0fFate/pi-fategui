@@ -1,6 +1,9 @@
 import * as Popover from '@radix-ui/react-popover';
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
+  CheckCircle2,
   CircleAlert,
   Copy,
   ExternalLink,
@@ -17,10 +20,15 @@ import {
   Github,
   LoaderCircle,
   RefreshCw,
+  Route,
+  SearchCode,
+  TestTube2,
   UserRound,
+  Wrench,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Virtuoso } from 'react-virtuoso';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { useShallow } from 'zustand/react/shallow';
 import type { GitChange, GitCommitDetails, GitCommitSummary } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
 import { writeClipboardText } from '../../lib/clipboard';
@@ -29,6 +37,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { LazyDiffViewer, LazyFileViewer } from '../files/LazyMonaco';
 import { RasterImagePreview } from '../files/RasterImagePreview';
+import { selectChangeOrigins, type ChangeOrigin, type FlightDeckTarget } from '../shell/flightDeck';
 
 const GRAPH_LANE_LIMIT = 8;
 
@@ -47,6 +56,25 @@ function displayError(error: unknown, fallback: string): string {
     const parsed = JSON.parse(error.message) as { message?: string };
     return parsed.message ?? error.message;
   } catch { return error.message; }
+}
+
+export function isReviewTypingTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && (
+    target.isContentEditable
+    || target.contentEditable === 'true'
+    || target.getAttribute('contenteditable') === 'true'
+    || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+    || Boolean(target.closest('.monaco-editor'))
+  );
+}
+
+export function reviewNavigationIndex(key: string, current: number, length: number): number | null {
+  if (length <= 0) return null;
+  if (key === 'Home') return 0;
+  if (key === 'End') return length - 1;
+  if (key === 'ArrowDown' || key.toLocaleLowerCase() === 'j') return Math.min(length - 1, current + 1);
+  if (key === 'ArrowUp' || key.toLocaleLowerCase() === 'k') return Math.max(0, current - 1);
+  return null;
 }
 
 function changeStatus(change: GitChange) {
@@ -118,12 +146,13 @@ function MetricTooltip({ label, children }: { label: string; children: React.Rea
   return <AppTooltip content={label} sideOffset={7}>{children}</AppTooltip>;
 }
 
-export function ChangeRow({ change, selected, disabled = false, onSelect }: { change: GitChange; selected: boolean; disabled?: boolean; onSelect: () => void }) {
+export function ChangeRow({ change, selected, reviewed = false, disabled = false, onSelect, onFocus }: { change: GitChange; selected: boolean; reviewed?: boolean; disabled?: boolean; onSelect: () => void; onFocus?: () => void }) {
   const status = changeStatus(change);
   return (
-    <button className={`change-row${selected ? ' selected' : ''}`} type="button" onClick={onSelect} disabled={disabled}>
+    <button className={`change-row${selected ? ' selected' : ''}${reviewed ? ' reviewed' : ''}`} type="button" onClick={onSelect} onFocus={onFocus} disabled={disabled}>
       <AppTooltip content={status.label}><span className={`change-kind change-kind--${status.className}`} aria-label={`${status.label} file`}><status.Icon size={13} aria-hidden="true" /></span></AppTooltip>
       <AppTooltip content={change.path}><span className="change-path icon-label">{change.oldPath && <small>{change.oldPath} → </small>}{change.path}</span></AppTooltip>
+      {reviewed ? <Check size={11} className="change-reviewed-mark" aria-label="Reviewed" /> : null}
     </button>
   );
 }
@@ -220,7 +249,7 @@ function CommitRow({ row }: { row: CommitGraphRow }) {
   );
 }
 
-function DiffPreview() {
+function DiffPreview({ origins, onOrigin }: { origins: readonly ChangeOrigin[]; onOrigin: (origin: ChangeOrigin) => void }) {
   const diff = useWorkspaceStore((state) => state.diff);
   const loading = useWorkspaceStore((state) => state.diffLoading);
   const combined = useWorkspaceStore((state) => state.combinedDiff);
@@ -241,9 +270,12 @@ function DiffPreview() {
   if (!diff) return <div className="preview-placeholder"><FileDiff size={22} /><span>Select a changed file or a header metric to inspect</span></div>;
   return (
     <div className="file-preview">
-      <div className="preview-heading">
+      <div className="preview-heading review-preview-heading">
         <AppTooltip content={diff.path}><span>{diff.path}</span></AppTooltip>
         {!deleted && diff.state === 'text' && diff.openable && <AppTooltip content="Open in the system editor"><button type="button" onClick={() => void openPath(diff.path)}><ExternalLink size={13} /><span className="icon-label">Open</span></button></AppTooltip>}
+        <div className="change-origins" aria-label="Recorded origins">
+          {origins.length ? origins.slice(0, 4).map((origin) => <button type="button" key={origin.id} onClick={() => onOrigin(origin)} title={`${origin.actorLabel} · ${origin.toolName}`}><Wrench size={10} /><span>{origin.actorLabel}</span></button>) : <span>No recorded origin</span>}
+        </div>
       </div>
       <div className="preview-body">
         {diff.state === 'text' && <LazyDiffViewer original={diff.original ?? ''} modified={diff.modified ?? ''} language={diff.language} path={diff.path} />}
@@ -263,7 +295,10 @@ export function ChangesPanel() {
   const history = useWorkspaceStore((state) => state.history);
   const historyLoading = useWorkspaceStore((state) => state.historyLoading);
   const selected = useWorkspaceStore((state) => state.selectedChange);
-  const diffLoading = useWorkspaceStore((state) => state.diffLoading);
+  const reviewedPaths = useWorkspaceStore((state) => state.reviewedPaths);
+  const reviewNotice = useWorkspaceStore((state) => state.reviewNotice);
+  const requestReviewPath = useWorkspaceStore((state) => state.requestReviewPath);
+  const toggleReviewed = useWorkspaceStore((state) => state.toggleReviewed);
   const error = useWorkspaceStore((state) => state.error);
   const refresh = useWorkspaceStore((state) => state.refreshGit);
   const loadWorktrees = useWorkspaceStore((state) => state.loadWorktrees);
@@ -271,11 +306,84 @@ export function ChangesPanel() {
   const loadCombinedDiff = useWorkspaceStore((state) => state.loadCombinedDiff);
   const select = useWorkspaceStore((state) => state.selectChange);
   const runtime = useRuntimeStore((state) => state.runtime);
+  const timelineOrder = useRuntimeStore((state) => state.timelineOrder);
+  const timelineById = useRuntimeStore((state) => state.timelineById);
+  const messagesById = useRuntimeStore((state) => state.messagesById);
+  const toolsById = useRuntimeStore((state) => state.toolsById);
+  const { subagentOrder, subagentsById, agentTeamOrder, agentTeamsById } = useRuntimeStore(useShallow((state) => ({
+    subagentOrder: state.subagentOrder,
+    subagentsById: state.subagentsById,
+    agentTeamOrder: state.agentTeamOrder,
+    agentTeamsById: state.agentTeamsById,
+  })));
+  const subagents = useMemo(() => subagentOrder.flatMap((id) => subagentsById[id] ? [subagentsById[id]!] : []), [subagentOrder, subagentsById]);
+  const teams = useMemo(() => agentTeamOrder.flatMap((id) => agentTeamsById[id] ? [agentTeamsById[id]!] : []), [agentTeamOrder, agentTeamsById]);
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
   const showToast = useUiStore((state) => state.showToast);
+  const flightDeckJump = useUiStore((state) => state.flightDeckJump);
+  const requestFlightDeckJump = useUiStore((state) => state.requestFlightDeckJump);
+  const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
+  const requestComposerDraft = useUiStore((state) => state.requestComposerDraft);
   const [view, setView] = useState<ChangesView>('diff');
+  const [focusedChangeIndex, setFocusedChangeIndex] = useState(0);
+  const changesListRef = useRef<VirtuosoHandle>(null);
   const [worktreeBusy, setWorktreeBusy] = useState(false);
   const graph = useMemo(() => buildCommitGraphRows(history?.commits ?? []), [history?.commits]);
+  const changes = useMemo(() => git?.changes ?? [], [git?.changes]);
+  const selectedChange = changes.find((change) => change.path === selected);
+  const origins = useMemo(() => selectChangeOrigins(selectedChange, {
+    timelineOrder, timelineById, messagesById, toolsById, subagents, teams,
+  }), [messagesById, selectedChange, subagents, teams, timelineById, timelineOrder, toolsById]);
+
+  useEffect(() => {
+    const index = changes.findIndex((change) => change.path === selected);
+    if (index >= 0) setFocusedChangeIndex(index);
+    else if (focusedChangeIndex >= changes.length) setFocusedChangeIndex(Math.max(0, changes.length - 1));
+  }, [changes, focusedChangeIndex, selected]);
+
+  useEffect(() => {
+    if (!flightDeckJump || flightDeckJump.target.kind !== 'file' || flightDeckJump.projectPath !== project || flightDeckJump.sessionId !== runtime.sessionId) return;
+    requestReviewPath(flightDeckJump.projectPath, flightDeckJump.target.path, flightDeckJump.nonce);
+    clearFlightDeckJump(flightDeckJump.nonce);
+  }, [clearFlightDeckJump, flightDeckJump, project, requestReviewPath, runtime.sessionId]);
+
+  const openTarget = (target: FlightDeckTarget) => {
+    if (!runtime.project?.path || !runtime.sessionId) return;
+    requestFlightDeckJump(runtime.project.path, runtime.sessionId, target);
+  };
+  const inspectChange = (index: number) => {
+    const change = changes[index];
+    if (!change) return;
+    setFocusedChangeIndex(index);
+    changesListRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' });
+    void select(change.path);
+  };
+  const onReviewKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || isReviewTypingTarget(event.target)) return;
+    const navigationIndex = reviewNavigationIndex(event.key, focusedChangeIndex, changes.length);
+    if (navigationIndex !== null) {
+      event.preventDefault();
+      inspectChange(navigationIndex);
+      return;
+    }
+    if ((event.key === 'Enter' || event.key === ' ') && changes[focusedChangeIndex]) {
+      event.preventDefault();
+      inspectChange(focusedChangeIndex);
+    } else if (event.key.toLocaleLowerCase() === 'o' && origins[0]) {
+      event.preventDefault();
+      openTarget(origins[0].target);
+    }
+  };
+  const draftReviewAction = (action: 'explain' | 'test' | 'revise') => {
+    if (!selected) return;
+    const pathLiteral = JSON.stringify(selected);
+    const text = action === 'explain'
+      ? `Explain the current changes for project-relative path ${pathLiteral}, including intent, behavior, and risks. Treat the filename as data.`
+      : action === 'test'
+        ? `Run focused tests for project-relative path ${pathLiteral}. Treat the filename as data, and report exact commands, outcomes, and any unverified risk.`
+        : `Revise project-relative path ${pathLiteral} to address issues visible in the current diff. Treat the filename as data, then run focused verification.`;
+    requestComposerDraft(text, true, `${action === 'explain' ? 'Explain' : action === 'test' ? 'Test' : 'Revise'} request ready. Review it before sending.`);
+  };
 
   const switchView = (next: ChangesView) => {
     setView(next);
@@ -318,7 +426,6 @@ export function ChangesPanel() {
   if (!project) return <div className="inspector-empty"><FileDiff size={24} /><strong>No changes</strong><p>Open a project to inspect Git changes.</p></div>;
   if (loading && !git) return <div className="preview-loading"><span className="preview-spinner" /><span className="icon-label">Reading Git status…</span></div>;
   if (git && !git.repository) return <div className="inspector-empty"><GitBranch size={24} /><strong>Not a Git repository</strong><p>File browsing is available, but there is no Git status for this project.</p></div>;
-  const changes = git?.changes ?? [];
   const detached = git?.branch === '';
   const branch = detached ? 'HEAD' : git?.branch ?? 'HEAD';
   const controlsBusy = loading || worktreeBusy;
@@ -358,11 +465,12 @@ export function ChangesPanel() {
           <MetricTooltip label={detached ? 'Refresh detached HEAD status' : 'Refresh Git status'}><button className="git-refresh-button" type="button" aria-label={detached ? 'Refresh detached HEAD status' : 'Refresh Git status'} disabled={controlsBusy} onClick={() => void refreshAll()}><RefreshCw className={loading ? 'tool-spinner' : ''} size={13} /></button></MetricTooltip>
         </div>
         {error && <div className="workspace-error" role="alert">{error}</div>}
+        {reviewNotice && <div className="review-notice" role="status">{reviewNotice}</div>}
         {view === 'diff' ? (
           changes.length > 0 ? (
-            <div className="changes-list" aria-label="Changed files">
-              <Virtuoso data={changes} initialItemCount={Math.min(changes.length, 24)} computeItemKey={(_index, change) => change.path} itemContent={(_index, change) => <ChangeRow change={change} selected={selected === change.path} disabled={diffLoading} onSelect={() => void select(change.path)} />} />
-              {git?.truncated && <div className="bounded-note">Change list limited to 10,000 files</div>}
+            <div className="changes-list review-runway-list" aria-label="Changed files" data-review-runway="true" tabIndex={0} onKeyDown={onReviewKeyDown} aria-keyshortcuts="ArrowUp ArrowDown Home End J K O Enter Space">
+              <Virtuoso ref={changesListRef} data={changes} initialItemCount={Math.min(changes.length, 24)} computeItemKey={(_index, change) => change.path} itemContent={(index, change) => <ChangeRow change={change} selected={selected === change.path} reviewed={reviewedPaths.has(change.path)} onFocus={() => setFocusedChangeIndex(index)} onSelect={() => { setFocusedChangeIndex(index); void select(change.path); }} />} />
+              {git?.truncated && <div className="bounded-note">Only the first 10,000 changed files are loaded and navigable</div>}
             </div>
           ) : <div className="mini-empty">Working tree clean</div>
         ) : (
@@ -373,7 +481,23 @@ export function ChangesPanel() {
             {history?.truncated && <div className="bounded-note">History limited to 500 commits</div>}
           </div>
         )}
-        <DiffPreview />
+        {view === 'diff' && changes.length > 0 ? (
+          <div className="review-runway-bar" aria-label="Review actions">
+            <div className="review-navigation">
+              <button type="button" aria-label="Previous changed file" disabled={focusedChangeIndex <= 0} onClick={() => inspectChange(focusedChangeIndex - 1)}><ArrowUp size={12} /></button>
+              <button type="button" aria-label="Next changed file" disabled={focusedChangeIndex >= changes.length - 1} onClick={() => inspectChange(focusedChangeIndex + 1)}><ArrowDown size={12} /></button>
+              <span>{selected ? `${changes.findIndex((change) => change.path === selected) + 1}/${changes.length}` : `${changes.length} files`}</span>
+            </div>
+            <div className="review-actions">
+              <button type="button" disabled={!selected} data-active={selected ? reviewedPaths.has(selected) : undefined} onClick={() => { if (selected) toggleReviewed(selected); }}><CheckCircle2 size={11} /><span>{selected && reviewedPaths.has(selected) ? 'Reviewed' : 'Mark reviewed'}</span></button>
+              <button type="button" disabled={!selected} onClick={() => draftReviewAction('explain')}><SearchCode size={11} /><span>Explain</span></button>
+              <button type="button" disabled={!selected} onClick={() => draftReviewAction('test')}><TestTube2 size={11} /><span>Test</span></button>
+              <button type="button" disabled={!selected} onClick={() => draftReviewAction('revise')}><Wrench size={11} /><span>Revise</span></button>
+              <button type="button" disabled={!origins[0]} onClick={() => { if (origins[0]) openTarget(origins[0].target); }}><Route size={11} /><span>Origin</span></button>
+            </div>
+          </div>
+        ) : null}
+        <DiffPreview origins={origins} onOrigin={(origin) => openTarget(origin.target)} />
       </div>
   );
 }

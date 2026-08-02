@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { toolProvenanceSchema } from './provenance';
 
 export const AGENT_TEAM_MAX_DEPTH = 2;
 export const AGENT_TEAM_MAX_NODES = 16;
@@ -110,10 +111,14 @@ export const agentTeamOperationReceiptSchema = z.object({
 export const agentTeamTimelineEventSchema = z.object({
   id,
   sequence: z.number().int().nonnegative(),
-  type: z.enum(['team.created', 'node.created', 'node.updated', 'task.created', 'task.updated', 'envelope.created', 'envelope.updated', 'node.interrupted', 'node.closed', 'team.restored', 'team.closed']),
+  type: z.enum(['team.created', 'node.created', 'node.updated', 'task.created', 'task.updated', 'envelope.created', 'envelope.updated', 'node.interrupted', 'node.closed', 'team.restored', 'team.closed', 'tool.started', 'tool.completed', 'message.completed', 'error']),
   nodeId: id.optional(),
   taskId: id.optional(),
   envelopeId: id.optional(),
+  toolCallId: id.optional(),
+  toolName: z.string().min(1).max(200).optional(),
+  messageId: id.optional(),
+  provenance: toolProvenanceSchema.optional(),
   summary: z.string().min(1).max(1_000),
   timestamp: z.number().finite(),
 }).strict();

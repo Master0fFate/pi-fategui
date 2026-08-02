@@ -782,7 +782,7 @@ describe('SubagentCoordinator', () => {
     await coordinator.cancelAll();
   });
 
-  it('restores completed snapshots and marks unmatched parent tool calls interrupted', async () => {
+  it('restores interrupted children once and keeps repeated management reads terminal and idempotent', async () => {
     const parent = parentSession();
     const children = childFactory();
     const coordinator = new SubagentCoordinator({
@@ -791,14 +791,29 @@ describe('SubagentCoordinator', () => {
     }, children.factory);
     const result = await executeTool(coordinator, { task: 'Inspect the project', role: 'scout', permission: 'read-only' });
     const details = result.details as SubagentToolDetails;
+    const staleManagedRun: SubagentRun = {
+      ...details.runs![0]!,
+      id: 'managed-before-restart',
+      parentToolCallId: 'managed-start',
+      task: 'Persist through restart',
+      executionMode: 'managed',
+      status: 'running',
+      mailbox: { state: 'available', ttlMs: 120_000, expiresAt: 1, followUpCount: 2 },
+      updatedAt: 20,
+      endedAt: undefined,
+      result: undefined,
+      error: 'stale provider metadata',
+    };
     const history = [
       {
         role: 'assistant', timestamp: 10, content: [
           { type: 'toolCall', id: 'delegate-1', name: 'subagent', arguments: { task: 'Inspect the project', role: 'scout', permission: 'read-only' } },
           { type: 'toolCall', id: 'unfinished', name: 'subagent', arguments: { task: 'Finish later', role: 'worker', permission: 'edit' } },
+          { type: 'toolCall', id: 'managed-start', name: 'subagent_start', arguments: { task: 'Persist through restart', mailboxTtlSeconds: 120 } },
         ],
       },
       { role: 'toolResult', toolCallId: 'delegate-1', toolName: 'subagent', details, content: [{ type: 'text', text: 'done' }] },
+      { role: 'toolResult', toolCallId: 'managed-start', toolName: 'subagent_start', details: { kind: 'fate-subagent', version: 3, runIds: [staleManagedRun.id], runs: [staleManagedRun] }, content: [{ type: 'text', text: 'launched' }] },
     ];
     const restoredParent = parentSession(history);
     const restored = new SubagentCoordinator({
@@ -808,10 +823,41 @@ describe('SubagentCoordinator', () => {
 
     restored.restoreParent(restoredParent);
 
-    expect(restored.getRuns('parent-1').map((run) => run.status).sort()).toEqual(['completed', 'interrupted']);
-    expect(restored.getRuns('parent-1').find((run) => run.status === 'interrupted')).toMatchObject({
-      task: 'Finish later', role: 'worker', error: expect.stringContaining('restarted'),
+    expect(restored.getRuns('parent-1').map((run) => run.status).sort()).toEqual(['completed', 'interrupted', 'interrupted']);
+    const interrupted = restored.getRuns('parent-1').find((run) => run.task === 'Finish later');
+    expect(interrupted).toMatchObject({
+      task: 'Finish later', role: 'worker', status: 'interrupted', mailbox: { state: 'disabled' },
+      result: 'Fate UI restarted before this child run settled.',
     });
+    expect(interrupted?.error).toBeUndefined();
+    const persistedInterrupted = restored.getRuns('parent-1').find((run) => run.id === staleManagedRun.id);
+    expect(persistedInterrupted).toMatchObject({
+      status: 'interrupted', result: 'Fate UI restarted before this child run settled.',
+      mailbox: { state: 'expired', ttlMs: 120_000, followUpCount: 2 },
+    });
+    expect(persistedInterrupted?.error).toBeUndefined();
+    expect(persistedInterrupted?.timeoutAt).toBeUndefined();
+
+    const recoveredState = restored.getRuns('parent-1');
+    const modelRuntime = runtime();
+    const list = await executeNamedTool(restored, modelRuntime, 'subagent_manage', 'restart-list-1', { action: 'list' });
+    const listAgain = await executeNamedTool(restored, modelRuntime, 'subagent_manage', 'restart-list-2', { action: 'list' });
+    const status = await executeNamedTool(restored, modelRuntime, 'subagent_manage', 'restart-status-1', { action: 'status', runIds: [`@${persistedInterrupted?.handle}`] });
+    const statusAgain = await executeNamedTool(restored, modelRuntime, 'subagent_manage', 'restart-status-2', { action: 'status', runIds: [`@${persistedInterrupted?.handle}`] });
+    const waited = await executeNamedTool(restored, modelRuntime, 'subagent_manage', 'restart-wait-1', { action: 'wait', runIds: [`@${persistedInterrupted?.handle}`], until: 'all', timeoutSeconds: 0 });
+    const waitedAgain = await executeNamedTool(restored, modelRuntime, 'subagent_manage', 'restart-wait-2', { action: 'wait', runIds: [`@${persistedInterrupted?.handle}`], until: 'all', timeoutSeconds: 0 });
+
+    expect(listAgain.content).toEqual(list.content);
+    expect(statusAgain.content).toEqual(status.content);
+    expect(waitedAgain.content).toEqual(waited.content);
+    for (const response of [status, statusAgain, waited, waitedAgain]) {
+      expect(subagentToolDetailsSchema.parse(response.details).runs?.[0]).toMatchObject({
+        id: persistedInterrupted?.id, status: 'interrupted', result: 'Fate UI restarted before this child run settled.',
+      });
+      expect(subagentToolDetailsSchema.parse(response.details).runs?.[0]?.error).toBeUndefined();
+    }
+    expect(restored.getRuns('parent-1')).toEqual(recoveredState);
+    expect(children.prompts).toEqual(['Inspect the project']);
   });
 
   it('cancels promptly during child setup and disposes a session that arrives late', async () => {

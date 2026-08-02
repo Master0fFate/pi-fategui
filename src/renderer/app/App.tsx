@@ -70,6 +70,13 @@ export function reconcileHydrationEvents(runtime: RuntimeState, events: readonly
     // Queue, compaction, and error events own renderer-only presentation state
     // that is not fully represented by RuntimeState.
     return true;
+  }).map((event) => {
+    if (event.cursor === undefined || event.cursor > watermark) return event;
+    // The reconciliation above proved this pre-watermark event is not represented
+    // by the authoritative snapshot. Replay that specific gap as uncursored so the
+    // store's monotonic cursor gate can still reject every duplicate/regression.
+    const { cursor: _representedCursor, ...reconciledGap } = event;
+    return reconciledGap as PiEvent;
   });
 }
 const MusicPlayerDock = lazy(() => import('../features/music/MusicPlayerDock').then((module) => ({ default: module.MusicPlayerDock })));
@@ -80,6 +87,7 @@ export function App() {
   const hydrateRuntime = useRuntimeStore((state) => state.hydrateRuntime);
   const applyEvents = useRuntimeStore((state) => state.applyEvents);
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
+  const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
   const initializeWorkspace = useWorkspaceStore((state) => state.initialize);
   const inspectorCollapsed = useUiStore((state) => state.inspectorCollapsed);
   const inspectorTab = useUiStore((state) => state.inspectorTab);
@@ -87,6 +95,13 @@ export function App() {
   const [hydrationAttempt, setHydrationAttempt] = useState(0);
   const [hydrationError, setHydrationError] = useState<string | null>(null);
   const sessionReplacementBusy = useRef(false);
+
+  useEffect(() => {
+    const jump = useUiStore.getState().flightDeckJump;
+    if (jump && (jump.projectPath !== projectPath || jump.sessionId !== sessionId)) {
+      useUiStore.getState().clearFlightDeckJump(jump.nonce);
+    }
+  }, [projectPath, sessionId]);
 
   useEffect(() => {
     const surface = inspectorCollapsed ? null : inspectorTab === 'files' ? 'files' : inspectorTab === 'changes' ? 'changes' : null;

@@ -9,7 +9,8 @@ import {
   Sparkles,
   ShieldCheck,
 } from 'lucide-react';
-import { Virtuoso } from 'react-virtuoso';
+import { useEffect, useRef } from 'react';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { IconButton } from '../../components/IconButton';
 import { ToolCard } from '../chat/ToolCard';
 import { ChangesPanel } from '../diffs/ChangesPanel';
@@ -34,11 +35,29 @@ const tabs = [
 
 function ToolsPanel() {
   const order = useRuntimeStore((state) => state.toolOrder);
+  const toolsById = useRuntimeStore((state) => state.toolsById);
+  const projectPath = useRuntimeStore((state) => state.runtime.project?.path);
+  const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
+  const jump = useUiStore((state) => state.flightDeckJump);
+  const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
+  const showToast = useUiStore((state) => state.showToast);
+  const listRef = useRef<VirtuosoHandle>(null);
+  useEffect(() => {
+    if (!jump || jump.projectPath !== projectPath || jump.sessionId !== sessionId || jump.target.kind !== 'tool') return;
+    const index = order.indexOf(jump.target.toolCallId);
+    if (index < 0 || !toolsById[jump.target.toolCallId]) {
+      showToast({ kind: 'info', title: 'Activity not retained', message: 'That tool execution is no longer available in the bounded timeline.' });
+      clearFlightDeckJump(jump.nonce);
+      return;
+    }
+    listRef.current?.scrollToIndex({ index, align: 'center', behavior: 'auto' });
+  }, [clearFlightDeckJump, jump, order, projectPath, sessionId, showToast, toolsById]);
   if (order.length === 0) {
     return <div className="inspector-empty"><ListChecks size={24} /><strong>No tool activity</strong><p>Pi tool executions will be shown chronologically.</p></div>;
   }
   return (
     <Virtuoso
+      ref={listRef}
       className="tool-history"
       data={order}
       computeItemKey={(_index, id) => id}

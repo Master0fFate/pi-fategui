@@ -3,13 +3,27 @@ import type { PiEvent, SubagentRun, SubagentWorkflowLivenessReport } from '../..
 import { createTeamRuntime, projectTeam } from '../../main/pi/multi-agent/AgentTeamStore';
 import { MAX_LIVE_TIMELINE_ENTITIES, MAX_LIVE_TOOL_OUTPUT, useRuntimeStore } from './runtimeStore';
 
+const resetRuntime = (sessionId: string) => ({
+  status: 'ready' as const,
+  project: { path: '/project', name: 'project', trusted: true },
+  sessionId,
+  sessionFile: null,
+  streaming: false,
+  model: null,
+  models: [],
+  thinkingLevel: 'medium' as const,
+  messages: [],
+  commands: [],
+  error: null,
+});
+
 const reset = () => useRuntimeStore.setState({
   runtime: { status: 'disconnected', project: null, sessionId: null, sessionFile: null, streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null },
   messagesById: {}, messageOrder: [], reasoningByMessageId: {}, toolsById: {}, toolOrder: [],
   subagentsById: {}, subagentOrder: [],
   agentTeamsById: {}, agentTeamOrder: [], agentNodesById: {}, agentTasksById: {}, agentEnvelopesById: {},
   timelineById: {}, timelineOrder: [], visibleTimelineOrder: [], visibleTimelineIds: new Set(), queue: { steering: 0, followUp: 0, items: [] }, lastError: null,
-  sequence: 0, activeCompactionId: null,
+  sequence: 0, timelineSequence: 0, activeCompactionId: null,
 });
 
 describe('runtimeStore event reducer', () => {
@@ -27,6 +41,46 @@ describe('runtimeStore event reducer', () => {
 
     reset();
     expect(useRuntimeStore.getState().agentTeamOrder).toEqual([]);
+  });
+
+  it('ignores duplicate and regressive cursored events without breaking uncursored fixtures', () => {
+    useRuntimeStore.getState().hydrateRuntime({
+      ...resetRuntime('session-a'), eventCursor: 5,
+      messages: [{ id: 'stream', role: 'assistant', text: 'snapshot', timestamp: 1 }],
+    });
+    useRuntimeStore.getState().applyEvents([
+      { type: 'assistant.text', messageId: 'stream', delta: '-duplicate', timestamp: 2, cursor: 5 },
+      { type: 'assistant.text', messageId: 'stream', delta: '-new', timestamp: 3, cursor: 6 },
+      { type: 'assistant.text', messageId: 'stream', delta: '-regressive', timestamp: 4, cursor: 4 },
+      { type: 'assistant.text', messageId: 'stream', delta: '-same', timestamp: 5, cursor: 6 },
+    ]);
+    expect(useRuntimeStore.getState().messagesById.stream?.text).toBe('snapshot-new');
+    expect(useRuntimeStore.getState().sequence).toBe(6);
+
+    useRuntimeStore.getState().applyEvents([{ type: 'assistant.text', messageId: 'stream', delta: '-fixture', timestamp: 6 }]);
+    expect(useRuntimeStore.getState().messagesById.stream?.text).toBe('snapshot-new-fixture');
+  });
+
+  it('does not let a stale tool start overwrite a cursored completion', () => {
+    useRuntimeStore.getState().hydrateRuntime(resetRuntime('session-a'));
+    useRuntimeStore.getState().applyEvents([
+      { type: 'tool.completed', toolCallId: 'edit-1', name: 'edit', output: 'done', error: false, timestamp: 4, cursor: 4 },
+      { type: 'tool.started', toolCallId: 'edit-1', name: 'edit', input: '{}', timestamp: 3, cursor: 3 },
+    ]);
+    expect(useRuntimeStore.getState().toolsById['edit-1']).toMatchObject({ status: 'succeeded', output: 'done', endedAt: 4 });
+  });
+
+  it('accepts a lower cursor only across an authoritative project/session boundary', () => {
+    useRuntimeStore.getState().hydrateRuntime({ ...resetRuntime('session-a'), eventCursor: 50 });
+    useRuntimeStore.getState().applyEvents([{
+      type: 'state.changed', cursor: 1, timestamp: 1, messagesIncluded: true,
+      state: { ...resetRuntime('session-b'), eventCursor: 1 },
+    }, {
+      type: 'message.completed', cursor: 2, messageId: 'new-session', role: 'assistant', text: 'fresh', timestamp: 2,
+    }]);
+    expect(useRuntimeStore.getState().runtime.sessionId).toBe('session-b');
+    expect(useRuntimeStore.getState().messagesById['new-session']?.text).toBe('fresh');
+    expect(useRuntimeStore.getState().sequence).toBe(2);
   });
 
   it('updates only the streamed message entity across a batched delta', () => {
@@ -199,7 +253,7 @@ describe('runtimeStore event reducer', () => {
 
   it('models structured tool transitions and bounds live output', () => {
     useRuntimeStore.getState().applyEvents([
-      { type: 'tool.started', toolCallId: 't1', name: 'bash', input: '{"command":"test"}', timestamp: 10 },
+      { type: 'tool.started', toolCallId: 't1', name: 'edit', input: '{"path":"src/app.ts"}', provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'src/app.ts', operation: 'edit' }] }, timestamp: 10 },
       { type: 'tool.updated', toolCallId: 't1', output: 'x'.repeat(MAX_LIVE_TOOL_OUTPUT + 100), timestamp: 11 },
     ]);
     expect(useRuntimeStore.getState().toolsById.t1?.status).toBe('running');
@@ -207,9 +261,9 @@ describe('runtimeStore event reducer', () => {
     expect(useRuntimeStore.getState().toolsById.t1?.outputTruncated).toBe(true);
 
     useRuntimeStore.getState().applyEvents([
-      { type: 'tool.completed', toolCallId: 't1', name: 'bash', output: 'failed', error: true, timestamp: 20 },
+      { type: 'tool.completed', toolCallId: 't1', name: 'edit', output: 'failed', error: true, timestamp: 20 },
     ]);
-    expect(useRuntimeStore.getState().toolsById.t1).toMatchObject({ status: 'error', output: 'failed', startedAt: 10, endedAt: 20 });
+    expect(useRuntimeStore.getState().toolsById.t1).toMatchObject({ status: 'error', output: 'failed', startedAt: 10, endedAt: 20, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'src/app.ts', operation: 'edit' }] } });
     expect(useRuntimeStore.getState().timelineOrder).toEqual(['tool:t1']);
   });
 

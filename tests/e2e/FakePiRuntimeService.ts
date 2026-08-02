@@ -36,7 +36,19 @@ function agentTeamFixture(): AgentTeam {
     ],
     tasks: [{ id: 'e2e-team-review-task', teamId, assigneeNodeId: reviewerId, requesterNodeId: rootId, inputEnvelopeId: 'e2e-team-review-envelope', summary: 'Review the Agent Teams V2 flow', status: 'running', createdAt: now, startedAt: now }],
     envelopes: [{ id: 'e2e-team-review-envelope', teamId, sequence: 1, kind: 'NEW_TASK', authorNodeId: rootId, recipientNodeId: reviewerId, taskId: 'e2e-team-review-task', content: 'Review the Agent Teams V2 flow', triggerTurn: true, state: 'consumed', createdAt: now, deliveredAt: now }],
-    operationReceipts: [], timeline: [{ id: 'e2e-team-created', sequence: 1, type: 'team.created', summary: 'Agent Team V2 test fixture created.', timestamp: now }], createdAt: now, updatedAt: now,
+    operationReceipts: [], timeline: [
+      { id: 'e2e-team-created', sequence: 1, type: 'team.created', summary: 'Agent Team V2 test fixture created.', timestamp: now },
+      {
+        id: 'e2e-team-edit-started', sequence: 2, type: 'tool.started', summary: '/root/reviewer started edit.', timestamp: now + 1,
+        nodeId: reviewerId, taskId: 'e2e-team-review-task', toolCallId: 'e2e-team-edit', toolName: 'edit',
+        provenance: { actor: { kind: 'team', teamId, nodeId: reviewerId, taskId: 'e2e-team-review-task' }, affectedPaths: [{ path: 'src/example.ts', operation: 'edit' }] },
+      },
+      {
+        id: 'e2e-team-edit-completed', sequence: 3, type: 'tool.completed', summary: '/root/reviewer completed edit.', timestamp: now + 2,
+        nodeId: reviewerId, taskId: 'e2e-team-review-task', toolCallId: 'e2e-team-edit', toolName: 'edit',
+        provenance: { actor: { kind: 'team', teamId, nodeId: reviewerId, taskId: 'e2e-team-review-task' }, affectedPaths: [{ path: 'src/example.ts', operation: 'edit' }] },
+      },
+    ], createdAt: now, updatedAt: now,
   };
 }
 
@@ -107,7 +119,11 @@ export class FakePiRuntimeService {
     if (input.text === '__FATE_AGENT_FIXTURE__') {
       this.subagents = [
         agentFixture('e2e-auth-reviewer', 'auth-reviewer-1', 'Auth Reviewer', 'Review the authentication flow', 'running', { state: 'closed', ttlMs: 300_000, followUpCount: 0 }),
-        agentFixture('e2e-test-runner', 'test-runner-1', 'Test Runner', 'Run the desktop regression suite', 'completed', { state: 'available', ttlMs: 300_000, expiresAt: Date.now() + 300_000, followUpCount: 0 }),
+        {
+          ...agentFixture('e2e-test-runner', 'test-runner-1', 'Test Runner', 'Run the desktop regression suite', 'completed', { state: 'available', ttlMs: 300_000, expiresAt: Date.now() + 300_000, followUpCount: 0 }),
+          omittedActivity: 1,
+          transcriptTruncated: true,
+        },
       ];
       const timestamp = Date.now();
       const runIds = this.subagents.map((run) => run.id);

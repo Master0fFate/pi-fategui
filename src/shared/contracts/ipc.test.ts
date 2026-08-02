@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, openUpdateDownloadResultSchema, piEventBatchSchema, piEventSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, subagentControlInputSchema, subagentRunSchema, subagentToolDetailsSchema, subagentWorkflowSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, updateCheckResultSchema, windowStateSchema } from './ipc';
+import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, openUpdateDownloadResultSchema, piEventBatchSchema, piEventSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, runtimeToolSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, subagentControlInputSchema, subagentRunSchema, subagentToolDetailsSchema, subagentWorkflowSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, updateCheckResultSchema, windowStateSchema } from './ipc';
 
 describe('IPC contracts', () => {
   it('accepts only an empty object for system info input', () => {
@@ -96,6 +96,19 @@ describe('IPC contracts', () => {
     expect(() => promptInputSchema.parse({ text: '', extra: true })).toThrow();
     expect(() => piEventBatchSchema.parse(Array.from({ length: 101 }, () => ({ type: 'run.started', runId: 'r', timestamp: 1 })))).toThrow();
     expect(() => runtimeStateSchema.parse({ status: 'ready' })).toThrow();
+  });
+
+  it('validates enriched tool provenance in snapshots and event batches', () => {
+    const provenance = { actor: { kind: 'root' as const }, affectedPaths: [{ path: 'src/app.ts', operation: 'edit' as const }] };
+    const tool = { id: 'tool-1', name: 'edit', input: '{}', output: '', outputTruncated: false, status: 'running', startedAt: 1, updatedAt: 1, provenance };
+    expect(runtimeToolSchema.parse(tool).provenance).toEqual(provenance);
+    expect(piEventSchema.parse({ type: 'tool.started', toolCallId: 'tool-1', name: 'edit', input: '{}', provenance, timestamp: 1 })).toMatchObject({ provenance });
+    expect(piEventBatchSchema.parse([{ type: 'tool.completed', toolCallId: 'tool-1', name: 'edit', output: 'done', error: false, provenance, timestamp: 2 }])).toHaveLength(1);
+    expect(() => runtimeToolSchema.parse({ ...tool, provenance: { ...provenance, affectedPaths: [{ path: '../secret', operation: 'edit' }] } })).toThrow();
+    expect(() => piEventBatchSchema.parse([{ type: 'tool.started', toolCallId: 'tool-1', name: 'edit', input: '{}', provenance: { ...provenance, command: 'cat secret' }, timestamp: 1 }])).toThrow();
+    expect(() => piEventSchema.parse({ type: 'tool.started', toolCallId: 'tool-1', name: 'edit', input: '{}', timestamp: 1, unexpected: 'not allowed' })).toThrow();
+    const validState = { status: 'ready', project: null, sessionId: null, sessionFile: null, streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], error: null };
+    expect(() => piEventSchema.parse({ type: 'state.changed', state: validState, messagesIncluded: false, timestamp: 1, unexpected: true })).toThrow();
   });
 
   it('bounds Git worktree, history, commit-detail, global-diff, and operation contracts', () => {

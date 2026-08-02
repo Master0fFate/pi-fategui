@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiEvent, RuntimeState } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
+import { useUiStore } from '../../stores/uiStore';
 import { ConversationTimeline, getConversationScrollbarMetrics } from './ConversationTimeline';
 
 const virtuosoMock = vi.hoisted(() => ({
@@ -113,6 +114,7 @@ describe('conversation output auto-scroll', () => {
     });
     useRuntimeStore.getState().setRuntime({ ...ready(), sessionId: null });
     useRuntimeStore.getState().setRuntime(ready());
+    useUiStore.setState({ flightDeckJump: null, toast: null });
   });
 
   afterEach(() => {
@@ -197,6 +199,33 @@ describe('conversation output auto-scroll', () => {
     flushAnimationFrames();
     expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledTimes(5);
     expect(virtuosoMock.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it('consumes retained and missing Flight Recorder jumps exactly once', () => {
+    apply([{ type: 'message.completed', messageId: 'retained', role: 'assistant', text: 'Answer', timestamp: 1 }]);
+    render(<ConversationTimeline />);
+    virtuosoMock.scrollToIndex.mockClear();
+
+    act(() => useUiStore.getState().requestFlightDeckJump('/project', 's1', { kind: 'message', messageId: 'retained' }));
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledOnce();
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledWith({ index: 0, align: 'center', behavior: 'auto' });
+    expect(useUiStore.getState().flightDeckJump).toBeNull();
+
+    apply([
+      { type: 'message.completed', messageId: 'later', role: 'assistant', text: 'Later', timestamp: 2 },
+      { type: 'error', error: { code: 'UNKNOWN', message: 'Failed', retryable: false }, timestamp: 3 },
+    ]);
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledOnce();
+
+    act(() => useUiStore.getState().requestFlightDeckJump('/project', 's1', { kind: 'error', timelineId: 'error:1' }));
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledTimes(2);
+    expect(virtuosoMock.scrollToIndex).toHaveBeenLastCalledWith({ index: 2, align: 'center', behavior: 'auto' });
+    expect(useUiStore.getState().flightDeckJump).toBeNull();
+
+    act(() => useUiStore.getState().requestFlightDeckJump('/project', 's1', { kind: 'message', messageId: 'missing' }));
+    expect(useUiStore.getState().flightDeckJump).toBeNull();
+    expect(useUiStore.getState().toast).toMatchObject({ title: 'Activity not retained' });
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledTimes(2);
   });
 
   it('keeps following when a reasoning row changes layout before the scheduled scroll', () => {

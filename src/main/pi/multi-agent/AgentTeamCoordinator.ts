@@ -2,12 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AgentSession, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
+import type { AgentSession, AgentSessionEvent, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
 import type { AgentTeam, AgentTeamControlInput, AgentTeamEnvelope, AgentTeamNode, AgentTeamTask } from '../../../shared/contracts/multiAgent';
+import type { ToolActor } from '../../../shared/contracts/provenance';
 import { addUsage, createSdkChildSession, emptyUsage, finalAssistant, usageFromMessages } from '../SubagentSessionFactory';
 import { assertContextTransfer } from '../SubagentContext';
 import { toolNamesForPermission } from '../PiToolPolicy';
+import { createToolProvenance } from '../ToolProvenance';
 import { discoverSubagentProfiles, resolveSubagentProfile } from '../SubagentProfiles';
 import { assertSkillTools, selectSubagentSkills } from '../SubagentSkills';
 import { childToolNames, modelInfo, type ChildToolName, type ParentModel } from '../SubagentProtocol';
@@ -155,6 +157,7 @@ export class AgentTeamCoordinator {
       const nodeRuntime = await this.createNodeSession(runtime, node, prepared, modelRuntime);
       nodeRuntime.lease = lease;
       runtime.nodeRuntime.set(node.id, nodeRuntime);
+      this.attachNodeRecorder(runtime, node, nodeRuntime);
       input.state = 'delivered';
       input.deliveredAt = Date.now();
       node.status = 'active';
@@ -415,6 +418,10 @@ export class AgentTeamCoordinator {
   releaseRoot(rootSessionId: string): void {
     const runtime = this.teamsByRoot.get(rootSessionId);
     if (!runtime || this.hasOwnedWork(rootSessionId)) return;
+    for (const nodeRuntime of runtime.nodeRuntime.values()) {
+      try { nodeRuntime.unsubscribe?.(); } catch { /* Best effort. */ }
+      nodeRuntime.toolProvenanceByCall.clear();
+    }
     this.teamsByRoot.delete(rootSessionId);
     this.schedulers.delete(runtime.state.id);
     this.listeners.delete(runtime.state.id);
@@ -423,6 +430,12 @@ export class AgentTeamCoordinator {
 
   reset(): void {
     if ([...this.teamsByRoot.keys()].some((root) => this.hasActiveWork(root))) throw new Error('Cannot reset Agent Teams while a descendant turn is active.');
+    for (const runtime of this.teamsByRoot.values()) {
+      for (const nodeRuntime of runtime.nodeRuntime.values()) {
+        try { nodeRuntime.unsubscribe?.(); } catch { /* Best effort. */ }
+        nodeRuntime.toolProvenanceByCall.clear();
+      }
+    }
     this.teamsByRoot.clear();
     this.nodeToRoot.clear();
     this.schedulers.clear();
@@ -596,6 +609,7 @@ export class AgentTeamCoordinator {
       sessionDirectory,
       modelRuntime,
       controlQueue: Promise.resolve(),
+      toolProvenanceByCall: new Map(),
       profileSystemPrompt: prepared.profileSystemPrompt,
       ...(prepared.instructions ? { instructions: prepared.instructions } : {}),
       selectedSkills: prepared.selectedSkills,
@@ -644,15 +658,86 @@ export class AgentTeamCoordinator {
       sessionDirectory,
       modelRuntime,
       controlQueue: Promise.resolve(),
+      toolProvenanceByCall: new Map(),
       profileSystemPrompt: existing?.profileSystemPrompt ?? '',
       ...(existing?.instructions ? { instructions: existing.instructions } : {}),
       selectedSkills: existing?.selectedSkills ?? [],
       skillMode: existing?.skillMode ?? 'all',
     };
     runtime.nodeRuntime.set(node.id, reopened);
+    this.attachNodeRecorder(runtime, node, reopened);
     const pending = [...runtime.envelopes.values()].filter((envelope) => envelope.recipientNodeId === node.id && envelope.state === 'queued' && !envelope.triggerTurn);
     for (const envelope of pending) await this.deliverEnvelope(runtime, envelope, envelope.kind === 'FINAL_ANSWER');
     return reopened;
+  }
+
+  private attachNodeRecorder(runtime: AgentTeamRuntime, node: AgentTeamNode, nodeRuntime: AgentNodeRuntime): void {
+    try { nodeRuntime.unsubscribe?.(); } catch { /* Best effort. */ }
+    nodeRuntime.toolProvenanceByCall.clear();
+    const session = nodeRuntime.session;
+    if (!session || typeof session.subscribe !== 'function') return;
+    nodeRuntime.unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+      const now = Date.now();
+      const currentTaskId = node.currentTaskId;
+      const actor: ToolActor = {
+        kind: 'team',
+        teamId: runtime.state.id,
+        nodeId: node.id,
+        ...(currentTaskId ? { taskId: currentTaskId } : {}),
+      };
+      if (event.type === 'tool_execution_start') {
+        const provenance = createToolProvenance(event.toolName, event.args, actor);
+        if (provenance) {
+          nodeRuntime.toolProvenanceByCall.set(event.toolCallId, provenance);
+          while (nodeRuntime.toolProvenanceByCall.size > 32) {
+            const oldest = nodeRuntime.toolProvenanceByCall.keys().next().value as string | undefined;
+            if (!oldest) break;
+            nodeRuntime.toolProvenanceByCall.delete(oldest);
+          }
+        }
+        appendTimeline(runtime, 'tool.started', `${node.path} started ${event.toolName}.`, {
+          nodeId: node.id,
+          ...(currentTaskId ? { taskId: currentTaskId } : {}),
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          ...(provenance ? { provenance } : {}),
+        }, now);
+        this.changed(runtime, `${node.path} recorded ${event.toolName} start.`);
+        return;
+      }
+      if (event.type === 'tool_execution_end') {
+        const provenance = nodeRuntime.toolProvenanceByCall.get(event.toolCallId);
+        nodeRuntime.toolProvenanceByCall.delete(event.toolCallId);
+        const taskId = provenance?.actor.kind === 'team' ? provenance.actor.taskId : currentTaskId;
+        appendTimeline(runtime, 'tool.completed', `${node.path} ${event.isError ? 'failed' : 'completed'} ${event.toolName}.`, {
+          nodeId: node.id,
+          ...(taskId ? { taskId } : {}),
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          ...(provenance ? { provenance } : {}),
+        }, now);
+        this.changed(runtime, `${node.path} recorded ${event.toolName} completion.`);
+        return;
+      }
+      if (event.type === 'message_end') {
+        const message = event.message as { role?: unknown; stopReason?: unknown; isError?: unknown };
+        if (message.role !== 'assistant') return;
+        const failed = message.stopReason === 'error' || message.isError === true;
+        appendTimeline(runtime, failed ? 'error' : 'message.completed', failed ? `${node.path} completed with an error.` : `${node.path} completed a message.`, {
+          nodeId: node.id,
+          ...(currentTaskId ? { taskId: currentTaskId } : {}),
+        }, now);
+        this.changed(runtime, `${node.path} recorded a completed message.`);
+        return;
+      }
+      if (event.type === 'message_update' && event.assistantMessageEvent.type === 'error') {
+        appendTimeline(runtime, 'error', `${node.path} reported a model error.`, {
+          nodeId: node.id,
+          ...(currentTaskId ? { taskId: currentTaskId } : {}),
+        }, now);
+        this.changed(runtime, `${node.path} recorded a model error.`);
+      }
+    });
   }
 
   private async runTurn(runtime: AgentTeamRuntime, node: AgentTeamNode, task: AgentTeamTask, prompt: string, signal?: AbortSignal): Promise<void> {
@@ -824,6 +909,7 @@ export class AgentTeamCoordinator {
       if (activeNodeStatuses.has(node.status) || nodeRuntime.session?.isStreaming) return;
       try { nodeRuntime.unsubscribe?.(); } catch { /* Best effort. */ }
       delete nodeRuntime.unsubscribe;
+      nodeRuntime.toolProvenanceByCall.clear();
       try { nodeRuntime.session?.dispose(); } catch { /* Persistent context remains reopenable. */ }
       nodeRuntime.session = null;
       this.changed(runtime, `${node.path} released its idle in-memory session after retention expiry.`);
@@ -841,6 +927,8 @@ export class AgentTeamCoordinator {
     if (nodeRuntime) delete nodeRuntime.retentionTimer;
     if (nodeRuntime?.session?.isStreaming) await nodeRuntime.session.abort().catch(() => undefined);
     nodeRuntime?.lease?.release();
+    try { nodeRuntime?.unsubscribe?.(); } catch { /* Best effort. */ }
+    nodeRuntime?.toolProvenanceByCall.clear();
     try { nodeRuntime?.session?.dispose(); } catch { /* Durable state remains authoritative. */ }
     runtime.nodeRuntime.delete(node.id);
     node.status = 'closed';

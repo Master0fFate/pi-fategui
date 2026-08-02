@@ -282,6 +282,7 @@ export function applySubagentChildEvent(input: SubagentRun, event: SubagentChild
       updatedAt: event.timestamp,
       timelinePosition: toolIndex >= 0 ? tools[toolIndex]?.timelinePosition : nextPosition(run),
       ...(event.subagentRunIds === undefined ? {} : { subagentRunIds: event.subagentRunIds }),
+      ...(event.provenance === undefined ? {} : { provenance: event.provenance }),
     };
     if (toolIndex >= 0) tools[toolIndex] = next;
     else tools.push(next);
@@ -304,6 +305,7 @@ export function applySubagentChildEvent(input: SubagentRun, event: SubagentChild
       output: event.output,
       updatedAt: event.timestamp,
       ...(event.subagentRunIds === undefined ? {} : { subagentRunIds: event.subagentRunIds }),
+      ...((event.provenance ?? existing.provenance) === undefined ? {} : { provenance: event.provenance ?? existing.provenance }),
     };
     if (toolIndex >= 0) tools[toolIndex] = next;
     else tools.push(next);
@@ -324,6 +326,7 @@ export function applySubagentChildEvent(input: SubagentRun, event: SubagentChild
       timelinePosition: existing?.timelinePosition ?? nextPosition(run),
       ...(event.images === undefined ? {} : { images: event.images }),
       ...(event.subagentRunIds === undefined ? {} : { subagentRunIds: event.subagentRunIds }),
+      ...((event.provenance ?? existing?.provenance) === undefined ? {} : { provenance: event.provenance ?? existing?.provenance }),
     };
     if (toolIndex >= 0) tools[toolIndex] = next;
     else tools.push(next);

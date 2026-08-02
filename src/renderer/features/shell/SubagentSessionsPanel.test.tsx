@@ -1,11 +1,13 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeState, SubagentRun } from '../../../shared/contracts/ipc';
+import type { AgentTeam } from '../../../shared/contracts/multiAgent';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { ToolCard } from '../chat/ToolCard';
 import { Inspector } from './Inspector';
+import { SubagentSessionsPanel } from './SubagentSessionsPanel';
 
 const run: SubagentRun = {
   id: 'subagent-1',
@@ -46,6 +48,28 @@ const run: SubagentRun = {
   usage: { input: 120, output: 24, cacheRead: 0, cacheWrite: 0, cost: 0.001, contextTokens: 144, turns: 1 },
 };
 
+const team: AgentTeam = {
+  id: 'team-1', rootSessionId: 'parent-1', protocolVersion: 2, status: 'active', rootNodeId: 'team-root',
+  limits: { maxDepth: 2, maxNodes: 16, maxActiveTurns: 3, maxMessages: 256, maxMessageBytes: 32_768 },
+  activeTurns: 0, writerNodeId: null, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  nodes: [
+    {
+      id: 'team-root', teamId: 'team-1', parentNodeId: null, path: '/root', handle: 'root', displayName: 'Root', depth: 0,
+      role: 'root', agentName: 'direct', permissionLevel: 'full-access', enabledTools: ['read'], model: run.model,
+      thinkingLevel: 'medium', status: 'ready', childIds: ['team-reviewer'], unreadMessages: 0, writer: false,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 }, createdAt: 1, updatedAt: 2,
+    },
+    {
+      id: 'team-reviewer', teamId: 'team-1', parentNodeId: 'team-root', path: '/root/reviewer', handle: 'reviewer', displayName: 'Reviewer', depth: 1,
+      role: 'reviewer', agentName: 'direct', permissionLevel: 'read-only', enabledTools: ['read'], model: run.model,
+      thinkingLevel: 'medium', status: 'ready', currentTaskId: 'team-task', childIds: [], unreadMessages: 0, writer: false,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 }, createdAt: 1, updatedAt: 2,
+    },
+  ],
+  tasks: [{ id: 'team-task', teamId: 'team-1', assigneeNodeId: 'team-reviewer', requesterNodeId: 'team-root', inputEnvelopeId: 'team-envelope', summary: 'Review the change', status: 'completed', createdAt: 1, startedAt: 1, endedAt: 2 }],
+  envelopes: [], operationReceipts: [], timeline: [], createdAt: 1, updatedAt: 2,
+};
+
 const state: RuntimeState = {
   status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 'parent-1', sessionFile: '/sessions/parent.jsonl',
   streaming: false, model: run.model, models: [run.model], thinkingLevel: 'medium', messages: [],
@@ -64,7 +88,7 @@ describe('subagent session inspector', () => {
   beforeEach(() => {
     localStorage.clear();
     useRuntimeStore.getState().hydrateRuntime(state);
-    useUiStore.setState({ inspectorTab: 'changes', selectedSubagentRunId: null, inspectorCollapsed: false });
+    useUiStore.setState({ inspectorTab: 'changes', selectedSubagentRunId: null, inspectorCollapsed: false, flightDeckJump: null, toast: null });
   });
 
   afterEach(() => {
@@ -157,6 +181,64 @@ describe('subagent session inspector', () => {
     expect(within(workflows).getByText('@foundation')).toBeInTheDocument();
     expect(within(workflows).getByText('@resume-me')).toHaveAttribute('data-status', 'interrupted');
     expect(within(workflows).getByText('Workflow liveness checkpoint · adaptive-limit')).toBeInTheDocument();
+  });
+
+  it('consumes a retained tool jump after focus without clearing a newer nonce', async () => {
+    const view = render(<ToolCard toolCallId="delegate-1" />);
+    act(() => useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', { kind: 'tool', toolCallId: 'delegate-1' }));
+    const tool = screen.getByRole('article', { name: 'subagent tool completed' });
+    await waitFor(() => expect(useUiStore.getState().flightDeckJump).toBeNull());
+    expect(tool).toHaveFocus();
+    expect(tool).not.toHaveAttribute('data-flight-focus');
+
+    const clearFlightDeckJump = useUiStore.getState().clearFlightDeckJump;
+    let requestedNewerJump = false;
+    useUiStore.setState({
+      clearFlightDeckJump: (nonce) => {
+        if (!requestedNewerJump) {
+          requestedNewerJump = true;
+          useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', { kind: 'agent', runId: 'newer-run' });
+        }
+        clearFlightDeckJump(nonce);
+      },
+    });
+    act(() => useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', { kind: 'tool', toolCallId: 'delegate-1' }));
+    await waitFor(() => expect(useUiStore.getState().flightDeckJump?.target).toEqual({ kind: 'agent', runId: 'newer-run' }));
+    useUiStore.setState({ clearFlightDeckJump });
+    clearFlightDeckJump(useUiStore.getState().flightDeckJump?.nonce);
+    view.unmount();
+
+    render(<Inspector onCollapse={vi.fn()} />);
+    act(() => useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', { kind: 'tool', toolCallId: 'not-retained' }));
+    await waitFor(() => expect(useUiStore.getState().flightDeckJump).toBeNull());
+    expect(useUiStore.getState().toast).toMatchObject({ title: 'Activity not retained' });
+  });
+
+  it('consumes retained agent-run jumps and resolves missing runs once', async () => {
+    act(() => useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', { kind: 'agent', runId: run.id }));
+    render(<SubagentSessionsPanel />);
+    const detail = screen.getByRole('region', { name: 'Architecture Scout agent session' });
+    await waitFor(() => expect(useUiStore.getState().flightDeckJump).toBeNull());
+    expect(detail).toHaveFocus();
+
+    act(() => useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', { kind: 'agent', runId: 'not-retained' }));
+    await waitFor(() => expect(useUiStore.getState().flightDeckJump).toBeNull());
+    expect(useUiStore.getState().toast).toMatchObject({ title: 'Activity not retained' });
+  });
+
+  it.each([
+    ['team node', { kind: 'team-node' as const, teamId: team.id, nodeId: 'team-reviewer' }],
+    ['team task', { kind: 'task' as const, teamId: team.id, taskId: 'team-task' }],
+  ])('consumes a retained %s jump after focusing its rendered node', async (_label, target) => {
+    useRuntimeStore.getState().hydrateRuntime({ ...state, agentTeams: [team] });
+    render(<SubagentSessionsPanel />);
+    expect(screen.getByRole('region', { name: 'Flight Recorder' })).toBeInTheDocument();
+    act(() => useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', target));
+    const node = screen.getByLabelText('Reviewer Agent Team node ready').closest('article');
+    expect(node).not.toBeNull();
+    await waitFor(() => expect(useUiStore.getState().flightDeckJump).toBeNull());
+    expect(node).toHaveFocus();
+    expect(node).not.toHaveAttribute('data-flight-focus');
   });
 
   it('discovers nested children, opens a controlled transcript, and deep-links from the parent tool', async () => {

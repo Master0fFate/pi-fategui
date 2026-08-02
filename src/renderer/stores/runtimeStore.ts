@@ -55,7 +55,10 @@ interface RuntimeStore {
   visibleTimelineIds: Set<string>;
   queue: RuntimeQueue;
   lastError: AppError | null;
+  /** Last accepted main-process event cursor. Uncursored fixtures do not advance it. */
   sequence: number;
+  /** Renderer-local identity sequence for uncursored notice rows. */
+  timelineSequence: number;
   activeCompactionId: string | null;
   pendingSessionSwitch: { projectPath: string; sessionId: string; generation: number } | null;
   sessionSwitchGeneration: number;
@@ -88,12 +91,12 @@ function boundLiveText(value: string): string {
 
 function coalesceAdjacentStreamDelta(events: readonly PiEvent[], startIndex: number): { event: PiEvent; lastIndex: number } {
   const first = events[startIndex]!;
-  if (first.type !== 'assistant.text' && first.type !== 'assistant.reasoning') return { event: first, lastIndex: startIndex };
+  if (first.cursor !== undefined || (first.type !== 'assistant.text' && first.type !== 'assistant.reasoning')) return { event: first, lastIndex: startIndex };
   let delta = first.delta;
   let lastIndex = startIndex;
   while (lastIndex + 1 < events.length) {
     const next = events[lastIndex + 1]!;
-    if (next.type !== first.type || next.messageId !== first.messageId) break;
+    if (next.cursor !== undefined || next.type !== first.type || next.messageId !== first.messageId) break;
     delta += next.delta;
     lastIndex += 1;
   }
@@ -260,6 +263,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   queue: emptyQueue(),
   lastError: null,
   sequence: 0,
+  timelineSequence: 0,
   activeCompactionId: null,
   pendingSessionSwitch: null,
   sessionSwitchGeneration: 0,
@@ -294,6 +298,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         ...agentTeams,
         queue: runtime.queue ?? current.queue,
         lastError: runtime.error,
+        sequence: runtime.eventCursor === undefined ? current.sequence : Math.max(current.sequence, runtime.eventCursor),
         pendingSessionSwitch: current.pendingSessionSwitch
           && current.pendingSessionSwitch.projectPath === runtime.project?.path
           && current.pendingSessionSwitch.sessionId === runtime.sessionId
@@ -317,7 +322,8 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       ...agentTeams,
       queue: runtime.queue ?? emptyQueue(),
       lastError: runtime.error,
-      sequence: 0,
+      sequence: runtime.eventCursor ?? 0,
+      timelineSequence: 0,
       activeCompactionId: null,
       pendingSessionSwitch: current.pendingSessionSwitch
         && current.pendingSessionSwitch.projectPath === runtime.project?.path
@@ -343,7 +349,8 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       ...agentTeams,
       queue: runtime.queue ?? emptyQueue(),
       lastError: runtime.error,
-      sequence: 0,
+      sequence: runtime.eventCursor ?? 0,
+      timelineSequence: 0,
       activeCompactionId: null,
       pendingSessionSwitch: null,
     };
@@ -386,6 +393,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         queue: emptyQueue(),
         lastError: null,
         sequence: 0,
+        timelineSequence: 0,
         activeCompactionId: null,
         pendingSessionSwitch: { projectPath, sessionId, generation },
         sessionSwitchGeneration: generation,
@@ -415,7 +423,8 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         ...agentTeams,
         queue: runtime.queue ?? emptyQueue(),
         lastError: runtime.error,
-        sequence: 0,
+        sequence: runtime.eventCursor ?? 0,
+        timelineSequence: 0,
         activeCompactionId: null,
         pendingSessionSwitch: null,
       };
@@ -443,7 +452,8 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         ...agentTeams,
         queue: runtime.queue ?? emptyQueue(),
         lastError: runtime.error,
-        sequence: 0,
+        sequence: runtime.eventCursor ?? 0,
+        timelineSequence: 0,
         activeCompactionId: null,
         pendingSessionSwitch: null,
       };
@@ -473,6 +483,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     let queue = current.queue;
     let lastError = current.lastError;
     let sequence = current.sequence;
+    let timelineSequence = current.timelineSequence;
     let activeCompactionId = current.activeCompactionId;
     let pendingSessionSwitch = current.pendingSessionSwitch;
     let imagePayloadChanged = false;
@@ -558,6 +569,14 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       const merged = coalesceAdjacentStreamDelta(events, eventIndex);
       const event = merged.event;
       eventIndex = merged.lastIndex;
+      const crossesSessionBoundary = event.type === 'state.changed'
+        && (runtime.project?.path !== event.state.project?.path || runtime.sessionId !== event.state.sessionId);
+      if (event.cursor !== undefined && !crossesSessionBoundary) {
+        if (event.cursor <= sequence) continue;
+        sequence = event.cursor;
+      } else if (event.cursor !== undefined) {
+        sequence = event.cursor;
+      }
       if (pendingSessionSwitch) {
         const confirmsTarget = event.type === 'state.changed'
           && event.messagesIncluded
@@ -576,6 +595,8 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           ({ agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById } = indexedAgentTeams(event.state.agentTeams));
           subagentsChanged = true;
           activeCompactionId = null;
+          timelineSequence = 0;
+          sequence = event.state.eventCursor ?? event.cursor ?? (sameSession ? sequence : 0);
           queue = event.state.queue ?? emptyQueue();
         } else {
           if (event.state.subagents) {
@@ -591,6 +612,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
             subagents: subagentOrder.flatMap((id) => subagentsById[id] ? [subagentsById[id]!] : []),
           };
           if (event.state.queue) queue = event.state.queue;
+          if (event.state.eventCursor !== undefined) sequence = Math.max(sequence, event.state.eventCursor);
         }
         lastError = event.state.error;
       } else if (event.type === 'message.started') {
@@ -623,6 +645,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           id: event.toolCallId, name: event.name, input: event.input, output: '', outputTruncated: false,
           status: 'running', startedAt: event.timestamp, updatedAt: event.timestamp,
           ...(event.subagentRunIds === undefined ? {} : { subagentRunIds: event.subagentRunIds }),
+          ...(event.provenance === undefined ? {} : { provenance: event.provenance }),
         });
       } else if (event.type === 'tool.updated') {
         appendTool(event.toolCallId, event.timestamp);
@@ -635,6 +658,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           ...boundOutput(event.output),
           updatedAt: event.timestamp,
           ...(event.subagentRunIds === undefined ? {} : { subagentRunIds: event.subagentRunIds }),
+          ...((event.provenance ?? existing.provenance) === undefined ? {} : { provenance: event.provenance ?? existing.provenance }),
         });
       } else if (event.type === 'tool.completed') {
         appendTool(event.toolCallId, event.timestamp);
@@ -651,6 +675,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           endedAt: event.timestamp,
           ...(event.images === undefined ? {} : { images: event.images }),
           ...((event.subagentRunIds ?? existing?.subagentRunIds) ? { subagentRunIds: event.subagentRunIds ?? existing?.subagentRunIds } : {}),
+          ...((event.provenance ?? existing?.provenance) ? { provenance: event.provenance ?? existing?.provenance } : {}),
         });
       } else if (event.type === 'subagent.started') {
         setSubagent(event.run);
@@ -724,14 +749,14 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         runtime = { ...runtime, queue };
       } else if (event.type === 'context.compaction') {
         if (event.phase === 'started') {
-          const id = `compaction:${++sequence}`;
+          const id = `compaction:${++timelineSequence}`;
           activeCompactionId = id;
           setTimeline({ id, kind: 'compaction', phase: 'started', timestamp: event.timestamp });
           if (timelineOrder === current.timelineOrder) timelineOrder = [...timelineOrder];
           timelineOrder.push(id);
           setTimelineVisibility(id, true);
         } else {
-          const id = activeCompactionId ?? `compaction:${++sequence}`;
+          const id = activeCompactionId ?? `compaction:${++timelineSequence}`;
           setTimeline({
             id,
             kind: 'compaction',
@@ -750,7 +775,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         }
       } else if (event.type === 'error') {
         lastError = event.error;
-        const id = `error:${++sequence}`;
+        const id = `error:${++timelineSequence}`;
         setTimeline({ id, kind: 'error', error: event.error, timestamp: event.timestamp });
         if (timelineOrder === current.timelineOrder) timelineOrder = [...timelineOrder];
         timelineOrder.push(id);
@@ -829,7 +854,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       runtime, messagesById, messageOrder, reasoningByMessageId, toolsById, toolOrder,
       subagentsById, subagentOrder,
       agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById,
-      timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds, queue, lastError, sequence, activeCompactionId,
+      timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds, queue, lastError, sequence, timelineSequence, activeCompactionId,
       pendingSessionSwitch,
     };
   }),

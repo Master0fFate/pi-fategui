@@ -1,5 +1,5 @@
 import { ArrowUpRight, Check, ChevronDown, ChevronRight, CircleAlert, CircleStop, LoaderCircle } from 'lucide-react';
-import { memo, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import type { RuntimeTool, SubagentRun } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -28,7 +28,20 @@ export const ToolCard = memo(function ToolCard({ toolCallId, compact = false, wa
   const childStatusKey = useRuntimeStore((state) => state.toolsById[toolCallId]?.subagentRunIds
     ?.flatMap((runId) => state.subagentsById[runId]?.status ?? [])
     .join('|') ?? '');
+  const jump = useUiStore((state) => state.flightDeckJump);
+  const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
+  const projectPath = useRuntimeStore((state) => state.runtime.project?.path);
+  const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
+  const focused = Boolean(jump && jump.projectPath === projectPath && jump.sessionId === sessionId && jump.target.kind === 'tool' && jump.target.toolCallId === toolCallId);
+  const cardRef = useRef<HTMLElement>(null);
   const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!focused || !jump || !card) return;
+    if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ block: 'nearest' });
+    card.focus({ preventScroll: true });
+    if (document.activeElement === card) clearFlightDeckJump(jump.nonce);
+  }, [clearFlightDeckJump, focused, jump]);
   if (!tool) return null;
   const isSubagentTool = /^subagent(?:_|$)/u.test(tool.name);
   const presentedStatus = isSubagentTool
@@ -41,7 +54,7 @@ export const ToolCard = memo(function ToolCard({ toolCallId, compact = false, wa
   const ariaStatus = isSubagentTool && presentedStatus === 'succeeded' ? 'completed' : presentedStatus;
 
   return (
-    <article className={`tool-card tool-card--${presentedStatus}${tool.images?.length ? ' tool-card--with-images' : ''}${compact ? ' tool-card--compact' : ''}`} aria-label={`${tool.name} tool ${ariaStatus}`}>
+    <article ref={cardRef} tabIndex={-1} data-flight-focus={focused || undefined} className={`tool-card tool-card--${presentedStatus}${tool.images?.length ? ' tool-card--with-images' : ''}${compact ? ' tool-card--compact' : ''}`} aria-label={`${tool.name} tool ${ariaStatus}`}>
       <button className="tool-card-header" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
         <Icon size={13} className={`tool-status-icon${presentedStatus === 'running' ? ' tool-spinner' : ''}`} aria-hidden="true" />
         <span className="tool-heading icon-label"><strong>{tool.name}</strong><small>{summary}</small></span>

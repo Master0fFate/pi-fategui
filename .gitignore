@@ -3,6 +3,7 @@ dist/
 design-concepts/
 release/
 artifacts/
+/.ci-artifact-inspect/
 build/vendor/yt-dlp/
 *.log
 *.p12

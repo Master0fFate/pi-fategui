@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { SpeechDownloadProgress, SpeechSettings } from '../../shared/contracts/ipc';
+import type { FlightDeckTarget } from '../features/shell/flightDeck';
 
 export type AppToastKind = 'info' | 'success' | 'warning' | 'error';
 export interface AppToastMessage {
@@ -12,11 +13,19 @@ export interface AppToastMessage {
 
 let nextToastId = 0;
 let nextComposerDraftRequestId = 0;
+let nextFlightDeckJumpNonce = 0;
+
+export interface FlightDeckJump {
+  nonce: number;
+  projectPath: string;
+  sessionId: string;
+  target: FlightDeckTarget;
+}
 
 export const LEFT_MIN = 220;
-export const LEFT_MAX = 420;
+export const LEFT_MAX = 460;
 export const RIGHT_MIN = 280;
-export const RIGHT_MAX = 520;
+export const RIGHT_MAX = 560;
 
 interface UiState {
   leftWidth: number;
@@ -35,6 +44,7 @@ interface UiState {
   composerDraftRequest: { id: number; text: string; selectAll: boolean; notice?: string } | null;
   inspectorTab: 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context';
   selectedSubagentRunId: string | null;
+  flightDeckJump: FlightDeckJump | null;
   setLeftWidth: (width: number) => void;
   setRightWidth: (width: number) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -57,6 +67,8 @@ interface UiState {
   openSubagent: (runId: string) => void;
   openSubagentList: () => void;
   closeSubagent: () => void;
+  requestFlightDeckJump: (projectPath: string, sessionId: string, target: FlightDeckTarget) => void;
+  clearFlightDeckJump: (nonce?: number) => void;
 }
 
 const clamp = (value: number, minimum: number, maximum: number) =>
@@ -81,6 +93,7 @@ export const useUiStore = create<UiState>()(
       composerDraftRequest: null,
       inspectorTab: 'changes',
       selectedSubagentRunId: null,
+      flightDeckJump: null,
       setLeftWidth: (leftWidth) => set({ leftWidth: clamp(leftWidth, LEFT_MIN, LEFT_MAX) }),
       setRightWidth: (rightWidth) => set({ rightWidth: clamp(rightWidth, RIGHT_MIN, RIGHT_MAX) }),
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
@@ -103,6 +116,16 @@ export const useUiStore = create<UiState>()(
       openSubagent: (selectedSubagentRunId) => set({ selectedSubagentRunId, inspectorTab: 'sessions', inspectorCollapsed: false }),
       openSubagentList: () => set({ selectedSubagentRunId: null, inspectorTab: 'sessions', inspectorCollapsed: false }),
       closeSubagent: () => set({ selectedSubagentRunId: null }),
+      requestFlightDeckJump: (projectPath, sessionId, target) => set((state) => ({
+        flightDeckJump: { nonce: ++nextFlightDeckJumpNonce, projectPath, sessionId, target },
+        ...(target.kind === 'file' ? { inspectorTab: 'changes' as const, inspectorCollapsed: false }
+          : target.kind === 'tool' ? { inspectorTab: 'tools' as const, inspectorCollapsed: false }
+            : target.kind === 'agent' ? { inspectorTab: 'sessions' as const, inspectorCollapsed: false, selectedSubagentRunId: target.runId }
+              : target.kind === 'team-node' || target.kind === 'task' ? { inspectorTab: 'sessions' as const, inspectorCollapsed: false, selectedSubagentRunId: null }
+                : {}),
+        ...(target.kind !== 'agent' ? { selectedSubagentRunId: target.kind === 'team-node' || target.kind === 'task' ? null : state.selectedSubagentRunId } : {}),
+      })),
+      clearFlightDeckJump: (nonce) => set((state) => !state.flightDeckJump || (nonce !== undefined && state.flightDeckJump.nonce !== nonce) ? state : { flightDeckJump: null }),
     }),
     {
       name: 'pi-desktop-ui-v1',

@@ -6,6 +6,7 @@ import {
 } from '../subagentIdentity';
 import { themeCatalogSchema, type ThemeDefinition } from '../themes';
 import { agentTeamSchema, agentTeamControlInputSchema, type AgentTeamControlInput } from './multiAgent';
+import { toolProvenanceSchema } from './provenance';
 
 export const ipcChannels = {
   systemGetInfo: 'system:get-info',
@@ -305,7 +306,8 @@ export const runtimeToolSchema = z.object({
   timelinePosition: z.number().finite().optional(),
   images: z.array(runtimeImageSchema).max(8).optional(),
   subagentRunIds: z.array(z.string().min(1).max(100)).optional(),
-});
+  provenance: toolProvenanceSchema.optional(),
+}).strict();
 
 export const slashCommandSchema = z.object({
   name: z.string().min(1).max(500),
@@ -650,16 +652,16 @@ export const runtimeStateSchema = z.object({
   error: appErrorSchema.nullable(),
 });
 
-const eventBaseSchema = z.object({ timestamp: z.number().finite(), cursor: z.number().int().nonnegative().optional() });
+const eventBaseSchema = z.object({ timestamp: z.number().finite(), cursor: z.number().int().nonnegative().optional() }).strict();
 const runStartedEventSchema = eventBaseSchema.extend({ type: z.literal('run.started'), runId: z.string().min(1) });
 const runCompletedEventSchema = eventBaseSchema.extend({ type: z.literal('run.completed'), runId: z.string().min(1), aborted: z.boolean() });
 const messageStartedEventSchema = eventBaseSchema.extend({ type: z.literal('message.started'), messageId: z.string().min(1), role: z.enum(['user', 'assistant', 'system', 'tool']) });
 const messageCompletedEventSchema = eventBaseSchema.extend({ type: z.literal('message.completed'), messageId: z.string().min(1), role: z.enum(['user', 'assistant', 'system', 'tool']), text: z.string().max(65_000), images: z.array(runtimeImageSchema).max(8).optional(), error: z.boolean().optional() });
 const assistantTextEventSchema = eventBaseSchema.extend({ type: z.literal('assistant.text'), messageId: z.string().min(1), delta: z.string().min(1).max(32_000) });
 const assistantReasoningEventSchema = eventBaseSchema.extend({ type: z.literal('assistant.reasoning'), messageId: z.string().min(1), delta: z.string().min(1).max(32_000) });
-const toolStartedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.started'), toolCallId: z.string().min(1), name: z.string().min(1), input: z.string().max(65_000), subagentRunIds: z.array(z.string().min(1).max(100)).optional() });
-const toolUpdatedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.updated'), toolCallId: z.string().min(1), output: z.string().max(65_000), subagentRunIds: z.array(z.string().min(1).max(100)).optional() });
-const toolCompletedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.completed'), toolCallId: z.string().min(1), name: z.string().min(1), output: z.string().max(65_000), images: z.array(runtimeImageSchema).max(8).optional(), error: z.boolean(), subagentRunIds: z.array(z.string().min(1).max(100)).optional() });
+const toolStartedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.started'), toolCallId: z.string().min(1), name: z.string().min(1), input: z.string().max(65_000), subagentRunIds: z.array(z.string().min(1).max(100)).optional(), provenance: toolProvenanceSchema.optional() });
+const toolUpdatedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.updated'), toolCallId: z.string().min(1), output: z.string().max(65_000), subagentRunIds: z.array(z.string().min(1).max(100)).optional(), provenance: toolProvenanceSchema.optional() });
+const toolCompletedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.completed'), toolCallId: z.string().min(1), name: z.string().min(1), output: z.string().max(65_000), images: z.array(runtimeImageSchema).max(8).optional(), error: z.boolean(), subagentRunIds: z.array(z.string().min(1).max(100)).optional(), provenance: toolProvenanceSchema.optional() });
 const queueChangedEventSchema = eventBaseSchema.extend({ type: z.literal('queue.changed'), steering: z.number().int().nonnegative(), followUp: z.number().int().nonnegative() });
 const contextCompactionEventSchema = eventBaseSchema.extend({ type: z.literal('context.compaction'), phase: z.enum(['started', 'completed', 'failed']), aborted: z.boolean().optional(), error: appErrorSchema.optional() });
 const errorEventSchema = eventBaseSchema.extend({ type: z.literal('error'), error: appErrorSchema });

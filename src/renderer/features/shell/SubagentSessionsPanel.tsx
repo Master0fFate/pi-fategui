@@ -12,7 +12,7 @@ import {
   OctagonX,
   Wrench,
 } from 'lucide-react';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import type { AgentTeam, AgentTeamNode } from '../../../shared/contracts/multiAgent';
 import { Virtuoso } from 'react-virtuoso';
 import type {
@@ -29,6 +29,8 @@ import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { SubagentControls } from './SubagentControls';
 import { AgentTeamControls } from './AgentTeamControls';
+import { FlightRecorder } from './FlightRecorder';
+import type { FlightDeckTarget } from './flightDeck';
 
 const activeStatuses = new Set<SubagentStatus>(['queued', 'running']);
 
@@ -157,14 +159,27 @@ function ActivityRow({ activity }: { activity: Activity }) {
 
 function RunDetail({ run }: { run: SubagentRun }) {
   const close = useUiStore((state) => state.closeSubagent);
+  const jump = useUiStore((state) => state.flightDeckJump);
+  const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
+  const projectPath = useRuntimeStore((state) => state.runtime.project?.path);
+  const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
+  const focused = Boolean(jump && jump.projectPath === projectPath && jump.sessionId === sessionId && jump.target.kind === 'agent' && jump.target.runId === run.id);
+  const detailRef = useRef<HTMLElement>(null);
   const activities = useMemo(() => activitiesFor(run), [run]);
+  useEffect(() => {
+    const detail = detailRef.current;
+    if (!focused || !jump || !detail) return;
+    if (typeof detail.scrollIntoView === 'function') detail.scrollIntoView({ block: 'nearest' });
+    detail.focus({ preventScroll: true });
+    if (document.activeElement === detail) clearFlightDeckJump(jump.nonce);
+  }, [clearFlightDeckJump, focused, jump]);
   const isActive = activeStatuses.has(run.status);
   const usage = run.usage;
   const latestLiveness = run.livenessReports?.[run.livenessReports.length - 1];
   const handle = subagentHandle(run);
   const displayName = subagentDisplayName(run);
   return (
-    <section className="subagent-detail" aria-label={`${displayName} agent session`}>
+    <section ref={detailRef} className="subagent-detail" aria-label={`${displayName} agent session`} tabIndex={-1} data-flight-focus={focused || undefined}>
       <header className="subagent-detail-header">
         <button type="button" onClick={close} aria-label="Back to child sessions"><ArrowLeft size={15} /></button>
         <div>
@@ -348,6 +363,12 @@ function DelegationBranch({
   );
 }
 
+function teamJumpNodeId(team: AgentTeam, target: FlightDeckTarget): string | null {
+  if (target.kind === 'team-node' && target.teamId === team.id) return target.nodeId;
+  if (target.kind !== 'task' || target.teamId !== team.id) return null;
+  return target.nodeId ?? team.tasks.find((task) => task.id === target.taskId)?.assigneeNodeId ?? null;
+}
+
 function teamNodeStatus(node: AgentTeamNode): SubagentStatus {
   if (node.status === 'creating') return 'queued';
   if (node.status === 'active') return 'running';
@@ -358,6 +379,18 @@ function teamNodeStatus(node: AgentTeamNode): SubagentStatus {
 }
 
 function AgentTeamNodeRow({ team, node }: { team: AgentTeam; node: AgentTeamNode }) {
+  const jump = useUiStore((state) => state.flightDeckJump);
+  const projectPath = useRuntimeStore((state) => state.runtime.project?.path);
+  const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
+  const focused = Boolean(jump && jump.projectPath === projectPath && jump.sessionId === sessionId && teamJumpNodeId(team, jump.target) === node.id);
+  const rowRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!focused || !jump || !row) return;
+    if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
+    row.focus({ preventScroll: true });
+    if (document.activeElement === row) useUiStore.getState().clearFlightDeckJump(jump.nonce);
+  }, [focused, jump]);
   const children = node.childIds.flatMap((id) => {
     const child = team.nodes.find((candidate) => candidate.id === id);
     return child ? [child] : [];
@@ -365,7 +398,7 @@ function AgentTeamNodeRow({ team, node }: { team: AgentTeam; node: AgentTeamNode
   const task = node.currentTaskId ? team.tasks.find((candidate) => candidate.id === node.currentTaskId) : undefined;
   return (
     <div className="agent-tree-node" data-depth={node.depth} role="treeitem" aria-level={node.depth + 1} aria-expanded={children.length ? true : undefined}>
-      <article className={`subagent-session-row subagent-session-row--${teamNodeStatus(node)}`}>
+      <article ref={rowRef} className={`subagent-session-row subagent-session-row--${teamNodeStatus(node)}`} data-flight-focus={focused || undefined} tabIndex={-1}>
         <div className="subagent-session-open" aria-label={`${node.displayName} Agent Team node ${node.status}`}>
           <span className="subagent-status-mark"><StatusIcon status={teamNodeStatus(node)} /></span>
           <span className="subagent-session-copy">
@@ -383,12 +416,24 @@ function AgentTeamNodeRow({ team, node }: { team: AgentTeam; node: AgentTeamNode
 
 function AgentTeamBranch({ team }: { team: AgentTeam }) {
   const root = team.nodes.find((node) => node.id === team.rootNodeId);
+  const jump = useUiStore((state) => state.flightDeckJump);
+  const projectPath = useRuntimeStore((state) => state.runtime.project?.path);
+  const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
+  const focused = Boolean(root && jump && jump.projectPath === projectPath && jump.sessionId === sessionId && teamJumpNodeId(team, jump.target) === root.id);
+  const branchRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const branch = branchRef.current;
+    if (!focused || !jump || !branch) return;
+    if (typeof branch.scrollIntoView === 'function') branch.scrollIntoView({ block: 'nearest' });
+    branch.focus({ preventScroll: true });
+    if (document.activeElement === branch) useUiStore.getState().clearFlightDeckJump(jump.nonce);
+  }, [focused, jump]);
   const children = root?.childIds.flatMap((id) => {
     const child = team.nodes.find((candidate) => candidate.id === id);
     return child ? [child] : [];
   }).sort((left, right) => left.path.localeCompare(right.path)) ?? [];
   return (
-    <section className="agent-tree-branch" data-status={team.status} aria-label={`Agent Team V2 ${team.id}`}>
+    <section ref={branchRef} className="agent-tree-branch" data-status={team.status} aria-label={`Agent Team V2 ${team.id}`} tabIndex={-1} data-flight-focus={focused || undefined}>
       <header className="agent-tree-branch-heading"><span className="agent-tree-branch-mark"><GitBranch size={12} /></span><span className="agent-tree-branch-copy"><strong>Agent Team V2</strong><small>{team.nodes.length - 1}/{team.limits.maxNodes} nodes · {team.activeTurns}/{team.limits.maxActiveTurns} active{team.writerNodeId ? ' · writer leased' : ''}</small></span><span className="agent-tree-branch-state">{team.status}</span></header>
       <div className="agent-tree-children" role="tree">{children.map((node) => <AgentTeamNodeRow key={node.id} team={team} node={node} />)}</div>
     </section>
@@ -401,12 +446,29 @@ export function SubagentSessionsPanel() {
   const runsById = useRuntimeStore((state) => state.subagentsById);
   const toolsById = useRuntimeStore((state) => state.toolsById);
   const selectedRunId = useUiStore((state) => state.selectedSubagentRunId);
+  const jump = useUiStore((state) => state.flightDeckJump);
+  const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
+  const showToast = useUiStore((state) => state.showToast);
   const selected = selectedRunId ? runsById[selectedRunId] : undefined;
+  const agentTeams = runtime.agentTeams ?? [];
+  useEffect(() => {
+    if (!jump || jump.projectPath !== runtime.project?.path || jump.sessionId !== runtime.sessionId) return;
+    let retained = true;
+    if (jump.target.kind === 'agent') retained = Boolean(runsById[jump.target.runId]);
+    else if (jump.target.kind === 'team-node' || jump.target.kind === 'task') {
+      const target = jump.target;
+      const team = agentTeams.find((candidate) => candidate.id === target.teamId);
+      const nodeId = team ? teamJumpNodeId(team, target) : null;
+      retained = Boolean(team && nodeId && team.nodes.some((node) => node.id === nodeId));
+    } else return;
+    if (retained) return;
+    showToast({ kind: 'info', title: 'Activity not retained', message: 'That agent activity is no longer available in the bounded recorder.' });
+    clearFlightDeckJump(jump.nonce);
+  }, [agentTeams, clearFlightDeckJump, jump, runtime.project?.path, runtime.sessionId, runsById, showToast]);
   if (selected) return <RunDetail run={selected} />;
 
   const runs = order.flatMap((id) => runsById[id] ? [runsById[id]!] : []).reverse();
   const workflows = [...(runtime.subagentWorkflows ?? [])].reverse();
-  const agentTeams = runtime.agentTeams ?? [];
   const groups = new Map<string, SubagentRun[]>();
   for (const run of runs) groups.set(run.parentToolCallId, [...(groups.get(run.parentToolCallId) ?? []), run]);
   const workflowToolIds = new Set(workflows.map((workflow) => workflow.parentToolCallId));
@@ -456,6 +518,7 @@ export function SubagentSessionsPanel() {
           ))}
         </div>
       )}
+      <FlightRecorder />
     </section>
   );
 }

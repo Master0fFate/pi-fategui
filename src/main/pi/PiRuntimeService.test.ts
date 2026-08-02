@@ -915,6 +915,7 @@ describe('PiRuntimeService', () => {
 
     expect(state.tools).toEqual([expect.objectContaining({
       id: 'read-1', name: 'read', input: '{"path":"README.md"}', output: '# Project', status: 'succeeded',
+      provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'README.md', operation: 'read' }] },
       images: [{ data: 'dG9vbA==', mimeType: 'image/webp', alt: 'Generated image 1' }],
     })]);
     expect(state.messages.map((message) => message.text)).toEqual(['Inspect', '', '**Done**', 'Parallax enabled']);
@@ -1612,7 +1613,7 @@ describe('PiRuntimeService', () => {
     const state = await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     expect(state.messages.map((message) => message.text)).toEqual(['Original prompt', '', 'Context compacted', 'After compaction']);
-    expect(state.tools).toEqual([expect.objectContaining({ id: 'read-old', output: 'persisted output', status: 'succeeded' })]);
+    expect(state.tools).toEqual([expect.objectContaining({ id: 'read-old', output: 'persisted output', status: 'succeeded', provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'old.ts', operation: 'read' }] } })]);
     await service.dispose();
   });
 

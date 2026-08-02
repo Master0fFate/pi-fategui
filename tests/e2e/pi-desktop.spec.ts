@@ -131,6 +131,10 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     };
     await expect(contextMeter).toBeVisible();
     await expect(contextMeter).toHaveText('');
+    const activityPulse = page.getByLabel(/Activity: Ready\. 42\.0% context/u);
+    await expect(activityPulse).toBeVisible();
+    await expect(activityPulse).toContainText('changed');
+    await expect(activityPulse).not.toContainText('Completed with changes');
     await page.getByRole('button', { name: 'Permission level: Full access' }).click();
     await page.getByRole('button', { name: 'Read only' }).click();
     await expect(page.getByRole('button', { name: 'Permission level: Read only' })).toBeVisible();
@@ -227,8 +231,97 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     const v2Team = agents.getByLabel('Agent Team V2 e2e-agent-team');
     await expect(v2Team).toBeVisible();
     await expect(v2Team).toContainText('2/16 nodes · 1/3 active · writer leased');
+    await expect(page.getByLabel(/Activity: Reviewer is writing/u)).toBeVisible();
     await expect(agents.getByLabel('Reviewer Agent Team node active')).toContainText('Review the Agent Teams V2 flow');
     await expect(agents.getByLabel('Verifier Agent Team node ready')).toBeVisible();
+    const nestedTreeDecoration = await v2Team.evaluate((branch) => {
+      const parentCard = branch.querySelector<HTMLElement>('.agent-tree-node[data-depth="1"] > .subagent-session-row');
+      const nestedCard = branch.querySelector<HTMLElement>('.agent-tree-node[data-depth="2"] > .subagent-session-row');
+      if (!parentCard || !nestedCard) return null;
+      const decoration = (pseudo: '::before' | '::after') => {
+        const style = getComputedStyle(nestedCard, pseudo);
+        return {
+          content: style.content,
+          borderBottomWidth: style.borderBottomWidth,
+          borderLeftWidth: style.borderLeftWidth,
+          backgroundImage: style.backgroundImage,
+        };
+      };
+      return {
+        indentation: nestedCard.getBoundingClientRect().left - parentCard.getBoundingClientRect().left,
+        before: decoration('::before'),
+        after: decoration('::after'),
+      };
+    });
+    expect(nestedTreeDecoration).not.toBeNull();
+    expect(nestedTreeDecoration!.indentation).toBeGreaterThan(20);
+    for (const decoration of [nestedTreeDecoration!.before, nestedTreeDecoration!.after]) {
+      expect(['none', 'normal']).toContain(decoration.content);
+      expect(decoration.borderBottomWidth).toBe('0px');
+      expect(decoration.borderLeftWidth).toBe('0px');
+      expect(decoration.backgroundImage).toBe('none');
+    }
+    const recorder = agents.getByRole('region', { name: 'Flight Recorder' });
+    await expect(recorder).toBeVisible();
+    await expect(recorder).toContainText('Flight Recorder');
+    await expect(recorder).toContainText('edit');
+    await expect(recorder.getByRole('button', { name: 'src/example.ts' }).first()).toBeVisible();
+    const assertRecorderBoundaryTextFits = async () => {
+      const boundary = recorder.locator('.recorder-boundary');
+      await expect(boundary).toBeVisible();
+      const metrics = await boundary.evaluate((element) => {
+        const description = element.querySelector<HTMLElement>('.recorder-boundary-copy');
+        if (!description) return null;
+        const boundaryBox = element.getBoundingClientRect();
+        const descriptionBox = description.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(description);
+        const boundaryStyle = getComputedStyle(element);
+        const descriptionStyle = getComputedStyle(description);
+        return {
+          text: description.textContent,
+          boundary: {
+            top: boundaryBox.top,
+            bottom: boundaryBox.bottom,
+            flexShrink: boundaryStyle.flexShrink,
+            minHeight: boundaryStyle.minHeight,
+            paddingBottom: boundaryStyle.paddingBottom,
+            paddingTop: boundaryStyle.paddingTop,
+          },
+          description: {
+            top: descriptionBox.top,
+            right: descriptionBox.right,
+            bottom: descriptionBox.bottom,
+            left: descriptionBox.left,
+            clientHeight: description.clientHeight,
+            scrollHeight: description.scrollHeight,
+            fontSize: descriptionStyle.fontSize,
+            lineHeight: descriptionStyle.lineHeight,
+          },
+          textRects: [...range.getClientRects()].map((rect) => ({ top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left })),
+        };
+      });
+      expect(metrics).not.toBeNull();
+      const result = metrics!;
+      expect(result.text).toBe('Older recorder activity is bounded');
+      expect(result.boundary.flexShrink).toBe('0');
+      expect(Number.parseFloat(result.boundary.minHeight)).toBeGreaterThanOrEqual(28);
+      expect(Number.parseFloat(result.boundary.paddingTop)).toBeGreaterThan(0);
+      expect(Number.parseFloat(result.boundary.paddingBottom)).toBeGreaterThan(0);
+      expect(result.description.lineHeight).not.toBe('normal');
+      expect(Number.parseFloat(result.description.lineHeight)).toBeGreaterThan(Number.parseFloat(result.description.fontSize));
+      expect(result.description.top).toBeGreaterThanOrEqual(result.boundary.top - 0.5);
+      expect(result.description.bottom).toBeLessThanOrEqual(result.boundary.bottom + 0.5);
+      expect(result.description.scrollHeight).toBeLessThanOrEqual(result.description.clientHeight + 1);
+      expect(result.textRects).not.toHaveLength(0);
+      for (const rect of result.textRects) {
+        expect(rect.top).toBeGreaterThanOrEqual(result.description.top - 0.5);
+        expect(rect.right).toBeLessThanOrEqual(result.description.right + 0.5);
+        expect(rect.bottom).toBeLessThanOrEqual(result.description.bottom + 0.5);
+        expect(rect.left).toBeGreaterThanOrEqual(result.description.left - 0.5);
+      }
+    };
+    await assertRecorderBoundaryTextFits();
     await agents.getByRole('button', { name: 'Message /root/reviewer', exact: true }).click();
     await agents.getByPlaceholder('Queue information without waking the agent…').fill('Check the integration boundary.');
     await agents.getByRole('button', { name: 'Send' }).click();
@@ -244,6 +337,25 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await agents.getByRole('button', { name: 'Close /root/reviewer', exact: true }).click();
     await expect(agents.getByLabel('Reviewer Agent Team node closed')).toBeVisible();
     await expect(agents.getByLabel('Verifier Agent Team node closed')).toBeVisible();
+    await recorder.getByRole('button', { name: 'src/example.ts' }).first().click();
+    await expect(page.getByRole('tab', { name: 'Changes' })).toHaveAttribute('data-state', 'active');
+    await expect(page.getByLabel('Recorded origins')).toContainText('Team agent e2e-team-reviewer');
+    const runway = page.getByLabel('Changed files', { exact: true });
+    await runway.focus();
+    await runway.press('Home');
+    await runway.press('End');
+    await expect(page.locator('.change-row.selected')).toContainText('src/example.ts');
+    await runway.press('o');
+    await expect(page.getByRole('tab', { name: /Subagent sessions/u })).toHaveAttribute('data-state', 'active');
+    const reviewerTeamRow = agents.getByLabel('Reviewer Agent Team node closed').locator('xpath=..');
+    await expect(reviewerTeamRow).toHaveAttribute('tabindex', '-1');
+    await expect(reviewerTeamRow).toBeFocused();
+    const defaultInspectorWidth = await page.locator('.inspector').evaluate((element) => element.getBoundingClientRect().width);
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
+    await expect.poll(() => page.locator('.inspector').evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(defaultInspectorWidth);
+    await assertRecorderBoundaryTextFits();
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1280, 720));
+    await page.waitForTimeout(180);
 
     await composerInput.fill('@test');
     const agentMentions = page.getByRole('listbox', { name: 'Agent mentions' });
@@ -288,6 +400,10 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
     const compactToolsTrigger = page.getByRole('button', { name: 'Open composer tools' });
     await expect(compactToolsTrigger).toBeVisible();
+    await expect(activityPulse).toBeVisible();
+    const compactHeader = await page.locator('.workspace-header').evaluate((element) => ({ client: element.clientWidth, scroll: element.scrollWidth }));
+    expect(compactHeader.scroll).toBeLessThanOrEqual(compactHeader.client);
+    expect(await page.locator('.activity-pulse-chip').evaluateAll((chips) => chips.every((chip) => getComputedStyle(chip).display === 'none'))).toBe(true);
     const compactOverflow = await page.locator('form.composer').evaluate((element) => ({ client: element.clientWidth, scroll: element.scrollWidth }));
     expect(compactOverflow.scroll).toBeLessThanOrEqual(compactOverflow.client);
     await compactToolsTrigger.click();
@@ -296,6 +412,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(compactTools.getByRole('button', { name: 'Tag project file or folder' })).toBeVisible();
     await assertInsideViewport(compactTools);
     await page.waitForTimeout(180);
+    await page.screenshot({ path: 'test-results/pi-desktop-compact-flight-deck.png' });
     await page.screenshot({ path: 'test-results/pi-desktop-compact-composer.png' });
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Permission level: Edit files' }).click();
@@ -591,7 +708,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByRole('article', { name: 'read tool succeeded' })).toBeVisible();
     await page.getByRole('article', { name: 'read tool succeeded' }).getByRole('button').click();
-    await expect(page.getByText('export const answer = 42;')).toBeVisible();
+    await expect(page.getByRole('article', { name: 'read tool succeeded' }).getByText('export const answer = 42;')).toBeVisible();
     const chatFontRouting = await page.evaluate(() => {
       const interfaceFont = getComputedStyle(document.documentElement).getPropertyValue('--font-interface').trim();
       return {
@@ -626,6 +743,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(changedFile).toBeVisible();
     await expect(changedFile.locator('.change-counts')).toHaveCount(0);
     await changedFile.locator('.change-path').hover();
+    await page.waitForTimeout(800);
     await expect(page.getByRole('tooltip').filter({ hasText: 'src/example.ts' })).toBeVisible();
     await page.getByRole('button', { name: '2 changed files. Open combined diff' }).click();
     await expect(page.getByText('Working tree diff', { exact: true })).toBeVisible();

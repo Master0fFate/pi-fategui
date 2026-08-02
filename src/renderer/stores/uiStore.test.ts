@@ -14,6 +14,7 @@ describe('UI store', () => {
       toast: null,
       inspectorTab: 'changes',
       selectedSubagentRunId: null,
+      flightDeckJump: null,
     });
   });
 
@@ -58,6 +59,19 @@ describe('UI store', () => {
     expect(useUiStore.getState()).toMatchObject({
       inspectorTab: 'sessions', inspectorCollapsed: false, selectedSubagentRunId: null,
     });
+  });
+
+  it('keeps scoped Flight Deck jumps transient and routes existing inspector surfaces', () => {
+    useUiStore.getState().requestFlightDeckJump('C:/project', 'session-1', { kind: 'file', path: 'src/app.ts' });
+    const fileJump = useUiStore.getState().flightDeckJump;
+    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'changes', inspectorCollapsed: false });
+    expect(fileJump).toMatchObject({ projectPath: 'C:/project', sessionId: 'session-1', target: { kind: 'file', path: 'src/app.ts' } });
+    expect(JSON.parse(localStorage.getItem('pi-desktop-ui-v1') ?? '{}').state?.flightDeckJump).toBeUndefined();
+    useUiStore.getState().clearFlightDeckJump(fileJump?.nonce);
+    expect(useUiStore.getState().flightDeckJump).toBeNull();
+
+    useUiStore.getState().requestFlightDeckJump('C:/project', 'session-1', { kind: 'agent', runId: 'run-1' });
+    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'sessions', selectedSubagentRunId: 'run-1' });
   });
 
   it('sets and toggles both collapsible panes independently', () => {

@@ -127,6 +127,7 @@ interface ChildAbortReason {
 interface RunContext {
   runId: string;
   parentSessionId: string;
+  parentToolCallId: string;
   projectPath: string;
   modelRuntime: ModelRuntime;
   controller: AbortController;
@@ -248,8 +249,21 @@ function sourceForAgent(agent: string | undefined): SubagentAgentSource {
   return 'direct';
 }
 
+const RESTART_INTERRUPTION_RESULT = 'Fate UI restarted before this child run settled.';
+
 function runTerminal(status: SubagentStatus): boolean {
   return childTerminalStatuses.has(status as never);
+}
+
+function recoveredInterruptedRun(run: SubagentRun): SubagentRun {
+  const { error: _error, result: _result, timeoutAt: _timeoutAt, ...stable } = run;
+  return boundSubagentRun({
+    ...stable,
+    status: 'interrupted',
+    endedAt: run.updatedAt,
+    result: RESTART_INTERRUPTION_RESULT,
+    mailbox: run.mailbox.state === 'available' ? { ...run.mailbox, state: 'expired', expiresAt: undefined } : run.mailbox,
+  });
 }
 
 function mailboxDisabled(): SubagentMailbox {
@@ -660,7 +674,7 @@ export class SubagentCoordinator {
           ...(request.idleTimeoutMs ? { idleTimeoutMs: request.idleTimeoutMs } : {}),
           messages: [],
           tools: [],
-          error: 'Fate UI restarted before this child run produced a durable result.',
+          result: RESTART_INTERRUPTION_RESULT,
           omittedActivity: 0,
           transcriptTruncated: false,
           usage: emptyUsage(),
@@ -669,13 +683,7 @@ export class SubagentCoordinator {
     }
     const normalized = [...restored.values()]
       .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
-      .map((run) => runTerminal(run.status) ? run : boundSubagentRun({
-        ...run,
-        status: 'interrupted',
-        endedAt: run.updatedAt,
-        error: 'Fate UI restarted before this child run settled.',
-        mailbox: run.mailbox.state === 'available' ? { ...run.mailbox, state: 'expired', expiresAt: undefined } : run.mailbox,
-      }));
+      .map((run) => runTerminal(run.status) ? run : recoveredInterruptedRun(run));
     const usedHandles = new Set<string>();
     const identified = normalized.map((run) => {
       const identity = ensureSubagentIdentity(run, usedHandles);
@@ -803,6 +811,7 @@ export class SubagentCoordinator {
         const context: RunContext = {
           runId: id,
           parentSessionId,
+          parentToolCallId: toolCallId,
           projectPath: parent.projectPath,
           modelRuntime,
           controller,
@@ -964,7 +973,11 @@ export class SubagentCoordinator {
         try {
           const child = await awaitChildCreation(this.childSessionFactory(this.childInput(context)), context.controller.signal);
           context.session = child;
-          context.normalizer = new PiEventNormalizer(() => context.runId, `attempt-${attempt}:`);
+          context.normalizer = new PiEventNormalizer(
+            () => context.runId,
+            `attempt-${attempt}:`,
+            () => ({ kind: 'legacy', runId: context.runId, parentToolCallId: context.parentToolCallId }),
+          );
           context.unsubscribe = child.subscribe((event) => this.handleChildEvent(context, child, event, turnEpoch));
           await this.exclusive(context, async () => {
             if (context.controller.signal.aborted) return;

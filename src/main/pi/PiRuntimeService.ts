@@ -44,6 +44,7 @@ import type {
 } from '../../shared/contracts/ipc';
 import { PiEventBatcher } from './PiEventBatcher';
 import { PiEventNormalizer, messageImages, messageText, safeText, subagentRunIds } from './PiEventNormalizer';
+import { createToolProvenance } from './ToolProvenance';
 import { expandMultipleSkillCommands, promoteInlineResourceCommand } from './PiInlineCommands';
 import { createPiExtensionUiBridge, emptyExtensionUiState, type ExtensionNoticeLevel, type PiExtensionUiBridge } from './PiExtensionUi';
 import { PiDesktopError, authRequiredError, normalizeError } from './errors';
@@ -327,6 +328,7 @@ function toTools(messages: readonly unknown[]): RuntimeTool[] {
         if (!part || typeof part !== 'object') return;
         const block = part as { type?: unknown; id?: unknown; name?: unknown; arguments?: unknown };
         if (block.type !== 'toolCall' || typeof block.id !== 'string' || typeof block.name !== 'string') return;
+        const provenance = createToolProvenance(block.name, block.arguments, { kind: 'root' });
         tools.set(block.id, {
           id: block.id,
           name: block.name,
@@ -337,6 +339,7 @@ function toTools(messages: readonly unknown[]): RuntimeTool[] {
           startedAt: timestamp,
           updatedAt: timestamp,
           timelinePosition: messageIndex + (partIndex + 1) / (content.length + 1),
+          ...(provenance ? { provenance } : {}),
         });
       });
       return;
@@ -359,6 +362,7 @@ function toTools(messages: readonly unknown[]): RuntimeTool[] {
       timelinePosition: existing?.timelinePosition ?? messageIndex,
       ...(images.length ? { images } : {}),
       ...(runIds ? { subagentRunIds: runIds } : {}),
+      ...(existing?.provenance ? { provenance: existing.provenance } : {}),
     });
   });
   return [...tools.values()];

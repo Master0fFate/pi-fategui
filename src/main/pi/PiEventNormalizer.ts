@@ -1,6 +1,8 @@
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { subagentToolDetailsSchema, type RuntimeImage, type SubagentChildEvent } from '../../shared/contracts/ipc';
+import type { ToolActor, ToolProvenance } from '../../shared/contracts/provenance';
 import { normalizeError } from './errors';
+import { createToolProvenance } from './ToolProvenance';
 
 const MAX_SERIALIZED_LENGTH = 64_000;
 const MAX_DELTA_LENGTH = 32_000;
@@ -141,14 +143,17 @@ export class PiEventNormalizer {
   private readonly messageIds = new WeakMap<object, string>();
   private sequence = 0;
   private activeAssistantId: string | null = null;
+  private readonly toolProvenance = new Map<string, ToolProvenance>();
 
   constructor(
     private readonly runId: () => string | null,
     private readonly idPrefix = '',
+    private readonly actor: () => ToolActor = () => ({ kind: 'root' }),
   ) {}
 
   resetSession(): void {
     this.activeAssistantId = null;
+    this.toolProvenance.clear();
   }
 
   currentAssistantMessageId(): string | null {
@@ -208,29 +213,54 @@ export class PiEventNormalizer {
         if (messageError(event.message)) normalized.error = true;
         return [normalized];
       }
-      case 'tool_execution_start':
-        return [{ type: 'tool.started', toolCallId: this.toolId(event.toolCallId), name: event.toolName, input: safeText(event.args), timestamp: now }];
+      case 'tool_execution_start': {
+        const toolCallId = this.toolId(event.toolCallId);
+        const provenance = createToolProvenance(event.toolName, event.args, this.actor());
+        if (provenance) {
+          this.toolProvenance.set(toolCallId, provenance);
+          while (this.toolProvenance.size > 256) {
+            const oldest = this.toolProvenance.keys().next().value as string | undefined;
+            if (!oldest) break;
+            this.toolProvenance.delete(oldest);
+          }
+        } else this.toolProvenance.delete(toolCallId);
+        return [{
+          type: 'tool.started',
+          toolCallId,
+          name: event.toolName,
+          input: safeText(event.args),
+          ...(provenance ? { provenance } : {}),
+          timestamp: now,
+        }];
+      }
       case 'tool_execution_update': {
+        const toolCallId = this.toolId(event.toolCallId);
         const runIds = subagentRunIds(event.partialResult);
+        const provenance = this.toolProvenance.get(toolCallId);
         return [{
           type: 'tool.updated',
-          toolCallId: this.toolId(event.toolCallId),
+          toolCallId,
           output: safeText(event.partialResult),
           ...(runIds ? { subagentRunIds: runIds } : {}),
+          ...(provenance ? { provenance } : {}),
           timestamp: now,
         }];
       }
       case 'tool_execution_end': {
+        const toolCallId = this.toolId(event.toolCallId);
         const images = messageImages(event.result);
         const text = messageText(event.result);
         const runIds = subagentRunIds(event.result);
+        const provenance = this.toolProvenance.get(toolCallId);
+        this.toolProvenance.delete(toolCallId);
         return [{
           type: 'tool.completed',
-          toolCallId: this.toolId(event.toolCallId),
+          toolCallId,
           name: event.toolName,
           output: text ? safeText(text) : (images.length ? '' : safeText(event.result)),
           ...(images.length ? { images } : {}),
           ...(runIds ? { subagentRunIds: runIds } : {}),
+          ...(provenance ? { provenance } : {}),
           error: event.isError,
           timestamp: now,
         }];

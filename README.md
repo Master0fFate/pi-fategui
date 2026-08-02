@@ -2,16 +2,16 @@
 
 # Fate UI
 
-### A GUI workbench for Pi Agent
+### A local-first desktop workspace for Pi Agent
 
-Run Pi in a focused graphical workspace—with durable conversations, transparent tool activity, project files, Git, terminals, and explicit trust controls.
+Run Pi in a focused graphical workspace for durable conversations, transparent agent activity, project files, Git, terminals, and explicit trust controls.
 
 [![Cross-platform](https://github.com/Master0fFate/pi-fategui/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/Master0fFate/pi-fategui/actions/workflows/cross-platform.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-6f63ff.svg)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-252a38.svg)](#installation)
 [![Electron](https://img.shields.io/badge/Electron-43-47848f.svg)](https://www.electronjs.org/)
 
-[Latest beta: v0.4.1-beta2](https://github.com/Master0fFate/pi-fategui/releases/tag/v0.4.1-beta2) · [Installation](#installation) · [Features](#why-fate-ui) · [Development](#local-development) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
+[Latest beta: v0.5.1-beta1](https://github.com/Master0fFate/pi-fategui/releases/tag/v0.5.1-beta1) · [Installation](#installation) · [Capabilities](#what-fate-ui-provides) · [Development](#local-development) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -22,32 +22,19 @@ Run Pi in a focused graphical workspace—with durable conversations, transparen
 >
 > Fate UI embeds `@earendil-works/pi-coding-agent`. It does not scrape Pi's terminal UI, and production never substitutes mocked agent responses. Fate UI is an independent community project and is not an official Pi distribution.
 
-## Why Fate UI?
+## What Fate UI provides
 
-Fate UI turns Pi into a complete desktop workspace without weakening the local control that makes a coding agent trustworthy.
-
-- **The real Pi runtime** — streamed text, reasoning, tools, sessions, models, skills, prompts, and provider authentication come from the embedded Pi SDK.
-- **Local-first by design** — repositories, sessions, Git operations, terminals, settings, and credentials remain on your machine.
-- **Explicit project trust** — every terminal-opened or manually selected project goes through the same **Trust and open**, **Open without Pi**, or **Cancel** decision.
-- **A serious coding workspace** — browse project files, inspect Monaco previews and diffs, follow tool execution, manage worktrees, and use a separate manual terminal.
-- **Make the workspace yours** — choose built-in or validated custom themes, plus interface and code fonts—including a light Daylight theme and Poppins interface type.
-- **Private voice input** — record in the composer and turn speech into editable text locally, with a selectable microphone and downloadable, checksum-verified model tiers.
-- **Optional ambient audio** — a compact music dock can play user-supplied public HTTPS media or local audio while staying separate from Pi and project activity.
-- **Managed multi-model subagents** — Pi can route isolated children to different authenticated providers, reasoning levels, tools, skills, and reusable agent profiles; run dependency workflows; and inspect, steer, retarget, follow up with, or terminate them while Fate UI preserves read-only nested transcripts.
-- **Calm during long-running work** — bounded event batches, virtualized timelines, guarded project switching, queued messages, stop/steer controls, and durable sessions keep the interface responsive.
-- **Cross-platform beta installers** — tagged releases publish native Windows, macOS, and Linux packages built and installation-smoke-tested on native GitHub runners.
-
-## Highlights
-
-| Workspace | Agent control | Local tooling |
-| --- | --- | --- |
-| Durable sessions, search, forks, clones, imports, and branches | Streamed output, reasoning, tools, stop, steer, follow-up, and queue editing | Project-confined file browsing, Monaco previews, Git status/history/diffs, and xterm.js terminals |
-| Isolated Git worktree sessions | Model, reasoning, and per-session permission controls | Local voice transcription and optional ambient audio |
-| Virtualized conversation and tool timelines | Skills, prompt templates, extensions, and generated images | Native menus, shortcuts, settings, diagnostics, and logs |
+- **The real Pi runtime.** Streamed text, reasoning, tools, sessions, models, skills, prompts, and provider authentication come from the embedded Pi SDK.
+- **Local control and explicit trust.** Repositories, sessions, Git, terminals, settings, and credentials stay on your machine. Terminal-opened and manually selected projects get the same **Trust and open**, **Open without Pi**, or **Cancel** choice.
+- **Fate Flight Deck.** Activity Pulse reports runtime, queue, context, and change state. Flight Recorder keeps a bounded, navigable history of root, legacy, and team activity. Review Runway pairs diffs and review status with recorded direct-file provenance when available.
+- **A focused coding workspace.** One resizable workspace brings together durable sessions, branches and worktrees, project-confined files, Monaco previews and diffs, Git status and history, and a manual terminal. Virtualized timelines, queued messages, guarded project switching, and stop/steer controls keep long-running work responsive.
+- **Agent orchestration.** Choose either recursive Agent Teams V2 or isolated legacy subagents, with model, tool, skill, and permission controls.
+- **Personal preferences, kept local.** Choose built-in or validated custom themes and interface or code fonts. Use local voice transcription or optional ambient audio when useful.
+- **Native installers.** See [Installation](#installation) for published builds, checksum guidance, and platform-specific setup.
 
 ## Installation
 
-Download installers and `SHA256SUMS` from the [GitHub Releases page](https://github.com/Master0fFate/pi-fategui/releases). New tagged releases publish Windows x64, macOS Apple Silicon and Intel, and Linux x64 builds.
+Download installers and `SHA256SUMS` for published versions from the [GitHub Releases page](https://github.com/Master0fFate/pi-fategui/releases). Published releases include Windows x64, macOS Apple Silicon and Intel, and Linux x64 packages.
 
 > [!NOTE]
 > Public beta installers are currently unsigned. Windows SmartScreen or macOS Gatekeeper may display an unknown-publisher warning. Verify the download against `SHA256SUMS` before installation.
@@ -129,25 +116,19 @@ Opening another project resets the active Pi permission level. The manual termin
 
 ## Agent orchestration
 
-Fate UI supports two exclusive orchestration surfaces, selected under **Settings → Agent** and applied when the project is reopened. A model never sees both surfaces in one runtime.
+Choose one surface under **Settings > Agent**, then reopen the project. A model sees only the selected surface.
 
 ### Agent Teams V2 (beta)
 
-Agent Teams V2 is Fate's provider-neutral recursive control plane. It exposes `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents`, plus `subagent_catalog` for authenticated model/profile/skill discovery. A root can create children, and children can create grandchildren. Every node has an immutable ID and canonical path such as `/root/reviewer/tester`; final results route to the direct parent.
+Agent Teams V2 is the recursive, provider-neutral option. A root can create children and children can create grandchildren. The **Agents** inspector shows the tree, task state, profile/model, usage, messages, and writer ownership. It also lets you message, follow up with, interrupt, or close agents. Conversations and events persist under `~/.pi/fateGUI/agent-teams/`; after restart, in-flight work is marked interrupted and retained context can be resumed with a follow-up.
 
-V2 separates long-lived nodes, individual task turns, messages, and durable events. Child Pi conversations persist under `~/.pi/fateGUI/agent-teams/`; after restart, in-flight work is reported honestly as interrupted and retained context can be resumed with a follow-up. Inter-agent messages are locally inspectable plaintext and use ordinary Pi custom messages rather than provider-specific encrypted payloads.
-
-Hard MVP limits are enforced in the main process: depth 2, 16 non-root nodes, three concurrent non-root turns, 32 KiB UTF-8 per message, 256 messages, waits up to five minutes, and one write-capable child turn at a time. Descendant permission and ordinary tools can only narrow the immediate caller's authority. All agents share the project working tree; parallel writers are intentionally unavailable until worktree isolation exists.
-
-The **Agents** inspector renders the recursive tree, task state, profile/model, usage, unread mail, writer ownership, and human message/follow-up/interrupt/close controls. Project/session clone, fork, import, and compaction remain blocked while reusable V2 work exists.
+Teams limit depth to 2, non-root nodes to 16, concurrent non-root turns to 3, and write-capable child turns to 1. All agents share the project working tree, so parallel writers are unavailable. Descendant permissions and ordinary tools can only narrow the direct caller's authority.
 
 ### Legacy subagents
 
-Legacy mode preserves the five existing Fate tools: `subagent` for blocking delegation, `subagent_start` for background children, `subagent_manage` for lifecycle controls and follow-ups, `subagent_workflow` for deterministic dependency graphs, and `subagent_catalog` for models, profiles, skills, and capabilities. Historical snapshots remain readable and render as direct root children.
+Legacy mode keeps `subagent`, `subagent_start`, `subagent_manage`, `subagent_workflow`, and `subagent_catalog`. Each child uses an isolated Pi SDK session with its own model, thinking level, profile, permissions, tools, skills, and limits. It cannot launch child agents. Historical snapshots stay readable as direct root children.
 
-Each legacy child receives a stable handle such as `@auth-reviewer-1`. Type `@` to autocomplete handles or use commands such as `@stop @auth-reviewer-1`. Legacy children run in isolated Pi SDK sessions and may select their own model, thinking level, profile, role, permission, tools, skills, retries, fallbacks, timeouts, mailbox, notifications, and budgets, but they do not recursively launch agents.
-
-Reusable Markdown profiles are loaded from `~/.pi/agent/agents/*.md` and, in trusted projects, `.pi/agents/*.md`. Profiles support a small frontmatter set for fields such as name, description, role, tools, and model.
+Reusable Markdown profiles load from `~/.pi/agent/agents/*.md` and, in trusted projects, `.pi/agents/*.md`. Their frontmatter can define fields such as name, description, role, tools, and model.
 
 ## Local development
 
@@ -188,12 +169,11 @@ pnpm dist            # target-native installer artifacts
 
 ## Release process
 
-The cross-platform GitHub Actions workflow runs for pull requests, pushes to `main`, version tags, and manual dispatches.
+The cross-platform GitHub Actions package matrix runs for pull requests, pushes to `main`, version tags, and non-promotion manual dispatches.
 
-- Windows x64, macOS Apple Silicon, macOS Intel, and Linux x64 packages are built on native hosted runners.
-- The workflow installs or mounts every output format and launches the packaged app: Windows NSIS, macOS DMG and PKG, Linux AppImage and DEB.
-- A version tag such as `v0.1.0-beta.2` must match `package.json` and point to history contained in `main`.
-- Only after all native jobs pass does a tag publish the seven installers plus `SHA256SUMS` to its GitHub release.
+- Native hosted runners build, install or mount, and smoke-test Windows x64, macOS Apple Silicon and Intel, and Linux x64 packages: Windows NSIS, macOS DMG and PKG, Linux AppImage and DEB.
+- A release tag must be `v<package.json version>` and point to history contained in `main`.
+- After every native job passes, a version tag publishes seven installers and `SHA256SUMS` to its GitHub Release.
 
 ## Architecture and security
 
@@ -230,11 +210,3 @@ Fate UI is licensed under the [Apache License 2.0](LICENSE). You may use, modify
 The license does **not** grant permission to use project names, logos, or marks in a way that implies an unmodified official build or endorsement. See [TRADEMARKS.md](TRADEMARKS.md).
 
 Fate UI includes and interoperates with third-party software under its own licenses, including the MIT-licensed Pi coding agent. Required upstream terms are reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Fate UI remains an independent project.
-
----
-
-<div align="center">
-
-Built for developers who want Pi's power with a transparent, local-first desktop workflow.
-
-</div>

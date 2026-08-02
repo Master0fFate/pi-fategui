@@ -7,6 +7,7 @@ import type { ChildSessionInput } from '../SubagentSessionFactory';
 
 const createdInputs: ChildSessionInput[] = [];
 const childSessions: AgentSession[] = [];
+const childUnsubscribes: ReturnType<typeof vi.fn>[] = [];
 
 vi.mock('../SubagentSessionFactory', async () => {
   const actual = await vi.importActual<typeof import('../SubagentSessionFactory')>('../SubagentSessionFactory');
@@ -15,6 +16,9 @@ vi.mock('../SubagentSessionFactory', async () => {
     createSdkChildSession: vi.fn(async (input: ChildSessionInput) => {
       createdInputs.push(input);
       const messages: unknown[] = [];
+      let listener: ((event: unknown) => void) | null = null;
+      const unsubscribe = vi.fn(() => { listener = null; });
+      childUnsubscribes.push(unsubscribe);
       const session = {
         sessionId: `child-${childSessions.length + 1}`,
         sessionFile: path.join(input.sessionDirectory ?? os.tmpdir(), `child-${childSessions.length + 1}.jsonl`),
@@ -25,9 +29,14 @@ vi.mock('../SubagentSessionFactory', async () => {
         sessionManager: { getSessionId: () => `child-${childSessions.length + 1}` },
         resourceLoader: { getSkills: () => ({ skills: [] }) },
         getToolDefinition: vi.fn((name: string) => input.collaborationTools?.find((tool) => tool.name === name)),
+        subscribe: vi.fn((next: (event: unknown) => void) => { listener = next; return unsubscribe; }),
         prompt: vi.fn(async (text: string) => {
           messages.push({ role: 'user', content: text });
-          messages.push({ role: 'assistant', content: [{ type: 'text', text: `result:${input.teamIdentity?.path}` }], stopReason: 'stop' });
+          listener?.({ type: 'tool_execution_start', toolCallId: 'read-1', toolName: 'read', args: { path: 'src/example.ts' } });
+          listener?.({ type: 'tool_execution_end', toolCallId: 'read-1', toolName: 'read', result: 'ok', isError: false });
+          const assistant = { role: 'assistant', content: [{ type: 'text', text: `result:${input.teamIdentity?.path}` }], stopReason: 'stop' };
+          messages.push(assistant);
+          listener?.({ type: 'message_end', message: assistant });
         }),
         sendCustomMessage: vi.fn(async () => undefined),
         abort: vi.fn(async () => undefined),
@@ -51,6 +60,7 @@ let dataRoot: string;
 beforeEach(async () => {
   createdInputs.length = 0;
   childSessions.length = 0;
+  childUnsubscribes.length = 0;
   dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-agent-team-test-'));
 });
 afterEach(async () => { await fs.rm(dataRoot, { recursive: true, force: true }); });
@@ -95,6 +105,11 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(firstTeam.nodes.find((node) => node.id === child.nodeId)).toMatchObject({ path: '/root/reviewer', status: 'ready', depth: 1 });
     expect(firstTeam.tasks).toHaveLength(1);
     expect(firstTeam.envelopes.map((item) => item.kind)).toEqual(['NEW_TASK', 'FINAL_ANSWER']);
+    expect(firstTeam.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'tool.started', nodeId: child.nodeId, toolName: 'read', provenance: expect.objectContaining({ actor: expect.objectContaining({ kind: 'team', nodeId: child.nodeId }), affectedPaths: [{ path: 'src/example.ts', operation: 'read' }] }) }),
+      expect.objectContaining({ type: 'tool.completed', nodeId: child.nodeId, toolName: 'read' }),
+      expect.objectContaining({ type: 'message.completed', nodeId: child.nodeId }),
+    ]));
     expect(root.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'fate-agent-team-envelope' }), expect.anything());
     expect(createdInputs[0]?.collaborationTools?.map((tool) => tool.name)).toEqual(['spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents']);
 

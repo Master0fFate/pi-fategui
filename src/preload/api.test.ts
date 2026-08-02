@@ -16,6 +16,20 @@ import { piDesktopApi } from './api';
 describe('preload desktop bridge', () => {
   beforeEach(() => {
     electron.invoke.mockReset();
+    electron.on.mockReset();
+    electron.removeListener.mockReset();
+  });
+
+  it('validates structured provenance before runtime events reach the renderer', () => {
+    const listener = vi.fn();
+    const unsubscribe = piDesktopApi.onEvents(listener);
+    const handler = electron.on.mock.calls.find(([channel]) => channel === ipcChannels.runtimeEvents)?.[1] as ((event: unknown, payload: unknown) => void);
+    const valid = [{ type: 'tool.started', toolCallId: 'tool-1', name: 'edit', input: '{}', timestamp: 1, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'src/app.ts', operation: 'edit' }] } }];
+    handler({}, valid);
+    expect(listener).toHaveBeenCalledWith(valid);
+    expect(() => handler({}, [{ ...valid[0], provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: '../secret', operation: 'edit' }] } }])).toThrow();
+    unsubscribe();
+    expect(electron.removeListener).toHaveBeenCalledWith(ipcChannels.runtimeEvents, handler);
   });
 
   it('writes bounded plain text through the clipboard IPC channel', async () => {

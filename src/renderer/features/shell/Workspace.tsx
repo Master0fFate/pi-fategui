@@ -6,6 +6,7 @@ import { ConversationTimeline } from '../chat/ConversationTimeline';
 import { ExtensionStatusRail } from '../chat/ExtensionStatusRail';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
+import { WorkspaceActivityPulse } from './WorkspaceActivityPulse';
 
 const TerminalPanel = lazy(() => import('../terminal/TerminalPanel').then((module) => ({ default: module.TerminalPanel })));
 
@@ -58,6 +59,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
         <div>
           <span className="eyebrow">SESSION</span>
           <strong>{activeSession?.title ?? runtime.project?.name ?? 'Welcome'}</strong>
+          <WorkspaceActivityPulse />
         </div>
         <div className="session-controls">
           <IconButton label="Show project in file browser" onClick={() => void revealProject()} disabled={!runtime.project}><FolderSearch size={17} /></IconButton>
