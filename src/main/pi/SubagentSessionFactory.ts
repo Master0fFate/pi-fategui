@@ -137,7 +137,7 @@ export async function createSdkChildSession(input: ChildSessionInput): Promise<A
     sessionManager,
     model: input.model,
     thinkingLevel: input.thinkingLevel,
-    tools: input.toolNames,
+    tools: [...input.toolNames, ...collaborationTools.map((tool) => tool.name)],
     excludeTools: [...SUBAGENT_TOOL_NAMES],
     customTools: [...confinedTools, ...collaborationTools] as unknown as NonNullable<Parameters<typeof createAgentSessionFromServices>[0]['customTools']>,
   });
