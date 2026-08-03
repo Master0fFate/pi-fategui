@@ -321,6 +321,36 @@ export const contextUsageSchema = z.object({
   percent: z.number().nonnegative().nullable(),
   estimated: z.boolean().optional(),
 });
+const tokenCountSchema = z.number().int().nonnegative().safe();
+const tokenCostSchema = z.number().finite().nonnegative().max(1_000_000_000);
+const tokenMetricsShape = {
+  input: tokenCountSchema,
+  output: tokenCountSchema,
+  cacheRead: tokenCountSchema,
+  cacheWrite: tokenCountSchema,
+  reasoning: tokenCountSchema.optional(),
+  totalTokens: tokenCountSchema,
+  cost: tokenCostSchema,
+};
+function requireReasoningSubset(usage: { output: number; reasoning?: number | undefined }, context: z.RefinementCtx): void {
+  if (usage.reasoning !== undefined && usage.reasoning > usage.output) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Reasoning tokens must be a subset of output tokens.' });
+  }
+}
+export const tokenMetricsSchema = z.object(tokenMetricsShape).strict().superRefine(requireReasoningSubset);
+export const tokenUsageSampleSchema = z.object({
+  ...tokenMetricsShape,
+  timestamp: z.number().int().nonnegative().safe(),
+}).strict().superRefine(requireReasoningSubset);
+export const sessionTokenTotalsSchema = z.object({
+  ...tokenMetricsShape,
+  turns: tokenCountSchema,
+}).strict().superRefine(requireReasoningSubset);
+export const runtimeTokenTelemetrySchema = z.object({
+  session: sessionTokenTotalsSchema,
+  latest: tokenUsageSampleSchema.nullable(),
+  history: z.array(tokenUsageSampleSchema).max(120),
+}).strict();
 
 export const MAX_SUBAGENT_IMAGE_CHARACTERS = 8_000_000;
 export const subagentRoleSchema = z.string().trim().min(1).max(80).refine((role) => !/[\u0000-\u001f\u007f]/u.test(role), 'Subagent role labels cannot contain control characters.');
@@ -638,6 +668,7 @@ export const runtimeStateSchema = z.object({
   skills: z.array(skillInfoSchema).max(5_000).optional(),
   objective: z.string().optional(),
   contextUsage: contextUsageSchema.optional(),
+  tokenTelemetry: runtimeTokenTelemetrySchema.optional(),
   queue: runtimeQueueSchema.optional(),
   extensionUi: extensionUiStateSchema.optional(),
   sessions: z.array(sessionSummarySchema).max(1_000).optional(),
@@ -900,6 +931,9 @@ export type ImageSaveInput = z.infer<typeof imageSaveInputSchema>;
 export type ImageSaveResult = z.infer<typeof imageSaveResultSchema>;
 export type RuntimeMessage = z.infer<typeof runtimeMessageSchema>;
 export type RuntimeTool = z.infer<typeof runtimeToolSchema>;
+export type TokenMetrics = z.infer<typeof tokenMetricsSchema>;
+export type TokenUsageSample = z.infer<typeof tokenUsageSampleSchema>;
+export type RuntimeTokenTelemetry = z.infer<typeof runtimeTokenTelemetrySchema>;
 export type RuntimeState = z.infer<typeof runtimeStateSchema>;
 export type SubagentRole = z.infer<typeof subagentRoleSchema>;
 export type SubagentAgentSource = z.infer<typeof subagentAgentSourceSchema>;

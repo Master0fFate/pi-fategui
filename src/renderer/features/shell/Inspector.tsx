@@ -7,7 +7,6 @@ import {
   ListChecks,
   MessagesSquare,
   Sparkles,
-  ShieldCheck,
 } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
@@ -16,6 +15,7 @@ import { ToolCard } from '../chat/ToolCard';
 import { ChangesPanel } from '../diffs/ChangesPanel';
 import { FilesPanel } from '../files/FilesPanel';
 import { ResourcesPanel } from '../resources/ResourcesPanel';
+import { ContextPanel } from './ContextPanel';
 import { SubagentSessionsPanel } from './SubagentSessionsPanel';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -103,17 +103,7 @@ export function Inspector({ onCollapse }: InspectorProps) {
         <Tabs.Content value="sessions" className="tab-content"><SubagentSessionsPanel /></Tabs.Content>
         <Tabs.Content value="tools" className="tab-content"><ToolsPanel /></Tabs.Content>
         <Tabs.Content value="resources" className="tab-content"><ResourcesPanel /></Tabs.Content>
-        <Tabs.Content value="context" className="tab-content">
-          <div className="context-list">
-            <div><span>Project</span><strong>{runtime.project?.name ?? 'Not selected'}</strong></div>
-            <div><span>Agent</span><strong>{runtime.status}</strong></div>
-            <div><span>Model</span><strong>{runtime.model?.name ?? '—'}</strong></div>
-            <div><span>Thinking</span><strong>{runtime.thinkingLevel}</strong></div>
-            <div><span>Context</span><strong>{runtime.contextUsage?.percent == null ? '—' : `${runtime.contextUsage.estimated ? '~' : ''}${runtime.contextUsage.percent.toFixed(1)}%`}</strong></div>
-            <div><span>Objective</span><strong>{runtime.objective || 'No active objective'}</strong></div>
-            <div className="trust-row"><ShieldCheck size={16} /><span>{runtime.project?.trusted ? `Trusted · ${runtime.project.path}` : 'Project trust starts after selection'}</span></div>
-          </div>
-        </Tabs.Content>
+        <Tabs.Content value="context" className="tab-content"><ContextPanel runtime={runtime} /></Tabs.Content>
       </Tabs.Root>
     </aside>
   );

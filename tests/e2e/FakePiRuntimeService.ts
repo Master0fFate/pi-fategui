@@ -3,6 +3,24 @@ import type { AgentTeam, AgentTeamControlInput } from '../../src/shared/contract
 
 const model = { provider: 'test', id: 'deterministic', name: 'Deterministic Test Model', reasoning: true, contextWindow: 100_000, supportsImages: true };
 const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+const tokenHistory = Array.from({ length: 24 }, (_value, index) => {
+  const input = 720 + index * 91;
+  const output = 180 + index * 23;
+  const cacheRead = index < 3 ? 0 : 1_200 + index * 240;
+  const cacheWrite = index % 7 === 0 ? 460 : 0;
+  return {
+    input, output, cacheRead, cacheWrite,
+    ...(index > 8 ? { reasoning: Math.floor(output * 0.42) } : {}),
+    totalTokens: input + output + cacheRead + cacheWrite,
+    cost: 0.006 + index * 0.0017,
+    timestamp: Date.UTC(2026, 0, 1, 12, index * 2),
+  };
+});
+const tokenTelemetry: NonNullable<RuntimeState['tokenTelemetry']> = {
+  session: { input: 41_200, output: 14_800, cacheRead: 82_000, cacheWrite: 6_400, totalTokens: 144_400, cost: 0.4283, turns: 24 },
+  latest: tokenHistory.at(-1)!,
+  history: tokenHistory,
+};
 
 function agentFixture(id: string, handle: string, displayName: string, task: string, status: SubagentRun['status'], mailbox: SubagentRun['mailbox']): SubagentRun {
   const now = Date.now();
@@ -86,6 +104,18 @@ export class FakePiRuntimeService {
       ],
       objective: 'Review the deliberately long session objective without allowing it to collide with the Objective label in the narrow inspector.',
       contextUsage: { tokens: 42_000, contextWindow: 100_000, percent: 42 },
+      ...(this.project ? {
+        tokenTelemetry,
+        extensionUi: {
+          statuses: [
+            { key: 'mcp', text: 'MCP: 2 servers ready' },
+            { key: 'plugin', text: 'PLUGIN: output ready' },
+          ],
+          widgets: [{ key: 'output', lines: ['Output channel connected'] }],
+          working: null,
+          title: null,
+        },
+      } : {}),
       queue: {
         steering: this.queuedMessages.filter((item) => item.behavior === 'steer').length,
         followUp: this.queuedMessages.filter((item) => item.behavior === 'followUp').length,

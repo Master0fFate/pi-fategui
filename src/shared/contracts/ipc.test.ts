@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, openUpdateDownloadResultSchema, piEventBatchSchema, piEventSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, runtimeToolSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, subagentControlInputSchema, subagentRunSchema, subagentToolDetailsSchema, subagentWorkflowSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, updateCheckResultSchema, windowStateSchema } from './ipc';
+import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, openUpdateDownloadResultSchema, piEventBatchSchema, piEventSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, runtimeTokenTelemetrySchema, runtimeToolSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, subagentControlInputSchema, subagentRunSchema, subagentToolDetailsSchema, subagentWorkflowSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, updateCheckResultSchema, windowStateSchema } from './ipc';
 
 describe('IPC contracts', () => {
   it('accepts only an empty object for system info input', () => {
@@ -80,6 +80,27 @@ describe('IPC contracts', () => {
       tokens: 21_000, contextWindow: 100_000, percent: 21, estimated: true,
     });
     expect(() => contextUsageSchema.parse({ tokens: -1, contextWindow: 100_000, percent: -1, estimated: true })).toThrow();
+  });
+
+  it('validates strict bounded provider-native token telemetry', () => {
+    const sample = {
+      input: 120, output: 30, cacheRead: 400, cacheWrite: 10,
+      reasoning: 12, totalTokens: 560, cost: 0.014, timestamp: 1_700_000_000_000,
+    };
+    const telemetry = {
+      session: { input: 240, output: 60, cacheRead: 800, cacheWrite: 20, totalTokens: 1_120, cost: 0.028, turns: 2 },
+      latest: sample,
+      history: [sample],
+    };
+    expect(runtimeTokenTelemetrySchema.parse(telemetry)).toEqual(telemetry);
+    expect(() => runtimeTokenTelemetrySchema.parse({ ...telemetry, latest: { ...sample, reasoning: 31 } })).toThrow();
+    expect(() => runtimeTokenTelemetrySchema.parse({ ...telemetry, latest: { ...sample, cacheRead: -1 } })).toThrow();
+    expect(() => runtimeTokenTelemetrySchema.parse({ ...telemetry, latest: { ...sample, cost: Number.POSITIVE_INFINITY } })).toThrow();
+    expect(() => runtimeTokenTelemetrySchema.parse({ ...telemetry, latest: { ...sample, providerSpecific: true } })).toThrow();
+    expect(() => runtimeTokenTelemetrySchema.parse({
+      ...telemetry,
+      history: Array.from({ length: 121 }, (_, index) => ({ ...sample, timestamp: index })),
+    })).toThrow();
   });
 
   it('requires bounded data and supported MIME types for raster previews', () => {

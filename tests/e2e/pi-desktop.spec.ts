@@ -1,4 +1,4 @@
-import { _electron as electron, expect, test } from '@playwright/test';
+import { _electron as electron, expect, test, type Locator, type Page } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,6 +6,15 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
+
+async function expectHoverTooltip(page: Page, trigger: Locator, content: string): Promise<void> {
+  const tooltip = page.getByRole('tooltip').filter({ hasText: content });
+  await expect(async () => {
+    await page.mouse.move(1, 1);
+    await trigger.hover();
+    await expect(tooltip).toBeVisible({ timeout: 2_000 });
+  }).toPass({ intervals: [100, 250, 500], timeout: 10_000 });
+}
 
 async function fixtureRepository(): Promise<{ root: string; worktree: string }> {
   const root = await mkdtemp(path.join(tmpdir(), 'pi-desktop-e2e-'));
@@ -167,6 +176,51 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     expect(composerLayout!.position).toBe('absolute');
     expect(composerLayout!.composerWidth).toBeGreaterThan(composerLayout!.conversationWidth);
     expect(['none', 'normal']).toContain(composerLayout!.resizeMarker);
+
+    const extensionRail = page.getByRole('status', { name: 'Pi extension status' });
+    const extensionDetails = page.getByRole('button', { name: 'Show 3 extension details' });
+    await expect(extensionRail).toBeVisible();
+    await expect(extensionRail).toContainText('PLUGIN: output ready');
+    const readExtensionRailLayout = () => page.evaluate(() => {
+      const rail = document.querySelector<HTMLElement>('.extension-status-rail')!;
+      const trigger = document.querySelector<HTMLElement>('.extension-status-details-trigger')!;
+      const workspace = document.querySelector<HTMLElement>('.workspace')!;
+      const header = document.querySelector<HTMLElement>('.workspace-header')!;
+      const welcome = document.querySelector<HTMLElement>('.welcome')!;
+      const composer = document.querySelector<HTMLElement>('.composer-wrap')!;
+      const rect = (element: HTMLElement) => {
+        const bounds = element.getBoundingClientRect();
+        return { top: bounds.top, right: bounds.right, bottom: bounds.bottom, left: bounds.left, width: bounds.width, height: bounds.height };
+      };
+      return {
+        position: getComputedStyle(rail).position,
+        detailBackground: getComputedStyle(trigger).backgroundColor,
+        rail: rect(rail),
+        trigger: rect(trigger),
+        workspace: rect(workspace),
+        header: rect(header),
+        welcome: rect(welcome),
+        composer: rect(composer),
+      };
+    });
+    const railBeforeHover = await readExtensionRailLayout();
+    expect(railBeforeHover.position).toBe('absolute');
+    expect(railBeforeHover.rail.top - railBeforeHover.header.bottom).toBeGreaterThanOrEqual(4);
+    expect(railBeforeHover.rail.top - railBeforeHover.header.bottom).toBeLessThanOrEqual(6);
+    expect(railBeforeHover.workspace.right - railBeforeHover.rail.right).toBeGreaterThanOrEqual(20);
+    expect(railBeforeHover.workspace.right - railBeforeHover.rail.right).toBeLessThanOrEqual(24);
+
+    await extensionDetails.hover();
+    await expect.poll(async () => (await readExtensionRailLayout()).detailBackground).not.toBe(railBeforeHover.detailBackground);
+    const railOnHover = await readExtensionRailLayout();
+    expect(railOnHover.trigger.top).toBeGreaterThanOrEqual(railOnHover.rail.top);
+    expect(railOnHover.trigger.bottom).toBeLessThanOrEqual(railOnHover.rail.bottom);
+    expect(railOnHover.rail).toEqual(railBeforeHover.rail);
+    expect(railOnHover.welcome).toEqual(railBeforeHover.welcome);
+    expect(railOnHover.composer).toEqual(railBeforeHover.composer);
+    await page.screenshot({ path: 'test-results/pi-desktop-extension-status-hover.png' });
+    await page.mouse.move(1, 1);
+
     const sessionList = page.getByLabel('Sessions', { exact: true });
     const firstSessionRow = page.locator('.session-row').filter({ hasText: 'First session' });
     await expect(sessionList).toBeVisible();
@@ -726,10 +780,16 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1280, 720));
     await page.waitForTimeout(180);
     await page.getByRole('tab', { name: /Context/ }).click();
-    const objectiveRow = page.locator('.context-list > div').filter({ hasText: 'Objective' });
-    const [objectiveLabelBox, objectiveTextBox] = await Promise.all([objectiveRow.locator('span').boundingBox(), objectiveRow.locator('strong').boundingBox()]);
-    expect(objectiveTextBox!.x).toBeGreaterThan(objectiveLabelBox!.x + objectiveLabelBox!.width + 10);
-    expect(objectiveTextBox!.height).toBeGreaterThan(objectiveLabelBox!.height * 2);
+    await expect(page.getByRole('img', { name: 'Stacked token traffic for the 24 most recent responses on the active branch' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Session token summary' })).toContainText('provider-reported input');
+    await expect(page.getByText('included in output')).toBeVisible();
+    const contextLayout = await page.locator('.context-dashboard').evaluate((panel) => ({
+      scrollWidth: panel.scrollWidth,
+      clientWidth: panel.clientWidth,
+      chartWidth: panel.querySelector<SVGElement>('.token-chart svg')?.getBoundingClientRect().width ?? 0,
+    }));
+    expect(contextLayout.scrollWidth).toBeLessThanOrEqual(contextLayout.clientWidth);
+    expect(contextLayout.chartWidth).toBeGreaterThan(200);
     await page.screenshot({ path: 'test-results/pi-desktop-context-wrap.png' });
 
     await page.getByRole('tab', { name: /Changes/ }).click();
@@ -742,9 +802,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     const changedFile = page.locator('button.change-row').filter({ hasText: 'src/example.ts' });
     await expect(changedFile).toBeVisible();
     await expect(changedFile.locator('.change-counts')).toHaveCount(0);
-    await changedFile.locator('.change-path').hover();
-    await page.waitForTimeout(800);
-    await expect(page.getByRole('tooltip').filter({ hasText: 'src/example.ts' })).toBeVisible();
+    await expectHoverTooltip(page, changedFile.locator('.change-path'), 'src/example.ts');
     await page.getByRole('button', { name: '2 changed files. Open combined diff' }).click();
     await expect(page.getByText('Working tree diff', { exact: true })).toBeVisible();
     await changedFile.click();

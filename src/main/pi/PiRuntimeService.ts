@@ -34,6 +34,7 @@ import type {
   QueueMutationResult,
   RuntimeMessage,
   RuntimeState,
+  RuntimeTokenTelemetry,
   RuntimeTool,
   SessionAttention,
   SessionSummary,
@@ -81,6 +82,8 @@ const MAX_LIVE_RUNTIME_SLOTS = 4;
 const MAX_SESSION_ATTENTION_ENTRIES = 1_000;
 const MAX_MANUAL_SESSION_NAME_CLAIMS = 5_000;
 const MAX_COLD_PENDING_MODELS = 1_000;
+const MAX_TOKEN_USAGE_HISTORY = 120;
+const MAX_TOKEN_TELEMETRY_COST = 1_000_000_000;
 
 type SessionModel = NonNullable<AgentSession['model']>;
 interface StagedModel {
@@ -376,6 +379,112 @@ function historyBoundary(omittedEntries: number, scope = 'history'): Record<stri
     omittedEntries,
     display: true,
     timestamp: 0,
+  };
+}
+
+function validTokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function tokenUsageSample(usage: unknown, timestamp: unknown): RuntimeTokenTelemetry['history'][number] | null {
+  if (!usage || typeof usage !== 'object' || !validTokenCount(timestamp)) return null;
+  const value = usage as {
+    input?: unknown;
+    output?: unknown;
+    cacheRead?: unknown;
+    cacheWrite?: unknown;
+    reasoning?: unknown;
+    totalTokens?: unknown;
+    cost?: unknown;
+  };
+  if (
+    !validTokenCount(value.input)
+    || !validTokenCount(value.output)
+    || !validTokenCount(value.cacheRead)
+    || !validTokenCount(value.cacheWrite)
+    || !validTokenCount(value.totalTokens)
+  ) return null;
+  const cost = typeof value.cost === 'number'
+    ? value.cost
+    : value.cost && typeof value.cost === 'object'
+      ? (value.cost as { total?: unknown }).total
+      : undefined;
+  if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0 || cost > MAX_TOKEN_TELEMETRY_COST) return null;
+  const reasoning = validTokenCount(value.reasoning) && value.reasoning <= value.output ? value.reasoning : undefined;
+  return {
+    input: value.input,
+    output: value.output,
+    cacheRead: value.cacheRead,
+    cacheWrite: value.cacheWrite,
+    ...(reasoning !== undefined ? { reasoning } : {}),
+    totalTokens: value.totalTokens,
+    cost,
+    timestamp,
+  };
+}
+
+function sessionTokenTelemetry(session: AgentSession): RuntimeTokenTelemetry | undefined {
+  let stats: unknown;
+  try {
+    stats = session.getSessionStats();
+  } catch {
+    return undefined;
+  }
+  if (!stats || typeof stats !== 'object') return undefined;
+  const value = stats as { assistantMessages?: unknown; tokens?: unknown; cost?: unknown };
+  const tokens = value.tokens && typeof value.tokens === 'object'
+    ? value.tokens as { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown; total?: unknown }
+    : null;
+  if (
+    !tokens
+    || !validTokenCount(tokens.input)
+    || !validTokenCount(tokens.output)
+    || !validTokenCount(tokens.cacheRead)
+    || !validTokenCount(tokens.cacheWrite)
+    || !validTokenCount(tokens.total)
+    || !validTokenCount(value.assistantMessages)
+    || typeof value.cost !== 'number'
+    || !Number.isFinite(value.cost)
+    || value.cost < 0
+    || value.cost > MAX_TOKEN_TELEMETRY_COST
+  ) return undefined;
+
+  let branch: readonly unknown[] = [];
+  try {
+    const persisted = session.sessionManager?.getBranch?.();
+    branch = Array.isArray(persisted) && persisted.length > 0 ? persisted : session.messages;
+  } catch {
+    branch = session.messages;
+  }
+  const history: RuntimeTokenTelemetry['history'] = [];
+  for (let index = branch.length - 1; index >= 0 && history.length < MAX_TOKEN_USAGE_HISTORY; index -= 1) {
+    const item = branch[index];
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as { type?: unknown; timestamp?: unknown; message?: unknown };
+    const message = entry.type === 'message' ? entry.message : item;
+    if (!message || typeof message !== 'object') continue;
+    const assistant = message as { role?: unknown; timestamp?: unknown; usage?: unknown };
+    if (assistant.role !== 'assistant') continue;
+    const persistedTimestamp = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : undefined;
+    const sample = tokenUsageSample(
+      assistant.usage,
+      validTokenCount(assistant.timestamp) ? assistant.timestamp : persistedTimestamp,
+    );
+    if (sample) history.push(sample);
+  }
+  history.sort((left, right) => left.timestamp - right.timestamp);
+  return {
+    session: {
+      input: tokens.input,
+      output: tokens.output,
+      cacheRead: tokens.cacheRead,
+      cacheWrite: tokens.cacheWrite,
+      totalTokens: tokens.total,
+      cost: value.cost,
+      turns: value.assistantMessages,
+    },
+    latest: history.at(-1) ?? null,
+    history,
   };
 }
 
@@ -700,6 +809,7 @@ export class PiRuntimeService {
     } else if (reportedContextUsage?.tokens !== null && reportedContextUsage?.tokens !== undefined && this.selectedSlot) {
       this.selectedSlot.contextUsageEstimate = null;
     }
+    const tokenTelemetry = session ? sessionTokenTelemetry(session) : undefined;
     const queue = {
       steering: session?.getSteeringMessages?.().length ?? 0,
       followUp: session?.getFollowUpMessages?.().length ?? 0,
@@ -726,6 +836,7 @@ export class PiRuntimeService {
       skills: skills ?? [],
       ...(objective ? { objective } : {}),
       ...(contextUsage ? { contextUsage } : {}),
+      ...(tokenTelemetry ? { tokenTelemetry } : {}),
       queue,
       extensionUi: this.selectedSlot?.extensionUiState ?? emptyExtensionUiState(),
       sessions: this.sessions,

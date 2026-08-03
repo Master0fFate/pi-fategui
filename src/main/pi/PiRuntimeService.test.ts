@@ -41,6 +41,7 @@ function fixture(availableModels: typeof model[] = [model]) {
     get sessionName() { return sessionName; },
     sessionManager: {
       getLeafId: vi.fn(() => 'leaf-1'),
+      getBranch: vi.fn(() => [] as unknown[]),
       getSessionName: vi.fn(() => sessionName),
       appendSessionInfo: vi.fn((name: string) => { sessionName = name; return 'name-entry'; }),
       appendCustomEntry: vi.fn(() => 'custom-entry'),
@@ -71,6 +72,17 @@ function fixture(availableModels: typeof model[] = [model]) {
     }),
     getSteeringMessages: vi.fn(() => [...steeringMessages]),
     getFollowUpMessages: vi.fn(() => [...followUpMessages]),
+    getSessionStats: vi.fn(() => ({
+      sessionFile: session.sessionFile,
+      sessionId: session.sessionId,
+      userMessages: 0,
+      assistantMessages: 0,
+      toolCalls: 0,
+      toolResults: 0,
+      totalMessages: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      cost: 0,
+    })),
     abort: vi.fn(async () => { streaming = false; settleRun?.(); }),
     setModel: vi.fn(async (nextModel: typeof model) => {
       session.model = nextModel;
@@ -1339,6 +1351,109 @@ describe('PiRuntimeService', () => {
     const result = await service.forkSession('entry-1');
     expect(result.selectedText).toBe('original prompt');
     expect(result.state.sessionId).toBe('session-1');
+    await service.dispose();
+  });
+
+  it('represents an empty session with honest zero token telemetry', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    const state = await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    expect(state.tokenTelemetry).toEqual({
+      session: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, turns: 0 },
+      latest: null,
+      history: [],
+    });
+    await service.dispose();
+  });
+
+  it('publishes canonical session totals and provider-native active-branch response usage', async () => {
+    const fake = fixture();
+    fake.session.getSessionStats.mockReturnValue({
+      sessionFile: undefined,
+      sessionId: 'session-1',
+      userMessages: 2,
+      assistantMessages: 2,
+      toolCalls: 0,
+      toolResults: 0,
+      totalMessages: 4,
+      tokens: { input: 150, output: 42, cacheRead: 600, cacheWrite: 20, total: 812 },
+      cost: 0.031,
+    });
+    fake.session.sessionManager.getBranch.mockReturnValue([
+      { type: 'message', timestamp: '2025-01-01T00:00:00.000Z', message: { role: 'user', timestamp: 1, content: 'First' } },
+      {
+        type: 'message', timestamp: '2025-01-01T00:00:02.000Z',
+        message: {
+          role: 'assistant', timestamp: 2_000,
+          usage: { input: 100, output: 30, cacheRead: 500, cacheWrite: 20, reasoning: 12, totalTokens: 650, cost: { total: 0.02 } },
+          content: 'First answer',
+        },
+      },
+      {
+        type: 'message', timestamp: '2025-01-01T00:00:04.000Z',
+        message: {
+          role: 'assistant', timestamp: 4_000,
+          usage: { input: 50, output: 12, cacheRead: 100, cacheWrite: 0, totalTokens: 162, cost: { total: 0.011 } },
+          content: 'Second answer',
+        },
+      },
+    ]);
+    const service = new PiRuntimeService(fake.adapter);
+    const state = await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    expect(fake.session.getSessionStats).toHaveBeenCalled();
+    expect(state.tokenTelemetry).toEqual({
+      session: { input: 150, output: 42, cacheRead: 600, cacheWrite: 20, totalTokens: 812, cost: 0.031, turns: 2 },
+      latest: { input: 50, output: 12, cacheRead: 100, cacheWrite: 0, totalTokens: 162, cost: 0.011, timestamp: 4_000 },
+      history: [
+        { input: 100, output: 30, cacheRead: 500, cacheWrite: 20, reasoning: 12, totalTokens: 650, cost: 0.02, timestamp: 2_000 },
+        { input: 50, output: 12, cacheRead: 100, cacheWrite: 0, totalTokens: 162, cost: 0.011, timestamp: 4_000 },
+      ],
+    });
+    await service.dispose();
+  });
+
+  it('bounds restored response history and ignores malformed provider usage', async () => {
+    const fake = fixture();
+    fake.session.messages = [];
+    fake.session.getSessionStats.mockReturnValue({
+      sessionFile: '/sessions/restored.jsonl',
+      sessionId: 'session-1',
+      userMessages: 125,
+      assistantMessages: 128,
+      toolCalls: 0,
+      toolResults: 0,
+      totalMessages: 253,
+      tokens: { input: 1_000, output: 500, cacheRead: 300, cacheWrite: 200, total: 2_000 },
+      cost: 1.25,
+    });
+    const validEntries = Array.from({ length: 125 }, (_, index) => ({
+      type: 'message',
+      timestamp: new Date(index * 1_000).toISOString(),
+      message: {
+        role: 'assistant',
+        timestamp: index * 1_000,
+        usage: { input: 4, output: 3, cacheRead: 2, cacheWrite: 1, totalTokens: 10, cost: { total: 0.01 } },
+        content: `answer ${index}`,
+      },
+    }));
+    fake.session.sessionManager.getBranch.mockReturnValue([
+      ...validEntries,
+      { type: 'message', timestamp: new Date(125_000).toISOString(), message: { role: 'assistant', timestamp: 125_000, usage: { input: -1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } } } },
+      { type: 'message', timestamp: new Date(126_000).toISOString(), message: { role: 'assistant', timestamp: 126_000, usage: { input: 1, output: 1, cacheRead: Number.NaN, cacheWrite: 0, totalTokens: 2, cost: { total: 0 } } } },
+      { type: 'message', timestamp: new Date(127_000).toISOString(), message: { role: 'assistant', timestamp: 127_000, usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, reasoning: 3, totalTokens: 3, cost: { total: 0 } } } },
+    ]);
+    const service = new PiRuntimeService(fake.adapter);
+    const state = await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const history = state.tokenTelemetry?.history ?? [];
+
+    expect(history).toHaveLength(120);
+    expect(history[0]?.timestamp).toBe(6_000);
+    expect(history.at(-1)).toMatchObject({ timestamp: 127_000, output: 2 });
+    expect(history.at(-1)).not.toHaveProperty('reasoning');
+    expect(history.every((sample, index) => index === 0 || sample.timestamp >= history[index - 1]!.timestamp)).toBe(true);
+    expect(state.tokenTelemetry?.latest).toEqual(history.at(-1));
     await service.dispose();
   });
 

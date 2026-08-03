@@ -139,19 +139,15 @@ const workflowNodeSchema = Type.Object({
   ...taskOptions,
 }, { additionalProperties: false });
 
-export const workflowParameters = Type.Union([
-  Type.Object({
-    action: Type.Literal('start'),
-    nodes: Type.Array(workflowNodeSchema, { minItems: 1 }),
-    maxConcurrency: Type.Optional(Type.Integer({ minimum: 1, default: DEFAULT_RUNNING_CONCURRENCY })),
-    notifyParent: Type.Optional(stringEnum(notificationModes, 'Workflow-level notification after all nodes settle.', 'never')),
-    budget: Type.Optional(budgetSchema),
-  }, { additionalProperties: false }),
-  Type.Object({ action: Type.Literal('list') }, { additionalProperties: false }),
-  Type.Object({ action: Type.Literal('status'), workflowId: Type.String({ minLength: 1, maxLength: 100 }) }, { additionalProperties: false }),
-  Type.Object({ action: Type.Literal('cancel'), workflowId: Type.String({ minLength: 1, maxLength: 100 }), reason: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })) }, { additionalProperties: false }),
-  Type.Object({ action: Type.Literal('resume'), workflowId: Type.String({ minLength: 1, maxLength: 100 }) }, { additionalProperties: false }),
-]);
+export const workflowParameters = Type.Object({
+  action: stringEnum(['start', 'list', 'status', 'cancel', 'resume'] as const, 'Workflow operation. start requires nodes; status/cancel/resume require workflowId.'),
+  nodes: Type.Optional(Type.Array(workflowNodeSchema, { minItems: 1, description: 'Required when action is start.' })),
+  maxConcurrency: Type.Optional(Type.Integer({ minimum: 1, default: DEFAULT_RUNNING_CONCURRENCY })),
+  notifyParent: Type.Optional(stringEnum(notificationModes, 'Workflow-level notification after all nodes settle.', 'never')),
+  budget: Type.Optional(budgetSchema),
+  workflowId: Type.Optional(Type.String({ minLength: 1, maxLength: 100, description: 'Required when action is status, cancel, or resume.' })),
+  reason: Type.Optional(Type.String({ minLength: 1, maxLength: 500, description: 'Optional cancellation reason when action is cancel.' })),
+}, { additionalProperties: false });
 
 const runTarget = (description: string) => Type.String({
   minLength: 1,
@@ -164,42 +160,20 @@ const managePageOptions = {
   limit: Type.Optional(Type.Integer({ minimum: 1, description: 'Optional page size. No maximum is imposed; choose a size that fits the parent model context.' })),
 };
 
-export const manageParameters = Type.Union([
-  Type.Object({ action: Type.Literal('list'), ...managePageOptions }, { additionalProperties: false }),
-  Type.Object({
-    action: Type.Literal('status'),
-    runIds: Type.Optional(Type.Array(runTarget('Child targets to inspect.'), { minItems: 1 })),
-    ...managePageOptions,
-  }, { additionalProperties: false }),
-  Type.Object({
-    action: Type.Literal('wait'),
-    runIds: Type.Array(runTarget('Child targets to wait for.'), { minItems: 1 }),
-    until: Type.Optional(stringEnum(['any', 'all', 'activity'] as const, 'Return after any settles, all settle, or any selected run changes.', 'any')),
-    timeoutSeconds: Type.Optional(Type.Number({ minimum: 0, default: DEFAULT_MANAGE_WAIT_SECONDS })),
-  }, { additionalProperties: false }),
-  Type.Object({ action: Type.Literal('steer'), runId: runTarget('Active child target.'), instruction: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
-  Type.Object({
-    action: Type.Literal('retarget'),
-    runId: runTarget('Child target to retarget.'),
-    model: Type.Optional(modelSelectionSchema),
-    thinkingLevel: Type.Optional(stringEnum(thinkingLevels, 'Reasoning effort for subsequent child turns.')),
-  }, { additionalProperties: false }),
-  Type.Object({
-    action: Type.Literal('followup'),
-    runId: runTarget('Retained child target.'),
-    message: Type.String({ minLength: 1 }),
-    model: Type.Optional(modelSelectionSchema),
-    thinkingLevel: Type.Optional(stringEnum(thinkingLevels, 'Optional retarget before the follow-up.')),
-    timeoutSeconds: Type.Optional(Type.Number({ minimum: 0, description: 'Optional advisory runtime threshold for this follow-up. Crossing it records inspector telemetry and the child continues.' })),
-    extendMailboxTtlSeconds: Type.Optional(Type.Number({ minimum: 0 })),
-  }, { additionalProperties: false }),
-  Type.Object({ action: Type.Literal('close'), runIds: Type.Array(runTarget('Retained child targets to close.'), { minItems: 1 }) }, { additionalProperties: false }),
-  Type.Object({
-    action: Type.Literal('cancel'),
-    runIds: Type.Array(runTarget('Live child targets to cancel.'), { minItems: 1 }),
-    reason: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
-  }, { additionalProperties: false }),
-]);
+export const manageParameters = Type.Object({
+  action: stringEnum(['list', 'status', 'wait', 'steer', 'retarget', 'followup', 'close', 'cancel'] as const, 'Management operation. wait/close/cancel require runIds; steer/retarget/followup require runId.'),
+  runIds: Type.Optional(Type.Array(runTarget('Child targets for status, wait, close, or cancel.'), { minItems: 1 })),
+  runId: Type.Optional(runTarget('Single child target for steer, retarget, or followup.')),
+  ...managePageOptions,
+  until: Type.Optional(stringEnum(['any', 'all', 'activity'] as const, 'Return after any settles, all settle, or any selected run changes.', 'any')),
+  timeoutSeconds: Type.Optional(Type.Number({ minimum: 0, description: `Wait timeout (defaults to ${DEFAULT_MANAGE_WAIT_SECONDS} seconds) or advisory follow-up runtime threshold, depending on action.` })),
+  instruction: Type.Optional(Type.String({ minLength: 1, description: 'Required when action is steer.' })),
+  message: Type.Optional(Type.String({ minLength: 1, description: 'Required when action is followup.' })),
+  model: Type.Optional(modelSelectionSchema),
+  thinkingLevel: Type.Optional(stringEnum(thinkingLevels, 'Optional reasoning effort for retarget or followup.')),
+  extendMailboxTtlSeconds: Type.Optional(Type.Number({ minimum: 0 })),
+  reason: Type.Optional(Type.String({ minLength: 1, maxLength: 500, description: 'Optional cancellation reason when action is cancel.' })),
+}, { additionalProperties: false });
 
 export const catalogParameters = Type.Object({
   section: Type.Optional(stringEnum(['all', 'models', 'agents', 'skills', 'capabilities'] as const, 'Catalog section.', 'all')),
