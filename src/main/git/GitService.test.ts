@@ -99,7 +99,9 @@ afterEach(async () => {
   await Promise.all(temporary.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 }, 60_000);
 
-describe('GitService', () => {
+// These integration tests launch real Git processes. Loaded cross-platform CI
+// runners can take more than Vitest's 5-second unit-test default to spawn them.
+describe('GitService', { timeout: 30_000 }, () => {
   it('parses NUL-delimited Unicode, spaced, and renamed paths without shell tokenization', () => {
     const status = parsePorcelainStatus('## main...origin/main [ahead 2, behind 1]\0 M hello world ü.txt\0R  新 name.ts\0旧 name.ts\0');
     expect(status).toMatchObject({ branch: 'main', upstream: 'origin/main', ahead: 2, behind: 1 });
