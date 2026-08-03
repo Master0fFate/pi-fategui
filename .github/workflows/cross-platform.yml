@@ -239,7 +239,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: verify-package
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
@@ -247,31 +247,59 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate release tag and source branch
+      - name: Validate release tag, notes, and source branch
+        shell: bash
         run: |
+          set -euo pipefail
           node scripts/release-artifacts.mjs validate-tag --tag "$GITHUB_REF_NAME"
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          test -s ".github/release-notes/$GITHUB_REF_NAME.md"
+      - name: Prepare artifact directory
+        run: rm -rf artifacts && mkdir artifacts
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: fate-ui-*
           path: artifacts
           merge-multiple: true
-      - name: Verify release set and write checksums
+      - name: Verify exact release set and write checksums
+        shell: bash
         run: |
-          test "$(find artifacts -maxdepth 1 -type f | wc -l)" -eq 7
+          set -euo pipefail
           node scripts/release-artifacts.mjs checksums --source artifacts
+          (cd artifacts && sha256sum -c SHA256SUMS)
+          test "$(find artifacts -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 8
+          test "$(find artifacts -mindepth 1 -maxdepth 1 | wc -l)" -eq 8
       - name: Publish verified artifacts
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber
-          else
-            release_type=()
-            if [[ "$GITHUB_REF_NAME" == *-* ]]; then release_type+=(--prerelease); fi
-            gh release create "$GITHUB_REF_NAME" artifacts/* --draft --verify-tag --generate-notes --title "Fate UI $GITHUB_REF_NAME" "${release_type[@]}"
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          notes=".github/release-notes/$tag.md"
+          release_type=(--prerelease=false)
+          expected_prerelease=false
+          if [[ "$tag" == *-* ]]; then
+            release_type=(--prerelease)
+            expected_prerelease=true
           fi
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Refusing to mutate pre-existing release $tag; remove or resolve it explicitly." >&2
+            exit 1
+          fi
+          gh release create "$tag" --draft --verify-tag --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release edit "$tag" --draft --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release upload "$tag" artifacts/*
+
+          find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$RUNNER_TEMP/local-assets"
+          gh release view "$tag" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$RUNNER_TEMP/remote-assets"
+          diff -u "$RUNNER_TEMP/local-assets" "$RUNNER_TEMP/remote-assets"
+
+          gh release edit "$tag" --draft=false --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release view "$tag" --json tagName,name,isDraft,isPrerelease \
+            | jq -e --arg tag "$tag" --argjson prerelease "$expected_prerelease" \
+              '.tagName == $tag and .name == $tag and .isDraft == false and .isPrerelease == $prerelease'
 
   promote-release:
     name: Promote verified release artifacts
@@ -292,9 +320,10 @@ jobs:
       - name: Validate promotion source
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -euo pipefail
           [[ "$PROMOTE_RUN_ID" =~ ^[0-9]+$ ]]
-          node scripts/release-artifacts.mjs validate-tag --tag "$PROMOTE_TAG"
           run_head=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .head_sha)
           run_conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .conclusion)
           run_workflow=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .path)
@@ -303,6 +332,11 @@ jobs:
           test "$run_workflow" = .github/workflows/cross-platform.yml
           test "$run_head" = "$tag_head"
           git merge-base --is-ancestor "$tag_head" origin/main
+          git checkout --detach "$PROMOTE_TAG"
+          node scripts/release-artifacts.mjs validate-tag --tag "$PROMOTE_TAG"
+          test -s ".github/release-notes/$PROMOTE_TAG.md"
+      - name: Prepare artifact directory
+        run: rm -rf artifacts && mkdir artifacts
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: fate-ui-*
@@ -310,13 +344,42 @@ jobs:
           merge-multiple: true
           run-id: ${{ inputs.promote_run_id }}
           github-token: ${{ github.token }}
-      - name: Verify release set and write checksums
+      - name: Verify exact release set and write checksums
+        shell: bash
         run: |
-          test "$(find artifacts -maxdepth 1 -type f | wc -l)" -eq 7
+          set -euo pipefail
           node scripts/release-artifacts.mjs checksums --source artifacts
+          (cd artifacts && sha256sum -c SHA256SUMS)
+          test "$(find artifacts -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 8
+          test "$(find artifacts -mindepth 1 -maxdepth 1 | wc -l)" -eq 8
       - name: Publish promoted artifacts
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          gh release upload "$PROMOTE_TAG" artifacts/* --clobber
-          gh release edit "$PROMOTE_TAG" --draft=false
+          set -euo pipefail
+          tag="$PROMOTE_TAG"
+          notes=".github/release-notes/$tag.md"
+          release_type=(--prerelease=false)
+          expected_prerelease=false
+          if [[ "$tag" == *-* ]]; then
+            release_type=(--prerelease)
+            expected_prerelease=true
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Refusing to mutate pre-existing release $tag; remove or resolve it explicitly." >&2
+            exit 1
+          fi
+          gh release create "$tag" --draft --verify-tag --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release edit "$tag" --draft --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release upload "$tag" artifacts/*
+
+          find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$RUNNER_TEMP/local-assets"
+          gh release view "$tag" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$RUNNER_TEMP/remote-assets"
+          diff -u "$RUNNER_TEMP/local-assets" "$RUNNER_TEMP/remote-assets"
+
+          gh release edit "$tag" --draft=false --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release view "$tag" --json tagName,name,isDraft,isPrerelease \
+            | jq -e --arg tag "$tag" --argjson prerelease "$expected_prerelease" \
+              '.tagName == $tag and .name == $tag and .isDraft == false and .isPrerelease == $prerelease'

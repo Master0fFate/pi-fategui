@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,21 +24,63 @@ async function packageVersion() {
   return manifest.version;
 }
 
+function platformArtifacts(version, platform, arch) {
+  if (platform === 'win32') return [`Fate-UI-${version}-Windows-${arch}.exe`];
+  if (platform === 'darwin') return [`Fate-UI-${version}-macOS-${arch}.dmg`, `Fate-UI-${version}-macOS-${arch}.pkg`];
+  if (platform === 'linux') return [`Fate-UI-${version}-Linux-${arch}.AppImage`, `Fate-UI-${version}-Linux-${arch}.deb`];
+  throw new Error(`Unsupported release platform: ${platform}`);
+}
+
+function releaseArtifacts(version) {
+  return [
+    ...platformArtifacts(version, 'win32', 'x64'),
+    ...platformArtifacts(version, 'darwin', 'arm64'),
+    ...platformArtifacts(version, 'darwin', 'x64'),
+    ...platformArtifacts(version, 'linux', 'x64'),
+  ].sort();
+}
+
+async function regularNonemptyFile(filePath) {
+  const metadata = await lstat(filePath).catch(() => null);
+  return metadata?.isFile() && !metadata.isSymbolicLink() && metadata.size > 0 ? metadata : null;
+}
+
+async function assertReleaseArtifactSet(source, version) {
+  const entries = await readdir(source, { withFileTypes: true }).catch(() => []);
+  const actual = entries.map((entry) => entry.name).filter((name) => name !== 'SHA256SUMS').sort();
+  const expected = releaseArtifacts(version);
+  if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
+    throw new Error(`Release artifact set mismatch. Expected ${expected.join(', ')}; received ${actual.join(', ') || '(none)'}.`);
+  }
+  for (const fileName of expected) {
+    const filePath = path.join(source, fileName);
+    if (!await regularNonemptyFile(filePath)) throw new Error(`Invalid release artifact: ${filePath}`);
+  }
+  return expected;
+}
+
+async function sha256File(filePath) {
+  const before = await regularNonemptyFile(filePath);
+  if (!before) throw new Error(`Invalid release artifact: ${filePath}`);
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  const after = await regularNonemptyFile(filePath);
+  if (!after || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+    throw new Error(`Release artifact changed while hashing: ${filePath}`);
+  }
+  return hash.digest('hex');
+}
+
 async function stage(args) {
   const source = path.resolve(root, option(args, '--source', 'release'));
   const output = path.resolve(root, option(args, '--output', 'artifacts'));
   const platform = option(args, '--platform', process.platform);
   const arch = option(args, '--arch', process.arch);
   const version = await packageVersion();
-  const expected = platform === 'win32'
-    ? [`Fate-UI-${version}-Windows-${arch}.exe`]
-    : platform === 'darwin'
-      ? [`Fate-UI-${version}-macOS-${arch}.dmg`, `Fate-UI-${version}-macOS-${arch}.pkg`]
-      : platform === 'linux'
-        ? [`Fate-UI-${version}-Linux-${arch}.AppImage`, `Fate-UI-${version}-Linux-${arch}.deb`]
-        : [];
-  if (expected.length === 0) throw new Error(`Unsupported release platform: ${platform}`);
+  const expected = platformArtifacts(version, platform, arch);
+  if (source === output) throw new Error('Release staging source and output directories must be different.');
 
+  await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   for (const fileName of expected) {
     let sourceName = fileName;
@@ -46,8 +89,7 @@ async function stage(args) {
       if (fileName.endsWith('.deb')) sourceName = fileName.replace('-x64.deb', '-amd64.deb');
     }
     const from = path.join(source, sourceName);
-    const metadata = await stat(from).catch(() => null);
-    if (!metadata?.isFile() || metadata.size === 0) throw new Error(`Missing release artifact: ${from}`);
+    if (!await regularNonemptyFile(from)) throw new Error(`Missing release artifact: ${from}`);
     await copyFile(from, path.join(output, fileName));
   }
   process.stdout.write(`Staged ${expected.length} ${platform}/${arch} release artifact(s).\n`);
@@ -55,18 +97,14 @@ async function stage(args) {
 
 async function checksums(args) {
   const source = path.resolve(root, option(args, '--source', 'artifacts'));
-  const fileNames = (await readdir(source)).filter((name) => name !== 'SHA256SUMS').sort((left, right) => left.localeCompare(right, 'en'));
-  if (fileNames.length === 0) throw new Error(`No release artifacts found in ${source}.`);
+  const version = await packageVersion();
+  const fileNames = await assertReleaseArtifactSet(source, version);
   const lines = [];
   for (const fileName of fileNames) {
-    const filePath = path.join(source, fileName);
-    const metadata = await stat(filePath);
-    if (!metadata.isFile() || metadata.size === 0) throw new Error(`Invalid release artifact: ${filePath}`);
-    const hash = createHash('sha256').update(await readFile(filePath)).digest('hex');
-    lines.push(`${hash}  ${fileName}`);
+    lines.push(`${await sha256File(path.join(source, fileName))}  ${fileName}`);
   }
   await writeFile(path.join(source, 'SHA256SUMS'), `${lines.join('\n')}\n`, 'utf8');
-  process.stdout.write(`Wrote SHA256SUMS for ${lines.length} release artifact(s).\n`);
+  process.stdout.write(`Verified ${fileNames.length} release artifacts and wrote SHA256SUMS.\n`);
 }
 
 async function validateTag(args) {

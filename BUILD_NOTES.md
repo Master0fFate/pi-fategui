@@ -21,7 +21,7 @@
 - Filesystem and Git services accept project-relative paths only. Reads use one validated open handle for size/sample/content. Git uses `execFile`, NUL-delimited parsing, bounded output, and no destructive commands.
 - Manual terminal PTYs are main-owned, renderer-owner scoped, output-batched, trust-gated, and separate from Pi tool events. xterm and Monaco are lazy chunks.
 - Settings are atomically persisted under Electron user data. Diagnostics expose versions/status/paths but no credentials; logs redact token-like strings and retain 500 entries in memory.
-- Queued messages use Pi 0.81.1's public queue APIs. A bounded main-process mirror adds stable UI IDs and original editable drafts; edit/cancel/behavior changes serialize `clearQueue()` plus public `steer()`/`followUp()` requeue operations and reconcile against authoritative queue counts.
+- Queued messages use Pi 0.83.0's public queue APIs. A bounded main-process mirror adds stable UI IDs and original editable drafts; edit/cancel/behavior changes serialize `clearQueue()` plus public `steer()`/`followUp()` requeue operations and reconcile against authoritative queue counts.
 - Git remains main-owned and library-free: trusted absolute Git/SSH executables run through `execFile` with bounded output, repository hooks disabled, project filter drivers neutralized, submodule recursion disabled, and network protocols explicitly allowlisted. A worktree switch reuses the project trust path and recreates the entire project-bound Pi runtime.
 
 ## Current limitations
@@ -34,13 +34,13 @@
 
 ## Verification evidence
 
-- Host Node: 22.22.2; Electron 43.2.0 embeds Node 24.18.0, satisfying Pi 0.81.1’s Node requirement.
+- Host Node: 22.22.2; Electron 43.2.0 embeds Node 24.18.0, satisfying Pi 0.83.0’s Node requirement.
 - `pnpm typecheck` passes under strict TypeScript.
-- `pnpm test` passes 38 unit/RTL/adapter integration files and 274 tests, including queue mutation races, schemas, errors, event normalization/batching, replacement races, 5,000 entries, session-row actions, files, hardened Git operations, worktrees/history/details, settings persistence/recovery, and terminal ownership/output batching.
+- `pnpm test` passes 79 unit/RTL/adapter integration files and 654 tests, including queue mutation races, schemas, errors, event normalization/batching, replacement races, 5,000 entries, session-row actions, files, hardened Git operations, worktrees/history/details, settings persistence/recovery, and terminal ownership/output batching.
 - A fresh direct main/preload/renderer/E2E build plus `pnpm exec playwright test` passes the full Electron scenario, including default follow-up queueing, preview, Steer conversion, Edit restoration, stable composer focus border, prompt streaming, tool card, composer scrollbar masking, global diff, Git graph/card, real worktree round-trip, and session switch.
 - `pnpm audit --prod` reports no known vulnerabilities; patched transitive versions are pinned through pnpm 11 workspace overrides.
 - Real `node-pty` loaded under Electron and executed `cmd.exe` output `PI_PTY_OK`.
-- `pnpm package` produces a target-native Fate UI unpacked application; `pnpm smoke:packaged` verifies renderer startup and unpacked node-pty binaries. CI currently repeats this on Windows; macOS and Linux packages must be built natively by their users or a future native build host.
+- `pnpm package` produces a target-native Fate UI unpacked application; packaged and installed smoke checks verify renderer startup, native dependencies, and bundled Pi themes. CI repeats verification and packaging natively on Windows x64, macOS arm64/x64, and Linux x64.
 
 ## Manual verification steps
 
@@ -56,7 +56,7 @@
 
 ## Pi API discrepancies
 
-- SDK 0.81.1 was checked against installed types and current `https://pi.dev/docs/latest/sdk` / `rpc` documentation.
+- SDK 0.83.0 was checked against installed types and current `https://pi.dev/docs/latest/sdk` / `rpc` documentation.
 - `prompt()` uses `preflightResult` because its promise resolves after the complete accepted run. Steering/follow-up use `prompt(..., { streamingBehavior })` so rejected queues are not falsely acknowledged and extension commands retain SDK behavior.
 - Clone is the documented `runtime.fork(currentLeaf, { position: "at" })`; normal fork uses an SDK user-message entry.
 - Project-bound services are created before checking model availability so trusted project extensions can register providers.
