@@ -224,6 +224,8 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     const sessionList = page.getByLabel('Sessions', { exact: true });
     const firstSessionRow = page.locator('.session-row').filter({ hasText: 'First session' });
     await expect(sessionList).toBeVisible();
+    await expect(firstSessionRow).toContainText(/main.*messages.*updated (?:now|.* ago)/iu);
+    await expect(firstSessionRow.locator('.session-drag-handle')).toHaveCount(0);
     const [sessionListBox, sidebarFooterBox] = await Promise.all([sessionList.boundingBox(), page.locator('.sidebar-footer').boundingBox()]);
     expect(sessionListBox!.height).toBeGreaterThan(300);
     expect(sessionListBox!.y + sessionListBox!.height).toBeLessThanOrEqual(sidebarFooterBox!.y);
@@ -566,6 +568,11 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.waitForTimeout(250);
     await page.screenshot({ path: 'test-results/pi-desktop-settings-light.png' });
     await themeSelect.click();
+    await page.getByRole('option', { name: /Pi · E2E Theme/ }).click();
+    await expect(themeSelect).toContainText('Pi · E2E Theme');
+    await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('pi-e2e-theme-0123456789ab');
+    await page.screenshot({ path: 'test-results/pi-desktop-settings-pi-theme.png' });
+    await themeSelect.click();
     await page.getByRole('option', { name: /Midnight/ }).click();
     const assertSettingsGeometryStable = async (action: () => Promise<void>) => {
       const before = await settingsDialog.boundingBox();
@@ -668,6 +675,14 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     ]);
     expect(playlistButtonBox!.x).toBeLessThan(previousBox!.x);
     expect(muteBox!.x).toBeGreaterThan(nextBox!.x);
+    const loopOff = page.getByRole('button', { name: 'Loop mode: Off. Activate to loop queue' });
+    await expect(loopOff).toHaveAttribute('aria-pressed', 'false');
+    await loopOff.click();
+    const loopQueue = page.getByRole('button', { name: 'Loop mode: Queue. Activate to loop current track' });
+    await expect(loopQueue).toHaveAttribute('aria-pressed', 'true');
+    await loopQueue.click();
+    await page.getByRole('button', { name: 'Loop mode: Current track. Activate to turn looping off' }).click();
+    await expect(loopOff).toHaveAttribute('aria-pressed', 'false');
     await page.locator('.music-volume-control').hover();
     await expect.poll(() => page.getByLabel('Volume').evaluate((element) => getComputedStyle(element).opacity)).toBe('1');
     await playlistToggle.click();
@@ -858,6 +873,25 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(page.getByText('historical output')).toHaveCount(0);
     await page.getByRole('article', { name: 'read tool succeeded' }).getByRole('button').click();
     await expect(page.getByText('historical output')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+    await page.getByRole('button', { name: 'Collapse inspector' }).click();
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(600, 620));
+    await expect.poll(() => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getSize())).toEqual([600, 620]);
+    const narrowLayout = await page.evaluate(() => {
+      const shell = document.querySelector<HTMLElement>('.app-shell')!;
+      const footer = document.querySelector<HTMLElement>('.sidebar-footer')!;
+      const settingsTrigger = footer.querySelector<HTMLElement>(':scope > .tooltip-trigger')!;
+      return {
+        documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        shellOverflow: shell.scrollWidth - shell.clientWidth,
+        settingsTriggerWidth: settingsTrigger.getBoundingClientRect().width,
+        footerWidth: footer.getBoundingClientRect().width,
+      };
+    });
+    expect(narrowLayout.documentOverflow).toBeLessThanOrEqual(0);
+    expect(narrowLayout.shellOverflow).toBeLessThanOrEqual(0);
+    expect(Math.abs(narrowLayout.settingsTriggerWidth - narrowLayout.footerWidth)).toBeLessThanOrEqual(1);
 
     const closed = page.waitForEvent('close');
     await page.getByRole('button', { name: 'Close window' }).click();

@@ -788,6 +788,7 @@ describe('PiRuntimeService', () => {
         expect.objectContaining({ name: 'subagent_manage' }),
         expect.objectContaining({ name: 'subagent_catalog' }),
       ]),
+      expect.any(Function),
     );
 
     const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as ((session: typeof fake.session) => Promise<void>) | undefined;
@@ -832,6 +833,86 @@ describe('PiRuntimeService', () => {
     await service.prompt({ text: 'work', behavior: 'prompt' });
     expect(await service.abort()).toEqual({ aborted: true });
     expect(fake.session.abort).toHaveBeenCalledOnce();
+    await service.dispose();
+  });
+
+  it('continues an unfinished turn automatically after an output-length stop', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.setStreaming(true);
+
+    fake.emitSession({ type: 'message_start', message: { role: 'user', content: 'Complete the release' } });
+    fake.emitSession({ type: 'message_end', message: { role: 'assistant', content: 'Partial work', stopReason: 'length' } });
+
+    await vi.waitFor(() => expect(fake.session.sendCustomMessage).toHaveBeenCalledWith({
+      customType: 'fate-length-continuation',
+      content: [{ type: 'text', text: expect.stringContaining('Continue the unfinished work') }],
+      display: false,
+      details: { attempt: 1 },
+    }, { deliverAs: 'followUp' }));
+
+    fake.emitSession({ type: 'message_end', message: { role: 'assistant', content: 'Finished', stopReason: 'stop' } });
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+    await service.dispose();
+  });
+
+  it('does not append an automatic continuation behind a queued user request', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.setStreaming(true);
+    fake.setQueue([], ['Review the finished release']);
+
+    fake.emitSession({ type: 'message_start', message: { role: 'user', content: 'Complete the release' } });
+    fake.emitSession({ type: 'message_end', message: { role: 'assistant', content: 'Partial work', stopReason: 'length' } });
+
+    await Promise.resolve();
+    expect(fake.session.sendCustomMessage).not.toHaveBeenCalled();
+    expect(fake.session.getFollowUpMessages()).toEqual(['Review the finished release']);
+    await service.dispose();
+  });
+
+  it('bounds repeated automatic continuations and leaves an actionable error', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.setStreaming(true);
+    fake.emitSession({ type: 'message_start', message: { role: 'user', content: 'Complete the release' } });
+
+    for (let index = 0; index < 9; index += 1) {
+      fake.emitSession({ type: 'message_end', message: { role: 'assistant', content: `Part ${index}`, stopReason: 'length' } });
+    }
+
+    await vi.waitFor(() => expect(fake.session.sendCustomMessage).toHaveBeenCalledTimes(8));
+    expect(service.getState(false).error).toMatchObject({
+      code: 'INVALID_REQUEST',
+      message: expect.stringContaining('reached its output limit repeatedly'),
+      retryable: true,
+    });
+    await service.dispose();
+  });
+
+  it('ignores a delayed continuation failure after the session is replaced', async () => {
+    const fake = fixture();
+    let rejectContinuation: ((error: Error) => void) | undefined;
+    fake.session.sendCustomMessage.mockImplementationOnce(() => new Promise<undefined>((_resolve, reject) => { rejectContinuation = reject; }));
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.setStreaming(true);
+    fake.emitSession({ type: 'message_start', message: { role: 'user', content: 'Complete the release' } });
+    fake.emitSession({ type: 'message_end', message: { role: 'assistant', content: 'Partial work', stopReason: 'length' } });
+    await vi.waitFor(() => expect(fake.session.sendCustomMessage).toHaveBeenCalledOnce());
+
+    const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as ((session: typeof fake.session) => Promise<void>) | undefined;
+    const successor = { ...fake.session, sessionId: 'session-2' };
+    fake.runtime.session = successor;
+    await rebind?.(successor);
+    rejectContinuation?.(new Error('stale continuation failed'));
+    await Promise.resolve();
+
+    expect(service.getState(false).sessionId).toBe('session-2');
+    expect(service.getState(false).error).toBeNull();
     await service.dispose();
   });
 
@@ -1486,6 +1567,21 @@ describe('PiRuntimeService', () => {
     });
 
     usage = { tokens: 310, contextWindow: 1_000, percent: 31 };
+    expect(service.getState(false).contextUsage).toEqual(usage);
+    await service.dispose();
+  });
+
+  it('clears an older compaction estimate when a newer successful compaction has no estimate', async () => {
+    const fake = fixture();
+    const usage = { tokens: null, contextWindow: 1_000, percent: null };
+    Object.assign(fake.session, { getContextUsage: vi.fn(() => usage) });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    fake.emitSession({ type: 'compaction_end', reason: 'manual', result: { estimatedTokensAfter: 240 }, aborted: false, willRetry: false });
+    expect(service.getState(false).contextUsage?.tokens).toBe(240);
+
+    fake.emitSession({ type: 'compaction_end', reason: 'manual', result: {}, aborted: false, willRetry: false });
     expect(service.getState(false).contextUsage).toEqual(usage);
     await service.dispose();
   });

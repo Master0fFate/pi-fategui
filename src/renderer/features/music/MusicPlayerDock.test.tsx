@@ -83,6 +83,54 @@ describe('MusicPlayerDock', () => {
     expect(audio.muted).toBe(false);
   });
 
+  it('cycles queue and current-track looping without re-resolving a repeated track', async () => {
+    const resolveMusicTrack = vi.fn(async (trackId: string) => ({
+      trackId,
+      title: trackId === firstId ? 'First track' : 'Second track',
+      duration: 60,
+      url: `https://cdn.example/${trackId}.m4a`,
+    }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getMusicStatus: vi.fn(async () => ({ available: true, version: '2026.03.17', message: undefined })),
+        loadMusic: vi.fn(async () => ({
+          title: 'Loop queue',
+          tracks: [
+            { id: firstId, title: 'First track', duration: 60 },
+            { id: secondId, title: 'Second track', duration: 60 },
+          ],
+        })),
+        resolveMusicTrack,
+      } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    const { container } = render(<MusicPlayerDock />);
+    await user.click(screen.getByRole('button', { name: 'Open music player' }));
+    await user.type(screen.getByLabelText('Media or playlist link'), 'https://media.example/loop');
+    await user.click(screen.getByRole('button', { name: 'Load music link' }));
+    await waitFor(() => expect(container.querySelector('audio')).toHaveAttribute('src', `https://cdn.example/${firstId}.m4a`));
+    await user.click(screen.getByRole('button', { name: 'Next track' }));
+    await waitFor(() => expect(container.querySelector('audio')).toHaveAttribute('src', `https://cdn.example/${secondId}.m4a`));
+
+    const queueLoop = screen.getByRole('button', { name: 'Loop mode: Off. Activate to loop queue' });
+    await user.click(queueLoop);
+    expect(screen.getByRole('button', { name: 'Loop mode: Queue. Activate to loop current track' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.ended(container.querySelector('audio')!);
+    await waitFor(() => expect(container.querySelector('audio')).toHaveAttribute('src', `https://cdn.example/${firstId}.m4a`));
+
+    await user.click(screen.getByRole('button', { name: 'Loop mode: Queue. Activate to loop current track' }));
+    const audio = container.querySelector('audio')!;
+    expect(audio).toHaveAttribute('loop');
+    const resolutionsBeforeReplay = resolveMusicTrack.mock.calls.length;
+    fireEvent.ended(audio);
+    await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalled());
+    expect(resolveMusicTrack).toHaveBeenCalledTimes(resolutionsBeforeReplay);
+
+    await user.click(screen.getByRole('button', { name: 'Loop mode: Current track. Activate to turn looping off' }));
+    expect(screen.getByRole('button', { name: 'Loop mode: Off. Activate to loop queue' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
   it('appends URL and local imports without interrupting the active track, then clears explicitly', async () => {
     const loadMusic = vi.fn()
       .mockResolvedValueOnce({ title: 'First source', tracks: [{ id: firstId, title: 'First track', duration: 61 }] })
@@ -126,11 +174,13 @@ describe('MusicPlayerDock', () => {
 
     await user.click(screen.getByRole('button', { name: 'Show playlist' }));
     expect(screen.getByText('3 tracks')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Loop mode: Off. Activate to loop queue' }));
     await user.click(screen.getByRole('button', { name: 'Clear playlist' }));
     await waitFor(() => expect(clearMusicQueue).toHaveBeenCalledOnce());
     expect(screen.getByRole('complementary', { name: 'Playlist' })).toHaveTextContent('Nothing queued');
     expect(audio).not.toHaveAttribute('src');
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:local-audio');
+    expect(screen.getByRole('button', { name: 'Loop mode: Off. Activate to loop queue' })).toHaveAttribute('aria-pressed', 'false');
     expect(useUiStore.getState().musicPlaying).toBe(false);
   });
 

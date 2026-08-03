@@ -19,6 +19,7 @@ import type {
   ThinkingLevel,
 } from '../../shared/contracts/ipc';
 import { createProjectConfinedTools, type ProjectToolAccess } from './PiToolPolicy';
+import type { ImageGenerationSettingsResolver } from './PiImageTool';
 import { messageText } from './PiEventNormalizer';
 import { filterSkillsForChild, type SelectedSubagentSkill } from './SubagentSkills';
 import type { ChildToolName, ParentModel } from './SubagentProtocol';
@@ -42,6 +43,7 @@ export interface ChildSessionInput {
   sessionFile?: string;
   collaborationTools?: ToolDefinition[];
   teamIdentity?: { path: string; parentPath: string; depth: number; maxDepth: number };
+  getImageGenerationSettings?: ImageGenerationSettingsResolver;
 }
 
 export type SubagentChildSessionFactory = (input: ChildSessionInput) => Promise<AgentSession>;
@@ -124,7 +126,7 @@ export async function createSdkChildSession(input: ChildSessionInput): Promise<A
       getExamplesPath(),
       ...services.resourceLoader.getSkills().skills.map((skill) => skill.baseDir),
     ],
-    { searchTools: true },
+    { searchTools: true, ...(input.getImageGenerationSettings ? { getImageGenerationSettings: input.getImageGenerationSettings } : {}) },
   );
   const sessionManager = input.sessionFile
     ? SessionManager.open(input.sessionFile, input.sessionDirectory, input.projectPath)

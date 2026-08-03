@@ -8,6 +8,8 @@ import {
   LoaderCircle,
   Pause,
   Play,
+  Repeat,
+  Repeat1,
   SkipBack,
   SkipForward,
   Volume1,
@@ -41,6 +43,14 @@ function formatTime(seconds: number): string {
   return `${minutes}:${String(rounded % 60).padStart(2, '0')}`;
 }
 
+type LoopMode = 'off' | 'all' | 'one';
+
+const loopModeLabels: Record<LoopMode, string> = {
+  off: 'Loop mode: Off. Activate to loop queue',
+  all: 'Loop mode: Queue. Activate to loop current track',
+  one: 'Loop mode: Current track. Activate to turn looping off',
+};
+
 export function MusicPlayerDock() {
   const enabled = useUiStore((state) => state.musicPlayerEnabled);
   const playing = useUiStore((state) => state.musicPlaying);
@@ -57,6 +67,7 @@ export function MusicPlayerDock() {
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
+  const [loopMode, setLoopMode] = useState<LoopMode>('off');
   const [notice, setNotice] = useState('Paste a public media link or open local audio.');
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -88,6 +99,7 @@ export function MusicPlayerDock() {
       setPlaylistOpen(false);
       setQueue(null);
       setStream(null);
+      setLoopMode('off');
       setPlaying(false);
       clearLocalAudio();
       return;
@@ -313,6 +325,7 @@ export function MusicPlayerDock() {
     setQueue(null);
     setTrackIndex(0);
     setStream(null);
+    setLoopMode('off');
     setPlaying(false);
     setCurrentTime(0);
     setDuration(0);
@@ -517,18 +530,32 @@ export function MusicPlayerDock() {
         </div>
 
         <div className="music-controls">
-          <AppTooltip content={playlistOpen ? 'Hide playlist' : 'Show playlist'}>
-            <button
-              className="music-playlist-button"
-              type="button"
-              aria-label={playlistOpen ? 'Hide playlist' : 'Show playlist'}
-              aria-controls="music-playlist"
-              aria-expanded={playlistOpen}
-              onClick={() => setPlaylistOpen((value) => !value)}
-            >
-              <ListMusic size={16} />
-            </button>
-          </AppTooltip>
+          <div className="music-secondary-controls">
+            <AppTooltip content={playlistOpen ? 'Hide playlist' : 'Show playlist'}>
+              <button
+                className="music-playlist-button"
+                type="button"
+                aria-label={playlistOpen ? 'Hide playlist' : 'Show playlist'}
+                aria-controls="music-playlist"
+                aria-expanded={playlistOpen}
+                onClick={() => setPlaylistOpen((value) => !value)}
+              >
+                <ListMusic size={16} />
+              </button>
+            </AppTooltip>
+            <AppTooltip content={loopModeLabels[loopMode]}>
+              <button
+                className="music-loop-button"
+                type="button"
+                aria-label={loopModeLabels[loopMode]}
+                aria-pressed={loopMode !== 'off'}
+                data-active={loopMode !== 'off'}
+                onClick={() => setLoopMode((current) => current === 'off' ? 'all' : current === 'all' ? 'one' : 'off')}
+              >
+                {loopMode === 'one' ? <Repeat1 size={16} /> : <Repeat size={16} />}
+              </button>
+            </AppTooltip>
+          </div>
 
           <div className="music-transport">
             <AppTooltip content="Previous"><button type="button" aria-label="Previous track" disabled={!queue || trackIndex === 0 || busy} onClick={() => move(-1)}><SkipBack size={16} /></button></AppTooltip>
@@ -579,6 +606,7 @@ export function MusicPlayerDock() {
       <audio
         ref={audioRef}
         preload="none"
+        loop={loopMode === 'one'}
         onCanPlay={() => {
           if (!playWhenReady.current || !audioRef.current) return;
           playWhenReady.current = false;
@@ -598,9 +626,30 @@ export function MusicPlayerDock() {
             return next;
           });
         }}
-        onEnded={() => {
+        onEnded={(event) => {
+          const activeQueue = queueRef.current;
+          if (!activeQueue) {
+            setPlaying(false);
+            return;
+          }
+          if (loopMode === 'one' || (loopMode === 'all' && activeQueue.tracks.length === 1)) {
+            event.currentTarget.currentTime = 0;
+            setCurrentTime(0);
+            void event.currentTarget.play().then(() => setPlaying(true)).catch(() => {
+              setPlaying(false);
+              setError('Press play to continue this track.');
+            });
+            return;
+          }
+          if (trackIndex < activeQueue.tracks.length - 1) {
+            move(1, true);
+            return;
+          }
+          if (loopMode === 'all') {
+            void prepareTrack(activeQueue.tracks[0]!, 0, true);
+            return;
+          }
           setPlaying(false);
-          if (queueRef.current && trackIndex < queueRef.current.tracks.length - 1) move(1, true);
         }}
         onError={() => {
           if (!stream) return;

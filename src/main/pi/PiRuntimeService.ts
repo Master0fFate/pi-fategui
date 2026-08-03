@@ -55,6 +55,9 @@ import { activeToolsForPermission, createProjectConfinedTools, type ProjectToolA
 import { validatePromptImages } from './PiPromptImages';
 import { appendProjectResourceContext, hasProjectResourceTags } from './ProjectResourceTags';
 import { SubagentCoordinator } from './SubagentCoordinator';
+import { createSdkChildSession } from './SubagentSessionFactory';
+import type { ImageGenerationSettingsResolver } from './PiImageTool';
+import { defaultImageGenerationSettings } from '../../shared/imageGeneration';
 import { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
 import type { AgentTeamControlInput } from '../../shared/contracts/multiAgent';
 import { InMemorySessionPermissionStore, type SessionPermissionPersistence } from './SessionPermissionStore';
@@ -68,7 +71,7 @@ export interface SessionDefaults {
 export interface PiSdkAdapter {
   supportsClone?: boolean;
   createModelRuntime: () => Promise<ModelRuntime>;
-  createRuntime: (cwd: string, modelRuntime: ModelRuntime, projectTrusted?: boolean, customTools?: ToolDefinition[]) => Promise<AgentSessionRuntime>;
+  createRuntime: (cwd: string, modelRuntime: ModelRuntime, projectTrusted?: boolean, customTools?: ToolDefinition[], getImageGenerationSettings?: ImageGenerationSettingsResolver) => Promise<AgentSessionRuntime>;
 }
 
 const MAX_HYDRATED_HISTORY_ENTRIES = 5_000;
@@ -106,6 +109,9 @@ interface SessionAttentionRecord {
   revision: number;
 }
 
+const MAX_LENGTH_CONTINUATIONS_PER_USER_TURN = 8;
+const LENGTH_CONTINUATION_PROMPT = 'The previous assistant turn reached its output limit before completing the active user request. Continue the unfinished work from exactly where it stopped. Do not repeat completed work and do not wait for another user message.';
+
 interface RuntimeSlot {
   runtime: AgentSessionRuntime;
   projectGeneration: number;
@@ -133,6 +139,7 @@ interface RuntimeSlot {
   extensionUiState: ExtensionUiState;
   attention: SessionAttention | null;
   runFailed: boolean;
+  lengthContinuationCount: number;
   firstPromptText: string;
   firstTitleStarted: boolean;
   createdAt: string;
@@ -205,7 +212,7 @@ const realPiSdkAdapter: PiSdkAdapter = {
   // Verified against SDK 0.83.0: clone is runtime.fork(currentLeaf, { position: 'at' }).
   supportsClone: true,
   createModelRuntime: () => ModelRuntime.create(),
-  async createRuntime(cwd, modelRuntime, projectTrusted, customTools = []) {
+  async createRuntime(cwd, modelRuntime, projectTrusted, customTools = [], getImageGenerationSettings) {
     const factory: CreateAgentSessionRuntimeFactory = async ({ cwd: effectiveCwd, sessionManager, sessionStartEvent }) => {
       // Project trust is decided by Fate UI's main-process prompt before the SDK
       // runtime exists. Pass that decision through so global extensions observe
@@ -245,6 +252,7 @@ const realPiSdkAdapter: PiSdkAdapter = {
           getExamplesPath(),
           ...services.resourceLoader.getSkills().skills.map((skill) => skill.baseDir),
         ],
+        { ...(getImageGenerationSettings ? { getImageGenerationSettings } : {}) },
       );
       const created = await createAgentSessionFromServices({
         services,
@@ -274,7 +282,7 @@ const realPiSdkAdapter: PiSdkAdapter = {
   },
 };
 
-function toModelInfo(model: { provider: string; id: string; name: string; reasoning: boolean; contextWindow: number; input?: readonly string[] }): ModelInfo {
+function toModelInfo(model: { provider: string; id: string; name: string; reasoning: boolean; contextWindow: number; input?: readonly string[]; api?: string }): ModelInfo {
   return {
     provider: model.provider,
     id: model.id,
@@ -282,6 +290,7 @@ function toModelInfo(model: { provider: string; id: string; name: string; reason
     reasoning: model.reasoning,
     contextWindow: model.contextWindow,
     supportsImages: model.input?.includes('image') ?? false,
+    ...(model.api ? { api: model.api } : {}),
   };
 }
 
@@ -667,8 +676,13 @@ export class PiRuntimeService {
     private readonly sessionRepository = new PiSessionRepository(),
     private readonly sessionPermissions: SessionPermissionPersistence = new InMemorySessionPermissionStore(),
     private readonly sessionTitleGenerator: SessionTitleGenerator = new PiSessionTitleGenerator(),
+    private readonly getImageGenerationSettings: ImageGenerationSettingsResolver = () => defaultImageGenerationSettings,
   ) {
     this.batcher = new PiEventBatcher((events) => this.eventSink(events));
+    const childSessionFactory = (input: Parameters<typeof createSdkChildSession>[0]) => createSdkChildSession({
+      ...input,
+      getImageGenerationSettings: this.getImageGenerationSettings,
+    });
     this.agentTeams = new AgentTeamCoordinator({
       resolveRoot: (sessionId) => {
         const slot = this.findLiveSlot(sessionId);
@@ -696,7 +710,7 @@ export class PiRuntimeService {
         if (this.selectedSlot === slot) this.emitState();
         else if (!this.agentTeams.hasOwnedWork(rootSessionId) && !this.subagents.hasOwnedWork(rootSessionId) && !this.sessionHasActiveWork(slot.runtime.session)) this.settleInactiveSlot(slot);
       },
-    });
+    }, undefined, childSessionFactory);
     this.subagents = new SubagentCoordinator({
       resolveParent: (sessionId) => {
         const slot = this.findLiveSlot(sessionId);
@@ -759,7 +773,7 @@ export class PiRuntimeService {
           this.settleInactiveSlot(slot);
         }
       },
-    });
+    }, childSessionFactory);
   }
 
   setEventSink(sink: (events: PiEvent[]) => void): void {
@@ -936,7 +950,7 @@ export class PiRuntimeService {
       // Build project-bound services before checking availability: enabled global
       // user extensions may register providers and models during runtime creation.
       this.agentTeamMode = defaults?.agentTeamMode ?? 'legacy';
-      const runtime = await this.adapter.createRuntime(project.path, modelRuntime, project.trusted, this.orchestrationTools(modelRuntime));
+      const runtime = await this.adapter.createRuntime(project.path, modelRuntime, project.trusted, this.orchestrationTools(modelRuntime), this.getImageGenerationSettings);
       if (generation !== this.initialization) {
         await runtime.dispose();
         return this.getState();
@@ -1564,6 +1578,7 @@ export class PiRuntimeService {
       extensionUiState: emptyExtensionUiState(),
       attention: null,
       runFailed: false,
+      lengthContinuationCount: 0,
       firstPromptText: '',
       firstTitleStarted: false,
       createdAt: now,
@@ -1816,9 +1831,9 @@ export class PiRuntimeService {
     }
     if (event.type === 'compaction_end' && !event.aborted && !event.errorMessage) {
       const estimatedTokensAfter = event.result?.estimatedTokensAfter;
-      if (typeof estimatedTokensAfter === 'number' && Number.isFinite(estimatedTokensAfter) && estimatedTokensAfter >= 0) {
-        slot.contextUsageEstimate = Math.round(estimatedTokensAfter);
-      }
+      slot.contextUsageEstimate = typeof estimatedTokensAfter === 'number' && Number.isFinite(estimatedTokensAfter) && estimatedTokensAfter >= 0
+        ? Math.round(estimatedTokensAfter)
+        : null;
     }
     if (event.type === 'queue_update' && !slot.queueMutationActive) {
       this.reconcileQueuedMessagesForSlot(slot, event.steering.length, event.followUp.length, true);
@@ -1828,10 +1843,46 @@ export class PiRuntimeService {
       if (selected) this.acknowledgeSession(session.sessionId);
       else this.setSessionAttention(slot, 'running');
     }
+    if (event.type === 'message_start' && event.message.role === 'user') {
+      slot.lengthContinuationCount = 0;
+    }
     if (event.type === 'message_end' && event.message.role === 'assistant') {
       const message = event.message as typeof event.message & { isError?: unknown; stopReason?: unknown };
       // A recovered parent turn supersedes an earlier provider or child failure.
       slot.runFailed = message.isError === true || message.stopReason === 'error';
+      const queuedUserRequest = slot.queuedMessages.length > 0
+        || (session.getSteeringMessages?.().length ?? 0) > 0
+        || (session.getFollowUpMessages?.().length ?? 0) > 0;
+      if (message.stopReason === 'length' && message.isError !== true && !queuedUserRequest) {
+        if (slot.lengthContinuationCount < MAX_LENGTH_CONTINUATIONS_PER_USER_TURN) {
+          slot.lengthContinuationCount += 1;
+          void session.sendCustomMessage({
+            customType: 'fate-length-continuation',
+            content: [{ type: 'text', text: LENGTH_CONTINUATION_PROMPT }],
+            display: false,
+            details: { attempt: slot.lengthContinuationCount },
+          }, { deliverAs: 'followUp' }).catch((error: unknown) => {
+            if (
+              this.initialization !== slot.projectGeneration
+              || slot.disposed
+              || generation !== slot.sessionGeneration
+              || slot.runtime.session !== session
+            ) return;
+            slot.runFailed = true;
+            slot.stateError = normalizeError(error);
+            if (this.selectedSlot === slot) this.emitError(slot.stateError);
+          });
+        } else {
+          slot.runFailed = true;
+          slot.stateError = {
+            code: 'INVALID_REQUEST',
+            message: 'The model reached its output limit repeatedly and could not finish automatically.',
+            actionable: 'Send “continue” to resume, or choose a model with a larger output limit.',
+            retryable: true,
+          };
+          if (selected) this.emitError(slot.stateError);
+        }
+      }
     }
 
     if (selected) {
@@ -2150,7 +2201,7 @@ export class PiRuntimeService {
       });
     }
     const generation = this.initialization;
-    const runtime = await this.adapter.createRuntime(this.project.path, this.modelRuntime, this.project.trusted, this.orchestrationTools(this.modelRuntime));
+    const runtime = await this.adapter.createRuntime(this.project.path, this.modelRuntime, this.project.trusted, this.orchestrationTools(this.modelRuntime), this.getImageGenerationSettings);
     if (generation !== this.initialization) {
       await runtime.dispose().catch(() => undefined);
       throw this.replacementSuperseded();

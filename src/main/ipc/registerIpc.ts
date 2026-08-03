@@ -579,7 +579,7 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   });
   handle(ipcChannels.themesGet, async (_event, input) => {
     emptyInputSchema.parse(input);
-    return themeCatalogSchema.parse(await settings.loadThemes());
+    return themeCatalogSchema.parse(await settings.loadThemes(runtime.getState(false).project));
   });
   handle(ipcChannels.speechGetStatus, async (_event, input) => {
     emptyInputSchema.parse(input);

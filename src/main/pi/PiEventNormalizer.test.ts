@@ -100,11 +100,14 @@ describe('PiEventNormalizer', () => {
       images: [{ data: 'dXNlcg==', mimeType: 'image/png', alt: 'Attached image 1' }],
     });
 
-    const result = { content: [{ type: 'text', text: 'Generated preview' }, { type: 'image', data: 'dG9vbA==', mimeType: 'image/webp' }] };
+    const result = {
+      content: [{ type: 'text', text: 'Generated preview' }, { type: 'image', data: 'dG9vbA==', mimeType: 'image/webp' }],
+      details: { alt: 'Moonlit fox' },
+    };
     expect(normalizer.normalize(event({ type: 'tool_execution_end', toolCallId: 'image-1', toolName: 'generate_image', result, isError: false }))[0]).toMatchObject({
       type: 'tool.completed',
       output: 'Generated preview',
-      images: [{ data: 'dG9vbA==', mimeType: 'image/webp', alt: 'Generated image 1' }],
+      images: [{ data: 'dG9vbA==', mimeType: 'image/webp', alt: 'Moonlit fox' }],
     });
   });
 

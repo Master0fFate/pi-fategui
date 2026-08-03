@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AppLogService } from './logging/AppLogService';
 import {
+  MINIMUM_WINDOW_SIZE,
   WindowStateService,
   defaultWindowPlacement,
   resolveWindowPlacement,
@@ -80,6 +81,17 @@ describe('window placement', () => {
       bounds: { x: 0, y: 0, width: 1920, height: 1040 },
       maximized: false,
     });
+  });
+
+  it('preserves a 600px window and clamps smaller remembered widths', () => {
+    const display = createDisplay(1, { x: 0, y: 0, width: 1920, height: 1040 });
+    const placement = (width: number): WindowPlacement => ({
+      bounds: { x: 40, y: 30, width, height: MINIMUM_WINDOW_SIZE.height },
+      maximized: false,
+    });
+
+    expect(resolveWindowPlacement(placement(600), [display], display).bounds.width).toBe(600);
+    expect(resolveWindowPlacement(placement(420), [display], display).bounds.width).toBe(600);
   });
 
   it('recovers an off-screen window on the primary display while preserving maximized state', () => {

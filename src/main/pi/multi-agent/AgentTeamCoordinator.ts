@@ -6,7 +6,7 @@ import type { AgentSession, AgentSessionEvent, ModelRuntime, ToolDefinition } fr
 import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
 import type { AgentTeam, AgentTeamControlInput, AgentTeamEnvelope, AgentTeamNode, AgentTeamTask } from '../../../shared/contracts/multiAgent';
 import type { ToolActor } from '../../../shared/contracts/provenance';
-import { addUsage, createSdkChildSession, emptyUsage, finalAssistant, usageFromMessages } from '../SubagentSessionFactory';
+import { addUsage, createSdkChildSession, emptyUsage, finalAssistant, usageFromMessages, type SubagentChildSessionFactory } from '../SubagentSessionFactory';
 import { assertContextTransfer } from '../SubagentContext';
 import { toolNamesForPermission } from '../PiToolPolicy';
 import { createToolProvenance } from '../ToolProvenance';
@@ -65,6 +65,7 @@ export class AgentTeamCoordinator {
   constructor(
     private readonly host: AgentTeamCoordinatorHost,
     private readonly dataRoot = path.join(os.homedir(), '.pi', 'fateGUI', 'agent-teams'),
+    private readonly childSessionFactory: SubagentChildSessionFactory = createSdkChildSession,
   ) {}
 
   createRootTools(modelRuntime: ModelRuntime): ToolDefinition[] {
@@ -586,7 +587,7 @@ export class AgentTeamCoordinator {
     await fs.mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
     const collaborationTools = createAgentCollaborationTools(this, node.id, modelRuntime);
     const parent = this.requireNode(runtime, node.parentNodeId!);
-    const session = await createSdkChildSession({
+    const session = await this.childSessionFactory({
       projectPath: root.projectPath,
       modelRuntime,
       model: prepared.modelValue,
@@ -634,7 +635,7 @@ export class AgentTeamCoordinator {
     if (!root || !model) throw new Error(`Stored model ${node.model.provider}/${node.model.id} is unavailable for ${node.path}.`);
     const parent = this.requireNode(runtime, node.parentNodeId!);
     const collaborationTools = createAgentCollaborationTools(this, node.id, modelRuntime);
-    const session = await createSdkChildSession({
+    const session = await this.childSessionFactory({
       projectPath: root.projectPath,
       modelRuntime,
       model,

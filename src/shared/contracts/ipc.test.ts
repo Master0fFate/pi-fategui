@@ -75,6 +75,15 @@ describe('IPC contracts', () => {
     expect(() => clipboardTextInputSchema.parse({ text: 'Copy me', html: '<b>Copy me</b>' })).toThrow();
   });
 
+  it('migrates image settings written before custom providers were added', () => {
+    const parsed = appSettingsSchema.parse({
+      appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true,
+      terminalShell: null, reduceMotion: false,
+      imageGeneration: { provider: 'openai', model: 'gpt-image-2' },
+    });
+    expect(parsed.imageGeneration).toEqual({ provider: 'openai', model: 'gpt-image-2', customProvider: null });
+  });
+
   it('distinguishes a bounded post-compaction estimate from measured context usage', () => {
     expect(contextUsageSchema.parse({ tokens: 21_000, contextWindow: 100_000, percent: 21, estimated: true })).toEqual({
       tokens: 21_000, contextWindow: 100_000, percent: 21, estimated: true,

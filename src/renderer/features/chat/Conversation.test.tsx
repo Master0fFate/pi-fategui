@@ -224,8 +224,12 @@ describe('conversation components', () => {
     const writeText = vi.fn(async () => undefined);
     const user = userEvent.setup();
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
-    render(<AssistantMarkdown text={'```ts\nconst answer = 42;\n```'} />);
-    await user.click(screen.getByRole('button', { name: 'Copy code' }));
+    const { container } = render(<AssistantMarkdown text={'```ts\nconst answer = 42;\n```'} />);
+    const copy = screen.getByRole('button', { name: 'Copy code' });
+    const shell = container.querySelector('.code-block-shell');
+    expect(shell?.querySelector('pre.code-block')).not.toContainElement(copy);
+    expect(shell).toContainElement(copy);
+    await user.click(copy);
     expect(writeText).toHaveBeenCalledWith('const answer = 42;');
   });
 

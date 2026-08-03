@@ -32,7 +32,7 @@ const result = await new Promise((resolve, reject) => {
 });
 clearTimeout(timeout);
 
-for (const marker of ['PI_DESKTOP_SPEECH_OK', 'PI_DESKTOP_YT_DLP_OK', 'PI_DESKTOP_SMOKE_OK']) {
+for (const marker of ['PI_DESKTOP_SPEECH_OK', 'PI_DESKTOP_YT_DLP_OK', 'PI_DESKTOP_THEMES_OK', 'PI_DESKTOP_SMOKE_OK']) {
   if (!output.includes(marker)) {
     throw new Error(`Installed application did not emit ${marker} (exit ${String(result.code)}, signal ${String(result.signal)}).`);
   }

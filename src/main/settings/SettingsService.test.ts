@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { builtInThemes } from '../../shared/themes';
 import { AppLogService } from '../logging/AppLogService';
 
 const appState = vi.hoisted(() => ({ userData: '' }));
@@ -22,14 +23,21 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
+function createSettings(logs = new AppLogService(), piThemes: ConstructorParameters<typeof SettingsService>[2] = {
+  discover: async () => ({ themes: [], diagnostics: [] }),
+}) {
+  return new SettingsService(logs, dataRoot, piThemes);
+}
+
 describe('SettingsService', () => {
   it('persists and reloads validated settings atomically', async () => {
     const logs = new AppLogService();
-    const service = new SettingsService(logs, dataRoot);
+    const service = createSettings(logs);
     const saved = await service.set({
       appearance: 'system', defaultModel: 'provider/model', thinkingLevel: 'high', agentTeamMode: 'v2',
       confirmRiskyCommands: false, terminalShell: 'pwsh.exe', reduceMotion: true, performanceMode: true, holyShitMode: true, musicPlayerEnabled: true, sendMessageWithModifier: true, themeId: 'graphite',
       interfaceFont: 'poppins', codeFont: 'noto-sans-mono',
+      imageGeneration: { provider: 'google', model: 'gemini-3.1-flash-image', customProvider: null },
       speech: { enabled: true, modelId: 'balanced', language: 'auto', inputDeviceId: null },
     });
 
@@ -39,7 +47,7 @@ describe('SettingsService', () => {
     expect(saved.sendMessageWithModifier).toBe(true);
     expect(saved.interfaceFont).toBe('poppins');
     expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(saved);
-    expect(await new SettingsService(logs, dataRoot).load()).toEqual(saved);
+    expect(await createSettings(logs).load()).toEqual(saved);
     expect(logs.list().at(-1)?.message).toContain('saved');
   });
 
@@ -48,8 +56,8 @@ describe('SettingsService', () => {
       appearance: 'system', defaultModel: null, thinkingLevel: 'high', confirmRiskyCommands: false, terminalShell: null, reduceMotion: true, performanceMode: false,
     }), 'utf8');
     const logs = new AppLogService();
-    const loaded = await new SettingsService(logs, dataRoot).load();
-    expect(loaded).toMatchObject({ appearance: 'system', thinkingLevel: 'high', holyShitMode: false, sendMessageWithModifier: false, interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono' });
+    const loaded = await createSettings(logs).load();
+    expect(loaded).toMatchObject({ appearance: 'system', thinkingLevel: 'high', holyShitMode: false, sendMessageWithModifier: false, interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null } });
     expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(loaded);
   });
 
@@ -62,8 +70,19 @@ describe('SettingsService', () => {
         onAccent: '#ffffff', success: '#55c78a', warning: '#d2a94b', danger: '#e35d6a', shadow: '#020308',
       },
     }] }), 'utf8');
-    const themes = await new SettingsService(new AppLogService(), dataRoot).loadThemes();
+    const themes = await createSettings().loadThemes();
     expect(themes.map((theme) => theme.id)).toEqual(expect.arrayContaining(['catppuccin-mocha', 'catppuccin-latte', 'midnight', 'daylight', 'storm']));
+  });
+
+  it('merges Pi themes using the explicit Fate project trust decision', async () => {
+    const piTheme = { ...builtInThemes[2]!, id: 'pi-terminal-0123456789ab', name: 'Pi · Terminal' };
+    const discover = vi.fn(async () => ({ themes: [piTheme], diagnostics: [] }));
+    const themes = await createSettings(new AppLogService(), { discover }).loadThemes({
+      path: '/trusted/project', name: 'project', trusted: true,
+    });
+
+    expect(discover).toHaveBeenCalledWith({ cwd: '/trusted/project', projectTrusted: true });
+    expect(themes).toEqual(expect.arrayContaining([piTheme]));
   });
 
   it('recovers to defaults and records a warning for malformed persisted data', async () => {
@@ -71,7 +90,7 @@ describe('SettingsService', () => {
     await writeFile(path.join(dataRoot, 'settings.json'), '{not-json', 'utf8');
     const logs = new AppLogService();
 
-    const loaded = await new SettingsService(logs, dataRoot).load();
+    const loaded = await createSettings(logs).load();
 
     expect(loaded).toMatchObject({ appearance: 'dark', thinkingLevel: 'medium', confirmRiskyCommands: true });
     expect(logs.list()).toEqual(expect.arrayContaining([expect.objectContaining({ level: 'warn', scope: 'settings' })]));
@@ -79,8 +98,8 @@ describe('SettingsService', () => {
 
   it('serializes concurrent writes and returns each persisted snapshot', async () => {
     const logs = new AppLogService();
-    const service = new SettingsService(logs, dataRoot);
-    const first = { appearance: 'dark', defaultModel: null, thinkingLevel: 'low', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } } as const;
+    const service = createSettings(logs);
+    const first = { appearance: 'dark', defaultModel: null, thinkingLevel: 'low', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } } as const;
     const second = { ...first, thinkingLevel: 'high' as const, reduceMotion: true };
 
     const [firstSaved, secondSaved] = await Promise.all([service.set(first), service.set(second)]);

@@ -7,6 +7,7 @@ import {
 import { themeCatalogSchema, type ThemeDefinition } from '../themes';
 import { agentTeamSchema, agentTeamControlInputSchema, type AgentTeamControlInput } from './multiAgent';
 import { toolProvenanceSchema } from './provenance';
+import { imageGenerationProviderIds } from '../imageGeneration';
 
 export const ipcChannels = {
   systemGetInfo: 'system:get-info',
@@ -124,6 +125,7 @@ export const modelInfoSchema = z.object({
   reasoning: z.boolean(),
   contextWindow: z.number().int().positive().max(2_147_483_647),
   supportsImages: z.boolean().optional(),
+  api: z.string().min(1).max(100).optional(),
 });
 
 export const projectStateSchema = z.object({
@@ -851,6 +853,12 @@ export const updateCheckResultSchema = z.object({
 }).strict();
 export const openUpdateDownloadResultSchema = z.object({ opened: z.literal(true) }).strict();
 
+export const imageGenerationSettingsSchema = z.object({
+  provider: z.enum(imageGenerationProviderIds),
+  model: z.string().trim().min(1).max(500).nullable(),
+  customProvider: z.string().trim().min(1).max(200).nullable().default(null),
+}).strict();
+
 export const appSettingsSchema = z.object({
   appearance: z.enum(['dark', 'system']),
   defaultModel: z.string().max(500).nullable(),
@@ -866,6 +874,7 @@ export const appSettingsSchema = z.object({
   themeId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,47}$/).default('catppuccin-mocha'),
   interfaceFont: interfaceFontSchema.default('noto-sans'),
   codeFont: codeFontSchema.default('jetbrains-mono'),
+  imageGeneration: imageGenerationSettingsSchema.default({ provider: 'auto', model: null, customProvider: null }),
   speech: speechSettingsSchema.default({ enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null }),
 }).strict();
 export const musicStatusSchema = z.object({
@@ -981,6 +990,7 @@ export type GitCommitDetails = z.infer<typeof gitCommitDetailsSchema>;
 export type GitOperation = z.infer<typeof gitOperationSchema>;
 export type GitOperationResult = z.infer<typeof gitOperationResultSchema>;
 export type TerminalEvent = z.infer<typeof terminalEventSchema>;
+export type ImageGenerationSettings = z.infer<typeof imageGenerationSettingsSchema>;
 export type AppSettings = z.infer<typeof appSettingsSchema>;
 export type UpdateCheckResult = z.infer<typeof updateCheckResultSchema>;
 export type MusicStatus = z.infer<typeof musicStatusSchema>;

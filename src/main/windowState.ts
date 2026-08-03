@@ -11,7 +11,7 @@ export interface WindowPlacement {
   maximized: boolean;
 }
 
-const minimumWindowSize = { width: 900, height: 620 } as const;
+export const MINIMUM_WINDOW_SIZE = { width: 600, height: 620 } as const;
 const hdWindowSize = { width: 1280, height: 720 } as const;
 const fourKWindowSize = { width: 1920, height: 1080 } as const;
 
@@ -93,8 +93,8 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 function fitRememberedBounds(bounds: Rectangle, workArea: Rectangle): Rectangle {
-  const width = Math.min(Math.max(bounds.width, minimumWindowSize.width), Math.max(1, workArea.width));
-  const height = Math.min(Math.max(bounds.height, minimumWindowSize.height), Math.max(1, workArea.height));
+  const width = Math.min(Math.max(bounds.width, MINIMUM_WINDOW_SIZE.width), Math.max(1, workArea.width));
+  const height = Math.min(Math.max(bounds.height, MINIMUM_WINDOW_SIZE.height), Math.max(1, workArea.height));
   return {
     x: clamp(bounds.x, workArea.x, workArea.x + workArea.width - width),
     y: clamp(bounds.y, workArea.y, workArea.y + workArea.height - height),

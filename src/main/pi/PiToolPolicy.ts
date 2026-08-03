@@ -11,7 +11,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { PermissionLevel } from '../../shared/contracts/ipc';
 import { PiDesktopError } from './errors';
-import { createGenerateImageTool } from './PiImageTool';
+import { createConfiguredImageGenerator, createGenerateImageTool, type ImageGenerationSettingsResolver } from './PiImageTool';
 
 const MAX_PI_READ_BYTES = 8 * 1024 * 1024;
 
@@ -138,7 +138,7 @@ export async function createProjectConfinedTools(
   cwd: string,
   access: ProjectToolAccess = { fullAccess: false },
   readableRoots: ReadableRoots = [],
-  options: { searchTools?: boolean } = {},
+  options: { searchTools?: boolean; getImageGenerationSettings?: ImageGenerationSettingsResolver } = {},
 ) {
   const canonicalCwd = path.normalize(await fs.realpath(cwd));
   const policy = await ProjectPathPolicy.create(canonicalCwd, access, readableRoots);
@@ -248,7 +248,7 @@ export async function createProjectConfinedTools(
     createReadToolDefinition(canonicalCwd, { operations: readOperations }),
     createWriteToolDefinition(canonicalCwd, { operations: writeOperations }),
     createEditToolDefinition(canonicalCwd, { operations: { ...readOperations, writeFile: writeOperations.writeFile } }),
-    createGenerateImageTool(),
+    createGenerateImageTool(createConfiguredImageGenerator(options.getImageGenerationSettings)),
     ...searchTools,
   ];
 }

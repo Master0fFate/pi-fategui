@@ -7,6 +7,8 @@ import {
   CircleAlert,
   Gauge,
   Keyboard,
+  ImageIcon,
+  LockKeyhole,
   Monitor,
   Music2,
   Save,
@@ -23,6 +25,13 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AppSettings, Diagnostics, LogEntry, ModelInfo, SpeechDownloadProgress, SpeechModelId, SpeechStatus, UpdateCheckResult } from '../../../shared/contracts/ipc';
 import type { ThemeDefinition } from '../../../shared/themes';
+import {
+  defaultImageGenerationModel,
+  imageGenerationPreset,
+  imageGenerationProviderPresets,
+  isOpenAICompatibleImageApi,
+  type ImageGenerationProviderId,
+} from '../../../shared/imageGeneration';
 import { applyVisualSettings } from '../../appearance';
 import { AppTooltip } from '../../components/AppTooltip';
 import { SelectControl } from '../../components/SelectControl';
@@ -36,6 +45,7 @@ const fallback: AppSettings = {
   appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true,
   terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight',
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
+  imageGeneration: { provider: 'auto', model: null, customProvider: null },
   speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
 };
 
@@ -51,7 +61,7 @@ const sections = [
 ] as const;
 
 const providerNames: Record<string, string> = {
-  anthropic: 'Anthropic', google: 'Google', openai: 'OpenAI', openrouter: 'OpenRouter',
+  anthropic: 'Anthropic', google: 'Google', openai: 'OpenAI', 'openai-codex': 'OpenAI Codex', openrouter: 'OpenRouter',
 };
 
 export const formatProviderName = (provider: string) => providerNames[provider.toLowerCase()]
@@ -69,7 +79,7 @@ export const groupModelsByProvider = (models: readonly ModelInfo[]) => {
     .sort((left, right) => left.title.localeCompare(right.title));
 };
 
-export function SettingsDialog() {
+export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog?: ThemeDefinition[] }) {
   const open = useUiStore((state) => state.settingsOpen);
   const setOpen = useUiStore((state) => state.setSettingsOpen);
   const setMusicPlayerEnabled = useUiStore((state) => state.setMusicPlayerEnabled);
@@ -77,11 +87,14 @@ export function SettingsDialog() {
   const setSpeech = useUiStore((state) => state.setSpeech);
   const models = useRuntimeStore((state) => state.runtime.models);
   const providerGroups = useMemo(() => groupModelsByProvider(models), [models]);
+  const imageCompatibleProviderGroups = useMemo(
+    () => providerGroups.filter((group) => group.models.some((model) => isOpenAICompatibleImageApi(model.api))),
+    [providerGroups],
+  );
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
   const [selectedProvider, setSelectedProvider] = useState('');
   const [settings, setSettings] = useState<AppSettings>(fallback);
   const [persistedSettings, setPersistedSettings] = useState<AppSettings>(fallback);
-  const [themes, setThemes] = useState<ThemeDefinition[]>(fallbackThemes);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
@@ -118,13 +131,9 @@ export function SettingsDialog() {
     const activeDownload = useUiStore.getState().speechDownload;
     setSpeechBusy(activeDownload?.modelId ?? null);
     setSpeechProgress(activeDownload);
-    const themesPromise = typeof window.piDesktop.getThemes === 'function'
-      ? window.piDesktop.getThemes().catch(() => fallbackThemes)
-      : Promise.resolve(fallbackThemes);
-    void Promise.all([window.piDesktop.getSettings(), themesPromise])
-      .then(([nextSettings, nextThemes]) => {
+    void window.piDesktop.getSettings()
+      .then((nextSettings) => {
         if (!active) return;
-        setThemes(nextThemes);
         setSettings(nextSettings);
         setPersistedSettings(nextSettings);
         setSelectedProvider(nextSettings.defaultModel?.split('/')[0] ?? '');
@@ -220,7 +229,7 @@ export function SettingsDialog() {
 
   useEffect(() => {
     if (!open || !settingsLoaded) return;
-    applyVisualSettings(settings, themes);
+    applyVisualSettings(settings, themeCatalog);
   }, [
     open,
     settings.appearance,
@@ -231,7 +240,7 @@ export function SettingsDialog() {
     settings.holyShitMode,
     settings.themeId,
     settingsLoaded,
-    themes,
+    themeCatalog,
   ]);
 
   useEffect(() => {
@@ -249,7 +258,7 @@ export function SettingsDialog() {
       const saved = await window.piDesktop.setSettings(settings);
       setSettings(saved);
       setPersistedSettings(saved);
-      applyVisualSettings(saved, themes);
+      applyVisualSettings(saved, themeCatalog);
       setMusicPlayerEnabled(saved.musicPlayerEnabled);
       setSendMessageWithModifier(saved.sendMessageWithModifier);
       setSpeech(saved.speech);
@@ -299,7 +308,7 @@ export function SettingsDialog() {
   };
 
   const handleOpenChange = (nextOpen: boolean) => {
-    if (!nextOpen && settingsLoaded) applyVisualSettings(persistedSettings, themes);
+    if (!nextOpen && settingsLoaded) applyVisualSettings(persistedSettings, themeCatalog);
     setOpen(nextOpen);
   };
 
@@ -314,6 +323,31 @@ export function SettingsDialog() {
     setSelectedProvider(provider);
     const firstModel = providerGroups.find((group) => group.provider === provider)?.models[0];
     setSettings({ ...settings, defaultModel: firstModel ? `${firstModel.provider}/${firstModel.id}` : null });
+  };
+
+  const imageSettings = settings.imageGeneration;
+  const imagePreset = imageGenerationPreset(imageSettings.provider);
+  const imageProviderId = imageSettings.provider === 'custom' ? imageSettings.customProvider : imagePreset?.providerId ?? null;
+  const selectedCustomImageProvider = imageCompatibleProviderGroups.find((group) => group.provider === imageSettings.customProvider);
+  const unavailableCustomImageProvider = imageSettings.provider === 'custom' && imageSettings.customProvider && !selectedCustomImageProvider
+    ? { value: imageSettings.customProvider, label: formatProviderName(imageSettings.customProvider), detail: 'Unavailable or not OpenAI-compatible' }
+    : null;
+  const customImageModelReady = Boolean(imageSettings.model?.trim());
+  const imageProviderReady = imageSettings.provider === 'auto'
+    ? imageGenerationProviderPresets.some((preset) => models.some((model) => model.provider === preset.providerId))
+    : imageSettings.provider === 'custom'
+      ? Boolean(selectedCustomImageProvider && customImageModelReady)
+      : Boolean(imageProviderId && models.some((model) => model.provider === imageProviderId));
+  const chooseImageProvider = (provider: string) => {
+    const nextProvider = provider as ImageGenerationProviderId;
+    setSettings({
+      ...settings,
+      imageGeneration: {
+        provider: nextProvider,
+        model: defaultImageGenerationModel(nextProvider),
+        customProvider: nextProvider === 'custom' ? imageSettings.customProvider : null,
+      },
+    });
   };
 
   const refreshSpeech = async () => {
@@ -408,7 +442,7 @@ export function SettingsDialog() {
                 <div className="settings-panel" role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general">
                   <div className="settings-title"><span><Monitor size={17} /></span><div><h3>Interface</h3><p>Theme, type, and visual behavior across Fate UI.</p></div></div>
                   <div className="settings-group">
-                    <div className="settings-theme-row"><div><strong>Theme</strong><small>Built-in themes and validated custom themes from ~/.pi/fateGUI/themes.json.</small></div><SelectControl label="Interface theme" value={settings.themeId} className="settings-theme-select" options={themes.map((theme) => ({ value: theme.id, label: theme.name, detail: theme.tone === 'light' ? 'Light' : 'Dark' }))} onValueChange={(themeId) => setSettings({ ...settings, themeId })} /></div>
+                    <div className="settings-theme-row"><div><strong>Theme</strong><small>Built-in, Fate custom, and Pi themes. Project themes load only after you trust the project.</small></div><SelectControl label="Interface theme" value={settings.themeId} className="settings-theme-select" options={themeCatalog.map((theme) => ({ value: theme.id, label: theme.name, detail: theme.tone === 'light' ? 'Light' : 'Dark' }))} onValueChange={(themeId) => setSettings({ ...settings, themeId })} /></div>
                   </div>
                   <div className="settings-title settings-title--spaced"><span><Type size={17} /></span><div><h3>Typography</h3><p>Bundled typefaces with a Noto fallback chain for extended Unicode.</p></div></div>
                   <div className="settings-group settings-font-group">
@@ -441,6 +475,30 @@ export function SettingsDialog() {
                   </div>
                   <div className="settings-select-row"><div><strong>Thinking level</strong><small>Initial reasoning effort when a project starts without an active session.</small></div><SelectControl label="Default thinking level" value={settings.thinkingLevel} className="settings-thinking-select" options={['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((level) => ({ value: level, label: level === 'xhigh' ? 'Extra high' : `${level[0]?.toUpperCase() ?? ''}${level.slice(1)}` }))} onValueChange={(value) => setSettings({ ...settings, thinkingLevel: value as AppSettings['thinkingLevel'] })} /></div>
                   <div className="settings-select-row"><div><strong>Agent orchestration</strong><small>Agent Teams V2 enables recursive child/grandchild delegation with durable context and hard safety limits. Applies when the project is reopened.</small></div><SelectControl label="Agent orchestration mode" value={settings.agentTeamMode} options={[{ value: 'legacy', label: 'Legacy subagents', detail: 'Flat managed agents and deterministic workflows' }, { value: 'v2', label: 'Agent Teams V2 (beta)', detail: 'Recursive provider-neutral teams' }]} onValueChange={(value) => setSettings({ ...settings, agentTeamMode: value as AppSettings['agentTeamMode'] })} /></div>
+
+                  <div className="settings-title settings-title--spaced"><span><ImageIcon size={17} /></span><div><h3>Image generation</h3><p>A dedicated image route, independent from the chat model and secured by Pi’s existing provider authentication.</p></div></div>
+                  <div className="image-provider-config">
+                    <div className="settings-model-controls">
+                      <div className="settings-select-field"><span>Provider route</span><SelectControl label="Image generation provider" value={imageSettings.provider} options={[{ value: 'auto', label: 'Automatic', detail: 'Best authenticated Pi provider' }, ...imageGenerationProviderPresets.map((preset) => ({ value: preset.id, label: preset.name, detail: preset.auth })), { value: 'custom', label: 'Custom Pi provider', detail: 'OpenAI-compatible Images API' }]} onValueChange={chooseImageProvider} /></div>
+                      {imageSettings.provider === 'custom' ? (
+                        <div className="settings-select-field"><span>Pi provider</span><SelectControl label="Custom image provider" value={imageSettings.customProvider ?? ''} options={[{ value: '', label: 'Select an OpenAI-compatible provider' }, ...(unavailableCustomImageProvider ? [unavailableCustomImageProvider] : []), ...imageCompatibleProviderGroups.map((group) => ({ value: group.provider, label: group.title, detail: 'Base URL and auth inherited from Pi' }))]} onValueChange={(customProvider) => setSettings({ ...settings, imageGeneration: { ...imageSettings, customProvider: customProvider || null } })} /></div>
+                      ) : (
+                        <div className="settings-select-field"><span>Image model</span><SelectControl label="Image generation model" value={imageSettings.model ?? ''} disabled={imageSettings.provider === 'auto'} options={imageSettings.provider === 'auto' ? [{ value: '', label: 'Chosen automatically' }] : (imagePreset?.models.map((model) => ({ value: model.id, label: model.name, detail: model.detail })) ?? [])} onValueChange={(model) => setSettings({ ...settings, imageGeneration: { ...imageSettings, model: model || null } })} /></div>
+                      )}
+                    </div>
+                    {imageSettings.provider === 'custom' && (
+                      <label className="image-model-input"><span>Image model ID</span><input value={imageSettings.model ?? ''} placeholder="Your deployed image model" onChange={(event) => setSettings({ ...settings, imageGeneration: { ...imageSettings, model: event.target.value || null } })} /></label>
+                    )}
+                    <div className="image-provider-status" data-ready={imageProviderReady}>
+                      <LockKeyhole size={15} aria-hidden="true" />
+                      <div><strong>{imageSettings.provider === 'auto' ? imageProviderReady ? 'Pi chooses at generation time' : 'No image provider authenticated in Pi' : imageProviderReady ? 'Ready through Pi' : imageSettings.provider === 'custom' && selectedCustomImageProvider && !customImageModelReady ? 'Choose an image model ID' : 'Provider not authenticated in Pi'}</strong><span>{imagePreset?.description ?? (imageSettings.provider === 'custom' ? 'The base URL and credential come from ~/.pi/agent/models.json; only /images/generations is appended.' : 'Priority: ChatGPT OAuth, OpenAI, Gemini, then OpenRouter.')}</span></div>
+                    </div>
+                    <dl className="image-provider-route">
+                      <div><dt>Authentication</dt><dd>{imagePreset?.auth ?? (imageSettings.provider === 'custom' ? 'Pi-managed provider credential' : 'Automatic · no credentials exposed')}</dd></div>
+                      <div><dt>Endpoint</dt><dd><code>{imagePreset?.endpoint ?? (imageSettings.provider === 'custom' ? 'Pi base URL + /images/generations' : 'Selected Pi provider endpoint')}</code></dd></div>
+                    </dl>
+                    {!imageProviderReady && <p className="image-provider-help">{imageSettings.provider === 'custom' && selectedCustomImageProvider && !customImageModelReady ? 'Enter the exact image model ID deployed by this provider.' : <>Authenticate a supported provider with Pi <code>/login</code>, or configure it in <code>~/.pi/agent/models.json</code>. Fate UI never stores or displays the credential.</>}</p>}
+                  </div>
                 </div>
               )}
 

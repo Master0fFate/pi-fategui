@@ -87,11 +87,13 @@ export function App() {
   const hydrateRuntime = useRuntimeStore((state) => state.hydrateRuntime);
   const applyEvents = useRuntimeStore((state) => state.applyEvents);
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
+  const projectTrusted = useRuntimeStore((state) => state.runtime.project?.trusted ?? false);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
   const initializeWorkspace = useWorkspaceStore((state) => state.initialize);
   const inspectorCollapsed = useUiStore((state) => state.inspectorCollapsed);
   const inspectorTab = useUiStore((state) => state.inspectorTab);
   const musicPlayerEnabled = useUiStore((state) => state.musicPlayerEnabled);
+  const [themeCatalog, setThemeCatalog] = useState(() => fallbackThemes);
   const [hydrationAttempt, setHydrationAttempt] = useState(0);
   const [hydrationError, setHydrationError] = useState<string | null>(null);
   const sessionReplacementBusy = useRef(false);
@@ -105,21 +107,30 @@ export function App() {
 
   useEffect(() => {
     const surface = inspectorCollapsed ? null : inspectorTab === 'files' ? 'files' : inspectorTab === 'changes' ? 'changes' : null;
-    void initializeWorkspace(projectPath, surface);
+    void initializeWorkspace(projectPath, surface).then(() => {
+      const workspace = useWorkspaceStore.getState();
+      const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
+      if (projectPath && workspace.projectPath === projectPath && !workspace.git && typeof desktop?.getGitStatus === 'function') return workspace.refreshGit();
+      return undefined;
+    });
   }, [initializeWorkspace, inspectorCollapsed, inspectorTab, projectPath]);
 
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.getSettings !== 'function') return;
+    if (!('piDesktop' in window) || typeof window.piDesktop.getSettings !== 'function') return undefined;
+    let active = true;
     const themesPromise = typeof window.piDesktop.getThemes === 'function'
       ? window.piDesktop.getThemes().catch(() => fallbackThemes)
       : Promise.resolve(fallbackThemes);
     void Promise.all([window.piDesktop.getSettings(), themesPromise]).then(([settings, themes]) => {
+      if (!active) return;
+      setThemeCatalog(themes);
       applyVisualSettings(settings, themes);
       useUiStore.getState().setMusicPlayerEnabled(settings.musicPlayerEnabled);
       useUiStore.getState().setSendMessageWithModifier(settings.sendMessageWithModifier);
       useUiStore.getState().setSpeech(settings.speech ?? { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null });
     }).catch(() => undefined);
-  }, []);
+    return () => { active = false; };
+  }, [projectPath, projectTrusted]);
 
   useEffect(() => {
     if (!('piDesktop' in window) || typeof window.piDesktop.onSpeechDownload !== 'function') return undefined;
@@ -282,7 +293,7 @@ export function App() {
       <AppToast />
       {musicPlayerEnabled && <Suspense fallback={null}><MusicPlayerDock /></Suspense>}
       <CommandPalette />
-      <SettingsDialog />
+      <SettingsDialog themeCatalog={themeCatalog} />
     </QueryClientProvider>
   );
 }

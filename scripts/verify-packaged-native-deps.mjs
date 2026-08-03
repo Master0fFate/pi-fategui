@@ -513,7 +513,15 @@ export function verifyPackagedNativeDeps({ appOutDir, platform, arch }) {
   }
 
   const piRuntime = 'node_modules/@earendil-works/pi-coding-agent';
-  for (const relative of ['package.json', 'dist/index.js', 'dist/core/agent-session.js', 'dist/core/agent-session-runtime.js', 'dist/core/model-runtime.js']) {
+  for (const relative of [
+    'package.json',
+    'dist/index.js',
+    'dist/core/agent-session.js',
+    'dist/core/agent-session-runtime.js',
+    'dist/core/model-runtime.js',
+    'dist/modes/interactive/theme/dark.json',
+    'dist/modes/interactive/theme/light.json',
+  ]) {
     requireFile(index, errors, `${piRuntime}/${relative}`);
   }
   const piPackage = readJson(index, errors, `${piRuntime}/package.json`);

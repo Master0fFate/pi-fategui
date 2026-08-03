@@ -3,9 +3,10 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { appSettingsSchema, type AppSettings } from '../../shared/contracts/ipc';
+import { appSettingsSchema, type AppSettings, type ProjectState } from '../../shared/contracts/ipc';
 import { builtInThemes, customThemeFileSchema, themeCatalogSchema, type ThemeDefinition } from '../../shared/themes';
 import type { AppLogService } from '../logging/AppLogService';
+import { PiThemeService } from './PiThemeService';
 
 const defaults: AppSettings = {
   appearance: 'dark',
@@ -22,6 +23,7 @@ const defaults: AppSettings = {
   themeId: 'catppuccin-mocha',
   interfaceFont: 'noto-sans',
   codeFont: 'jetbrains-mono',
+  imageGeneration: { provider: 'auto', model: null, customProvider: null },
   speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
 };
 
@@ -35,6 +37,7 @@ export class SettingsService {
     private readonly dataRoot = process.env.FATE_GUI_DATA_DIR
       ? path.resolve(process.env.FATE_GUI_DATA_DIR)
       : path.join(os.homedir(), '.pi', 'fateGUI'),
+    private readonly piThemes: Pick<PiThemeService, 'discover'> = new PiThemeService(),
   ) {}
 
   async load(): Promise<AppSettings> {
@@ -57,7 +60,14 @@ export class SettingsService {
     return { ...this.settings };
   }
 
-  async loadThemes(): Promise<ThemeDefinition[]> {
+  async loadThemes(project: ProjectState | null = null): Promise<ThemeDefinition[]> {
+    const piDiscovery = this.piThemes.discover({
+      cwd: project?.path ?? process.cwd(),
+      projectTrusted: project?.trusted === true,
+    }).catch((error: unknown) => {
+      this.logs.write('warn', 'themes', `Pi themes were ignored: ${error instanceof Error ? error.message : String(error)}`);
+      return { themes: [], diagnostics: [] };
+    });
     let custom: ThemeDefinition[] = [];
     try {
       const value: unknown = JSON.parse(await fs.readFile(path.join(this.dataRoot, 'themes.json'), 'utf8'));
@@ -71,7 +81,12 @@ export class SettingsService {
         this.logs.write('warn', 'themes', `Custom themes were ignored: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    const discovered = await piDiscovery;
+    for (const diagnostic of discovered.diagnostics) {
+      this.logs.write(diagnostic.type === 'error' ? 'error' : 'warn', 'themes', diagnostic.message);
+    }
     const merged = new Map(builtInThemes.map((theme) => [theme.id, theme]));
+    for (const theme of discovered.themes) merged.set(theme.id, theme);
     for (const theme of custom) merged.set(theme.id, theme);
     return themeCatalogSchema.parse([...merged.values()]);
   }

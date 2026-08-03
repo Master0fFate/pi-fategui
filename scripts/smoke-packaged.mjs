@@ -86,6 +86,7 @@ clearTimeout(timeout);
 if (timedOut) throw new Error(`Packaged smoke test timed out after ${timeoutMs} ms.`);
 if (!output.includes('PI_DESKTOP_SPEECH_OK')) throw new Error(`Packaged speech runtime did not initialize (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
 if (!output.includes('PI_DESKTOP_YT_DLP_OK')) throw new Error(`Packaged yt-dlp runtime did not initialize (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
+if (!output.includes('PI_DESKTOP_THEMES_OK')) throw new Error(`Packaged Pi themes did not load (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
 if (!output.includes('PI_DESKTOP_SMOKE_OK')) throw new Error(`Packaged smoke marker was not observed (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
 if (exitCode !== 0 || exitSignal) throw new Error(`Packaged application exited unexpectedly (exit ${exitCode}, signal ${exitSignal ?? 'none'}).`);
 console.log('PI_DESKTOP_PACKAGED_SMOKE_OK');

@@ -1,5 +1,4 @@
 import {
-  Archive,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -8,11 +7,11 @@ import {
   FolderOpen,
   GitBranchPlus,
   GitFork,
-  GripVertical,
   MessageSquarePlus,
   Pencil,
   Search,
   Settings,
+  Shrink,
   Trash2,
   X,
 } from 'lucide-react';
@@ -22,8 +21,10 @@ import type { SessionSummary } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
 import { IconButton } from '../../components/IconButton';
 import { SelectControl } from '../../components/SelectControl';
+import { formatRelativeTime } from '../../lib/relativeTime';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useWorkspaceStore } from '../../stores/workspaceStore';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -54,6 +55,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const showToast = useUiStore((state) => state.showToast);
   const requestComposerDraft = useUiStore((state) => state.requestComposerDraft);
   const musicPlaying = useUiStore((state) => state.musicPlaying);
+  const gitBranch = useWorkspaceStore((state) => state.git?.repository && state.git.branch ? state.git.branch : null);
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<'manual' | 'recent' | 'oldest' | 'alphabetical'>('recent');
   const [manualOrder, setManualOrder] = useState<string[]>([]);
@@ -67,6 +69,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>(runtime.sessions ?? []);
   const [renderExpanded, setRenderExpanded] = useState(!collapsed);
   const [expandedVisible, setExpandedVisible] = useState(!collapsed);
+  const [relativeNow, setRelativeNow] = useState(() => Date.now());
   const mounted = useRef(true);
   const navigationBusyRef = useRef(false);
   const actionBusyRef = useRef(false);
@@ -151,6 +154,16 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     }
     return () => { if (timer) clearTimeout(timer); };
   }, [collapsed]);
+  useEffect(() => {
+    if (collapsed || sessions.length === 0) return undefined;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      setRelativeNow(Date.now());
+      timer = setTimeout(tick, 60_000 - Date.now() % 60_000 + 25);
+    };
+    timer = setTimeout(tick, 60_000 - Date.now() % 60_000 + 25);
+    return () => clearTimeout(timer);
+  }, [collapsed, sessions.length]);
   useEffect(() => {
     const projectPath = runtime.project?.path;
     if (collapsed || !query.trim() || !projectPath || !('piDesktop' in window) || typeof window.piDesktop.listSessions !== 'function') return;
@@ -430,6 +443,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 key={session.id}
                 draggable={!query && editingSessionId !== session.id && confirmingDeleteId !== session.id}
                 onDragStart={(event) => {
+                  const target = event.target instanceof Element ? event.target : null;
+                  if (target?.closest('.session-row-actions, .session-rename, .session-delete-confirm')) {
+                    event.preventDefault();
+                    return;
+                  }
                   setDraggingSessionId(session.id);
                   event.dataTransfer.effectAllowed = 'move';
                   event.dataTransfer.setData('text/plain', session.id);
@@ -454,10 +472,16 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                   </form>
                 ) : (
                   <>
-                    <AppTooltip content={session.active ? `Current session: ${session.title}` : operationUnavailableReason ?? `Open ${session.title}${session.firstMessage ? `\n${session.firstMessage}` : ''}`} wrapTrigger triggerClassName="session-open-tooltip">
+                    <AppTooltip
+                      content={`${session.title}${!session.active && operationUnavailableReason ? `\n${operationUnavailableReason}` : ''}`}
+                      side="right"
+                      sideOffset={8}
+                      wrapTrigger
+                      triggerClassName="session-open-tooltip"
+                    >
                       <button className="session-open" type="button" disabled={session.active || replacementBusy} onClick={() => switchSession(session)}>
                         <span>{session.parentSessionPath && <GitFork size={11} aria-label="Forked session" />}{session.parentSessionPath ? <span className="session-title-label icon-label">{session.title}</span> : session.title}</span>
-                        <small>{session.parentSessionPath ? `Fork of ${sessionTitleByPath.get(session.parentSessionPath) ?? 'another session'} · ` : ''}{session.messageCount} messages · {new Date(session.modifiedAt).toLocaleDateString()}</small>
+                        <small title={`Updated ${new Date(session.modifiedAt).toLocaleString()}`}>{session.parentSessionPath ? `Fork of ${sessionTitleByPath.get(session.parentSessionPath) ?? 'another session'} · ` : ''}{gitBranch ? `${gitBranch} · ` : ''}{session.messageCount} messages · updated <time dateTime={session.modifiedAt}>{formatRelativeTime(session.modifiedAt, relativeNow)}</time></small>
                       </button>
                     </AppTooltip>
                     {!session.active && session.attention && (
@@ -466,13 +490,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                       </AppTooltip>
                     )}
                     <div className="session-row-actions">
-                      {!query && <AppTooltip content="Drag session to reorder"><span className="session-drag-handle" aria-hidden="true"><GripVertical size={12} /></span></AppTooltip>}
-                      {capabilities?.fork && <AppTooltip content={sessionActionTooltip(session, `Branch from ${session.title}’s latest prompt`)} wrapTrigger><button type="button" aria-label={`Create new session from latest prompt in ${session.title}`} disabled={sessionActionDisabled(session)} onClick={() => void runSessionAction(session, 'fork')}><GitFork size={12} /></button></AppTooltip>}
-                      {capabilities?.fork && <AppTooltip content={worktreeUnavailableReason ?? `Create an isolated Git worktree session from ${session.title}`} wrapTrigger><button className="session-worktree-button" type="button" aria-label={`Create an isolated Git worktree session from ${session.title}`} disabled={replacementBusy || anySessionRunning} onClick={() => void runSessionAction(session, 'worktree')}><GitBranchPlus size={12} /></button></AppTooltip>}
-                      {capabilities?.clone && <AppTooltip content={sessionActionTooltip(session, `Clone ${session.title}`)} wrapTrigger><button type="button" aria-label={`Clone ${session.title}`} disabled={sessionActionDisabled(session)} onClick={() => void runSessionAction(session, 'clone')}><Copy size={12} /></button></AppTooltip>}
-                      {capabilities?.compact && <AppTooltip content={sessionActionTooltip(session, `Compact ${session.title}’s context`)} wrapTrigger><button type="button" aria-label={`Compact ${session.title}`} disabled={sessionActionDisabled(session)} onClick={() => void runSessionAction(session, 'compact')}><Archive size={12} /></button></AppTooltip>}
-                      <AppTooltip content={operationUnavailableReason ?? `Rename ${session.title}`} wrapTrigger><button type="button" aria-label={`Rename ${session.title}`} disabled={replacementBusy} onClick={() => beginRename(session)}><Pencil size={12} /></button></AppTooltip>
-                      {!session.active && <AppTooltip content={sessionActionTooltip(session, `Delete ${session.title}`)} wrapTrigger><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} disabled={sessionActionDisabled(session)} onClick={() => setConfirmingDeleteId(session.id)}><Trash2 size={12} /></button></AppTooltip>}
+                      {capabilities?.fork && <AppTooltip content={sessionActionTooltip(session, 'Branch from latest prompt')} wrapTrigger><button type="button" aria-label={`Create new session from latest prompt in ${session.title}`} disabled={sessionActionDisabled(session)} onClick={() => void runSessionAction(session, 'fork')}><GitFork size={12} /></button></AppTooltip>}
+                      {capabilities?.fork && <AppTooltip content={worktreeUnavailableReason ?? 'Create isolated Git worktree'} wrapTrigger><button className="session-worktree-button" type="button" aria-label={`Create an isolated Git worktree session from ${session.title}`} disabled={replacementBusy || anySessionRunning} onClick={() => void runSessionAction(session, 'worktree')}><GitBranchPlus size={12} /></button></AppTooltip>}
+                      {capabilities?.clone && <AppTooltip content={sessionActionTooltip(session, 'Clone session')} wrapTrigger><button type="button" aria-label={`Clone ${session.title}`} disabled={sessionActionDisabled(session)} onClick={() => void runSessionAction(session, 'clone')}><Copy size={12} /></button></AppTooltip>}
+                      {capabilities?.compact && <AppTooltip content={sessionActionTooltip(session, 'Compact session context')} wrapTrigger><button type="button" aria-label={`Compact ${session.title}`} disabled={sessionActionDisabled(session)} onClick={() => void runSessionAction(session, 'compact')}><Shrink size={12} /></button></AppTooltip>}
+                      <AppTooltip content={operationUnavailableReason ?? 'Rename session'} wrapTrigger><button type="button" aria-label={`Rename ${session.title}`} disabled={replacementBusy} onClick={() => beginRename(session)}><Pencil size={12} /></button></AppTooltip>
+                      {!session.active && <AppTooltip content={sessionActionTooltip(session, 'Delete session')} wrapTrigger><button className="session-delete-button" type="button" aria-label={`Delete ${session.title}`} disabled={sessionActionDisabled(session)} onClick={() => setConfirmingDeleteId(session.id)}><Trash2 size={12} /></button></AppTooltip>}
                     </div>
                   </>
                 )}

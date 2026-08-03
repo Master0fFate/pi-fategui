@@ -110,6 +110,15 @@ export function messageImages(message: unknown, altPrefix = 'Generated image'): 
   return images;
 }
 
+function toolImageAlt(result: unknown): string | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const details = (result as { details?: unknown }).details;
+  if (!details || typeof details !== 'object') return undefined;
+  const alt = (details as { alt?: unknown }).alt;
+  if (typeof alt !== 'string') return undefined;
+  return alt.slice(0, 200).trim() || undefined;
+}
+
 function messageRole(message: unknown): 'user' | 'assistant' | 'system' | 'tool' | 'hidden' {
   if (!message || typeof message !== 'object') return 'hidden';
   const value = message as { role?: unknown; display?: unknown; customType?: unknown };
@@ -248,7 +257,9 @@ export class PiEventNormalizer {
       }
       case 'tool_execution_end': {
         const toolCallId = this.toolId(event.toolCallId);
-        const images = messageImages(event.result);
+        const explicitImageAlt = toolImageAlt(event.result);
+        const images = messageImages(event.result, explicitImageAlt ?? 'Generated image');
+        if (explicitImageAlt && images.length === 1) images[0]!.alt = explicitImageAlt;
         const text = messageText(event.result);
         const runIds = subagentRunIds(event.result);
         const provenance = this.toolProvenance.get(toolCallId);

@@ -246,7 +246,7 @@ describe('first-launch shell', () => {
     const user = userEvent.setup();
     render(<App />);
     const shell = document.querySelector<HTMLElement>('.app-shell');
-    expect(shell?.style.gridTemplateColumns).toContain('min(264px, 27vw) 6px minmax(340px, 1fr) 6px min(332px, 31vw)');
+    expect(shell?.style.gridTemplateColumns).toContain('min(264px, 27vw) 6px minmax(min(340px, 40vw), 1fr) 6px min(332px, 31vw)');
     const pointer = (type: 'pointerdown' | 'pointermove' | 'pointerup', pointerId: number, clientX: number) => {
       const event = new Event(type, { bubbles: true });
       Object.defineProperties(event, { pointerId: { value: pointerId }, clientX: { value: clientX } });
@@ -282,7 +282,7 @@ describe('first-launch shell', () => {
     for (let index = 0; index < 20; index += 1) await user.keyboard('{ArrowLeft}');
     expect(inspectorHandle).toHaveAttribute('aria-valuenow', String(RIGHT_MAX));
 
-    expect(shell?.style.gridTemplateColumns).toContain(`min(${LEFT_MAX}px, 27vw) 6px minmax(340px, 1fr) 6px min(${RIGHT_MAX}px, 31vw)`);
+    expect(shell?.style.gridTemplateColumns).toContain(`min(${LEFT_MAX}px, 27vw) 6px minmax(min(340px, 40vw), 1fr) 6px min(${RIGHT_MAX}px, 31vw)`);
   });
 
   it('buffers live events until startup state hydration completes', async () => {

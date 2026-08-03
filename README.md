@@ -29,7 +29,7 @@ Run Pi in a focused graphical workspace for durable conversations, transparent a
 - **Fate Flight Deck.** Activity Pulse reports runtime, queue, context, and change state. Flight Recorder keeps a bounded, navigable history of root, legacy, and team activity. Review Runway pairs diffs and review status with recorded direct-file provenance when available.
 - **A focused coding workspace.** One resizable workspace brings together durable sessions, branches and worktrees, project-confined files, Monaco previews and diffs, Git status and history, and a manual terminal. Virtualized timelines, queued messages, guarded project switching, and stop/steer controls keep long-running work responsive.
 - **Agent orchestration.** Choose either recursive Agent Teams V2 or isolated legacy subagents, with model, tool, skill, and permission controls.
-- **Personal preferences, kept local.** Choose built-in or validated custom themes and interface or code fonts. Use local voice transcription or optional ambient audio when useful.
+- **Personal preferences, kept local.** Choose built-in, Pi-compatible, or validated custom themes and interface or code fonts. Use local voice transcription, optional ambient audio, or a dedicated image-generation model when useful.
 - **Native installers.** See [Installation](#installation) for published builds, checksum guidance, and platform-specific setup.
 
 ## Installation
@@ -108,7 +108,7 @@ Runtime diagnostics still load without credentials, but prompting remains unavai
 
 Fate UI starts Pi in project-confined **Edit files** mode.
 
-- **Read only** removes mutation tools.
+- **Read only** removes project and host mutation tools. If image generation is enabled, `generate_image` can still make a billable provider request and save its output under `~/.pi/agent/generated-images/`; it never writes into the project.
 - **Edit files** confines Pi file operations to the active project.
 - **Full access** is intentionally unsandboxed and requires explicit confirmation. Pi can then run shell commands and access host paths with your user account's permissions.
 
@@ -195,7 +195,7 @@ Please report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
 
 - **Voice transcription:** local, settings-controlled models with bounded and verified downloads.
 - **Ambient audio:** disabled by default; resolved through a bundled, pinned `yt-dlp` runtime and streamed without saving media into the project.
-- **Generated images:** supported model output is rendered inline and copied under `~/.pi/agent/generated-images/<session-id>/`.
+- **Generated images:** select an image model independently of the active chat model. Fate UI supports authenticated OpenAI, Google, OpenRouter, and ChatGPT OAuth routes, plus compatible custom Pi providers. Custom endpoints require HTTPS except on loopback addresses. Generated raster output is validated, rendered inline, and stored under `~/.pi/agent/generated-images/<session-id>/`.
 
 See [FONT_LICENSES.md](FONT_LICENSES.md) for bundled font redistribution notices.
 

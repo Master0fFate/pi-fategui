@@ -18,7 +18,7 @@ import { SettingsService } from './settings/SettingsService';
 import { SpeechService } from './speech/SpeechService';
 import { TerminalService } from './terminal/TerminalService';
 import { UpdateService } from './updates/UpdateService';
-import { WindowStateService, type WindowPlacement } from './windowState';
+import { MINIMUM_WINDOW_SIZE, WindowStateService, type WindowPlacement } from './windowState';
 import { installWindowZoomShortcuts } from './windowZoom';
 import { appCommandSchema, ipcChannels, windowStateSchema, type AppCommand } from '../shared/contracts/ipc';
 
@@ -49,11 +49,17 @@ const instanceProfile = acquireInstanceProfile(app);
 
 configurePackagedSpeechLibrary();
 const logs = new AppLogService();
-const runtime = new PiRuntimeService(undefined, undefined, new SessionPermissionStore(logs));
+const settings = new SettingsService(logs);
+const runtime = new PiRuntimeService(
+  undefined,
+  undefined,
+  new SessionPermissionStore(logs),
+  undefined,
+  () => settings.get().imageGeneration,
+);
 const projects = new ProjectService();
 const files = new FilesystemService();
 const git = new GitService(files);
-const settings = new SettingsService(logs);
 const updates = new UpdateService(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'PRODVER'), {
   openExternal: (url) => shell.openExternal(url),
 });
@@ -139,8 +145,8 @@ function createWindow(): BrowserWindow {
   const placement = windowState.resolve(screen.getAllDisplays(), screen.getPrimaryDisplay());
   const window = new BrowserWindow({
     ...placement.bounds,
-    minWidth: 900,
-    minHeight: 620,
+    minWidth: MINIMUM_WINDOW_SIZE.width,
+    minHeight: MINIMUM_WINDOW_SIZE.height,
     show: false,
     backgroundColor: '#11111b',
     title: 'Fate UI',
@@ -199,10 +205,14 @@ function createWindow(): BrowserWindow {
 
   if (process.env.PI_DESKTOP_SMOKE === '1') {
     window.webContents.once('did-finish-load', () => {
-      void Promise.all([speech.getStatus(), music.getStatus()]).then(([speechStatus, musicStatus]) => {
+      void Promise.all([speech.getStatus(), music.getStatus(), settings.loadThemes()]).then(([speechStatus, musicStatus, themes]) => {
         if (!musicStatus.available) throw new Error(musicStatus.message ?? 'Bundled yt-dlp is unavailable.');
+        if (!themes.some((theme) => theme.name === 'Pi · dark') || !themes.some((theme) => theme.name === 'Pi · light')) {
+          throw new Error('Bundled Pi themes are unavailable.');
+        }
         console.log(`PI_DESKTOP_SPEECH_OK ${speechStatus.backend}`);
         console.log(`PI_DESKTOP_YT_DLP_OK ${musicStatus.version}`);
+        console.log('PI_DESKTOP_THEMES_OK');
         console.log('PI_DESKTOP_SMOKE_OK');
         setTimeout(() => app.quit(), 100);
       }).catch((error: unknown) => {

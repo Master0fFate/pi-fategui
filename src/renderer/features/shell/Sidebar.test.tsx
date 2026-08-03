@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, RuntimeState, SessionSummary } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
+import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { Sidebar } from './Sidebar';
 
 const session = (id: string, title: string, active: boolean, attention?: SessionSummary['attention']): SessionSummary => ({
@@ -41,6 +42,7 @@ describe('Sidebar sessions', () => {
   beforeEach(() => {
     localStorage.clear();
     useRuntimeStore.getState().setRuntime(ready());
+    useWorkspaceStore.setState({ projectPath: '/project', git: null });
   });
 
   afterEach(() => {
@@ -125,12 +127,12 @@ describe('Sidebar sessions', () => {
   });
 
   it.each([
-    ['Create new session from latest prompt in First', 'Branch from First’s latest prompt'],
-    ['Create an isolated Git worktree session from First', 'Create an isolated Git worktree session from First'],
-    ['Clone First', 'Clone First'],
-    ['Compact First', 'Compact First’s context'],
-    ['Rename First', 'Rename First'],
-    ['Delete Second', 'Delete Second'],
+    ['Create new session from latest prompt in First', 'Branch from latest prompt'],
+    ['Create an isolated Git worktree session from First', 'Create isolated Git worktree'],
+    ['Clone First', 'Clone session'],
+    ['Compact First', 'Compact session context'],
+    ['Rename First', 'Rename session'],
+    ['Delete Second', 'Delete session'],
   ])('shows useful hover copy for the %s action', async (accessibleName, tooltipCopy) => {
     const user = userEvent.setup();
     render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
@@ -141,6 +143,29 @@ describe('Sidebar sessions', () => {
     await user.hover(tooltipTrigger!);
 
     expect(await screen.findByRole('tooltip')).toHaveTextContent(tooltipCopy);
+  });
+
+  it('shows the full session title to the right and includes branch plus relative activity', async () => {
+    useWorkspaceStore.setState({
+      git: { repository: true, branch: 'fate/session-feedback', upstream: null, pushTarget: null, ahead: 0, behind: 0, changes: [], additions: 0, deletions: 0, truncated: false },
+    });
+    const user = userEvent.setup();
+    const { container } = render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    const openSecond = screen.getByRole('button', { name: /^Second/u });
+    expect(openSecond).toHaveTextContent(/fate\/session-feedback.*updated.*ago/u);
+    expect(openSecond.querySelector('time')).toHaveAttribute('dateTime', '2025-01-02T00:00:00.000Z');
+    await user.hover(openSecond.closest<HTMLElement>('.tooltip-trigger')!);
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent('Second');
+    expect(container.querySelector('.session-drag-handle')).not.toBeInTheDocument();
+    expect(openSecond.closest('.session-row')).toHaveAttribute('draggable', 'true');
+  });
+
+  it('lets the collapsed Settings tooltip wrapper fill the footer rail', () => {
+    const { container } = render(<Sidebar collapsed onToggle={vi.fn()} />);
+    const settings = screen.getByRole('button', { name: 'Settings' });
+    expect(settings.closest('.tooltip-trigger')).toBe(container.querySelector('.sidebar-footer > .tooltip-trigger'));
   });
 
   it('keeps rename and delete confirmation controls hoverable', async () => {

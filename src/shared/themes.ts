@@ -30,7 +30,7 @@ export const themeDefinitionSchema = z.object({
   colors: themeColorsSchema,
 }).strict();
 
-export const themeCatalogSchema = z.array(themeDefinitionSchema).min(1).max(32);
+export const themeCatalogSchema = z.array(themeDefinitionSchema).min(1).max(128);
 export const customThemeFileSchema = z.union([
   z.array(themeDefinitionSchema).max(24),
   z.object({ themes: z.array(themeDefinitionSchema).max(24) }).strict().transform((value) => value.themes),

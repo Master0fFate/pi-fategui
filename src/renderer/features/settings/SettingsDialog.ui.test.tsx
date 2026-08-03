@@ -2,6 +2,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppSettings, PiDesktopApi, SpeechDownloadProgress, SpeechStatus, UpdateCheckResult } from '../../../shared/contracts/ipc';
+import { builtInThemes, type ThemeDefinition } from '../../../shared/themes';
+import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { SettingsDialog } from './SettingsDialog';
 
@@ -20,6 +22,7 @@ const settings: AppSettings = {
   themeId: 'catppuccin-mocha',
   interfaceFont: 'noto-sans',
   codeFont: 'jetbrains-mono',
+  imageGeneration: { provider: 'auto', model: null, customProvider: null },
   speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
 };
 
@@ -34,9 +37,14 @@ const speechStatus: SpeechStatus = {
   ],
 };
 
-function installBridge(setSettings: (value: AppSettings) => Promise<AppSettings>, loadedSettings: AppSettings = settings) {
+function installBridge(
+  setSettings: (value: AppSettings) => Promise<AppSettings>,
+  loadedSettings: AppSettings = settings,
+  loadedThemes: ThemeDefinition[] = [...builtInThemes],
+) {
   const bridge = {
     getSettings: vi.fn(async () => loadedSettings),
+    getThemes: vi.fn(async () => loadedThemes),
     setSettings,
     getDiagnostics: vi.fn(async () => null),
     getLogs: vi.fn(async () => []),
@@ -62,6 +70,10 @@ function installBridge(setSettings: (value: AppSettings) => Promise<AppSettings>
 
 beforeEach(() => {
   speechListener = null;
+  useRuntimeStore.getState().setRuntime({
+    status: 'disconnected', project: null, sessionId: null, sessionFile: null, streaming: false,
+    model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+  });
   useUiStore.setState({ settingsOpen: true, sendMessageWithModifier: false, speechDownload: null });
   document.documentElement.dataset.performanceMode = 'false';
   document.documentElement.dataset.reduceMotion = 'false';
@@ -99,6 +111,22 @@ describe('SettingsDialog feedback', () => {
     expect(save).toHaveAttribute('aria-busy', 'false');
   });
 
+  it('previews and saves a discovered Pi theme through the existing theme picker', async () => {
+    const piTheme = { ...builtInThemes[2]!, id: 'pi-terminal-0123456789ab', name: 'Pi · Terminal' };
+    const selected = { ...settings, themeId: piTheme.id };
+    const setSettings = vi.fn(async (value: AppSettings) => value);
+    installBridge(setSettings, selected, [...builtInThemes, piTheme]);
+    const user = userEvent.setup();
+    render(<SettingsDialog themeCatalog={[...builtInThemes, piTheme]} />);
+
+    expect(await screen.findByRole('combobox', { name: 'Interface theme' })).toHaveTextContent('Pi · Terminal');
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe(piTheme.id));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({ themeId: piTheme.id }));
+    expect(screen.getByText(/Pi themes.*trust the project/iu)).toBeInTheDocument();
+  });
+
   it('loads bundled font preferences and exposes the extended Unicode preview', async () => {
     installBridge(vi.fn(async (value) => value), { ...settings, interfaceFont: 'poppins', codeFont: 'noto-sans-mono' });
     render(<SettingsDialog />);
@@ -123,6 +151,48 @@ describe('SettingsDialog feedback', () => {
     expect(screen.getByText(/Initial reasoning effort when a project starts without an active session/)).toBeInTheDocument();
     expect(screen.queryByText('Sets the default reasoning effort for new sessions.')).not.toBeInTheDocument();
   });
+
+  it('configures a custom image route only when a compatible driver and model ID are present', async () => {
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null, streaming: false,
+      model: null,
+      models: [
+        { provider: 'mixed-images', id: 'chat', name: 'Chat', api: 'anthropic-messages', reasoning: false, contextWindow: 10_000 },
+        { provider: 'mixed-images', id: 'driver', name: 'Driver', api: 'openai-responses', reasoning: false, contextWindow: 10_000 },
+      ],
+      thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    });
+    installBridge(vi.fn(async (value) => value), {
+      ...settings,
+      imageGeneration: { provider: 'custom', model: null, customProvider: 'mixed-images' },
+    });
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+
+    await user.click(await screen.findByRole('tab', { name: /Agent/ }));
+    expect(screen.getByRole('combobox', { name: 'Custom image provider' })).toHaveTextContent('Mixed Images');
+    expect(screen.getByText('Choose an image model ID')).toBeInTheDocument();
+    await user.type(screen.getByRole('textbox', { name: 'Image model ID' }), 'deployed-image');
+    expect(screen.getByText('Ready through Pi')).toBeInTheDocument();
+  });
+
+  it('configures a dedicated Gemini image route without exposing credential inputs', async () => {
+    installBridge(vi.fn(async (value) => value), {
+      ...settings,
+      imageGeneration: { provider: 'google', model: 'gemini-3.1-flash-image', customProvider: null },
+    });
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+
+    await user.click(await screen.findByRole('tab', { name: /Agent/ }));
+
+    expect(screen.getByRole('combobox', { name: 'Image generation provider' })).toHaveTextContent('Google Gemini');
+    expect(screen.getByRole('combobox', { name: 'Image generation model' })).toHaveTextContent('Nano Banana 2');
+    expect(screen.getByText('generativelanguage.googleapis.com/v1beta/interactions')).toBeInTheDocument();
+    expect(screen.getByText(/Fate UI never stores or displays the credential/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/API key/iu)).not.toBeInTheDocument();
+  });
+
 
   it('checks for updates only on click and reports the installed version', async () => {
     const bridge = installBridge(vi.fn(async (value) => value));

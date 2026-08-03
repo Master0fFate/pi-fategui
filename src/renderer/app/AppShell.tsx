@@ -30,7 +30,7 @@ export function AppShell() {
     <div
       className={`app-shell app-shell--sidebar-${state.sidebarCollapsed ? 'collapsed' : 'open'} app-shell--inspector-${state.inspectorCollapsed ? 'collapsed' : 'open'}`}
       style={{
-        gridTemplateColumns: `${leftTrack} ${state.sidebarCollapsed ? 0 : 6}px minmax(340px, 1fr) ${state.inspectorCollapsed ? 0 : 6}px ${rightTrack}`,
+        gridTemplateColumns: `${leftTrack} ${state.sidebarCollapsed ? 0 : 6}px minmax(min(340px, 40vw), 1fr) ${state.inspectorCollapsed ? 0 : 6}px ${rightTrack}`,
       }}
     >
       <WindowChrome />

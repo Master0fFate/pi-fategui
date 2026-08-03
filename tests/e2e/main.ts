@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AppSettings, ProjectState, TerminalEvent } from '../../src/shared/contracts/ipc';
+import { builtInThemes } from '../../src/shared/themes';
 import { FilesystemService } from '../../src/main/files/FilesystemService';
 import { GitService } from '../../src/main/git/GitService';
 import { registerIpc } from '../../src/main/ipc/registerIpc';
@@ -15,6 +16,7 @@ import type { SettingsService } from '../../src/main/settings/SettingsService';
 import type { SpeechService } from '../../src/main/speech/SpeechService';
 import type { TerminalService } from '../../src/main/terminal/TerminalService';
 import { installWindowZoomShortcuts } from '../../src/main/windowZoom';
+import { MINIMUM_WINDOW_SIZE } from '../../src/main/windowState';
 import { FakePiRuntimeService } from './FakePiRuntimeService';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -34,8 +36,14 @@ const projects = {
   selectFile: async () => 'src/example.ts',
 } as unknown as ProjectService;
 const profileVisualMode = process.env.FATE_GUI_PROFILE_VISUAL_MODE;
-let settingsValue: AppSettings = { appearance: 'dark', defaultModel: 'test/deterministic', thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } };
-const settings = { load: async () => settingsValue, get: () => settingsValue, set: async (value: AppSettings) => { settingsValue = value; return value; } } as unknown as SettingsService;
+let settingsValue: AppSettings = { appearance: 'dark', defaultModel: 'test/deterministic', thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } };
+const e2ePiTheme = { ...builtInThemes[4]!, id: 'pi-e2e-theme-0123456789ab', name: 'Pi · E2E Theme' };
+const settings = {
+  load: async () => settingsValue,
+  get: () => settingsValue,
+  set: async (value: AppSettings) => { settingsValue = value; return value; },
+  loadThemes: async () => [...builtInThemes, e2ePiTheme],
+} as unknown as SettingsService;
 const logs = { list: () => [], write: () => undefined } as unknown as AppLogService;
 const music = {
   getStatus: async () => ({ available: false, version: null, message: 'yt-dlp is unavailable in the E2E harness.' }),
@@ -86,7 +94,9 @@ app.whenReady().then(() => {
     rendererPolicy: createTrustedRendererPolicy(rendererPath),
   });
   window = new BrowserWindow({
-    width: 1280, height: 720, show: false, frame: false, backgroundColor: '#11111b',
+    width: 1280, height: 720,
+    minWidth: MINIMUM_WINDOW_SIZE.width, minHeight: MINIMUM_WINDOW_SIZE.height,
+    show: false, frame: false, backgroundColor: '#11111b',
     webPreferences: { ...secureWebPreferences, preload: path.resolve(directory, '../../dist/preload/index.cjs') },
   });
   installWindowZoomShortcuts(window);

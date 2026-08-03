@@ -271,14 +271,14 @@ function CodeBlock({ child }: { child: ReactElement<{ className?: string; childr
     }
   };
   return (
-    <pre className="code-block">
-      {child}
+    <div className="code-block-shell">
+      <pre className="code-block">{child}</pre>
       <AppTooltip content={copied ? 'Copied' : 'Copy code'}>
         <button className="code-block-copy" type="button" aria-label={copied ? 'Code copied' : 'Copy code'} onClick={() => { void copy(); }}>
           {copied ? <Check size={14} /> : <Copy size={14} />}
         </button>
       </AppTooltip>
-    </pre>
+    </div>
   );
 }
 
