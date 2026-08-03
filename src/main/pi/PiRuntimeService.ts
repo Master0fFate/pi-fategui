@@ -112,6 +112,14 @@ interface SessionAttentionRecord {
 const MAX_LENGTH_CONTINUATIONS_PER_USER_TURN = 8;
 const LENGTH_CONTINUATION_PROMPT = 'The previous assistant turn reached its output limit before completing the active user request. Continue the unfinished work from exactly where it stopped. Do not repeat completed work and do not wait for another user message.';
 
+type SessionCustomMessage = Parameters<AgentSession['sendCustomMessage']>[0];
+type ActiveCustomMessageDelivery = 'steer' | 'followUp';
+type SessionTurnPhase = 'idle' | 'active' | 'ending';
+interface DeferredChildMessage {
+  message: SessionCustomMessage;
+  activeDelivery: ActiveCustomMessageDelivery;
+}
+
 interface RuntimeSlot {
   runtime: AgentSessionRuntime;
   projectGeneration: number;
@@ -139,6 +147,8 @@ interface RuntimeSlot {
   extensionUiState: ExtensionUiState;
   attention: SessionAttention | null;
   runFailed: boolean;
+  sessionTurnPhase: SessionTurnPhase;
+  deferredChildMessages: DeferredChildMessage[];
   lengthContinuationCount: number;
   firstPromptText: string;
   firstTitleStarted: boolean;
@@ -689,6 +699,11 @@ export class PiRuntimeService {
         if (!slot || !this.project) return null;
         return { projectPath: this.project.path, session: slot.runtime.session, permissionLevel: slot.permissionLevel };
       },
+      sendRootMessage: (rootSessionId, message, activeDelivery, triggerWhenIdle) => {
+        const slot = this.findLiveSlot(rootSessionId);
+        if (!slot || slot.disposed) return Promise.resolve();
+        return this.sendChildGeneratedMessage(slot, slot.runtime.session, message, activeDelivery, triggerWhenIdle);
+      },
       emit: (rootSessionId, team) => {
         const slot = this.findLiveSlot(rootSessionId);
         if (this.selectedSlot === slot) this.enqueue({ type: 'agent-team.updated', team, timestamp: team.updatedAt });
@@ -754,15 +769,17 @@ export class PiRuntimeService {
         const slot = this.findLiveSlot(parentSessionId);
         if (!slot || slot.disposed || mode === 'never') return;
         const session = slot.runtime.session;
-        await session.sendCustomMessage({
+        const message = {
           customType: 'fate-subagent-notification',
-          content: [{ type: 'text', text }],
+          content: [{ type: 'text' as const, text }],
           display: false,
           details: { runIds, ...(workflowId ? { workflowId } : {}) },
-        }, {
-          triggerTurn: mode === 'immediate',
-          deliverAs: mode === 'immediate' && session.isStreaming ? 'followUp' : 'nextTurn',
-        });
+        };
+        if (mode === 'next-turn') {
+          await session.sendCustomMessage(message, { triggerTurn: false, deliverAs: 'nextTurn' });
+          return;
+        }
+        await this.sendChildGeneratedMessage(slot, session, message, 'followUp', true);
       },
       settled: (parentSessionId) => {
         const slot = this.findLiveSlot(parentSessionId);
@@ -1578,6 +1595,8 @@ export class PiRuntimeService {
       extensionUiState: emptyExtensionUiState(),
       attention: null,
       runFailed: false,
+      sessionTurnPhase: 'idle',
+      deferredChildMessages: [],
       lengthContinuationCount: 0,
       firstPromptText: '',
       firstTitleStarted: false,
@@ -1636,6 +1655,8 @@ export class PiRuntimeService {
     slot.boundaryModelOverride = null;
     slot.attention = null;
     slot.runFailed = false;
+    slot.sessionTurnPhase = 'idle';
+    slot.deferredChildMessages = [];
     slot.firstPromptText = '';
     slot.firstTitleStarted = false;
     slot.createdAt = new Date().toISOString();
@@ -1753,6 +1774,7 @@ export class PiRuntimeService {
     session.setActiveToolsByName(activeToolsForPermission([...ordinaryActiveTools, ...selectedOrchestration], slot.permissionLevel));
     if (access) access.fullAccess = slot.permissionLevel === 'full-access';
     this.installModelBoundary(slot, session, ownsSession);
+    slot.sessionTurnPhase = session.isStreaming ? 'active' : 'idle';
     slot.unsubscribeSession = session.subscribe((event: AgentSessionEvent) => this.handleSessionEvent(slot, session, generation, event));
     slot.boundSession = session;
     slot.sessionInvalidated = false;
@@ -1823,8 +1845,90 @@ export class PiRuntimeService {
     };
   }
 
+  private sendChildGeneratedMessage(
+    slot: RuntimeSlot,
+    session: AgentSession,
+    message: SessionCustomMessage,
+    activeDelivery: ActiveCustomMessageDelivery,
+    triggerWhenIdle: boolean,
+  ): Promise<void> {
+    if (slot.disposed || slot.runtime.session !== session) return Promise.resolve();
+    if (session.isStreaming && slot.sessionTurnPhase !== 'active') {
+      // Pi's loop has emitted agent_end but AgentSession still reports streaming
+      // until agent_settled. Queueing a steer/follow-up in this window makes the
+      // SDK call continue() with an assistant as the final context message.
+      slot.deferredChildMessages.push({ message, activeDelivery });
+      return Promise.resolve();
+    }
+    return session.sendCustomMessage(
+      message,
+      session.isStreaming
+        ? { triggerTurn: triggerWhenIdle, deliverAs: activeDelivery }
+        : { triggerTurn: triggerWhenIdle },
+    );
+  }
+
+  private customMessageWasAccepted(session: AgentSession, message: SessionCustomMessage): boolean {
+    return session.messages.some((candidate) => candidate.role === 'custom'
+      && candidate.customType === message.customType
+      && candidate.content === message.content
+      && candidate.details === message.details);
+  }
+
+  private flushDeferredChildMessages(slot: RuntimeSlot, session: AgentSession, generation: number): void {
+    if (slot.deferredChildMessages.length === 0) return;
+    const pending = slot.deferredChildMessages.splice(0);
+    const ownsSession = () => this.initialization === slot.projectGeneration
+      && !slot.disposed
+      && generation === slot.sessionGeneration
+      && slot.runtime.session === session;
+    void (async () => {
+      let submitted = 0;
+      try {
+        if (session.isStreaming) {
+          for (const item of pending) {
+            if (!ownsSession()) return;
+            await session.sendCustomMessage(item.message, { triggerTurn: true, deliverAs: item.activeDelivery });
+            submitted += 1;
+          }
+          return;
+        }
+        for (let index = 0; index < pending.length; index += 1) {
+          if (!ownsSession()) return;
+          // Append every deferred report before waking the model once. This
+          // preserves all child results without racing multiple parent turns.
+          await session.sendCustomMessage(pending[index]!.message, { triggerTurn: index === pending.length - 1 });
+          submitted = index + 1;
+        }
+      } catch (error) {
+        // A child notification is never allowed to fail the root run. If Pi
+        // accepted the current custom message before its triggered turn failed,
+        // do not duplicate it; otherwise retain it for the next direct turn.
+        if (submitted < pending.length && this.customMessageWasAccepted(session, pending[submitted]!.message)) submitted += 1;
+        let fallbackFailed = false;
+        for (const item of pending.slice(submitted)) {
+          if (!ownsSession()) return;
+          try {
+            await session.sendCustomMessage(item.message, { triggerTurn: false, deliverAs: 'nextTurn' });
+          } catch {
+            fallbackFailed = true;
+          }
+        }
+        if (fallbackFailed && this.selectedSlot === slot) {
+          this.emitSystemMessage(
+            `A child report could not be attached to the parent model turn: ${error instanceof Error ? error.message : String(error)}. The child result remains available in the Agents inspector.`,
+            'warning',
+          );
+        }
+      }
+    })();
+  }
+
   private handleSessionEvent(slot: RuntimeSlot, session: AgentSession, generation: number, event: AgentSessionEvent): void {
     if (this.initialization !== slot.projectGeneration || slot.disposed || generation !== slot.sessionGeneration || slot.runtime.session !== session) return;
+    if (event.type === 'agent_start') slot.sessionTurnPhase = 'active';
+    else if (event.type === 'agent_end') slot.sessionTurnPhase = 'ending';
+    else if (event.type === 'agent_settled') slot.sessionTurnPhase = 'idle';
     const selected = this.selectedSlot === slot;
     if (event.type === 'message_end' || event.type === 'session_info_changed' || event.type === 'compaction_end') {
       slot.modifiedAt = new Date().toISOString();
@@ -1909,6 +2013,7 @@ export class PiRuntimeService {
       return;
     }
     if (event.type === 'agent_settled') {
+      this.flushDeferredChildMessages(slot, session, generation);
       // An agent_settled extension handler may synchronously start another run.
       // Keep that slot live and yellow instead of disposing the successor run.
       if (this.sessionHasActiveWork(session)) {

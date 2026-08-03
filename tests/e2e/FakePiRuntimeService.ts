@@ -142,8 +142,11 @@ export class FakePiRuntimeService {
       this.emitState();
       return { accepted: true, runId };
     }
-    if (input.text === '__FATE_LIVE_PROFILE__') {
-      this.runLiveProfile(runId);
+    const profileRequest = /^__FATE_LIVE_PROFILE__(?::(\d+):(\d+))?$/u.exec(input.text);
+    if (profileRequest) {
+      const historyCount = Math.max(0, Math.min(20_000, Number.parseInt(profileRequest[1] ?? '600', 10)));
+      const deltaCount = Math.max(1, Math.min(100_000, Number.parseInt(profileRequest[2] ?? '6000', 10)));
+      this.runLiveProfile(runId, historyCount, deltaCount);
       return { accepted: true, runId };
     }
     if (input.text === '__FATE_AGENT_FIXTURE__') {
@@ -282,11 +285,9 @@ export class FakePiRuntimeService {
   async compact(): Promise<RuntimeState> { return this.getState(); }
   async dispose(): Promise<void> {}
 
-  private runLiveProfile(runId: string): void {
+  private runLiveProfile(runId: string, historyCount: number, deltaCount: number): void {
     const profileId = ++this.profileSequence;
     const prefix = `profile-${profileId}`;
-    const historyCount = 600;
-    const deltaCount = 6_000;
     const batchSize = 60;
     let historyIndex = 0;
     let deltaIndex = 0;

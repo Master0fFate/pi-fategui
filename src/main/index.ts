@@ -8,7 +8,7 @@ import { registerIpc } from './ipc/registerIpc';
 import { parseLaunchProjectPath } from './launchProject';
 import { acquireInstanceProfile } from './instanceProfile';
 import { AppLogService } from './logging/AppLogService';
-import { MusicService } from './music/MusicService';
+import { MusicService, PublicHttpsProxy } from './music/MusicService';
 import { PiRuntimeService } from './pi/PiRuntimeService';
 import { SessionPermissionStore } from './pi/SessionPermissionStore';
 import { ProjectService } from './projects/ProjectService';
@@ -65,6 +65,7 @@ const updates = new UpdateService(path.join(app.isPackaged ? process.resourcesPa
 });
 const windowState = new WindowStateService(logs);
 const music = new MusicService();
+const rendererNetworkProxy = new PublicHttpsProxy();
 const speech = new SpeechService(logs);
 const terminal = new TerminalService(files, runtime, settings, logs);
 let mainWindow: BrowserWindow | null = null;
@@ -240,6 +241,17 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(async () => {
+  const proxyUrl = await rendererNetworkProxy.start();
+  const developmentUrl = process.env.VITE_DEV_SERVER_URL;
+  const developmentBypass = developmentUrl ? new URL(developmentUrl).host : null;
+  await session.defaultSession.setProxy({
+    mode: 'fixed_servers',
+    proxyRules: proxyUrl,
+    // Chromium bypasses loopback implicitly. Remove that exception in packaged
+    // builds so HTTPS redirects and DNS rebinding cannot reach local services;
+    // development bypasses only Vite's exact host and port.
+    proxyBypassRules: developmentBypass ? `<-loopback>,${developmentBypass}` : '<-loopback>',
+  });
   await Promise.all([settings.load(), windowState.load()]);
   logs.write('info', 'app', `Fate UI ${app.getVersion()} started in instance slot ${instanceProfile.slot}.`);
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
@@ -287,6 +299,7 @@ app.on('before-quit', (event) => {
   rememberWindowPlacement(mainWindow);
   terminal.dispose();
   music.dispose();
+  rendererNetworkProxy.dispose();
   shutdown = Promise.race([
     Promise.all([runtime.dispose(), speech.dispose(), windowState.flush()]).then(() => undefined),
     new Promise<void>((resolve) => setTimeout(resolve, 5_000)),

@@ -1,16 +1,12 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { AppCommand, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
 import { AppToast } from '../components/AppToast';
-import { CommandPalette } from '../features/commands/CommandPalette';
-import { SettingsDialog } from '../features/settings/SettingsDialog';
 import { applyVisualSettings } from '../appearance';
 import { useRuntimeStore } from '../stores/runtimeStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useUiStore } from '../stores/uiStore';
 import { fallbackThemes } from '../theme';
 
-const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 5_000, retry: 1 } } });
 const MAX_HYDRATION_BUFFER_EVENTS = 1_000;
 const MAX_HYDRATION_BUFFER_BYTES = 32 * 1024 * 1024;
 
@@ -80,6 +76,8 @@ export function reconcileHydrationEvents(runtime: RuntimeState, events: readonly
   });
 }
 const MusicPlayerDock = lazy(() => import('../features/music/MusicPlayerDock').then((module) => ({ default: module.MusicPlayerDock })));
+const CommandPalette = lazy(() => import('../features/commands/CommandPalette').then((module) => ({ default: module.CommandPalette })));
+const SettingsDialog = lazy(() => import('../features/settings/SettingsDialog').then((module) => ({ default: module.SettingsDialog })));
 import { AppShell } from './AppShell';
 
 export function App() {
@@ -93,10 +91,17 @@ export function App() {
   const inspectorCollapsed = useUiStore((state) => state.inspectorCollapsed);
   const inspectorTab = useUiStore((state) => state.inspectorTab);
   const musicPlayerEnabled = useUiStore((state) => state.musicPlayerEnabled);
+  const paletteOpen = useUiStore((state) => state.paletteOpen);
+  const settingsOpen = useUiStore((state) => state.settingsOpen);
+  const [paletteActivated, setPaletteActivated] = useState(false);
+  const [settingsActivated, setSettingsActivated] = useState(false);
   const [themeCatalog, setThemeCatalog] = useState(() => fallbackThemes);
   const [hydrationAttempt, setHydrationAttempt] = useState(0);
   const [hydrationError, setHydrationError] = useState<string | null>(null);
   const sessionReplacementBusy = useRef(false);
+
+  useEffect(() => { if (paletteOpen) setPaletteActivated(true); }, [paletteOpen]);
+  useEffect(() => { if (settingsOpen) setSettingsActivated(true); }, [settingsOpen]);
 
   useEffect(() => {
     const jump = useUiStore.getState().flightDeckJump;
@@ -287,13 +292,13 @@ export function App() {
   }, [setRuntime]);
 
   return (
-    <QueryClientProvider client={queryClient}>
+    <>
       {hydrationError && <div className="hydration-error-banner" role="alert"><span>{hydrationError}</span><button type="button" onClick={() => setHydrationAttempt((value) => value + 1)}>Retry</button></div>}
       <AppShell />
       <AppToast />
       {musicPlayerEnabled && <Suspense fallback={null}><MusicPlayerDock /></Suspense>}
-      <CommandPalette />
-      <SettingsDialog themeCatalog={themeCatalog} />
-    </QueryClientProvider>
+      {(paletteOpen || paletteActivated) && <Suspense fallback={null}><CommandPalette /></Suspense>}
+      {(settingsOpen || settingsActivated) && <Suspense fallback={null}><SettingsDialog themeCatalog={themeCatalog} /></Suspense>}
+    </>
   );
 }

@@ -285,12 +285,15 @@ const TimelineRow = memo(function TimelineRow({ id, waitPollCount }: { id: strin
 export function ConversationTimeline() {
   const order = useRuntimeStore((state) => state.timelineOrder);
   const visibleOrder = useRuntimeStore((state) => state.visibleTimelineOrder);
-  const timelineById = useRuntimeStore((state) => state.timelineById);
-  const toolsById = useRuntimeStore((state) => state.toolsById);
-  const { order: displayOrder, waitPollCountById } = useMemo(
-    () => coalesceSubagentWaitPolls(visibleOrder, timelineById, toolsById),
-    [timelineById, toolsById, visibleOrder],
-  );
+  const timelineVersion = useRuntimeStore((state) => state.timelineVersion);
+  const waitPollVersion = useRuntimeStore((state) => state.waitPollVersion);
+  const timelineById = useRuntimeStore.getState().timelineById;
+  const { order: displayOrder, waitPollCountById } = useMemo(() => {
+    // Tool output updates do not change wait-poll grouping. Recompute only when
+    // timeline structure or a wait tool's lifecycle changes.
+    const { timelineById, toolsById } = useRuntimeStore.getState();
+    return coalesceSubagentWaitPolls(visibleOrder, timelineById, toolsById);
+  }, [timelineVersion, visibleOrder, waitPollVersion]);
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
   const hasHistoricalTimeline = useRuntimeStore((state) => state.runtime.messages.length > 0 || Boolean(state.runtime.tools?.length));
@@ -439,10 +442,10 @@ export function ConversationTimeline() {
       }
 
       const outputChanged = next.visibleTimelineOrder !== previous.visibleTimelineOrder
-        || next.timelineById !== previous.timelineById
-        || next.messagesById !== previous.messagesById
-        || next.reasoningByMessageId !== previous.reasoningByMessageId
-        || next.toolsById !== previous.toolsById
+        || next.timelineVersion !== previous.timelineVersion
+        || next.messagesVersion !== previous.messagesVersion
+        || next.reasoningVersion !== previous.reasoningVersion
+        || next.toolsVersion !== previous.toolsVersion
         || (previous.runtime.streaming && !next.runtime.streaming);
       if (!outputChanged) return;
       if (!pinnedToBottomRef.current || followFrameRef.current !== null) {

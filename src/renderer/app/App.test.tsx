@@ -111,13 +111,13 @@ describe('first-launch shell', () => {
     await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
 
     act(() => useUiStore.getState().setPaletteOpen(true));
-    const modelCommand = screen.getByRole('option', { name: /Use model: Fast Model/u });
+    const modelCommand = await screen.findByRole('option', { name: /Use model: Fast Model/u });
     expect(modelCommand).toBeEnabled();
     await user.click(modelCommand);
     await waitFor(() => expect(setModel).toHaveBeenCalledWith('test', 'fast'));
 
     act(() => useUiStore.getState().setPaletteOpen(true));
-    const newCommand = screen.getByRole('option', { name: /New session/u });
+    const newCommand = await screen.findByRole('option', { name: /New session/u });
     expect(newCommand).toBeEnabled();
     await user.click(newCommand);
     await waitFor(() => expect(newSession).toHaveBeenCalledTimes(2));

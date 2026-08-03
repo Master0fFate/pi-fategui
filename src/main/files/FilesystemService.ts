@@ -13,6 +13,7 @@ const MAX_SEARCH_VISITED_ENTRIES = 50_000;
 const MAX_FUZZY_TOKEN_LENGTH = 128;
 const SEARCH_INDEX_TTL_MS = 10_000;
 const SEARCH_YIELD_INTERVAL = 128;
+const DIRECTORY_ENTRY_STAT_CONCURRENCY = 32;
 const ignoredDirectories = new Set(['.git', 'node_modules']);
 const safeExternalExtensions = new Set([
   '.c', '.cc', '.cpp', '.cs', '.css', '.csv', '.go', '.h', '.hpp', '.ini', '.java', '.json', '.jsx', '.log',
@@ -165,6 +166,20 @@ function retainBestSearchEntry(heap: ScoredSearchEntry[], candidate: ScoredSearc
     heap[0] = candidate;
     siftSearchHeapDown(heap);
   }
+}
+
+async function mapConcurrent<T, R>(values: readonly T[], concurrency: number, mapper: (value: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < values.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(values[index]!, index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, worker));
+  return results;
 }
 
 function compareDirectoryEntries(left: Dirent, right: Dirent): number {
@@ -394,8 +409,7 @@ export class FilesystemService {
     }
     selected.sort(compareDirectoryEntries);
 
-    const entries: FileEntry[] = [];
-    for (const child of selected) {
+    const resolved = await mapConcurrent(selected, DIRECTORY_ENTRY_STAT_CONCURRENCY, async (child): Promise<FileEntry | null> => {
       this.assertRootOperation(operation);
       const childRelative = relativePath ? `${relativePath}/${child.name}` : child.name;
       try {
@@ -403,16 +417,17 @@ export class FilesystemService {
         this.assertRootOperation(operation);
         const childStat = await fs.stat(canonical);
         this.assertRootOperation(operation);
-        if (!childStat.isFile() && !childStat.isDirectory()) continue;
-        entries.push({ path: childRelative, name: child.name, kind: childStat.isDirectory() ? 'directory' : 'file', symlink: child.isSymbolicLink() });
+        if (!childStat.isFile() && !childStat.isDirectory()) return null;
+        return { path: childRelative, name: child.name, kind: childStat.isDirectory() ? 'directory' : 'file', symlink: child.isSymbolicLink() };
       } catch (error) {
         this.assertRootOperation(operation);
         // Broken and escaping links are intentionally invisible to the renderer.
         if (!(error instanceof PiDesktopError)) throw error;
+        return null;
       }
-    }
+    });
     this.assertRootOperation(operation);
-    return { path: relativePath, entries, truncated: scanTruncated || visibleChildren > MAX_DIRECTORY_ENTRIES };
+    return { path: relativePath, entries: resolved.filter((entry): entry is FileEntry => entry !== null), truncated: scanTruncated || visibleChildren > MAX_DIRECTORY_ENTRIES };
   }
 
   private invalidateSearchIndex(): void {

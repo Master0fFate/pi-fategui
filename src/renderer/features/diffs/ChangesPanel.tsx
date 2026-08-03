@@ -307,15 +307,16 @@ export function ChangesPanel() {
   const select = useWorkspaceStore((state) => state.selectChange);
   const runtime = useRuntimeStore((state) => state.runtime);
   const timelineOrder = useRuntimeStore((state) => state.timelineOrder);
-  const timelineById = useRuntimeStore((state) => state.timelineById);
-  const messagesById = useRuntimeStore((state) => state.messagesById);
-  const toolsById = useRuntimeStore((state) => state.toolsById);
-  const { subagentOrder, subagentsById, agentTeamOrder, agentTeamsById } = useRuntimeStore(useShallow((state) => ({
+  const { messagesVersion, timelineVersion, toolsVersion, subagentOrder, subagentsById, agentTeamOrder, agentTeamsById } = useRuntimeStore(useShallow((state) => ({
+    messagesVersion: state.messagesVersion,
+    timelineVersion: state.timelineVersion,
+    toolsVersion: state.toolsVersion,
     subagentOrder: state.subagentOrder,
     subagentsById: state.subagentsById,
     agentTeamOrder: state.agentTeamOrder,
     agentTeamsById: state.agentTeamsById,
   })));
+  const { timelineById, messagesById, toolsById } = useRuntimeStore.getState();
   const subagents = useMemo(() => subagentOrder.flatMap((id) => subagentsById[id] ? [subagentsById[id]!] : []), [subagentOrder, subagentsById]);
   const teams = useMemo(() => agentTeamOrder.flatMap((id) => agentTeamsById[id] ? [agentTeamsById[id]!] : []), [agentTeamOrder, agentTeamsById]);
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
@@ -333,7 +334,7 @@ export function ChangesPanel() {
   const selectedChange = changes.find((change) => change.path === selected);
   const origins = useMemo(() => selectChangeOrigins(selectedChange, {
     timelineOrder, timelineById, messagesById, toolsById, subagents, teams,
-  }), [messagesById, selectedChange, subagents, teams, timelineById, timelineOrder, toolsById]);
+  }), [messagesVersion, selectedChange, subagents, teams, timelineOrder, timelineVersion, toolsVersion]);
 
   useEffect(() => {
     const index = changes.findIndex((change) => change.path === selected);

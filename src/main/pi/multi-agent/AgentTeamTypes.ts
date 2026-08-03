@@ -66,6 +66,17 @@ export interface PreparedAgentRequest extends SpawnAgentRequest {
 
 export interface AgentTeamCoordinatorHost {
   resolveRoot(sessionId: string): { projectPath: string; session: AgentSession; permissionLevel: PermissionLevel } | null;
+  /**
+   * Routes child-generated messages through the root session's lifecycle gate.
+   * A message arriving after `agent_end` must wait for `agent_settled`; queueing
+   * it directly would make Pi continue from a terminal assistant message.
+   */
+  sendRootMessage?(
+    rootSessionId: string,
+    message: Parameters<AgentSession['sendCustomMessage']>[0],
+    activeDelivery: 'steer' | 'followUp',
+    triggerWhenIdle: boolean,
+  ): Promise<void>;
   emit(rootSessionId: string, team: AgentTeam): void;
   persist(rootSessionId: string, event: AgentTeamLedgerEvent): void;
   settled?(rootSessionId: string): void;

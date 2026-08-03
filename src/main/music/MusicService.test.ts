@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { connect } from 'node:net';
 import path from 'node:path';
-import { MusicService, executableCandidates, type MusicProcessRunner } from './MusicService';
+import { MusicService, PublicHttpsProxy, executableCandidates, isPublicIpAddress, type MusicProcessRunner } from './MusicService';
 
 const publicDns = vi.fn(async () => ['93.184.216.34']);
 
@@ -14,6 +15,15 @@ function runner(outputs: string[]): MusicProcessRunner & { run: ReturnType<typeo
 }
 
 describe('MusicService', () => {
+  it('rejects private, translated, and non-canonical loopback addresses', () => {
+    for (const address of [
+      '127.0.0.1', '10.1.2.3', '169.254.169.254', '::1', 'fc00::1',
+      '::ffff:127.0.0.1', '0:0:0:0:0:ffff:7f00:1', '64:ff9b::7f00:1',
+    ]) expect(isPublicIpAddress(address), address).toBe(false);
+    expect(isPublicIpAddress('93.184.216.34')).toBe(true);
+    expect(isPublicIpAddress('2606:4700:4700::1111')).toBe(true);
+  });
+
   it('never resolves yt-dlp from a relative or project-local executable path', () => {
     const previous = process.env.YT_DLP_PATH;
     process.env.YT_DLP_PATH = 'yt-dlp';
@@ -60,6 +70,8 @@ describe('MusicService', () => {
     expect(queue.tracks).toHaveLength(2);
     expect(queue.tracks[0]).not.toHaveProperty('sourceUrl');
     expect(process.run.mock.calls[0]?.[0]).toEqual(expect.arrayContaining(['--flat-playlist', '--playlist-end', '200']));
+    const proxyIndex = process.run.mock.calls[0]?.[0].indexOf('--proxy') ?? -1;
+    expect(process.run.mock.calls[0]?.[0][proxyIndex + 1]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
 
     const stream = await service.resolveTrack(queue.tracks[0]!.id);
     expect(stream.url).toBe('https://cdn.example/audio.m4a?token=short-lived');
@@ -97,6 +109,33 @@ describe('MusicService', () => {
     await expect(service.load('https://localhost/audio')).rejects.toThrow(/public HTTPS/);
     await expect(service.load('https://example.com/audio')).rejects.toThrow(/private network/);
     expect(process.run).not.toHaveBeenCalled();
+  });
+
+  it('revalidates every yt-dlp CONNECT target and blocks DNS rebinding to loopback', async () => {
+    const privateDns = vi.fn(async () => ['127.0.0.1']);
+    const proxy = new PublicHttpsProxy(privateDns);
+    const proxyUrl = new URL(await proxy.start());
+    try {
+      const response = await new Promise<string>((resolve, reject) => {
+        const socket = connect(Number(proxyUrl.port), proxyUrl.hostname);
+        let received = '';
+        const timeout = setTimeout(() => { socket.destroy(); reject(new Error('Proxy response timed out.')); }, 2_000);
+        socket.setEncoding('utf8');
+        socket.once('connect', () => socket.write('CONNECT attacker.example:443 HTTP/1.1\r\nHost: attacker.example:443\r\n\r\n'));
+        socket.on('data', (chunk) => {
+          received += chunk;
+          if (!received.includes('\r\n\r\n')) return;
+          clearTimeout(timeout);
+          socket.destroy();
+          resolve(received);
+        });
+        socket.once('error', (error) => { clearTimeout(timeout); reject(error); });
+      });
+      expect(response).toMatch(/^HTTP\/1\.1 403 Forbidden/u);
+      expect(privateDns).toHaveBeenCalledWith('attacker.example', expect.any(AbortSignal));
+    } finally {
+      proxy.dispose();
+    }
   });
 
   it('does not spawn yt-dlp when Clear cancels a request during DNS validation', async () => {

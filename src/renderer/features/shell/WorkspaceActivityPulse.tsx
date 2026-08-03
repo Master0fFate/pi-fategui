@@ -6,14 +6,15 @@ import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { selectActivityPulse } from './flightDeck';
 
 export function WorkspaceActivityPulse() {
-  const { runtime, toolOrder, toolsById, subagentOrder, subagentsById } = useRuntimeStore(useShallow((state) => ({
+  const { runtime, toolOrder, toolsById, toolsVersion, subagentOrder, subagentsById } = useRuntimeStore(useShallow((state) => ({
     runtime: state.runtime,
     toolOrder: state.toolOrder,
     toolsById: state.toolsById,
+    toolsVersion: state.toolsVersion,
     subagentOrder: state.subagentOrder,
     subagentsById: state.subagentsById,
   })));
-  const tools = useMemo(() => toolOrder.flatMap((id) => toolsById[id] ? [toolsById[id]!] : []), [toolOrder, toolsById]);
+  const tools = useMemo(() => toolOrder.flatMap((id) => toolsById[id] ? [toolsById[id]!] : []), [toolOrder, toolsById, toolsVersion]);
   const subagents = useMemo(() => subagentOrder.flatMap((id) => subagentsById[id] ? [subagentsById[id]!] : []), [subagentOrder, subagentsById]);
   const git = useWorkspaceStore((state) => state.git);
   const pulse = useMemo(() => selectActivityPulse({

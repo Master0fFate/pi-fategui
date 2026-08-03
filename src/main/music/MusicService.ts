@@ -2,9 +2,10 @@ import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { Resolver } from 'node:dns';
 import { existsSync, realpathSync, statSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import { BlockList, connect as connectTcp, isIP, type Socket } from 'node:net';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { isIP } from 'node:net';
 import type { MusicQueue, MusicStatus, MusicStream, MusicTrack } from '../../shared/contracts/ipc';
 
 const MAX_TRACKS = 200;
@@ -160,43 +161,26 @@ const defaultHostResolver: MusicHostResolver = (hostname, signal) => new Promise
   resolver.resolve6(hostname, finish);
 });
 
-function isPublicIpv4(address: string): boolean {
-  const octets = address.split('.').map(Number);
-  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false;
-  const [a = 0, b = 0, c = 0] = octets;
-  return !(
-    a === 0
-    || a === 10
-    || a === 127
-    || (a === 100 && b >= 64 && b <= 127)
-    || (a === 169 && b === 254)
-    || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 168)
-    || (a === 192 && b === 0 && (c === 0 || c === 2))
-    || (a === 198 && (b === 18 || b === 19))
-    || (a === 198 && b === 51 && c === 100)
-    || (a === 203 && b === 0 && c === 113)
-    || a >= 224
-  );
-}
+const nonPublicIpv4 = new BlockList();
+for (const [network, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+  ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24],
+  ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24], ['203.0.113.0', 24],
+  ['224.0.0.0', 4], ['240.0.0.0', 4],
+] as const) nonPublicIpv4.addSubnet(network, prefix, 'ipv4');
 
-function isPublicIpAddress(address: string): boolean {
+const nonPublicIpv6 = new BlockList();
+for (const [network, prefix] of [
+  ['::', 96], ['::ffff:0:0', 96], ['64:ff9b::', 96], ['64:ff9b:1::', 48],
+  ['100::', 64], ['2001::', 23], ['2001:db8::', 32], ['2002::', 16],
+  ['3fff::', 20], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8],
+] as const) nonPublicIpv6.addSubnet(network, prefix, 'ipv6');
+
+export function isPublicIpAddress(address: string): boolean {
   const kind = isIP(address);
-  if (kind === 4) return isPublicIpv4(address);
-  if (kind !== 6) return false;
-  const normalized = address.toLocaleLowerCase();
-  if (normalized.startsWith('::ffff:')) return isPublicIpv4(normalized.slice(7));
-  const first = Number.parseInt(normalized.split(':')[0] || '0', 16);
-  return !(
-    normalized === '::'
-    || normalized === '::1'
-    || (first & 0xfe00) === 0xfc00
-    || (first & 0xffc0) === 0xfe80
-    || (first & 0xff00) === 0xff00
-    || normalized.startsWith('2001:db8:')
-    || normalized.startsWith('2002:')
-    || normalized.startsWith('64:ff9b:')
-  );
+  if (kind === 4) return !nonPublicIpv4.check(address, 'ipv4');
+  if (kind === 6) return !nonPublicIpv6.check(address, 'ipv6');
+  return false;
 }
 
 function parseHttpsUrl(rawUrl: string, maximumLength: number): URL {
@@ -207,7 +191,7 @@ function parseHttpsUrl(rawUrl: string, maximumLength: number): URL {
   } catch {
     throw new Error('Enter a complete HTTPS media link.');
   }
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLocaleLowerCase();
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
   if (
     parsed.protocol !== 'https:'
     || parsed.username
@@ -227,33 +211,140 @@ function parseHttpsUrl(rawUrl: string, maximumLength: number): URL {
   return parsed;
 }
 
+async function resolvePublicHost(hostname: string, resolveHost: MusicHostResolver, parentSignal?: AbortSignal): Promise<readonly string[]> {
+  if (isIP(hostname)) {
+    if (!isPublicIpAddress(hostname)) throw new Error('Local and private network media links are blocked.');
+    return [hostname];
+  }
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (parentSignal?.aborted) controller.abort();
+  else parentSignal?.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(abort, DNS_TIMEOUT_MS);
+  timeout.unref();
+  try {
+    const aborted = controller.signal.aborted
+      ? Promise.reject(new Error('DNS timeout or cancellation'))
+      : new Promise<never>((_resolve, reject) => {
+          controller.signal.addEventListener('abort', () => reject(new Error('DNS timeout or cancellation')), { once: true });
+        });
+    const addresses = [...new Set(await Promise.race([resolveHost(hostname, controller.signal), aborted]))];
+    if (addresses.length === 0 || addresses.some((address) => !isPublicIpAddress(address))) {
+      throw new Error('Local and private network media links are blocked.');
+    }
+    return addresses;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('private network')) throw error;
+    throw new Error('The media host could not be reached.');
+  } finally {
+    clearTimeout(timeout);
+    parentSignal?.removeEventListener('abort', abort);
+    controller.abort();
+  }
+}
+
 async function validatePublicHttpsUrl(rawUrl: string, maximumLength: number, resolveHost: MusicHostResolver, parentSignal?: AbortSignal): Promise<string> {
   const parsed = parseHttpsUrl(rawUrl, maximumLength);
   const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
-  if (!isIP(hostname)) {
-    const controller = new AbortController();
-    const abort = () => controller.abort();
-    parentSignal?.addEventListener('abort', abort, { once: true });
-    const timeout = setTimeout(abort, DNS_TIMEOUT_MS);
-    timeout.unref();
-    try {
-      const aborted = new Promise<never>((_resolve, reject) => {
-        controller.signal.addEventListener('abort', () => reject(new Error('DNS timeout or cancellation')), { once: true });
-      });
-      const addresses = await Promise.race([resolveHost(hostname, controller.signal), aborted]);
-      if (addresses.length === 0 || addresses.some((address) => !isPublicIpAddress(address))) {
-        throw new Error('Local and private network media links are blocked.');
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('private network')) throw error;
-      throw new Error('The media host could not be reached.');
-    } finally {
-      clearTimeout(timeout);
-      parentSignal?.removeEventListener('abort', abort);
-      controller.abort();
-    }
-  }
+  await resolvePublicHost(hostname, resolveHost, parentSignal);
   return parsed.toString();
+}
+
+export class PublicHttpsProxy {
+  private readonly server: Server;
+  private readonly controller = new AbortController();
+  private readonly sockets = new Set<Socket>();
+
+  constructor(private readonly resolveHost: MusicHostResolver = defaultHostResolver) {
+    this.server = createServer((_request, response) => {
+      response.writeHead(405, { Connection: 'close', 'Content-Type': 'text/plain' });
+      response.end('HTTPS CONNECT is required.');
+    });
+    this.server.maxConnections = 128;
+    this.server.headersTimeout = 5_000;
+    this.server.requestTimeout = 5_000;
+    this.server.on('connect', (request, rawClient, head) => {
+      const client = rawClient as Socket;
+      this.track(client);
+      void this.openTunnel(request.url ?? '', client, head).catch(() => {
+        if (!client.destroyed) client.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      });
+    });
+  }
+
+  async start(): Promise<string> {
+    await new Promise<void>((resolve, reject) => {
+      const failed = (error: Error) => reject(error);
+      this.server.once('error', failed);
+      this.server.listen(0, '127.0.0.1', () => {
+        this.server.removeListener('error', failed);
+        resolve();
+      });
+    });
+    const address = this.server.address();
+    if (!address || typeof address === 'string') throw new Error('The secure media proxy could not bind to loopback.');
+    return `http://127.0.0.1:${address.port}`;
+  }
+
+  dispose(): void {
+    this.controller.abort();
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
+    try { this.server.close(); } catch { /* The proxy may be cancelled before listen completes. */ }
+  }
+
+  private track(socket: Socket): void {
+    if (this.sockets.has(socket)) return;
+    this.sockets.add(socket);
+    socket.on('error', () => socket.destroy());
+    socket.once('close', () => this.sockets.delete(socket));
+  }
+
+  private async openTunnel(authority: string, client: Socket, head: Buffer): Promise<void> {
+    if (this.controller.signal.aborted) throw new Error('Proxy closed.');
+    const parsed = parseHttpsUrl(`https://${authority}`, 2_048);
+    if (parsed.pathname !== '/' || parsed.search) throw new Error('Invalid CONNECT authority.');
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+    const addresses = await resolvePublicHost(hostname, this.resolveHost, this.controller.signal);
+    const upstream = await this.connectFirst(addresses);
+    this.track(upstream);
+    if (this.controller.signal.aborted || client.destroyed) {
+      upstream.destroy();
+      throw new Error('Proxy closed.');
+    }
+    client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    if (head.length > 0) upstream.write(head);
+    client.pipe(upstream);
+    upstream.pipe(client);
+  }
+
+  private async connectFirst(addresses: readonly string[]): Promise<Socket> {
+    let lastError: unknown;
+    for (const address of addresses) {
+      if (this.controller.signal.aborted) break;
+      try {
+        return await new Promise<Socket>((resolve, reject) => {
+          const socket = connectTcp({ host: address, port: 443, family: isIP(address) });
+          this.track(socket);
+          const timeout = setTimeout(() => socket.destroy(new Error('Connection timed out.')), 10_000);
+          timeout.unref();
+          const failed = (error: Error) => {
+            clearTimeout(timeout);
+            reject(error);
+          };
+          socket.once('error', failed);
+          socket.once('connect', () => {
+            clearTimeout(timeout);
+            socket.removeListener('error', failed);
+            resolve(socket);
+          });
+        });
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError ?? new Error('No public media address was reachable.');
+  }
 }
 
 function recordOf(value: unknown): Record<string, unknown> | null {
@@ -308,6 +399,7 @@ export class MusicService {
   private operationActive = false;
   private generation = 0;
   private activeDnsController: AbortController | null = null;
+  private activeProxy: PublicHttpsProxy | null = null;
 
   constructor(
     private readonly runner: MusicProcessRunner = new YtDlpProcessRunner(),
@@ -391,6 +483,8 @@ export class MusicService {
     this.tracks.clear();
     this.activeDnsController?.abort();
     this.activeDnsController = null;
+    this.activeProxy?.dispose();
+    this.activeProxy = null;
     // Queue clearing is also cancellation: terminate any in-flight extractor
     // so a stale 30–45 second request cannot retain CPU or process resources.
     this.runner.dispose();
@@ -444,8 +538,12 @@ export class MusicService {
   }
 
   private async runExtractor(args: readonly string[], limits: RunnerLimits): Promise<string> {
+    const proxy = new PublicHttpsProxy(this.resolveHost);
+    this.activeProxy?.dispose();
+    this.activeProxy = proxy;
     try {
-      return await this.runner.run(args, limits);
+      const proxyUrl = await proxy.start();
+      return await this.runner.run(['--proxy', proxyUrl, ...args], limits);
     } catch (error) {
       if (error instanceof MusicProcessError && error.kind === 'timeout') {
         throw new Error('yt-dlp took too long to read this link. Try again or use a smaller playlist.');
@@ -454,6 +552,9 @@ export class MusicService {
         throw new Error('yt-dlp is unavailable. Install it on PATH, then restart Fate UI.');
       }
       throw new Error('yt-dlp could not resolve this media. Check the link, access requirements, or yt-dlp version.');
+    } finally {
+      proxy.dispose();
+      if (this.activeProxy === proxy) this.activeProxy = null;
     }
   }
 

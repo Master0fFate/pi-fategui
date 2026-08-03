@@ -53,6 +53,11 @@ interface RuntimeStore {
   timelineOrder: string[];
   visibleTimelineOrder: string[];
   visibleTimelineIds: Set<string>;
+  messagesVersion: number;
+  reasoningVersion: number;
+  toolsVersion: number;
+  timelineVersion: number;
+  waitPollVersion: number;
   queue: RuntimeQueue;
   lastError: AppError | null;
   /** Last accepted main-process event cursor. Uncursored fixtures do not advance it. */
@@ -80,6 +85,15 @@ function boundOutput(output: string): { output: string; outputTruncated: boolean
     output: `${output.slice(0, startLength)}${marker}${output.slice(-endLength)}`,
     outputTruncated: true,
   };
+}
+
+function isSubagentWaitPoll(name: string, input: string): boolean {
+  if (name !== 'subagent_manage') return false;
+  try {
+    return (JSON.parse(input) as { action?: unknown }).action === 'wait';
+  } catch {
+    return false;
+  }
 }
 
 function boundLiveText(value: string): string {
@@ -260,6 +274,11 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   ...indexed([]),
   ...indexedSubagents(),
   ...indexedAgentTeams(),
+  messagesVersion: 0,
+  reasoningVersion: 0,
+  toolsVersion: 0,
+  timelineVersion: 0,
+  waitPollVersion: 0,
   queue: emptyQueue(),
   lastError: null,
   sequence: 0,
@@ -320,6 +339,11 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       ...projection,
       ...subagents,
       ...agentTeams,
+      messagesVersion: current.messagesVersion + 1,
+      reasoningVersion: current.reasoningVersion + 1,
+      toolsVersion: current.toolsVersion + 1,
+      timelineVersion: current.timelineVersion + 1,
+      waitPollVersion: current.waitPollVersion + 1,
       queue: runtime.queue ?? emptyQueue(),
       lastError: runtime.error,
       sequence: runtime.eventCursor ?? 0,
@@ -332,7 +356,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         : null,
     };
   }),
-  hydrateRuntime: (runtime) => set(() => {
+  hydrateRuntime: (runtime) => set((current) => {
     const projection = indexed(runtime.messages, runtime.tools);
     const subagents = indexedSubagents(runtime.subagents);
     const agentTeams = indexedAgentTeams(runtime.agentTeams);
@@ -347,6 +371,11 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       ...projection,
       ...subagents,
       ...agentTeams,
+      messagesVersion: current.messagesVersion + 1,
+      reasoningVersion: current.reasoningVersion + 1,
+      toolsVersion: current.toolsVersion + 1,
+      timelineVersion: current.timelineVersion + 1,
+      waitPollVersion: current.waitPollVersion + 1,
       queue: runtime.queue ?? emptyQueue(),
       lastError: runtime.error,
       sequence: runtime.eventCursor ?? 0,
@@ -390,6 +419,11 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         ...indexed([]),
         ...indexedSubagents(),
         ...indexedAgentTeams(),
+        messagesVersion: current.messagesVersion + 1,
+        reasoningVersion: current.reasoningVersion + 1,
+        toolsVersion: current.toolsVersion + 1,
+        timelineVersion: current.timelineVersion + 1,
+        waitPollVersion: current.waitPollVersion + 1,
         queue: emptyQueue(),
         lastError: null,
         sequence: 0,
@@ -421,6 +455,11 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         ...projection,
         ...subagents,
         ...agentTeams,
+        messagesVersion: current.messagesVersion + 1,
+        reasoningVersion: current.reasoningVersion + 1,
+        toolsVersion: current.toolsVersion + 1,
+        timelineVersion: current.timelineVersion + 1,
+        waitPollVersion: current.waitPollVersion + 1,
         queue: runtime.queue ?? emptyQueue(),
         lastError: runtime.error,
         sequence: runtime.eventCursor ?? 0,
@@ -450,6 +489,11 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         ...projection,
         ...subagents,
         ...agentTeams,
+        messagesVersion: current.messagesVersion + 1,
+        reasoningVersion: current.reasoningVersion + 1,
+        toolsVersion: current.toolsVersion + 1,
+        timelineVersion: current.timelineVersion + 1,
+        waitPollVersion: current.waitPollVersion + 1,
         queue: runtime.queue ?? emptyQueue(),
         lastError: runtime.error,
         sequence: runtime.eventCursor ?? 0,
@@ -487,18 +531,27 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     let activeCompactionId = current.activeCompactionId;
     let pendingSessionSwitch = current.pendingSessionSwitch;
     let imagePayloadChanged = false;
+    let messagesChanged = false;
+    let reasoningChanged = false;
+    let toolsChanged = false;
+    let timelineChanged = false;
+    let waitPollChanged = false;
 
+    // Normalized record containers are store-owned mutable indexes. Entity
+    // values remain immutable, while scalar versions invalidate the few broad
+    // projections that need a whole record. This avoids cloning up to 5,000
+    // record properties for every streaming delta or tool-output batch.
     const setMessage = (id: string, message: RuntimeMessage) => {
-      if (messagesById === current.messagesById) messagesById = { ...messagesById };
       messagesById[id] = message;
+      messagesChanged = true;
     };
     const setReasoning = (id: string, value: string) => {
-      if (reasoningByMessageId === current.reasoningByMessageId) reasoningByMessageId = { ...reasoningByMessageId };
       reasoningByMessageId[id] = value;
+      reasoningChanged = true;
     };
     const setTool = (id: string, tool: ToolExecution) => {
-      if (toolsById === current.toolsById) toolsById = { ...toolsById };
       toolsById[id] = tool;
+      toolsChanged = true;
     };
     const setSubagent = (run: SubagentRun) => {
       if (subagentsById === current.subagentsById) subagentsById = { ...subagentsById };
@@ -510,12 +563,13 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       subagentsChanged = true;
     };
     const setTimeline = (entry: TimelineEntity) => {
-      if (timelineById === current.timelineById) timelineById = { ...timelineById };
       timelineById[entry.id] = entry;
+      timelineChanged = true;
     };
     const setTimelineVisibility = (id: string, visible: boolean) => {
       const alreadyVisible = visibleTimelineIds.has(id);
       if (visible === alreadyVisible) return;
+      timelineChanged = true;
       if (visibleTimelineOrder === current.visibleTimelineOrder) visibleTimelineOrder = [...visibleTimelineOrder];
       if (visibleTimelineIds === current.visibleTimelineIds) visibleTimelineIds = new Set(visibleTimelineIds);
       if (visible) {
@@ -591,6 +645,11 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         if (event.messagesIncluded || !sameSession) {
           runtime = event.state;
           ({ messagesById, messageOrder, reasoningByMessageId, toolsById, toolOrder, timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds } = indexed(event.state.messages, event.state.tools));
+          messagesChanged = true;
+          reasoningChanged = true;
+          toolsChanged = true;
+          timelineChanged = true;
+          waitPollChanged = true;
           ({ subagentsById, subagentOrder } = indexedSubagents(event.state.subagents));
           ({ agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById } = indexedAgentTeams(event.state.agentTeams));
           subagentsChanged = true;
@@ -641,6 +700,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         setTimelineVisibility(`message:${event.messageId}`, event.role !== 'assistant' || Boolean(event.text) || Boolean(event.images?.length));
       } else if (event.type === 'tool.started') {
         appendTool(event.toolCallId, event.timestamp);
+        waitPollChanged ||= isSubagentWaitPoll(event.name, event.input);
         setTool(event.toolCallId, {
           id: event.toolCallId, name: event.name, input: event.input, output: '', outputTruncated: false,
           status: 'running', startedAt: event.timestamp, updatedAt: event.timestamp,
@@ -663,6 +723,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       } else if (event.type === 'tool.completed') {
         appendTool(event.toolCallId, event.timestamp);
         const existing = toolsById[event.toolCallId];
+        waitPollChanged ||= isSubagentWaitPoll(event.name, existing?.input ?? '');
         imagePayloadChanged ||= Boolean(existing?.images?.length || event.images?.length);
         setTool(event.toolCallId, {
           id: event.toolCallId,
@@ -786,51 +847,68 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         runtime = { ...runtime, streaming: false };
       }
     }
-    if (imagePayloadChanged) ({ messagesById, toolsById } = enforceLiveImageBudget(messagesById, toolsById, timelineOrder));
+    if (imagePayloadChanged) {
+      ({ messagesById, toolsById } = enforceLiveImageBudget(messagesById, toolsById, timelineOrder));
+      messagesChanged = true;
+      toolsChanged = true;
+    }
     if (timelineOrder.length > MAX_LIVE_TIMELINE_ENTITIES) {
-      const existingBoundary = Object.values(messagesById).find((message) => message.historyOmitted !== undefined);
+      messagesChanged = true;
+      reasoningChanged = true;
+      toolsChanged = true;
+      timelineChanged = true;
+      waitPollChanged = true;
+      const firstEntry = timelineById[timelineOrder[0]!];
+      const firstMessage = firstEntry?.kind === 'message' ? messagesById[firstEntry.messageId] : undefined;
+      const conventionalBoundary = messagesById['history-boundary-renderer'];
+      const existingBoundary = firstMessage?.historyOmitted !== undefined
+        ? firstMessage
+        : conventionalBoundary?.historyOmitted !== undefined
+          ? conventionalBoundary
+          : Object.values(messagesById).find((message) => message.historyOmitted !== undefined);
       const boundaryMessageId = existingBoundary?.id ?? 'history-boundary-renderer';
       const boundaryTimelineId = `message:${boundaryMessageId}`;
-      const recent = timelineOrder.filter((id) => id !== boundaryTimelineId).slice(-(MAX_LIVE_TIMELINE_ENTITIES - 1));
-      const retainedTimeline = new Set([boundaryTimelineId, ...recent]);
-      const newlyOmitted = timelineOrder.reduce((total, id) => {
+      let candidates: string[];
+      if (timelineOrder[0] === boundaryTimelineId) candidates = timelineOrder.slice(1);
+      else if (existingBoundary) candidates = timelineOrder.filter((id) => id !== boundaryTimelineId);
+      else candidates = timelineOrder;
+      const evictedCount = Math.max(0, candidates.length - (MAX_LIVE_TIMELINE_ENTITIES - 1));
+      const evictedIds = candidates.slice(0, evictedCount);
+      const recent = candidates.slice(evictedCount);
+      const omitted = (existingBoundary?.historyOmitted ?? 0) + evictedIds.length;
+      const boundary: RuntimeMessage = {
+        id: boundaryMessageId,
+        role: 'system',
+        text: `${omitted.toLocaleString()} earlier conversation items were omitted from this view to keep Fate UI responsive.`,
+        timestamp: 0,
+        timelinePosition: -1,
+        historyOmitted: omitted,
+      };
+      setMessage(boundaryMessageId, boundary);
+      if (!messageOrder.includes(boundaryMessageId)) messageOrder = [boundaryMessageId, ...messageOrder];
+      setTimeline({ id: boundaryTimelineId, kind: 'message', messageId: boundaryMessageId, timestamp: 0 });
+      timelineOrder = [boundaryTimelineId, ...recent];
+
+      const removedMessageIds = new Set<string>();
+      const removedToolIds = new Set<string>();
+      for (const id of evictedIds) {
         const entry = timelineById[id];
-        return total + (id !== boundaryTimelineId && entry && !retainedTimeline.has(id) ? 1 : 0);
-      }, 0);
-      const omitted = (existingBoundary?.historyOmitted ?? 0) + newlyOmitted;
-      if (omitted > 0) {
-        const boundary: RuntimeMessage = {
-          id: boundaryMessageId,
-          role: 'system',
-          text: `${omitted.toLocaleString()} earlier conversation items were omitted from this view to keep Fate UI responsive.`,
-          timestamp: 0,
-          timelinePosition: -1,
-          historyOmitted: omitted,
-        };
-        messagesById = { ...messagesById, [boundaryMessageId]: boundary };
-        if (!messageOrder.includes(boundaryMessageId)) messageOrder = [boundaryMessageId, ...messageOrder];
-        timelineById = { ...timelineById, [boundaryTimelineId]: { id: boundaryTimelineId, kind: 'message', messageId: boundaryMessageId, timestamp: 0 } };
-        timelineOrder = [boundaryTimelineId, ...recent];
-      } else {
-        timelineOrder = timelineOrder.slice(-MAX_LIVE_TIMELINE_ENTITIES);
-        retainedTimeline.clear();
-        for (const id of timelineOrder) retainedTimeline.add(id);
+        if (!entry) continue;
+        delete timelineById[id];
+        if (entry.kind === 'message' || entry.kind === 'reasoning') removedMessageIds.add(entry.messageId);
+        else if (entry.kind === 'tool') removedToolIds.add(entry.toolCallId);
       }
-      timelineById = Object.fromEntries(timelineOrder.flatMap((id) => timelineById[id] ? [[id, timelineById[id]!]] : []));
-      const retainedMessages = new Set<string>();
-      const retainedReasoning = new Set<string>();
-      const retainedTools = new Set<string>();
-      for (const entry of Object.values(timelineById)) {
-        if (entry.kind === 'message') retainedMessages.add(entry.messageId);
-        else if (entry.kind === 'reasoning') { retainedMessages.add(entry.messageId); retainedReasoning.add(entry.messageId); }
-        else if (entry.kind === 'tool') retainedTools.add(entry.toolCallId);
+      for (const id of removedMessageIds) {
+        const messageRetained = Boolean(timelineById[`message:${id}`] || timelineById[`reasoning:${id}`]);
+        if (!messageRetained) delete messagesById[id];
+        if (!timelineById[`reasoning:${id}`]) delete reasoningByMessageId[id];
       }
-      messageOrder = messageOrder.filter((id) => retainedMessages.has(id));
-      messagesById = Object.fromEntries(messageOrder.flatMap((id) => messagesById[id] ? [[id, messagesById[id]!]] : []));
-      reasoningByMessageId = Object.fromEntries(Object.entries(reasoningByMessageId).filter(([id]) => retainedReasoning.has(id)));
-      toolOrder = toolOrder.filter((id) => retainedTools.has(id));
-      toolsById = Object.fromEntries(toolOrder.flatMap((id) => toolsById[id] ? [[id, toolsById[id]!]] : []));
-      visibleTimelineOrder = timelineOrder.filter((id) => retainedTimeline.has(id) && (id === boundaryTimelineId || visibleTimelineIds.has(id)));
+      for (const id of removedToolIds) {
+        if (!timelineById[`tool:${id}`]) delete toolsById[id];
+      }
+      messageOrder = messageOrder.filter((id) => Boolean(messagesById[id]));
+      toolOrder = toolOrder.filter((id) => Boolean(toolsById[id]));
+      visibleTimelineOrder = timelineOrder.filter((id) => id === boundaryTimelineId || visibleTimelineIds.has(id));
       visibleTimelineIds = new Set(visibleTimelineOrder);
       runtime = {
         ...runtime,
@@ -854,8 +932,13 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       runtime, messagesById, messageOrder, reasoningByMessageId, toolsById, toolOrder,
       subagentsById, subagentOrder,
       agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById,
-      timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds, queue, lastError, sequence, timelineSequence, activeCompactionId,
-      pendingSessionSwitch,
+      timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds,
+      messagesVersion: current.messagesVersion + (messagesChanged ? 1 : 0),
+      reasoningVersion: current.reasoningVersion + (reasoningChanged ? 1 : 0),
+      toolsVersion: current.toolsVersion + (toolsChanged ? 1 : 0),
+      timelineVersion: current.timelineVersion + (timelineChanged ? 1 : 0),
+      waitPollVersion: current.waitPollVersion + (waitPollChanged ? 1 : 0),
+      queue, lastError, sequence, timelineSequence, activeCompactionId, pendingSessionSwitch,
     };
   }),
 }));

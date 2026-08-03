@@ -1,5 +1,5 @@
 import Editor, { DiffEditor, loader } from '@monaco-editor/react';
-import * as monaco from 'monaco-editor';
+import * as monaco from './monacoRuntime';
 import { useEffect, useState } from 'react';
 import CssWorker from 'monaco-editor/language/css/css.worker.js?worker';
 import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker';

@@ -41,13 +41,17 @@ function RecorderRow({ row }: { row: FlightRecorderRow }) {
 }
 
 export function FlightRecorder() {
-  const { timelineOrder, timelineById, visibleTimelineIds, messagesById, reasoningByMessageId, toolsById, subagentOrder, subagentsById, agentTeamOrder, agentTeamsById } = useRuntimeStore(useShallow((state) => ({
+  const { timelineOrder, timelineById, visibleTimelineIds, messagesById, reasoningByMessageId, toolsById, messagesVersion, reasoningVersion, timelineVersion, toolsVersion, subagentOrder, subagentsById, agentTeamOrder, agentTeamsById } = useRuntimeStore(useShallow((state) => ({
     timelineOrder: state.timelineOrder,
     timelineById: state.timelineById,
     visibleTimelineIds: state.visibleTimelineIds,
     messagesById: state.messagesById,
     reasoningByMessageId: state.reasoningByMessageId,
     toolsById: state.toolsById,
+    messagesVersion: state.messagesVersion,
+    reasoningVersion: state.reasoningVersion,
+    timelineVersion: state.timelineVersion,
+    toolsVersion: state.toolsVersion,
     subagentOrder: state.subagentOrder,
     subagentsById: state.subagentsById,
     agentTeamOrder: state.agentTeamOrder,
@@ -55,7 +59,7 @@ export function FlightRecorder() {
   })));
   const subagents = useMemo(() => subagentOrder.flatMap((id) => subagentsById[id] ? [subagentsById[id]!] : []), [subagentOrder, subagentsById]);
   const teams = useMemo(() => agentTeamOrder.flatMap((id) => agentTeamsById[id] ? [agentTeamsById[id]!] : []), [agentTeamOrder, agentTeamsById]);
-  const projection = useMemo(() => selectFlightRecorder({ timelineOrder, timelineById, visibleTimelineIds, messagesById, reasoningByMessageId, toolsById, subagents, teams }), [messagesById, reasoningByMessageId, subagents, teams, timelineById, timelineOrder, toolsById, visibleTimelineIds]);
+  const projection = useMemo(() => selectFlightRecorder({ timelineOrder, timelineById, visibleTimelineIds, messagesById, reasoningByMessageId, toolsById, subagents, teams }), [messagesVersion, reasoningVersion, subagents, teams, timelineOrder, timelineVersion, toolsVersion, visibleTimelineIds]);
   return (
     <section className="flight-recorder" aria-label="Flight Recorder">
       <header><span><Route size={12} /><strong>Flight Recorder</strong></span><small>{projection.rows.length} recent</small></header>

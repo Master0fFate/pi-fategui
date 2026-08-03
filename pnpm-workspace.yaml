@@ -1,8 +1,17 @@
 confirmModulesPurge: false
 overrides:
   'ws@>=8.0.0 <8.21.0': 8.21.0
-  'brace-expansion@>=3.0.0 <5.0.8': 5.0.8
+  'brace-expansion@<1.1.18': 1.1.18
+  'brace-expansion@>=2.0.0 <2.1.4': 2.1.4
+  'brace-expansion@>=3.0.0 <5.0.9': 5.0.9
   'dompurify@<3.4.12': 3.4.12
+  'fast-uri@>=3.0.0 <3.1.5': 3.1.5
+  'form-data@>=4.0.0 <4.0.6': 4.0.6
+  'js-yaml@>=4.0.0 <4.3.0': 4.3.0
+  'tmp@<0.2.6': 0.2.7
+  'undici@>=6.0.0 <6.28.0': 6.28.0
+  'undici@>=7.0.0 <7.29.0': 7.29.0
+  'undici@>=8.0.0 <8.9.0': 8.10.0
 allowBuilds:
   '@google/genai': false
   electron: true
@@ -41,3 +50,4 @@ minimumReleaseAgeExclude:
   - '@radix-ui/react-use-size@1.1.3'
   - '@radix-ui/react-visually-hidden@1.2.9'
   - '@radix-ui/rect@1.1.3'
+  - undici@8.10.0

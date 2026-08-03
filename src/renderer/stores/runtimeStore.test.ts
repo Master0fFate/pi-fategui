@@ -22,7 +22,9 @@ const reset = () => useRuntimeStore.setState({
   messagesById: {}, messageOrder: [], reasoningByMessageId: {}, toolsById: {}, toolOrder: [],
   subagentsById: {}, subagentOrder: [],
   agentTeamsById: {}, agentTeamOrder: [], agentNodesById: {}, agentTasksById: {}, agentEnvelopesById: {},
-  timelineById: {}, timelineOrder: [], visibleTimelineOrder: [], visibleTimelineIds: new Set(), queue: { steering: 0, followUp: 0, items: [] }, lastError: null,
+  timelineById: {}, timelineOrder: [], visibleTimelineOrder: [], visibleTimelineIds: new Set(),
+  messagesVersion: 0, reasoningVersion: 0, toolsVersion: 0, timelineVersion: 0, waitPollVersion: 0,
+  queue: { steering: 0, followUp: 0, items: [] }, lastError: null,
   sequence: 0, timelineSequence: 0, activeCompactionId: null,
 });
 
@@ -105,6 +107,37 @@ describe('runtimeStore event reducer', () => {
     // pre-existing message entities.
     expect(timelineOrder).toEqual(['message:m1', 'message:m2']);
     expect(useRuntimeStore.getState().timelineOrder).toEqual(['reasoning:m1', 'message:m1', 'message:m2']);
+  });
+
+  it('invalidates broad projections with scalar versions without cloning normalized records', () => {
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.started', messageId: 'stream', role: 'assistant', timestamp: 1 },
+      { type: 'assistant.text', messageId: 'stream', delta: 'first', timestamp: 2 },
+      { type: 'tool.started', toolCallId: 'tool', name: 'subagent_manage', input: '{"action":"wait","runIds":["@worker"]}', timestamp: 3 },
+    ]);
+    const initial = useRuntimeStore.getState();
+    const messagesRecord = initial.messagesById;
+    const toolsRecord = initial.toolsById;
+    const timelineRecord = initial.timelineById;
+
+    useRuntimeStore.getState().applyEvents([
+      { type: 'assistant.text', messageId: 'stream', delta: ' second', timestamp: 4 },
+      { type: 'tool.updated', toolCallId: 'tool', output: 'progress', timestamp: 4 },
+    ]);
+    const updated = useRuntimeStore.getState();
+    expect(updated.messagesById).toBe(messagesRecord);
+    expect(updated.toolsById).toBe(toolsRecord);
+    expect(updated.timelineById).toBe(timelineRecord);
+    expect(updated.messagesById.stream?.text).toBe('first second');
+    expect(updated.messagesVersion).toBe(initial.messagesVersion + 1);
+    expect(updated.toolsVersion).toBe(initial.toolsVersion + 1);
+    expect(updated.timelineVersion).toBe(initial.timelineVersion);
+    expect(updated.waitPollVersion).toBe(initial.waitPollVersion);
+
+    useRuntimeStore.getState().applyEvents([
+      { type: 'tool.completed', toolCallId: 'tool', name: 'subagent_manage', output: 'done', error: false, timestamp: 5 },
+    ]);
+    expect(useRuntimeStore.getState().waitPollVersion).toBe(updated.waitPollVersion + 1);
   });
 
   it('coalesces adjacent renderer deltas without changing reducer semantics', () => {
@@ -379,6 +412,18 @@ describe('runtimeStore event reducer', () => {
     expect(useRuntimeStore.getState().timelineOrder).toHaveLength(MAX_LIVE_TIMELINE_ENTITIES);
     expect(useRuntimeStore.getState().messagesById.m0).toBeUndefined();
     expect(useRuntimeStore.getState().messagesById.m5000).toBeDefined();
+
+    const firstBoundary = Object.values(useRuntimeStore.getState().messagesById).find((message) => message.historyOmitted !== undefined);
+    useRuntimeStore.getState().applyEvents(Array.from({ length: 250 }, (_value, index) => ({
+      type: 'message.started' as const, messageId: `after-cap-${index}`, role: 'user' as const, timestamp: 5_001 + index,
+    })));
+    const bounded = useRuntimeStore.getState();
+    const boundary = Object.values(bounded.messagesById).find((message) => message.historyOmitted !== undefined);
+    expect(bounded.timelineOrder).toHaveLength(MAX_LIVE_TIMELINE_ENTITIES);
+    expect(bounded.timelineOrder[0]).toBe(`message:${boundary?.id}`);
+    expect(boundary?.historyOmitted).toBe((firstBoundary?.historyOmitted ?? 0) + 250);
+    expect(bounded.messagesById['after-cap-249']).toBeDefined();
+    expect(Object.keys(bounded.timelineById)).toHaveLength(MAX_LIVE_TIMELINE_ENTITIES);
   });
 
   it('hydrates queue counts and clears them on authoritative session replacement', () => {

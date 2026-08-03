@@ -9,13 +9,27 @@ const argumentsMap = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
   argumentsMap.set(process.argv[index], process.argv[index + 1]);
 }
-const runCount = Math.max(1, Number.parseInt(argumentsMap.get('--runs') ?? '3', 10));
+function integerArgument(name, fallback, minimum, maximum = Number.MAX_SAFE_INTEGER) {
+  const raw = argumentsMap.get(name);
+  if (raw === undefined) return fallback;
+  if (!/^-?\d+$/u.test(raw)) throw new Error(`${name} must be an integer.`);
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${name} is outside the supported integer range.`);
+  return Math.max(minimum, Math.min(maximum, parsed));
+}
+
+const runCount = integerArgument('--runs', 3, 1);
+const historyCount = integerArgument('--history', 600, 0, 20_000);
+const deltaCount = integerArgument('--deltas', 6_000, 1, 100_000);
+const settleMs = integerArgument('--settle-ms', 500, 0, 10_000);
+const idleMs = integerArgument('--idle-ms', 750, 100, 10_000);
 const label = argumentsMap.get('--label') ?? 'profile';
 const visualMode = argumentsMap.get('--mode') ?? 'normal';
 if (!['normal', 'performance', 'holy'].includes(visualMode)) throw new Error(`Unsupported --mode ${visualMode}. Use normal, performance, or holy.`);
 const outputPath = path.resolve(argumentsMap.get('--out') ?? `.parallax/performance/${label}.json`);
 const e2eMain = path.resolve('.test-dist/main/index.js');
-const rendererMarker = '__FATE_LIVE_PROFILE__';
+const rendererMarker = `__FATE_LIVE_PROFILE__:${historyCount}:${deltaCount}`;
+const expectedTimelineEntries = Math.min(5_000, historyCount + 3);
 
 const percentile = (values, fraction) => {
   if (values.length === 0) return 0;
@@ -121,11 +135,11 @@ async function runProfile(iteration) {
     await page.getByRole('button', { name: 'Queue follow-up message' }).waitFor({ timeout: 30_000 });
     await page.getByRole('button', { name: 'Send message' }).waitFor({ timeout: 120_000 });
     await page.waitForFunction(
-      () => Number(document.querySelector('.conversation')?.getAttribute('data-entry-count') ?? 0) >= 603,
-      undefined,
+      (expected) => Number(document.querySelector('.conversation')?.getAttribute('data-entry-count') ?? 0) >= expected,
+      expectedTimelineEntries,
       { timeout: 30_000 },
     );
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(settleMs);
     const wallMs = performance.now() - startedAt;
 
     const { profile } = await cdp.send('Profiler.stop');
@@ -153,12 +167,15 @@ async function runProfile(iteration) {
         },
       };
     });
-    const appMetrics = await application.evaluate(({ app }) => app.getAppMetrics().map((metric) => ({
+    const readAppMetrics = ({ app }) => app.getAppMetrics().map((metric) => ({
       type: metric.type,
       cpuPercent: metric.cpu.percentCPUUsage,
       workingSetKiB: metric.memory.workingSetSize,
       peakWorkingSetKiB: metric.memory.peakWorkingSetSize,
-    })));
+    }));
+    const appMetrics = await application.evaluate(readAppMetrics);
+    await page.waitForTimeout(idleMs);
+    const idleAppMetrics = await application.evaluate(readAppMetrics);
     const metricObject = (metrics) => Object.fromEntries(metrics.metrics.map((metric) => [metric.name, metric.value]));
     const before = metricObject(metricsBefore);
     const after = metricObject(metricsAfter);
@@ -190,6 +207,7 @@ async function runProfile(iteration) {
       mountedTimelineRows: browserSignals.mountedTimelineRows,
       visualMode: browserSignals.visualMode,
       appMetrics,
+      idleAppMetrics,
       cpuProfile: path.relative(process.cwd(), cpuPath),
       topCpuFunctions: cpuSummary(profile),
       consoleErrors,
@@ -216,7 +234,7 @@ const report = {
   schemaVersion: 1,
   label,
   capturedAt: new Date().toISOString(),
-  workload: { historyMessages: 600, assistantDeltas: 6_000, toolUpdates: 600, visualMode, transport: 'Electron main → validated IPC → preload → Zustand → React/Virtuoso' },
+  workload: { historyMessages: historyCount, assistantDeltas: deltaCount, toolUpdates: Math.ceil(deltaCount / 10), settleMs, idleMs, visualMode, transport: 'Electron main → validated IPC → preload → Zustand → React/Virtuoso' },
   environment: {
     node: process.version,
     platform: process.platform,

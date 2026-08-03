@@ -15,6 +15,7 @@ import {
 import { useEffect, useMemo, useRef } from 'react';
 import type { AgentTeam, AgentTeamNode } from '../../../shared/contracts/multiAgent';
 import { Virtuoso } from 'react-virtuoso';
+import { useShallow } from 'zustand/react/shallow';
 import type {
   RuntimeMessage,
   RuntimeTool,
@@ -444,7 +445,8 @@ export function SubagentSessionsPanel() {
   const runtime = useRuntimeStore((state) => state.runtime);
   const order = useRuntimeStore((state) => state.subagentOrder);
   const runsById = useRuntimeStore((state) => state.subagentsById);
-  const toolsById = useRuntimeStore((state) => state.toolsById);
+  const toolProjection = useRuntimeStore(useShallow((state) => ({ toolsById: state.toolsById, version: state.toolsVersion })));
+  const toolsById = toolProjection.toolsById;
   const selectedRunId = useUiStore((state) => state.selectedSubagentRunId);
   const jump = useUiStore((state) => state.flightDeckJump);
   const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);

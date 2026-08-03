@@ -933,7 +933,7 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
-  it('delivers opt-in child completion notifications to the model without cluttering the chat', async () => {
+  it('starts an idle parent turn for opt-in child completion notifications without cluttering the chat', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
@@ -948,7 +948,7 @@ describe('PiRuntimeService', () => {
       content: [{ type: 'text', text: 'Child settled.' }],
       display: false,
       details: { runIds: ['run-1'], workflowId: 'workflow-1' },
-    }, { triggerTurn: true, deliverAs: 'nextTurn' });
+    }, { triggerTurn: true });
     await service.dispose();
   });
 
@@ -975,6 +975,7 @@ describe('PiRuntimeService', () => {
       subagents: { host: { notifyParent: (sessionId: string, mode: 'immediate' | 'next-turn', text: string, runIds: string[]) => Promise<void> } };
     }).subagents;
     fake.setStreaming(true);
+    fake.emitSession({ type: 'agent_start' });
 
     await coordinator.host.notifyParent('session-1', 'immediate', 'Wake after the active turn.', ['run-1']);
     await coordinator.host.notifyParent('session-1', 'next-turn', 'Attach to a future turn.', ['run-2']);
@@ -985,6 +986,81 @@ describe('PiRuntimeService', () => {
     expect(fake.session.sendCustomMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
       customType: 'fate-subagent-notification', details: { runIds: ['run-2'] },
     }), { triggerTurn: false, deliverAs: 'nextTurn' });
+    await service.dispose();
+  });
+
+  it('defers child completion from the agent-end gap so it cannot terminate the root session', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const coordinator = (service as unknown as {
+      subagents: { host: { notifyParent: (sessionId: string, mode: 'immediate', text: string, runIds: string[]) => Promise<void> } };
+    }).subagents;
+    fake.setStreaming(true);
+    fake.emitSession({ type: 'agent_start' });
+    fake.emitSession({ type: 'agent_end', messages: [{ role: 'assistant', content: [], stopReason: 'stop' }] });
+
+    await coordinator.host.notifyParent('session-1', 'immediate', 'Child failed; continue independently.', ['failed-child']);
+    expect(fake.session.sendCustomMessage).not.toHaveBeenCalled();
+    expect(service.getState(false).error).toBeNull();
+
+    fake.setStreaming(false);
+    fake.emitSession({ type: 'agent_settled' });
+    await vi.waitFor(() => expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({
+      customType: 'fate-subagent-notification', details: { runIds: ['failed-child'] },
+    }), { triggerTurn: true }));
+    expect(service.getState(false).error).toBeNull();
+    await service.dispose();
+  });
+
+  it('appends every deferred child report and wakes the settled parent only once', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const coordinator = (service as unknown as {
+      subagents: { host: { notifyParent: (sessionId: string, mode: 'immediate', text: string, runIds: string[]) => Promise<void> } };
+    }).subagents;
+    fake.setStreaming(true);
+    fake.emitSession({ type: 'agent_start' });
+    fake.emitSession({ type: 'agent_end', messages: [{ role: 'assistant', content: [], stopReason: 'stop' }] });
+    await coordinator.host.notifyParent('session-1', 'immediate', 'First child report.', ['child-1']);
+    await coordinator.host.notifyParent('session-1', 'immediate', 'Second child report.', ['child-2']);
+
+    fake.setStreaming(false);
+    fake.emitSession({ type: 'agent_settled' });
+
+    await vi.waitFor(() => expect(fake.session.sendCustomMessage).toHaveBeenCalledTimes(2));
+    expect(fake.session.sendCustomMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({ details: { runIds: ['child-1'] } }), { triggerTurn: false });
+    expect(fake.session.sendCustomMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({ details: { runIds: ['child-2'] } }), { triggerTurn: true });
+    await service.dispose();
+  });
+
+  it('isolates a deferred child-delivery failure and retries it on the next direct turn', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const coordinator = (service as unknown as {
+      subagents: { host: { notifyParent: (sessionId: string, mode: 'immediate', text: string, runIds: string[]) => Promise<void> } };
+    }).subagents;
+    fake.setStreaming(true);
+    fake.emitSession({ type: 'agent_start' });
+    fake.emitSession({ type: 'agent_end', messages: [{ role: 'assistant', content: [], stopReason: 'stop' }] });
+    await coordinator.host.notifyParent('session-1', 'immediate', 'Child report survives delivery failure.', ['failed-child']);
+
+    fake.session.sendCustomMessage
+      .mockRejectedValueOnce(new Error('Cannot continue from message role: assistant'))
+      .mockResolvedValueOnce(undefined);
+    fake.setStreaming(false);
+    fake.emitSession({ type: 'agent_settled' });
+
+    await vi.waitFor(() => expect(fake.session.sendCustomMessage).toHaveBeenCalledTimes(2));
+    expect(fake.session.sendCustomMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      customType: 'fate-subagent-notification', details: { runIds: ['failed-child'] },
+    }), { triggerTurn: true });
+    expect(fake.session.sendCustomMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      customType: 'fate-subagent-notification', details: { runIds: ['failed-child'] },
+    }), { triggerTurn: false, deliverAs: 'nextTurn' });
+    expect(service.getState(false).error).toBeNull();
     await service.dispose();
   });
 

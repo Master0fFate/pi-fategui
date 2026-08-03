@@ -19,6 +19,7 @@ export default defineConfig(({ command }) => ({
     alias: {
       '@renderer': path.resolve('src/renderer'),
       '@shared': path.resolve('src/shared'),
+      'monaco-editor-esm': path.resolve('node_modules/monaco-editor/esm/vs'),
     },
   },
   build: {

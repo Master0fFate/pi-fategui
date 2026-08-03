@@ -92,8 +92,10 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const root = rootSession();
     const emitted: unknown[] = [];
     const persisted: unknown[] = [];
+    const sendRootMessage = vi.fn(async () => undefined);
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' }),
+      sendRootMessage,
       emit: (_root, team) => emitted.push(team),
       persist: (_root, event) => persisted.push(event),
     }, dataRoot);
@@ -110,7 +112,8 @@ describe('AgentTeamCoordinator vertical slice', () => {
       expect.objectContaining({ type: 'tool.completed', nodeId: child.nodeId, toolName: 'read' }),
       expect.objectContaining({ type: 'message.completed', nodeId: child.nodeId }),
     ]));
-    expect(root.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'fate-agent-team-envelope' }), expect.anything());
+    expect(sendRootMessage).toHaveBeenCalledWith('root-session', expect.objectContaining({ customType: 'fate-agent-team-envelope' }), 'steer', false);
+    expect(root.sendCustomMessage).not.toHaveBeenCalled();
     expect(createdInputs[0]?.collaborationTools?.map((tool) => tool.name)).toEqual(['spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents']);
 
     const followUp = await coordinator.followUp(rootId, child.nodeId, 'continue with retained context', 'follow-1', modelRuntime);

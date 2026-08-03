@@ -38,6 +38,22 @@ export function TerminalPanel() {
     fit.fit();
     let terminalId: string | null = null;
     let disposed = false;
+    let resizeFrame: number | null = null;
+    let lastSentColumns = terminal.cols;
+    let lastSentRows = terminal.rows;
+    const fitAndSync = () => {
+      resizeFrame = null;
+      if (disposed) return;
+      fit.fit();
+      if (!terminalId || (terminal.cols === lastSentColumns && terminal.rows === lastSentRows)) return;
+      lastSentColumns = terminal.cols;
+      lastSentRows = terminal.rows;
+      void window.piDesktop.resizeTerminal(terminalId, terminal.cols, terminal.rows).catch(() => undefined);
+    };
+    const scheduleFit = () => {
+      if (resizeFrame !== null) return;
+      resizeFrame = requestAnimationFrame(fitAndSync);
+    };
     const unsubscribe = window.piDesktop.onTerminalEvent((event) => {
       if (event.id !== terminalId) return;
       if (event.type === 'data') {
@@ -51,16 +67,12 @@ export function TerminalPanel() {
     const input = terminal.onData((data) => {
       if (terminalId) void window.piDesktop.writeTerminal(terminalId, data);
     });
-    const resize = new ResizeObserver(() => {
-      fit.fit();
-      if (terminalId) void window.piDesktop.resizeTerminal(terminalId, terminal.cols, terminal.rows);
-    });
+    const resize = new ResizeObserver(scheduleFit);
     resize.observe(host.current);
     const syncTheme = () => { terminal.options.theme = terminalTheme(); };
     const syncFont = () => {
       terminal.options.fontFamily = terminalFont();
-      fit.fit();
-      if (terminalId) void window.piDesktop.resizeTerminal(terminalId, terminal.cols, terminal.rows);
+      scheduleFit();
     };
     window.addEventListener('fate-theme-change', syncTheme);
     window.addEventListener('fate-font-change', syncFont);
@@ -71,6 +83,9 @@ export function TerminalPanel() {
         return;
       }
       terminalId = created.id;
+      // The container or selected font may have changed while the PTY was being
+      // created. Re-fit once and synchronize only if its requested size is stale.
+      scheduleFit();
       terminal.focus();
     }).catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : 'The terminal could not start.');
@@ -79,6 +94,7 @@ export function TerminalPanel() {
     return () => {
       disposed = true;
       resize.disconnect();
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
       window.removeEventListener('fate-theme-change', syncTheme);
       window.removeEventListener('fate-font-change', syncFont);
       input.dispose();

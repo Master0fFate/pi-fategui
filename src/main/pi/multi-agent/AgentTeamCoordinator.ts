@@ -807,12 +807,17 @@ export class AgentTeamCoordinator {
     const sender = this.requireNode(runtime, envelope.authorNodeId);
     const payload = `[Agent Team V2 ${envelope.kind} from ${sender.path}; envelope ${envelope.id}]\n${envelope.content}`;
     assertContextTransfer(`Agent Team V2 ${envelope.kind}`, session.model, payload, session);
-    await session.sendCustomMessage({
+    const message = {
       customType: 'fate-agent-team-envelope',
-      content: [{ type: 'text', text: payload }],
+      content: [{ type: 'text' as const, text: payload }],
       display: false,
       details: { envelopeId: envelope.id, kind: envelope.kind, authorNodeId: sender.id, taskId: envelope.taskId },
-    }, session.isStreaming ? { triggerTurn: false, deliverAs: 'steer' } : { triggerTurn: false });
+    };
+    if (target.id === runtime.state.rootNodeId && this.host.sendRootMessage) {
+      await this.host.sendRootMessage(runtime.state.rootSessionId, message, 'steer', false);
+    } else {
+      await session.sendCustomMessage(message, session.isStreaming ? { triggerTurn: false, deliverAs: 'steer' } : { triggerTurn: false });
+    }
     envelope.state = 'delivered';
     envelope.deliveredAt = Date.now();
     target.unreadMessages += 1;
