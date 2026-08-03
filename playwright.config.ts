@@ -5,7 +5,8 @@ export default defineConfig({
   testMatch: '*.spec.ts',
   workers: 1,
   fullyParallel: false,
-  timeout: 60_000,
+  // Hosted macOS Intel runners can take more than a minute for the full native Electron journey.
+  timeout: process.env.CI ? 120_000 : 60_000,
   expect: { timeout: 10_000 },
   reporter: [['list']],
   use: { trace: 'retain-on-failure', screenshot: 'only-on-failure' },
