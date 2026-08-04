@@ -437,7 +437,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     const slashPicker = page.getByRole('listbox', { name: 'Skills and commands' });
     await expect(slashPicker).toBeVisible();
     await expect(slashPicker.getByRole('option')).toHaveCount(4);
-    await expect(slashPicker.getByRole('option', { name: /^goalmaxxing\b/i })).toBeVisible();
+    await expect(slashPicker.getByRole('option', { name: /^goalmax\b/i })).toBeVisible();
     await expect(slashPicker.getByRole('option', { name: /^parallax\b/i })).toBeVisible();
     await expect(slashPicker.getByRole('option', { name: /^review\b/i })).toBeVisible();
     await expect(slashPicker.getByRole('option', { name: /^vibesecurity\b/i })).toBeVisible();
