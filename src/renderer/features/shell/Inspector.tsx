@@ -7,6 +7,7 @@ import {
   ListChecks,
   MessagesSquare,
   Sparkles,
+  Target,
 } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
@@ -19,19 +20,21 @@ import { ContextPanel } from './ContextPanel';
 import { SubagentSessionsPanel } from './SubagentSessionsPanel';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
+import { GoalMaxInspector } from '../goalmaxxing/GoalMaxInspector';
 
 interface InspectorProps {
   onCollapse: () => void;
 }
 
 const tabs = [
-  { value: 'changes', label: 'Changes', icon: GitCompareArrows },
-  { value: 'files', label: 'Files', icon: Files },
-  { value: 'sessions', label: 'Agents', icon: MessagesSquare },
-  { value: 'tools', label: 'Tools', icon: ListChecks },
-  { value: 'resources', label: 'Resources', icon: Sparkles },
-  { value: 'context', label: 'Context', icon: Info },
-];
+  { value: 'changes', label: 'Changes', icon: GitCompareArrows, layer: 'workspace' },
+  { value: 'files', label: 'Files', icon: Files, layer: 'workspace' },
+  { value: 'sessions', label: 'Agents', icon: MessagesSquare, layer: 'execution', layerStart: true },
+  { value: 'goal', label: 'Goal', icon: Target, layer: 'execution' },
+  { value: 'tools', label: 'Tools', icon: ListChecks, layer: 'execution' },
+  { value: 'resources', label: 'Resources', icon: Sparkles, layer: 'system', layerStart: true },
+  { value: 'context', label: 'Context', icon: Info, layer: 'system' },
+] as const;
 
 function ToolsPanel() {
   const order = useRuntimeStore((state) => state.toolOrder);
@@ -86,11 +89,14 @@ export function Inspector({ onCollapse }: InspectorProps) {
       </div>
       <Tabs.Root value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)} className="inspector-tabs">
         <Tabs.List aria-label="Inspector views" className="tab-list">
-          {tabs.map(({ value, label, icon: Icon }) => (
+          {tabs.map(({ value, label, icon: Icon, layer, ...tab }) => (
             <Tabs.Trigger
               value={value}
               key={value}
               className="tab-trigger"
+              data-layer={layer}
+              data-layer-start={'layerStart' in tab || undefined}
+              title={label}
               aria-label={value === 'sessions' ? `Subagent sessions${activeChildren ? `, ${activeChildren} active` : ''}` : label}
             >
               <Icon size={15} /><span className="icon-label" aria-hidden="true">{label}</span>
@@ -100,6 +106,7 @@ export function Inspector({ onCollapse }: InspectorProps) {
         <Tabs.Content value="changes" className="tab-content"><ChangesPanel /></Tabs.Content>
         <Tabs.Content value="files" className="tab-content"><FilesPanel /></Tabs.Content>
         <Tabs.Content value="sessions" className="tab-content"><SubagentSessionsPanel /></Tabs.Content>
+        <Tabs.Content value="goal" className="tab-content"><GoalMaxInspector /></Tabs.Content>
         <Tabs.Content value="tools" className="tab-content"><ToolsPanel /></Tabs.Content>
         <Tabs.Content value="resources" className="tab-content"><ResourcesPanel /></Tabs.Content>
         <Tabs.Content value="context" className="tab-content"><ContextPanel runtime={runtime} /></Tabs.Content>

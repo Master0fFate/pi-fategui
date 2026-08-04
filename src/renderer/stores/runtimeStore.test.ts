@@ -23,7 +23,7 @@ const reset = () => useRuntimeStore.setState({
   subagentsById: {}, subagentOrder: [],
   agentTeamsById: {}, agentTeamOrder: [], agentNodesById: {}, agentTasksById: {}, agentEnvelopesById: {},
   timelineById: {}, timelineOrder: [], visibleTimelineOrder: [], visibleTimelineIds: new Set(),
-  messagesVersion: 0, reasoningVersion: 0, toolsVersion: 0, timelineVersion: 0, waitPollVersion: 0,
+  messagesVersion: 0, reasoningVersion: 0, toolsVersion: 0, timelineVersion: 0, waitPollVersion: 0, subagentRecorderVersion: 0,
   queue: { steering: 0, followUp: 0, items: [] }, lastError: null,
   sequence: 0, timelineSequence: 0, activeCompactionId: null,
 });

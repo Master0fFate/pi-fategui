@@ -8,6 +8,7 @@ import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 
 type EditorMode = 'message' | 'rename' | null;
+export type SubagentControlTarget = Pick<SubagentRun, 'id' | 'role' | 'task' | 'handle' | 'displayName' | 'status' | 'mailbox'>;
 
 function applyControlState(origin: RuntimeState, state: RuntimeState): void {
   const current = useRuntimeStore.getState().runtime;
@@ -16,7 +17,7 @@ function applyControlState(origin: RuntimeState, state: RuntimeState): void {
   if (selectionIsOrigin || resultIsCurrent) useRuntimeStore.getState().setRuntime(state);
 }
 
-export function SubagentControls({ run, compact = false }: { run: SubagentRun; compact?: boolean }) {
+export function SubagentControls({ run, compact = false }: { run: SubagentControlTarget; compact?: boolean }) {
   const [mode, setMode] = useState<EditorMode>(null);
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState<SubagentControlInput['action'] | 'copy' | null>(null);

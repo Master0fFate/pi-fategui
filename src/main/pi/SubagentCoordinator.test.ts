@@ -214,6 +214,29 @@ describe('SubagentCoordinator', () => {
     expect(result.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('4/4 completed') });
   });
 
+  it('enforces GoalMax delegation strategy without weakening read-only child work', async () => {
+    const parent = parentSession();
+    const children = childFactory();
+    let agentStrategy: 'off' | 'read-only' = 'off';
+    const coordinator = new SubagentCoordinator({
+      resolveParent: () => ({ projectPath: '/project', session: parent, permissionLevel: 'full-access', agentStrategy }),
+      emit: () => undefined,
+    }, children.factory);
+
+    await expect(executeTool(coordinator, { task: 'ordinary delegation', permission: 'edit' }, undefined, undefined, runtime()))
+      .rejects.toThrow(/strategy is off/u);
+    expect(children.inputs).toEqual([]);
+
+    agentStrategy = 'read-only';
+    const result = await executeTool(coordinator, {
+      task: 'inspect without writing', role: 'reviewer', permission: 'full-access', tools: ['read', 'grep', 'write', 'edit', 'bash'],
+    }, undefined, undefined, runtime());
+    const details = subagentToolDetailsSchema.parse(result.details);
+
+    expect(details.runs?.[0]).toMatchObject({ status: 'completed', permissionLevel: 'read-only' });
+    expect(children.inputs[0]).toMatchObject({ permissionLevel: 'read-only', toolNames: ['read', 'grep'] });
+  });
+
   it('routes a child to another Pi-authenticated provider with independent thinking effort', async () => {
     const parent = parentSession();
     const children = childFactory();

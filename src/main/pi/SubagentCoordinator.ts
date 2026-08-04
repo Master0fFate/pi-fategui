@@ -214,6 +214,7 @@ export interface SubagentParentContext {
   projectPath: string;
   session: AgentSession;
   permissionLevel: PermissionLevel;
+  agentStrategy?: 'auto' | 'off' | 'read-only';
 }
 
 export interface SubagentCoordinatorHost {
@@ -241,6 +242,14 @@ function effectivePermission(requested: PermissionLevel, parent: PermissionLevel
 function childToolNamesForPermission(permissionLevel: PermissionLevel): ChildToolName[] {
   const base = [toolNamesForPermission(permissionLevel)[0]!, 'grep', 'find', 'ls', ...toolNamesForPermission(permissionLevel).slice(1)];
   return base.filter((name): name is ChildToolName => (childToolNames as readonly string[]).includes(name));
+}
+
+function delegationPermission(parent: SubagentParentContext): PermissionLevel {
+  return parent.agentStrategy === 'read-only' ? 'read-only' : parent.permissionLevel;
+}
+
+function assertDelegationAllowed(parent: SubagentParentContext): void {
+  if (parent.agentStrategy === 'off') throw new Error('Goal agent strategy is off; complete this turn with the root agent.');
 }
 
 function sourceForAgent(agent: string | undefined): SubagentAgentSource {
@@ -489,6 +498,7 @@ export class SubagentCoordinator {
         const input = params as WorkflowInput;
         const deliver = (workflows: readonly SubagentWorkflow[]) => this.deliverToParent(parent, this.workflowResult(workflows), 'orchestrator-to-parent workflow result');
         if (input.action === 'start') {
+          assertDelegationAllowed(parent);
           const request = normalizeWorkflowStart(params);
           if (!request) throw new Error('Invalid workflow graph. Node IDs must be unique, dependencies must exist, and cycles are not allowed.');
           const workflow = this.workflows.start(parent.session.sessionId, toolCallId, request, modelRuntime, signal);
@@ -586,6 +596,21 @@ export class SubagentCoordinator {
     return this.hasActiveRuns(parentSessionId) || this.hasRetainedRuns(parentSessionId);
   }
 
+  capDelegationPermission(parentSessionId: string, cap: PermissionLevel): void {
+    for (const context of this.contexts.values()) {
+      if (context.parentSessionId !== parentSessionId || permissionRank[context.permissionLevel] <= permissionRank[cap]) continue;
+      context.permissionLevel = cap;
+      const permitted = new Set(childToolNamesForPermission(cap));
+      context.toolNames = context.toolNames.filter((tool) => permitted.has(tool));
+      const session = context.session;
+      if (session) session.setActiveToolsByName(session.getActiveToolNames().filter((tool) => !(childToolNames as readonly string[]).includes(tool) || context.toolNames.includes(tool as ChildToolName)));
+      const updatedAt = Date.now();
+      const run = this.updateRun(parentSessionId, context.runId, { permissionLevel: cap, enabledTools: [...context.toolNames], updatedAt });
+      this.host.emit(parentSessionId, { type: 'subagent.updated', runId: run.id, status: run.status, updatedAt, timestamp: updatedAt });
+      this.persistRun(run);
+    }
+  }
+
   restoreParent(session: AgentSession): void {
     if (this.hasOwnedWork(session.sessionId)) return;
     const parent = this.host.resolveParent(session.sessionId);
@@ -642,7 +667,7 @@ export class SubagentCoordinator {
     for (const [toolCallId, call] of pending) {
       if (finished.has(toolCallId)) continue;
       call.requests.forEach((request, index) => {
-        const permissionLevel = effectivePermission(request.permissionLevel, parent.permissionLevel);
+        const permissionLevel = effectivePermission(request.permissionLevel, delegationPermission(parent));
         remember({
           id: deterministicRunId(session.sessionId, toolCallId, index),
           parentSessionId: session.sessionId,
@@ -753,6 +778,7 @@ export class SubagentCoordinator {
     await previousAdmission;
     try {
       if (signal?.aborted) throw abortError();
+      assertDelegationAllowed(parent);
       const prepared = await this.prepareRequests(requests, parent, modelRuntime);
       if (signal?.aborted) throw abortError();
       const parentSessionId = parent.session.sessionId;
@@ -897,7 +923,7 @@ export class SubagentCoordinator {
     const available = needsModels ? [...await modelRuntime.getAvailable()] as ParentModel[] : [];
     return Promise.all(requests.map(async (request, index): Promise<PreparedTask> => {
       const profile = selectedProfiles[index]!;
-      const permissionLevel = effectivePermission(request.permissionLevel, parent.permissionLevel);
+      const permissionLevel = effectivePermission(request.permissionLevel, delegationPermission(parent));
       const primary = request.model
         ? this.resolveExplicitModel(request.model, available)
         : profile.modelReference

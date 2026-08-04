@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
 import { useRuntimeStore } from '../stores/runtimeStore';
+import { useGoalMaxStore } from '../stores/goalMaxStore';
 import { LEFT_MAX, LEFT_MIN, RIGHT_MAX, RIGHT_MIN, useUiStore } from '../stores/uiStore';
 import { App, reconcileHydrationEvents } from './App';
 
@@ -10,7 +11,8 @@ describe('first-launch shell', () => {
   beforeEach(() => {
     localStorage.clear();
     delete document.documentElement.dataset.platform;
-    useUiStore.setState({ sidebarCollapsed: false, inspectorCollapsed: false, leftWidth: 264, rightWidth: 332, musicPlayerEnabled: false, musicPlaying: false, sendMessageWithModifier: false, paletteOpen: false, settingsOpen: false, toast: null, composerDraftRequest: null });
+    useUiStore.setState({ sidebarCollapsed: false, inspectorCollapsed: false, leftWidth: 264, rightWidth: 332, musicPlayerEnabled: false, musicPlaying: false, sendMessageWithModifier: false, paletteOpen: false, settingsOpen: false, toast: null, composerDraftRequest: null, goalEditorOpen: false });
+    useGoalMaxStore.setState({ projectPath: null, sessionId: null, goal: null, loading: false, selectionGeneration: 0 });
     useRuntimeStore.getState().setRuntime({
       status: 'disconnected', project: null, sessionId: null, sessionFile: null, streaming: false,
       model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,

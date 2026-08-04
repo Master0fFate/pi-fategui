@@ -10,9 +10,10 @@ import {
   LoaderCircle,
   MessagesSquare,
   OctagonX,
+  Target,
   Wrench,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentTeam, AgentTeamNode } from '../../../shared/contracts/multiAgent';
 import { Virtuoso } from 'react-virtuoso';
 import { useShallow } from 'zustand/react/shallow';
@@ -28,7 +29,9 @@ import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIde
 import { AssistantMarkdown, MessageImages } from '../chat/RichMessageContent';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
-import { SubagentControls } from './SubagentControls';
+import { useGoalMaxStore } from '../../stores/goalMaxStore';
+import { GoalMaxAgentMarker, GoalMaxAssignmentScope, type GoalMaxAgentLink } from '../goalmaxxing/GoalMaxAgentMarker';
+import { SubagentControls, type SubagentControlTarget } from './SubagentControls';
 import { AgentTeamControls } from './AgentTeamControls';
 import { FlightRecorder } from './FlightRecorder';
 import type { FlightDeckTarget } from './flightDeck';
@@ -158,7 +161,7 @@ function ActivityRow({ activity }: { activity: Activity }) {
   );
 }
 
-function RunDetail({ run }: { run: SubagentRun }) {
+function RunDetail({ run, goalLink }: { run: SubagentRun; goalLink?: GoalMaxAgentLink | undefined }) {
   const close = useUiStore((state) => state.closeSubagent);
   const jump = useUiStore((state) => state.flightDeckJump);
   const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
@@ -193,6 +196,7 @@ function RunDetail({ run }: { run: SubagentRun }) {
         <span>Delegated task</span>
         <p>{run.task}</p>
       </div>
+      {goalLink ? <GoalMaxAssignmentScope link={goalLink} /> : null}
       <SubagentControls run={run} />
       {latestLiveness ? (
         <details className="subagent-boundary" open={isActive}>
@@ -249,7 +253,24 @@ function RunDetail({ run }: { run: SubagentRun }) {
   );
 }
 
-function AgentSessionRow({ run }: { run: SubagentRun }) {
+function SelectedRunDetail({ runId, goalLink }: { runId: string; goalLink?: GoalMaxAgentLink | undefined }) {
+  const run = useRuntimeStore((state) => state.subagentsById[runId]);
+  return run ? <RunDetail run={run} goalLink={goalLink} /> : null;
+}
+
+type AgentSessionRowView = SubagentControlTarget & Pick<SubagentRun, 'agentSource' | 'agentName' | 'model'>;
+
+function AgentSessionRowById({ runId, goalLink }: { runId: string; goalLink?: GoalMaxAgentLink | undefined }) {
+  const run = useRuntimeStore(useShallow((state): AgentSessionRowView | null => {
+    const current = state.subagentsById[runId];
+    if (!current) return null;
+    const { id, role, task, handle, displayName, status, mailbox, agentSource, agentName, model } = current;
+    return { id, role, task, handle, displayName, status, mailbox, agentSource, agentName, model };
+  }));
+  return run ? <AgentSessionRow run={run} goalLink={goalLink} /> : null;
+}
+
+function AgentSessionRow({ run, goalLink }: { run: AgentSessionRowView; goalLink?: GoalMaxAgentLink | undefined }) {
   const displayName = subagentDisplayName(run);
   const handle = subagentHandle(run);
   return (
@@ -262,7 +283,7 @@ function AgentSessionRow({ run }: { run: SubagentRun }) {
       >
         <span className="subagent-status-mark"><StatusIcon status={run.status} /></span>
         <span className="subagent-session-copy">
-          <span><strong>{displayName}</strong><code>@{handle}</code></span>
+          <span><strong>{displayName}</strong><code>@{handle}</code>{goalLink ? <GoalMaxAgentMarker link={goalLink} /> : null}</span>
           <small>{run.task}</small>
           <span className="subagent-session-meta">
             <em>{statusLabel(run.status)}{run.mailbox.state === 'available' ? ' · mailbox' : ''}</em>
@@ -288,7 +309,7 @@ function workflowNodeStatus(node: SubagentWorkflowNode): SubagentStatus {
   }
 }
 
-function WorkflowNodeRow({ node }: { node: SubagentWorkflowNode }) {
+function WorkflowNodeRow({ node, goalLink }: { node: SubagentWorkflowNode; goalLink?: GoalMaxAgentLink | undefined }) {
   const status = workflowNodeStatus(node);
   const handle = node.handle ?? node.id;
   const displayName = node.displayName ?? node.id;
@@ -297,7 +318,7 @@ function WorkflowNodeRow({ node }: { node: SubagentWorkflowNode }) {
       <div className="subagent-session-open">
         <span className="subagent-status-mark"><StatusIcon status={status} /></span>
         <span className="subagent-session-copy">
-          <span><strong>{displayName}</strong><code data-status={node.status}>@{handle}</code></span>
+          <span><strong>{displayName}</strong><code data-status={node.status}>@{handle}</code>{goalLink ? <GoalMaxAgentMarker link={goalLink} /> : null}</span>
           <small>{node.task}</small>
           <span className="subagent-session-meta">
             <em>{node.status}</em>
@@ -314,21 +335,25 @@ function DelegationBranch({
   workflow,
   parentError,
   ordinal,
+  goalLinks,
 }: {
   runs: SubagentRun[];
   workflow?: SubagentWorkflow;
   parentError: boolean;
   ordinal: number;
+  goalLinks: ReadonlyMap<string, GoalMaxAgentLink>;
 }) {
   const runById = new Map(runs.map((run) => [run.id, run]));
   const renderedRunIds = new Set<string>();
   const workflowChildren = workflow?.nodes.map((node) => {
     const run = node.runId ? runById.get(node.runId) : undefined;
     if (run) renderedRunIds.add(run.id);
-    return run ? <AgentSessionRow key={run.id} run={run} /> : <WorkflowNodeRow key={`node:${node.id}`} node={node} />;
+    return run
+      ? <AgentSessionRowById key={run.id} runId={run.id} goalLink={goalLinks.get(run.id)} />
+      : <WorkflowNodeRow key={`node:${node.id}`} node={node} goalLink={node.runId ? goalLinks.get(node.runId) : undefined} />;
   }) ?? [];
   const extraRuns = runs.filter((run) => !renderedRunIds.has(run.id));
-  const children = [...workflowChildren, ...extraRuns.map((run) => <AgentSessionRow key={run.id} run={run} />)];
+  const children = [...workflowChildren, ...extraRuns.map((run) => <AgentSessionRowById key={run.id} runId={run.id} goalLink={goalLinks.get(run.id)} />)];
   const active = runs.filter((run) => activeStatuses.has(run.status)).length
     + (workflow?.nodes.filter((node) => (!node.runId || !runById.has(node.runId)) && (node.status === 'running' || node.status === 'pending')).length ?? 0);
   const completed = workflow?.nodes.filter((node) => node.status === 'completed').length
@@ -379,7 +404,7 @@ function teamNodeStatus(node: AgentTeamNode): SubagentStatus {
   return 'cancelled';
 }
 
-function AgentTeamNodeRow({ team, node }: { team: AgentTeam; node: AgentTeamNode }) {
+function AgentTeamNodeRow({ team, node, goalLinks }: { team: AgentTeam; node: AgentTeamNode; goalLinks: ReadonlyMap<string, GoalMaxAgentLink> }) {
   const jump = useUiStore((state) => state.flightDeckJump);
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
@@ -403,25 +428,30 @@ function AgentTeamNodeRow({ team, node }: { team: AgentTeam; node: AgentTeamNode
         <div className="subagent-session-open" aria-label={`${node.displayName} Agent Team node ${node.status}`}>
           <span className="subagent-status-mark"><StatusIcon status={teamNodeStatus(node)} /></span>
           <span className="subagent-session-copy">
-            <span><strong>{node.displayName}</strong><code>@{node.handle}</code></span>
+            <span><strong>{node.displayName}</strong><code>@{node.handle}</code>{goalLinks.get(node.id) ? <GoalMaxAgentMarker link={goalLinks.get(node.id)!} /> : null}</span>
             <small>{task?.summary ?? node.path}</small>
             <span className="subagent-session-meta"><em>{node.status}{node.writer ? ' · writer' : ''}{node.unreadMessages ? ` · ${node.unreadMessages} unread` : ''}</em><small>{node.agentName} profile · {node.model.name}</small></span>
           </span>
         </div>
         <AgentTeamControls node={node} />
       </article>
-      {children.length ? <div className="agent-tree-children" role="group">{children.map((child) => <AgentTeamNodeRow key={child.id} team={team} node={child} />)}</div> : null}
+      {children.length ? <div className="agent-tree-children" role="group">{children.map((child) => <AgentTeamNodeRow key={child.id} team={team} node={child} goalLinks={goalLinks} />)}</div> : null}
     </div>
   );
 }
 
-function AgentTeamBranch({ team }: { team: AgentTeam }) {
+function AgentTeamBranch({ team, goalLinks }: { team: AgentTeam; goalLinks: ReadonlyMap<string, GoalMaxAgentLink> }) {
   const root = team.nodes.find((node) => node.id === team.rootNodeId);
   const jump = useUiStore((state) => state.flightDeckJump);
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
-  const focused = Boolean(root && jump && jump.projectPath === projectPath && jump.sessionId === sessionId && teamJumpNodeId(team, jump.target) === root.id);
+  const targetNodeId = jump && jump.projectPath === projectPath && jump.sessionId === sessionId ? teamJumpNodeId(team, jump.target) : null;
+  const focused = Boolean(root && targetNodeId === root.id);
   const branchRef = useRef<HTMLElement>(null);
+  const [expanded, setExpanded] = useState(true);
+  useEffect(() => {
+    if (targetNodeId) setExpanded(true);
+  }, [targetNodeId]);
   useEffect(() => {
     const branch = branchRef.current;
     if (!focused || !jump || !branch) return;
@@ -433,30 +463,61 @@ function AgentTeamBranch({ team }: { team: AgentTeam }) {
     const child = team.nodes.find((candidate) => candidate.id === id);
     return child ? [child] : [];
   }).sort((left, right) => left.path.localeCompare(right.path)) ?? [];
+  const childrenId = `agent-team-children-${team.id}`;
   return (
-    <section ref={branchRef} className="agent-tree-branch" data-status={team.status} aria-label={`Agent Team V2 ${team.id}`} tabIndex={-1} data-flight-focus={focused || undefined}>
-      <header className="agent-tree-branch-heading"><span className="agent-tree-branch-mark"><GitBranch size={12} /></span><span className="agent-tree-branch-copy"><strong>Agent Team V2</strong><small>{team.nodes.length - 1}/{team.limits.maxNodes} nodes · {team.activeTurns}/{team.limits.maxActiveTurns} active{team.writerNodeId ? ' · writer leased' : ''}</small></span><span className="agent-tree-branch-state">{team.status}</span></header>
-      <div className="agent-tree-children" role="tree">{children.map((node) => <AgentTeamNodeRow key={node.id} team={team} node={node} />)}</div>
+    <section ref={branchRef} className="agent-tree-branch" data-status={team.status} data-expanded={expanded} aria-label={`Agent Team V2 ${team.id}`} tabIndex={-1} data-flight-focus={focused || undefined}>
+      <button className="agent-tree-branch-heading agent-tree-branch-toggle" type="button" aria-expanded={expanded} aria-controls={childrenId} onClick={() => setExpanded((current) => !current)}>
+        <span className="agent-tree-branch-mark"><GitBranch size={12} /></span>
+        <span className="agent-tree-branch-copy"><strong>Agent Team V2</strong><small>{team.nodes.length - 1}/{team.limits.maxNodes} nodes · {team.activeTurns}/{team.limits.maxActiveTurns} active{team.writerNodeId ? ' · writer leased' : ''}</small></span>
+        <span className="agent-tree-branch-state">{team.status}</span>
+        <ChevronRight className="agent-tree-branch-chevron" size={13} aria-hidden="true" />
+      </button>
+      {expanded ? <div id={childrenId} className="agent-tree-children" role="tree">{children.map((node) => <AgentTeamNodeRow key={node.id} team={team} node={node} goalLinks={goalLinks} />)}</div> : null}
     </section>
   );
 }
 
 export function SubagentSessionsPanel() {
-  const runtime = useRuntimeStore((state) => state.runtime);
+  const runtime = useRuntimeStore(useShallow((state) => ({
+    project: state.runtime.project,
+    sessionId: state.runtime.sessionId,
+    sessions: state.runtime.sessions,
+    objective: state.runtime.objective,
+    subagentWorkflows: state.runtime.subagentWorkflows,
+    agentTeams: state.runtime.agentTeams,
+  })));
   const order = useRuntimeStore((state) => state.subagentOrder);
-  const runsById = useRuntimeStore((state) => state.subagentsById);
+  const runStructure = useRuntimeStore(useShallow((state) => state.subagentOrder.map((id) => {
+    const run = state.subagentsById[id];
+    return `${id}\0${run?.status ?? ''}\0${run?.parentToolCallId ?? ''}\0${run?.workflowId ?? ''}`;
+  })));
+  const runsById = useRuntimeStore.getState().subagentsById;
   const toolProjection = useRuntimeStore(useShallow((state) => ({ toolsById: state.toolsById, version: state.toolsVersion })));
   const toolsById = toolProjection.toolsById;
   const selectedRunId = useUiStore((state) => state.selectedSubagentRunId);
+  const goalProjection = useGoalMaxStore(useShallow((state) => ({
+    hasGoal: Boolean(state.goal),
+    criteria: state.goal?.criteria,
+    childAssignments: state.goal?.childAssignments,
+  })));
   const jump = useUiStore((state) => state.flightDeckJump);
   const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
   const showToast = useUiStore((state) => state.showToast);
-  const selected = selectedRunId ? runsById[selectedRunId] : undefined;
+  void runStructure;
+  const selectedExists = selectedRunId ? Boolean(runsById[selectedRunId]) : false;
   const agentTeams = runtime.agentTeams ?? [];
+  const goalLinks = useMemo(() => {
+    if (!goalProjection.hasGoal) return new Map<string, GoalMaxAgentLink>();
+    const criteriaById = new Map((goalProjection.criteria ?? []).map((criterion) => [criterion.id, criterion.title]));
+    return new Map((goalProjection.childAssignments ?? []).map((assignment) => [assignment.nodeId, {
+      assignment,
+      criterionTitles: assignment.criterionIds.flatMap((id) => criteriaById.get(id) ?? []),
+    }]));
+  }, [goalProjection.childAssignments, goalProjection.criteria, goalProjection.hasGoal]);
   useEffect(() => {
     if (!jump || jump.projectPath !== runtime.project?.path || jump.sessionId !== runtime.sessionId) return;
     let retained = true;
-    if (jump.target.kind === 'agent') retained = Boolean(runsById[jump.target.runId]);
+    if (jump.target.kind === 'agent') retained = order.includes(jump.target.runId);
     else if (jump.target.kind === 'team-node' || jump.target.kind === 'task') {
       const target = jump.target;
       const team = agentTeams.find((candidate) => candidate.id === target.teamId);
@@ -466,8 +527,8 @@ export function SubagentSessionsPanel() {
     if (retained) return;
     showToast({ kind: 'info', title: 'Activity not retained', message: 'That agent activity is no longer available in the bounded recorder.' });
     clearFlightDeckJump(jump.nonce);
-  }, [agentTeams, clearFlightDeckJump, jump, runtime.project?.path, runtime.sessionId, runsById, showToast]);
-  if (selected) return <RunDetail run={selected} />;
+  }, [agentTeams, clearFlightDeckJump, jump, order, runtime.project?.path, runtime.sessionId, showToast]);
+  if (selectedRunId && selectedExists) return <SelectedRunDetail runId={selectedRunId} goalLink={goalLinks.get(selectedRunId)} />;
 
   const runs = order.flatMap((id) => runsById[id] ? [runsById[id]!] : []).reverse();
   const workflows = [...(runtime.subagentWorkflows ?? [])].reverse();
@@ -495,12 +556,13 @@ export function SubagentSessionsPanel() {
         <span className="agent-tree-root-mark"><Bot size={15} aria-hidden="true" /></span>
         <span className="agent-tree-root-copy"><strong>Main agent</strong><small>{activeSession?.title ?? runtime.objective ?? 'Current Pi session'}</small></span>
         {hasChildren ? <span className="agent-tree-overview">{totalAgents + teamAgents} {totalAgents + teamAgents === 1 ? 'agent' : 'agents'}{activeAgents + teamActive ? ` · ${activeAgents + teamActive} active` : ''}</span> : null}
+        {goalProjection.hasGoal ? <span className="goalmax-root-marker" title="Main agent is linked to the current goal" aria-label="Main agent linked to GoalMax"><Target size={11} /></span> : null}
       </div>
       {!hasChildren ? (
         <div className="inspector-empty subagent-empty"><MessagesSquare size={24} /><strong>No child sessions</strong><p>Managed child sessions and workflow graphs appear here when the parent launches them.</p></div>
       ) : (
         <div className="agent-tree-forest" aria-label={workflows.length ? 'Subagent workflows' : undefined}>
-          {agentTeams.map((team) => <AgentTeamBranch key={team.id} team={team} />)}
+          {agentTeams.map((team) => <AgentTeamBranch key={team.id} team={team} goalLinks={goalLinks} />)}
           {workflows.map((workflow, index) => (
             <DelegationBranch
               key={workflow.id}
@@ -508,6 +570,7 @@ export function SubagentSessionsPanel() {
               workflow={workflow}
               parentError={toolsById[workflow.parentToolCallId]?.status === 'error'}
               ordinal={workflows.length + delegations.length - index}
+              goalLinks={goalLinks}
             />
           ))}
           {delegations.map(([toolCallId, group], index) => (
@@ -516,6 +579,7 @@ export function SubagentSessionsPanel() {
               runs={group}
               parentError={toolsById[toolCallId]?.status === 'error'}
               ordinal={delegations.length - index}
+              goalLinks={goalLinks}
             />
           ))}
         </div>

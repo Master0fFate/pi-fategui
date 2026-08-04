@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AgentSession, AgentSessionEvent, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
-import type { AgentTeam, AgentTeamControlInput, AgentTeamEnvelope, AgentTeamNode, AgentTeamTask } from '../../../shared/contracts/multiAgent';
+import { AGENT_TEAM_MAX_WAIT_MS, type AgentTeam, type AgentTeamControlInput, type AgentTeamEnvelope, type AgentTeamNode, type AgentTeamTask } from '../../../shared/contracts/multiAgent';
 import type { ToolActor } from '../../../shared/contracts/provenance';
 import { addUsage, createSdkChildSession, emptyUsage, finalAssistant, usageFromMessages, type SubagentChildSessionFactory } from '../SubagentSessionFactory';
 import { assertContextTransfer } from '../SubagentContext';
@@ -30,8 +30,10 @@ import type { AgentNodeRuntime, AgentTeamCoordinatorHost, AgentTeamLedgerEvent, 
 
 const TEAM_EVENT_CUSTOM_TYPE = 'fate-agent-team-event';
 const DEFAULT_CHILD_RETENTION_MS = 5 * 60_000;
+const MAX_TASK_SETTLEMENT_WAIT_MS = AGENT_TEAM_MAX_WAIT_MS + 60_000;
 const permissionRank: Record<PermissionLevel, number> = { 'read-only': 0, edit: 1, 'full-access': 2 };
 const activeNodeStatuses = new Set<AgentTeamNode['status']>(['creating', 'active']);
+const settledTaskStatuses = new Set<AgentTeamTask['status']>(['completed', 'interrupted', 'cancelled', 'failed']);
 
 type WaitChange = { path: string; reason: string };
 type TeamListener = (change: WaitChange) => void;
@@ -92,12 +94,12 @@ export class AgentTeamCoordinator {
     return Boolean(runtime && [...runtime.nodes.values()].some((node) => node.depth > 0 && activeNodeStatuses.has(node.status)));
   }
 
-  spawn(callerNodeId: string, raw: unknown, operationId: string, modelRuntime: ModelRuntime, signal?: AbortSignal) {
+  spawn(callerNodeId: string, raw: unknown, operationId: string, modelRuntime: ModelRuntime, signal?: AbortSignal, options: { allowDelegation?: boolean; bypassGoalPolicy?: boolean } = {}) {
     const runtime = this.runtimeForCaller(callerNodeId);
-    return this.serializeMutation(runtime, () => this.spawnInternal(callerNodeId, raw, operationId, modelRuntime, signal));
+    return this.serializeMutation(runtime, () => this.spawnInternal(callerNodeId, raw, operationId, modelRuntime, signal, options));
   }
 
-  private async spawnInternal(callerNodeId: string, raw: unknown, operationId: string, modelRuntime: ModelRuntime, signal?: AbortSignal) {
+  private async spawnInternal(callerNodeId: string, raw: unknown, operationId: string, modelRuntime: ModelRuntime, signal: AbortSignal | undefined, options: { allowDelegation?: boolean; bypassGoalPolicy?: boolean }) {
     const request = this.normalizeSpawn(raw);
     const runtime = this.runtimeForCaller(callerNodeId);
     const receiptKey = operationKey(callerNodeId, operationId);
@@ -107,10 +109,14 @@ export class AgentTeamCoordinator {
       if (node) return this.nodeReceipt(node);
     }
     const caller = this.requireNode(runtime, callerNodeId);
+    const rootPolicy = this.host.resolveRoot(runtime.state.rootSessionId)?.agentStrategy;
+    if (rootPolicy === 'off' && options.bypassGoalPolicy !== true) throw new Error('Goal agent strategy is off; complete this turn with the root agent.');
     if (caller.status === 'closed' || caller.status === 'failed') throw new Error(`Caller ${caller.path} is not reusable.`);
     if (caller.depth >= runtime.state.limits.maxDepth) throw new Error(`Agent team maximum descendant depth is ${runtime.state.limits.maxDepth}.`);
     if (runtime.nodes.size - 1 >= runtime.state.limits.maxNodes) throw new Error(`Agent team node limit (${runtime.state.limits.maxNodes} non-root nodes) reached.`);
-    const prepared = await this.prepareRequest(runtime, caller, request, modelRuntime);
+    if (runtime.envelopes.size >= runtime.state.limits.maxMessages) throw new Error(`Agent team message limit (${runtime.state.limits.maxMessages}) reached.`);
+    if (Buffer.byteLength(request.task, 'utf8') > runtime.state.limits.maxMessageBytes) throw new Error(`Agent team messages are limited to ${runtime.state.limits.maxMessageBytes} UTF-8 bytes.`);
+    const prepared = await this.prepareRequest(runtime, caller, request, modelRuntime, options.bypassGoalPolicy === true);
     if (signal?.aborted) throw Object.assign(new Error('Spawn cancelled.'), { name: 'AbortError' });
     const usedPaths = new Set(runtime.pathToNode.keys());
     const usedHandles = new Set([...runtime.nodes.values()].map((node) => node.handle));
@@ -155,7 +161,7 @@ export class AgentTeamCoordinator {
     try {
       lease = this.scheduler(runtime).acquire(node.id, node.permissionLevel);
       this.syncScheduler(runtime);
-      const nodeRuntime = await this.createNodeSession(runtime, node, prepared, modelRuntime);
+      const nodeRuntime = await this.createNodeSession(runtime, node, prepared, modelRuntime, options.allowDelegation !== false);
       nodeRuntime.lease = lease;
       runtime.nodeRuntime.set(node.id, nodeRuntime);
       this.attachNodeRecorder(runtime, node, nodeRuntime);
@@ -279,7 +285,7 @@ export class AgentTeamCoordinator {
       ? [{ path: node.path, reason: node.unreadMessages > 0 ? 'unread-mail' : node.status }]
       : []);
     if (immediate.length) return { changed: immediate };
-    const bounded = Math.max(0, Math.min(5 * 60_000, timeoutMs));
+    const bounded = Math.max(0, Math.min(AGENT_TEAM_MAX_WAIT_MS, timeoutMs));
     runtime.waitEdges.set(caller.id, new Set(nodes.map((node) => node.id)));
     return new Promise((resolve, reject) => {
       const changes: WaitChange[] = [];
@@ -300,6 +306,62 @@ export class AgentTeamCoordinator {
       const timer = setTimeout(() => { finish(); resolve({ changed: [] }); }, bounded);
       this.listenersFor(runtime).add(listener);
       if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
+    });
+  }
+
+  async waitForTaskSettlement(callerNodeId: string, target: string, timeoutMs: number, signal?: AbortSignal): Promise<{ task: AgentTeamTask; envelope?: AgentTeamEnvelope } | null> {
+    const runtime = this.runtimeForCaller(callerNodeId);
+    const caller = this.requireNode(runtime, callerNodeId);
+    const node = this.resolveTarget(runtime, target);
+    if (node.id === caller.id || node.parentNodeId !== caller.id) throw new Error('Task settlement may be awaited only for an owned direct child.');
+    const taskId = node.currentTaskId;
+    if (!taskId) throw new Error(`${node.path} has no current task.`);
+    const inspect = (): { task: AgentTeamTask; envelope?: AgentTeamEnvelope } | null => {
+      const task = runtime.tasks.get(taskId);
+      if (!task || !settledTaskStatuses.has(task.status)) return null;
+      const envelope = task.resultEnvelopeId ? runtime.envelopes.get(task.resultEnvelopeId) : undefined;
+      return {
+        task: structuredClone(task),
+        ...(envelope ? { envelope: structuredClone(envelope) } : {}),
+      };
+    };
+    const immediate = inspect();
+    if (immediate) return immediate;
+    const bounded = Math.max(0, Math.min(MAX_TASK_SETTLEMENT_WAIT_MS, timeoutMs));
+    if (bounded === 0) return null;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return false;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+        this.listeners.get(runtime.state.id)?.delete(listener);
+        return true;
+      };
+      const resolveIfSettled = () => {
+        const result = inspect();
+        if (!result || !finish()) return false;
+        resolve(result);
+        return true;
+      };
+      const listener: TeamListener = (change) => {
+        if (change.path === node.path) resolveIfSettled();
+      };
+      const abort = () => {
+        if (!finish()) return;
+        reject(Object.assign(new Error('Agent task settlement wait aborted.'), { name: 'AbortError' }));
+      };
+      const timer = setTimeout(() => {
+        if (!finish()) return;
+        resolve(null);
+      }, bounded);
+      this.listenersFor(runtime).add(listener);
+      if (signal?.aborted) abort();
+      else {
+        signal?.addEventListener('abort', abort, { once: true });
+        resolveIfSettled();
+      }
     });
   }
 
@@ -334,6 +396,24 @@ export class AgentTeamCoordinator {
     const prefix = pathPrefix?.trim();
     if (prefix && !runtime.pathToNode.has(prefix) && ![...runtime.pathToNode.keys()].some((path) => path.startsWith(`${prefix}/`))) throw new Error(`Unknown team path prefix ${prefix}.`);
     return { teamId: runtime.state.id, nodes: [...runtime.nodes.values()].filter((node) => !prefix || node.path === prefix || node.path.startsWith(`${prefix}/`)).sort((left, right) => left.path.localeCompare(right.path)) };
+  }
+
+  capDelegationPermission(rootSessionId: string, cap: PermissionLevel): void {
+    const runtime = this.teamsByRoot.get(rootSessionId);
+    if (!runtime) return;
+    let changed = false;
+    for (const node of [...runtime.nodes.values()].sort((left, right) => left.depth - right.depth)) {
+      if (node.depth === 0 || permissionRank[node.permissionLevel] <= permissionRank[cap]) continue;
+      node.permissionLevel = cap;
+      const permitted = new Set(childToolsForPermission(cap));
+      node.enabledTools = node.enabledTools.filter((tool) => permitted.has(tool));
+      node.writer = cap !== 'read-only';
+      node.updatedAt = Date.now();
+      const session = runtime.nodeRuntime.get(node.id)?.session;
+      if (session) session.setActiveToolsByName(session.getActiveToolNames().filter((tool) => !((childToolNames as readonly string[]).includes(tool)) || node.enabledTools.includes(tool as ChildToolName)));
+      changed = true;
+    }
+    if (changed) this.changed(runtime, `Goal policy capped existing descendants at ${cap}.`);
   }
 
   lowerRootPermission(rootSessionId: string, level: PermissionLevel): void {
@@ -535,13 +615,14 @@ export class AgentTeamCoordinator {
     };
   }
 
-  private async prepareRequest(runtime: AgentTeamRuntime, caller: AgentTeamNode, request: SpawnAgentRequest, modelRuntime: ModelRuntime): Promise<PreparedAgentRequest> {
+  private async prepareRequest(runtime: AgentTeamRuntime, caller: AgentTeamNode, request: SpawnAgentRequest, modelRuntime: ModelRuntime, bypassGoalPolicy = false): Promise<PreparedAgentRequest> {
     const root = this.host.resolveRoot(runtime.state.rootSessionId);
     if (!root?.session.model) throw new Error('The root Pi session is unavailable.');
     const profiles = await discoverSubagentProfiles(root.projectPath);
     const profile = resolveSubagentProfile(profiles, request.agent);
     if (!profile) throw new Error(`Unknown Pi agent profile ${request.agent}. Use subagent_catalog for exact selectors.`);
-    const permission = effectivePermission(request.permission ?? 'read-only', caller.permissionLevel);
+    const callerPermission = !bypassGoalPolicy && root.agentStrategy === 'read-only' ? 'read-only' : caller.permissionLevel;
+    const permission = effectivePermission(request.permission ?? 'read-only', callerPermission);
     const available = request.model || profile.modelReference ? [...await modelRuntime.getAvailable()] as ParentModel[] : [];
     let selected: ParentModel;
     if (request.model) {
@@ -580,12 +661,12 @@ export class AgentTeamCoordinator {
     };
   }
 
-  private async createNodeSession(runtime: AgentTeamRuntime, node: AgentTeamNode, prepared: PreparedAgentRequest, modelRuntime: ModelRuntime): Promise<AgentNodeRuntime> {
+  private async createNodeSession(runtime: AgentTeamRuntime, node: AgentTeamNode, prepared: PreparedAgentRequest, modelRuntime: ModelRuntime, allowDelegation: boolean): Promise<AgentNodeRuntime> {
     const root = this.host.resolveRoot(runtime.state.rootSessionId);
     if (!root) throw new Error('Root session unavailable while creating child session.');
     const sessionDirectory = path.join(this.dataRoot, safeDirectoryKey(runtime.state.rootSessionId), safeDirectoryKey(runtime.state.id), safeDirectoryKey(node.id));
     await fs.mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
-    const collaborationTools = createAgentCollaborationTools(this, node.id, modelRuntime);
+    const collaborationTools = allowDelegation ? createAgentCollaborationTools(this, node.id, modelRuntime) : [];
     const parent = this.requireNode(runtime, node.parentNodeId!);
     const session = await this.childSessionFactory({
       projectPath: root.projectPath,
@@ -612,6 +693,7 @@ export class AgentTeamCoordinator {
       controlQueue: Promise.resolve(),
       toolProvenanceByCall: new Map(),
       profileSystemPrompt: prepared.profileSystemPrompt,
+      allowDelegation,
       ...(prepared.instructions ? { instructions: prepared.instructions } : {}),
       selectedSkills: prepared.selectedSkills,
       skillMode: prepared.skillMode,
@@ -634,7 +716,8 @@ export class AgentTeamCoordinator {
     const model = modelRuntime.getModel(node.model.provider, node.model.id);
     if (!root || !model) throw new Error(`Stored model ${node.model.provider}/${node.model.id} is unavailable for ${node.path}.`);
     const parent = this.requireNode(runtime, node.parentNodeId!);
-    const collaborationTools = createAgentCollaborationTools(this, node.id, modelRuntime);
+    const allowDelegation = existing?.allowDelegation !== false;
+    const collaborationTools = allowDelegation ? createAgentCollaborationTools(this, node.id, modelRuntime) : [];
     const session = await this.childSessionFactory({
       projectPath: root.projectPath,
       modelRuntime,
@@ -661,6 +744,7 @@ export class AgentTeamCoordinator {
       controlQueue: Promise.resolve(),
       toolProvenanceByCall: new Map(),
       profileSystemPrompt: existing?.profileSystemPrompt ?? '',
+      allowDelegation,
       ...(existing?.instructions ? { instructions: existing.instructions } : {}),
       selectedSkills: existing?.selectedSkills ?? [],
       skillMode: existing?.skillMode ?? 'all',

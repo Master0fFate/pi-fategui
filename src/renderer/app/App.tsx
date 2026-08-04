@@ -5,6 +5,7 @@ import { applyVisualSettings } from '../appearance';
 import { useRuntimeStore } from '../stores/runtimeStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useUiStore } from '../stores/uiStore';
+import { useGoalMaxStore } from '../stores/goalMaxStore';
 import { fallbackThemes } from '../theme';
 
 const MAX_HYDRATION_BUFFER_EVENTS = 1_000;
@@ -84,6 +85,9 @@ export function App() {
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
   const hydrateRuntime = useRuntimeStore((state) => state.hydrateRuntime);
   const applyEvents = useRuntimeStore((state) => state.applyEvents);
+  const applyGoalEvents = useGoalMaxStore((state) => state.applyEvents);
+  const selectGoalSession = useGoalMaxStore((state) => state.selectSession);
+  const hydrateGoal = useGoalMaxStore((state) => state.hydrate);
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
   const projectTrusted = useRuntimeStore((state) => state.runtime.project?.trusted ?? false);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
@@ -136,6 +140,26 @@ export function App() {
     }).catch(() => undefined);
     return () => { active = false; };
   }, [projectPath, projectTrusted]);
+
+  useEffect(() => {
+    const generation = selectGoalSession(projectPath, sessionId);
+    if (!projectPath || !sessionId || !('piDesktop' in window) || typeof window.piDesktop.getGoalMax !== 'function') {
+      hydrateGoal(generation, null);
+      return;
+    }
+    let active = true;
+    void window.piDesktop.getGoalMax().then((goal) => {
+      if (active) hydrateGoal(generation, goal);
+    }).catch(() => {
+      if (active) hydrateGoal(generation, null);
+    });
+    return () => { active = false; };
+  }, [hydrateGoal, projectPath, selectGoalSession, sessionId]);
+
+  useEffect(() => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.onGoalMaxEvents !== 'function') return undefined;
+    return window.piDesktop.onGoalMaxEvents((events) => applyGoalEvents(events));
+  }, [applyGoalEvents]);
 
   useEffect(() => {
     if (!('piDesktop' in window) || typeof window.piDesktop.onSpeechDownload !== 'function') return undefined;

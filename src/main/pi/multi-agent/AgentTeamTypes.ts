@@ -18,6 +18,7 @@ export interface AgentNodeRuntime {
   retentionTimer?: ReturnType<typeof setTimeout>;
   modelRuntime: ModelRuntime;
   profileSystemPrompt: string;
+  allowDelegation: boolean;
   instructions?: string;
   selectedSkills: SelectedSubagentSkill[];
   skillMode: 'all' | 'selected' | 'none';
@@ -65,7 +66,7 @@ export interface PreparedAgentRequest extends SpawnAgentRequest {
 }
 
 export interface AgentTeamCoordinatorHost {
-  resolveRoot(sessionId: string): { projectPath: string; session: AgentSession; permissionLevel: PermissionLevel } | null;
+  resolveRoot(sessionId: string): { projectPath: string; session: AgentSession; permissionLevel: PermissionLevel; agentStrategy?: 'auto' | 'off' | 'read-only' } | null;
   /**
    * Routes child-generated messages through the root session's lifecycle gate.
    * A message arriving after `agent_end` must wait for `agent_settled`; queueing

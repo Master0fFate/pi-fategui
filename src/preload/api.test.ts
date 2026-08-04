@@ -32,6 +32,18 @@ describe('preload desktop bridge', () => {
     expect(electron.removeListener).toHaveBeenCalledWith(ipcChannels.runtimeEvents, handler);
   });
 
+  it('validates GoalMax events on the isolated bridge', () => {
+    const listener = vi.fn();
+    const unsubscribe = piDesktopApi.onGoalMaxEvents(listener);
+    const handler = electron.on.mock.calls.find(([channel]) => channel === ipcChannels.runtimeGoalMaxEvents)?.[1] as ((event: unknown, payload: unknown) => void);
+    const valid = [{ type: 'goalmax.cleared', projectPath: '/project', sessionId: 's1', goalId: 'goal-1', timestamp: 1 }];
+    handler({}, valid);
+    expect(listener).toHaveBeenCalledWith(valid);
+    expect(() => handler({}, [{ ...valid[0], goalId: '' }])).toThrow();
+    unsubscribe();
+    expect(electron.removeListener).toHaveBeenCalledWith(ipcChannels.runtimeGoalMaxEvents, handler);
+  });
+
   it('writes bounded plain text through the clipboard IPC channel', async () => {
     electron.invoke.mockResolvedValueOnce({ written: true });
 

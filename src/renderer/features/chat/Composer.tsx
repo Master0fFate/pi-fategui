@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
-import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, Ellipsis, FileText, FolderOpen, GitFork, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
+import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, Ellipsis, FileText, FolderOpen, GitFork, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
 import { type ChangeEvent, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { FileEntry, PromptInput, QueueMutationInput } from '../../../shared/contracts/ipc';
@@ -9,6 +9,9 @@ import { AppTooltip } from '../../components/AppTooltip';
 import { SelectControl } from '../../components/SelectControl';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useGoalMaxStore } from '../../stores/goalMaxStore';
+import { GoalMaxRail } from '../goalmaxxing/GoalMaxRail';
+import { parseGoalMaxCommand } from '../goalmaxxing/parseGoalMaxCommand';
 import { ContextWheel } from './ContextWheel';
 import { agentMentionContext, findAgentMentions, parseAgentStopCommand } from './agentMentions';
 import { fileTagContext, fileTagText, findFileTags } from './fileTags';
@@ -98,7 +101,7 @@ type SendHoldGesture = {
   target: HTMLButtonElement;
   detachListeners: () => void;
 };
-type SendClickOutcome = 'submit-follow-up' | 'cancel';
+type SendClickOutcome = 'submit-follow-up' | 'submit-prompt' | 'cancel';
 const thinkingLabel = (level: string) => level === 'xhigh' ? 'Extra high' : level.charAt(0).toUpperCase() + level.slice(1);
 const normalizedPointerId = (pointerId: number) => Number.isFinite(pointerId) ? pointerId : 1;
 
@@ -240,6 +243,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const cachedActiveDraft = activeSessionDraftKey === null ? undefined : sessionDraftsByIdentity.get(activeSessionDraftKey);
   const editorDraft = activeDraftKey.current === activeSessionDraftKey ? draft : cachedActiveDraft?.text ?? '';
   const queue = useRuntimeStore((state) => state.queue);
+  const activeGoal = useGoalMaxStore((state) => state.goal);
+  const setActiveGoal = useGoalMaxStore((state) => state.setGoal);
   const subagentOrder = useRuntimeStore((state) => state.subagentOrder);
   const queuedItems = queue.items ?? [];
   const sendMessageWithModifier = useUiStore((state) => state.sendMessageWithModifier);
@@ -258,6 +263,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const PermissionIcon = permissionLevel === 'read-only' ? Shield : permissionLevel === 'full-access' ? Zap : ShieldCheck;
   const forkPoint = runtime.forkPoints?.at(-1);
   const activeSessionRunning = runtime.activeSessionRunning ?? runtime.streaming;
+  const goalCancelable = Boolean(activeGoal && activeGoal.status !== 'completed' && activeGoal.status !== 'cancelled');
   const canFork = Boolean(runtime.sessionCapabilities?.fork && forkPoint && !activeSessionRunning && !runtime.sessionOperation);
   const forkTooltip = forking
     ? 'Creating the new session…'
@@ -586,9 +592,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   }, [clearSendHoldGesture]);
 
   useEffect(() => {
-    if (runtime.streaming) return;
+    if (runtime.streaming || goalCancelable) return;
     if (clearSendHoldGesture()) sendClickOutcome.current = 'cancel';
-  }, [clearSendHoldGesture, runtime.streaming]);
+  }, [clearSendHoldGesture, goalCancelable, runtime.streaming]);
 
   useEffect(() => {
     const selectionKey = `${runtime.project?.path ?? ''}\u0000${runtime.sessionId ?? ''}`;
@@ -681,6 +687,21 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       }
     };
     try {
+      const goalCommand = parseGoalMaxCommand(text);
+      if (goalCommand) {
+        if (submittedImages.length > 0) throw new Error('Remove image attachments before starting GoalMax.');
+        if (goalCommand.kind === 'invalid') throw new Error(goalCommand.message);
+        if (typeof window.piDesktop.createGoalMax !== 'function') throw new Error('Restart Fate UI to create persistent goals.');
+        setActiveGoal(await window.piDesktop.createGoalMax({
+          objective: goalCommand.objective,
+          verificationLevel: 'normal',
+          agentStrategy: 'auto',
+          tokenLimit: null,
+          timeLimitMs: null,
+        }));
+        clearSubmittedDraft();
+        return;
+      }
       const stopCommand = submittedImages.length === 0 ? parseAgentStopCommand(text) : null;
       if (stopCommand) {
         if (typeof window.piDesktop.controlSubagent !== 'function') throw new Error('Restart Fate UI to use direct agent controls.');
@@ -709,9 +730,14 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const abortSendGesture = (gesture: SendHoldGesture) => {
     if (gesture.aborted || sendHoldGesture.current !== gesture) return gesture.aborted;
     const runtimeNow = useRuntimeStore.getState().runtime;
-    if (runtimeNow.status !== 'ready' || !runtimeNow.streaming || !('piDesktop' in window)) return false;
+    const goalNow = useGoalMaxStore.getState().goal;
+    const cancellableGoal = Boolean(goalNow && goalNow.status !== 'completed' && goalNow.status !== 'cancelled');
+    if (runtimeNow.status !== 'ready' || (!runtimeNow.streaming && !cancellableGoal) || !('piDesktop' in window)) return false;
     gesture.aborted = true;
-    void window.piDesktop.abort().catch((error: unknown) => {
+    const cancellation = cancellableGoal && typeof window.piDesktop.controlGoalMax === 'function'
+      ? window.piDesktop.controlGoalMax({ action: 'cancel', reason: 'Cancelled from the composer hold control.' }).then((goal) => { if (mounted.current) setActiveGoal(goal); })
+      : window.piDesktop.abort().then(() => undefined);
+    void cancellation.catch((error: unknown) => {
       if (mounted.current) setComposerError(error instanceof Error ? error.message : 'Pi could not be stopped.');
     });
     return true;
@@ -722,9 +748,12 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     if (!gesture || gesture.pointerId !== pointerId) return;
     if (!gesture.aborted && performance.now() - gesture.startedAt >= SEND_HOLD_TO_ABORT_MS) abortSendGesture(gesture);
     const runtimeNow = useRuntimeStore.getState().runtime;
+    const goalNow = useGoalMaxStore.getState().goal;
     const outcome: SendClickOutcome = !gesture.aborted && runtimeNow.status === 'ready' && runtimeNow.streaming
       ? 'submit-follow-up'
-      : 'cancel';
+      : !gesture.aborted && runtimeNow.status === 'ready' && goalNow && goalNow.status !== 'completed' && goalNow.status !== 'cancelled'
+        ? 'submit-prompt'
+        : 'cancel';
     clearSendHoldGesture(pointerId);
     sendClickOutcome.current = outcome;
   };
@@ -740,7 +769,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     // meaningless false isPrimary; real touch/pen pointers must be primary.
     if ((Number.isFinite(event.button) && event.button !== 0) || (event.pointerType && event.isPrimary === false) || sendHoldGesture.current) return;
     const runtimeNow = useRuntimeStore.getState().runtime;
-    if (runtimeNow.status !== 'ready' || !runtimeNow.streaming) return;
+    const goalNow = useGoalMaxStore.getState().goal;
+    const cancellableGoal = Boolean(goalNow && goalNow.status !== 'completed' && goalNow.status !== 'cancelled');
+    if (runtimeNow.status !== 'ready' || (!runtimeNow.streaming && !cancellableGoal)) return;
 
     const pointerId = normalizedPointerId(event.pointerId);
     const target = event.currentTarget;
@@ -1501,7 +1532,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
           <div ref={slashList} className="slash-suggestions-list">
             {commandSuggestions.map((command, index) => {
               const source = command.source ?? 'prompt';
-              const Icon = source === 'skill' ? Sparkles : source === 'extension' ? Plug : FileText;
+              const Icon = source === 'skill' ? Sparkles : source === 'extension' ? Plug : source === 'builtin' ? Target : FileText;
               return (
                 <button
                   id={`slash-option-${index}`}
@@ -1567,6 +1598,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
           })}
         </section>
       )}
+      <GoalMaxRail />
       <form
         ref={composer}
         className="composer"
@@ -1817,16 +1849,16 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                   </button>
                 </AppTooltip>
               )}
-              {runtime.streaming && <span id="streaming-send-instructions" className="visually-hidden">Hold continuously for two seconds to stop Pi without queuing the draft.</span>}
-              <AppTooltip content={runtime.streaming ? 'Click sends or queues the message · Hold for 2 seconds to stop Pi' : sendMessageWithModifier ? 'Send · Ctrl/⌘ Enter' : 'Send · Enter'}>
+              {(runtime.streaming || goalCancelable) && <span id="streaming-send-instructions" className="visually-hidden">Hold continuously for two seconds to {goalCancelable ? 'cancel the persistent goal and stop its work' : 'stop Pi without queuing the draft'}.</span>}
+              <AppTooltip content={runtime.streaming ? `Click sends or queues the message · Hold for 2 seconds to ${goalCancelable ? 'cancel goal' : 'stop Pi'}` : goalCancelable ? 'Send · Hold for 2 seconds to cancel goal' : sendMessageWithModifier ? 'Send · Ctrl/⌘ Enter' : 'Send · Enter'}>
                 <span className="send-tooltip-trigger">
                   <button
                     className="send-button"
                     type="submit"
-                    aria-label={runtime.streaming ? 'Queue follow-up message' : 'Send message'}
-                    aria-describedby={runtime.streaming ? 'streaming-send-instructions' : undefined}
+                    aria-label={runtime.streaming ? 'Queue follow-up message' : goalCancelable && !draft.trim() ? 'Goal control; hold to cancel goal' : 'Send message'}
+                    aria-describedby={runtime.streaming || goalCancelable ? 'streaming-send-instructions' : undefined}
                     aria-busy={submitting}
-                    disabled={!connected || (!runtime.streaming && (!draft.trim() || submitting))}
+                    disabled={!connected || (!runtime.streaming && submitting) || (!runtime.streaming && !goalCancelable && !draft.trim())}
                     onPointerDown={startSendHold}
                     onPointerUp={(event) => finishSendHold(normalizedPointerId(event.pointerId))}
                     onPointerCancel={(event) => cancelSendHold(normalizedPointerId(event.pointerId))}
@@ -1838,6 +1870,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                       sendClickOutcome.current = null;
                       event.preventDefault();
                       if (outcome === 'submit-follow-up') void submit('followUp');
+                      else if (outcome === 'submit-prompt') void submit('prompt');
                     }}
                   >
                     {submitting && !runtime.streaming ? <LoaderCircle className="tool-spinner" size={16} /> : <ArrowUp size={18} />}

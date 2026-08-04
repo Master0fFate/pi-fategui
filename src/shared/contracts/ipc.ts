@@ -8,6 +8,14 @@ import { themeCatalogSchema, type ThemeDefinition } from '../themes';
 import { agentTeamSchema, agentTeamControlInputSchema, type AgentTeamControlInput } from './multiAgent';
 import { toolProvenanceSchema } from './provenance';
 import { imageGenerationProviderIds } from '../imageGeneration';
+import type {
+  GoalMaxClearResult,
+  GoalMaxControlInput,
+  GoalMaxCreateInput,
+  GoalMaxEvent,
+  GoalMaxState,
+  GoalMaxUpdateInput,
+} from './goalmaxxing';
 
 export const ipcChannels = {
   systemGetInfo: 'system:get-info',
@@ -29,6 +37,12 @@ export const ipcChannels = {
   runtimeSetThinking: 'runtime:set-thinking',
   runtimeSetPermission: 'runtime:set-permission',
   runtimeMutateQueue: 'runtime:mutate-queue',
+  runtimeGoalMaxGet: 'runtime:goalmax:get',
+  runtimeGoalMaxCreate: 'runtime:goalmax:create',
+  runtimeGoalMaxControl: 'runtime:goalmax:control',
+  runtimeGoalMaxUpdate: 'runtime:goalmax:update',
+  runtimeGoalMaxClear: 'runtime:goalmax:clear',
+  runtimeGoalMaxEvents: 'runtime:goalmax:events',
   runtimeNewSession: 'runtime:new-session',
   runtimeListSessions: 'runtime:list-sessions',
   runtimeSwitchSession: 'runtime:switch-session',
@@ -314,7 +328,7 @@ export const runtimeToolSchema = z.object({
 export const slashCommandSchema = z.object({
   name: z.string().min(1).max(500),
   description: z.string().max(2_000),
-  source: z.enum(['extension', 'prompt', 'skill']).optional(),
+  source: z.enum(['builtin', 'extension', 'prompt', 'skill']).optional(),
 });
 export const skillInfoSchema = z.object({ name: z.string().min(1).max(500), description: z.string().max(2_000) });
 export const contextUsageSchema = z.object({
@@ -1023,6 +1037,12 @@ export interface PiDesktopApi {
   setThinkingLevel: (level: ThinkingLevel) => Promise<RuntimeState>;
   setPermissionLevel: (level: PermissionLevel) => Promise<RuntimeState>;
   mutateQueuedMessage: (input: QueueMutationInput) => Promise<QueueMutationResult>;
+  getGoalMax: () => Promise<GoalMaxState | null>;
+  createGoalMax: (input: GoalMaxCreateInput) => Promise<GoalMaxState>;
+  controlGoalMax: (input: GoalMaxControlInput) => Promise<GoalMaxState>;
+  updateGoalMax: (input: GoalMaxUpdateInput) => Promise<GoalMaxState>;
+  clearGoalMax: () => Promise<GoalMaxClearResult>;
+  onGoalMaxEvents: (listener: (events: GoalMaxEvent[]) => void) => () => void;
   newSession: () => Promise<RuntimeState>;
   listSessions: (query?: string) => Promise<SessionSummary[]>;
   switchSession: (sessionId: string) => Promise<RuntimeState>;

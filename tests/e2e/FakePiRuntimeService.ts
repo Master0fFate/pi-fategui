@@ -1,3 +1,4 @@
+import type { GoalMaxClearResult, GoalMaxControlInput, GoalMaxCreateInput, GoalMaxEvent, GoalMaxState, GoalMaxUpdateInput } from '../../src/shared/contracts/goalmaxxing';
 import type { PermissionLevel, PiEvent, ProjectState, PromptAcceptance, PromptInput, QueuedMessage, QueueMutationInput, QueueMutationResult, RuntimeState, SessionSummary, SubagentControlInput, SubagentRun, ThinkingLevel } from '../../src/shared/contracts/ipc';
 import type { AgentTeam, AgentTeamControlInput } from '../../src/shared/contracts/multiAgent';
 
@@ -82,12 +83,15 @@ export class FakePiRuntimeService {
   private agentTeams: AgentTeam[] = [];
   private readonly sessionPermissions = new Map<string, PermissionLevel>();
   private sink: (events: PiEvent[]) => void = () => undefined;
+  private goalSink: (event: GoalMaxEvent) => void = () => undefined;
+  private readonly goals = new Map<string, GoalMaxState>();
   private readonly sessions: SessionSummary[] = [
     { id: 'e2e-session-1', title: 'First session', firstMessage: '', path: 'test://session-1', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 0, active: true },
     { id: 'e2e-session-2', title: 'Second session', firstMessage: 'Second', path: 'test://session-2', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-03T00:00:00.000Z', messageCount: 1, active: false },
   ];
 
   setEventSink(sink: (events: PiEvent[]) => void): void { this.sink = sink; }
+  setGoalEventSink(sink: (event: GoalMaxEvent) => void): void { this.goalSink = sink; }
   getHydrationState(): RuntimeState { return this.getState(); }
   getState(): RuntimeState {
     const historical = this.activeSession === 'e2e-session-2';
@@ -98,6 +102,7 @@ export class FakePiRuntimeService {
       messages: historical ? [{ id: 'history-assistant', role: 'assistant', text: '**Second session** history', timestamp: 1, timelinePosition: 0 }] : [],
       tools: historical ? [{ id: 'history-tool', name: 'read', input: '{"path":"README.md"}', output: 'historical output', outputTruncated: false, status: 'succeeded', startedAt: 2, updatedAt: 3, endedAt: 3, timelinePosition: 0.5 }] : [],
       commands: [
+        { name: 'goalmaxxing', description: 'Start a persistent, visible, evidence-verified engineering goal', source: 'builtin' },
         { name: 'parallax', description: 'Control the Parallax engineering protocol', source: 'extension' },
         { name: 'skill:vibesecurity', description: 'Defensive, evidence-first security review', source: 'skill' },
         { name: 'review', description: 'Review changes', source: 'prompt' },
@@ -268,6 +273,79 @@ export class FakePiRuntimeService {
       ...(input.action === 'edit' ? { restored: { text: target.text, ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}) } } : {}),
     };
   }
+  async getGoalMax(): Promise<GoalMaxState | null> { return this.goals.get(this.activeSession) ?? null; }
+  async createGoalMax(input: GoalMaxCreateInput): Promise<GoalMaxState> {
+    if (this.goals.has(this.activeSession)) throw new Error('This session already has an active goal.');
+    const now = Date.now();
+    const goal: GoalMaxState = {
+      schemaVersion: 2, id: `goal-${this.activeSession}`, sessionId: this.activeSession, projectPath: this.project?.path ?? '', revision: 1,
+      objective: input.objective.trim(), originalBriefRef: null, originalBriefHash: null, status: 'active', phase: 'implementation', executionState: 'running-root',
+      verificationLevel: input.verificationLevel, agentStrategy: input.agentStrategy,
+      criteria: [
+        { id: 'e2e-goal-criterion', title: 'Deliver the objective', description: input.objective.trim(), required: true, status: 'active', evidenceIds: [], ownerNodeIds: [], updatedAt: now },
+        { id: 'e2e-goal-verify', title: 'Verify the delivered result', description: 'Run the completion gate.', required: true, status: 'pending', evidenceIds: [], ownerNodeIds: [], updatedAt: now },
+      ],
+      budget: { tokenLimit: input.tokenLimit, timeLimitMs: input.timeLimitMs, source: input.tokenLimit !== null || input.timeLimitMs !== null ? 'user-explicit' : null },
+      permission: { permissionLevel: this.permissionLevel, projectTrusted: true, revision: 1, resolvedAt: now },
+      progress: { meaningfulTurnCount: 0, noProgressTurnCount: 0, repeatedFailureCount: 0, planningOnlyTurnCount: 0, changedFileCount: 0, baselineWorkspaceFingerprint: 'e2e', latestWorkspaceFingerprint: 'e2e', latestEvidenceAt: null, latestMeaningfulProgressAt: null, lastFailureFingerprint: null },
+      evidence: [], continuation: { pending: false, attempt: 0, lastScheduledAt: now, lastSettledAt: null, reason: 'Goal started' }, steering: [], childAssignments: [],
+      tokensUsed: 0, tokenBaseline: 0, elapsedMs: 0, timeline: [{ id: 'e2e-goal-created', type: 'goal.created', summary: 'Goal created.', timestamp: now, revision: 1 }],
+      createdAt: now, updatedAt: now, startedAt: now, completedAt: null, blockedReason: null, failure: null,
+    };
+    this.goals.set(this.activeSession, goal);
+    this.emitGoal(goal);
+    await this.prompt({ text: goal.objective, behavior: 'prompt' });
+    return goal;
+  }
+  async controlGoalMax(input: GoalMaxControlInput): Promise<GoalMaxState> {
+    const goal = this.goals.get(this.activeSession);
+    if (!goal) throw new Error('This session has no GoalMax objective.');
+    const now = Date.now();
+    let status = goal.status;
+    let phase = goal.phase;
+    if (input.action === 'pause') status = 'paused';
+    else if (input.action === 'resume') status = 'active';
+    else if (input.action === 'cancel') { status = 'cancelled'; await this.abort(); }
+    else if (input.action === 'verify') { status = 'completed'; phase = 'handoff'; }
+    const eventType: GoalMaxState['timeline'][number]['type'] = input.action === 'checkpoint' ? 'checkpoint.created' : input.action === 'verify' ? 'verification.passed' : input.action === 'pause' ? 'goal.paused' : input.action === 'resume' ? 'goal.resumed' : 'goal.cancelled';
+    const verificationEvidence = status === 'completed' ? {
+      id: `e2e-goal-verification-${goal.revision + 1}`, kind: 'verification' as const, title: 'Independent completion gate passed', summary: 'E2E verification passed.',
+      criterionIds: goal.criteria.map((criterion) => criterion.id), source: 'verifier' as const, timestamp: now, current: true,
+    } : null;
+    const next: GoalMaxState = {
+      ...goal, revision: goal.revision + 1, status, phase,
+      executionState: 'idle',
+      criteria: verificationEvidence ? goal.criteria.map((criterion) => ({ ...criterion, status: 'satisfied' as const, evidenceIds: [...criterion.evidenceIds, verificationEvidence.id], updatedAt: now })) : goal.criteria,
+      evidence: verificationEvidence ? [...goal.evidence, verificationEvidence] : goal.evidence,
+      completedAt: status === 'completed' ? now : goal.completedAt,
+      blockedReason: input.action === 'pause' || input.action === 'cancel' ? input.reason ?? null : null,
+      updatedAt: now,
+      timeline: [...goal.timeline, { id: `e2e-goal-event-${goal.revision + 1}`, type: eventType, summary: `Goal ${input.action}.`, timestamp: now, revision: goal.revision + 1 }].slice(-256),
+    };
+    this.goals.set(this.activeSession, next); this.emitGoal(next); return next;
+  }
+  async updateGoalMax(input: GoalMaxUpdateInput): Promise<GoalMaxState> {
+    const goal = this.goals.get(this.activeSession);
+    if (!goal || goal.revision !== input.expectedRevision) throw new Error('The goal changed while it was being edited.');
+    const now = Date.now();
+    const tokenLimit = input.tokenLimit === undefined ? goal.budget.tokenLimit : input.tokenLimit;
+    const timeLimitMs = input.timeLimitMs === undefined ? goal.budget.timeLimitMs : input.timeLimitMs;
+    const next: GoalMaxState = {
+      ...goal, revision: goal.revision + 1, objective: input.objective ?? goal.objective,
+      criteria: input.criteria?.map((criterion, index) => ({ id: criterion.id ?? `e2e-goal-criterion-${index}`, title: criterion.title, description: criterion.description, required: criterion.required, status: 'pending' as const, evidenceIds: [], ownerNodeIds: [], updatedAt: now })) ?? goal.criteria,
+      verificationLevel: input.verificationLevel ?? goal.verificationLevel, agentStrategy: input.agentStrategy ?? goal.agentStrategy,
+      budget: { tokenLimit, timeLimitMs, source: tokenLimit !== null || timeLimitMs !== null ? 'user-explicit' : null }, updatedAt: now,
+    };
+    this.goals.set(this.activeSession, next); this.emitGoal(next); return next;
+  }
+  async clearGoalMax(): Promise<GoalMaxClearResult> {
+    const goal = this.goals.get(this.activeSession);
+    if (!goal) return { cleared: false, archivedGoalId: null };
+    if (goal.status !== 'completed' && goal.status !== 'cancelled') await this.controlGoalMax({ action: 'cancel', reason: 'Cleared by the user.' });
+    this.goals.delete(this.activeSession);
+    this.goalSink({ type: 'goalmax.cleared', projectPath: goal.projectPath, sessionId: goal.sessionId, goalId: goal.id, timestamp: Date.now() });
+    return { cleared: true, archivedGoalId: goal.id };
+  }
   async newSession(): Promise<RuntimeState> { this.activeSession = 'e2e-session-1'; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(this.activeSession) ?? 'full-access'; this.emitState(); return this.getState(); }
   async listSessions(query = ''): Promise<SessionSummary[]> { return this.getState().sessions!.filter((session) => session.title.toLowerCase().includes(query.toLowerCase())); }
   async switchSession(sessionId: string): Promise<RuntimeState> { this.activeSession = sessionId; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(sessionId) ?? 'full-access'; this.emitState(true); return this.getState(); }
@@ -276,6 +354,7 @@ export class FakePiRuntimeService {
     const index = this.sessions.findIndex((session) => session.id === sessionId);
     if (index >= 0 && sessionId !== this.activeSession) this.sessions.splice(index, 1);
     this.sessionPermissions.delete(sessionId);
+    this.goals.delete(sessionId);
     this.emitState();
     return this.getState();
   }
@@ -357,6 +436,10 @@ export class FakePiRuntimeService {
       this.emitState();
     };
     setTimeout(pump, 0);
+  }
+
+  private emitGoal(goal: GoalMaxState): void {
+    this.goalSink({ type: 'goalmax.snapshot', projectPath: goal.projectPath, sessionId: goal.sessionId, goal, timestamp: Date.now() });
   }
 
   private emitState(messagesIncluded = false): void {

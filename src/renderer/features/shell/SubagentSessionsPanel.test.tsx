@@ -1,8 +1,10 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { Profiler } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeState, SubagentRun } from '../../../shared/contracts/ipc';
 import type { AgentTeam } from '../../../shared/contracts/multiAgent';
+import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { ToolCard } from '../chat/ToolCard';
@@ -88,11 +90,76 @@ describe('subagent session inspector', () => {
   beforeEach(() => {
     localStorage.clear();
     useRuntimeStore.getState().hydrateRuntime(state);
+    useGoalMaxStore.setState({ projectPath: '/project', sessionId: 'parent-1', goal: null, loading: false, selectionGeneration: 1 });
     useUiStore.setState({ inspectorTab: 'changes', selectedSubagentRunId: null, inspectorCollapsed: false, flightDeckJump: null, toast: null });
   });
 
   afterEach(() => {
     Reflect.deleteProperty(window, 'piDesktop');
+  });
+
+  it('keeps the Agents tab free of notification-style counters', () => {
+    useGoalMaxStore.setState({ goal: { childAssignments: [{ status: 'running' }] } as never });
+    render(<Inspector onCollapse={vi.fn()} />);
+
+    const tab = screen.getByRole('tab', { name: 'Subagent sessions' });
+    expect(tab).toHaveAttribute('data-layer', 'execution');
+    expect(tab).toHaveAttribute('data-layer-start', 'true');
+    expect(screen.getByRole('tab', { name: 'Changes' })).toHaveAttribute('data-layer', 'workspace');
+    expect(screen.getByRole('tab', { name: 'Resources' })).toHaveAttribute('data-layer', 'system');
+    expect(tab.querySelector('.goalmax-agent-marker')).toBeNull();
+    expect(tab).not.toHaveTextContent('1');
+  });
+
+  it('marks goal-owned agents and exposes their assignment scope without duplicating the Flight Deck', async () => {
+    const user = userEvent.setup();
+    useGoalMaxStore.setState({
+      goal: {
+        criteria: [{ id: 'criterion-auth', title: 'Verify the authentication boundary' }],
+        childAssignments: [{
+          id: 'assignment-auth', goalId: 'goal-1', nodeId: run.id, label: 'Architecture Scout', lane: 'research',
+          objective: run.task, criterionIds: ['criterion-auth'], evidenceIds: ['evidence-auth'], status: 'completed',
+        }],
+      } as never,
+    });
+    render(<SubagentSessionsPanel />);
+
+    expect(screen.getByLabelText('Goal-linked research agent · 1 criterion · 1 evidence')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Open Architecture Scout (@architecture-scout-1) child session: Completed' }));
+
+    const scope = screen.getByRole('region', { name: 'Goal assignment' });
+    expect(within(scope).getByText('research lane')).toBeVisible();
+    expect(within(scope).getByText('1 criterion · 1 evidence')).toBeVisible();
+  });
+
+  it('does not rerender the Agents tree for unrelated goal usage updates', () => {
+    const stableCriteria = [{ id: 'criterion-auth', title: 'Verify the authentication boundary' }];
+    const stableAssignments = [{ nodeId: run.id, criterionIds: ['criterion-auth'], evidenceIds: [], lane: 'research' }];
+    useGoalMaxStore.setState({ goal: { id: 'goal-1', criteria: stableCriteria, childAssignments: stableAssignments, tokensUsed: 1 } as never });
+    const onRender = vi.fn();
+    render(<Profiler id="agents" onRender={onRender}><SubagentSessionsPanel /></Profiler>);
+    const initialRenders = onRender.mock.calls.length;
+
+    act(() => useGoalMaxStore.setState({ goal: { id: 'goal-1', criteria: stableCriteria, childAssignments: stableAssignments, tokensUsed: 2 } as never }));
+
+    expect(onRender).toHaveBeenCalledTimes(initialRenders);
+  });
+
+  it('does not repaint collapsed agent rows for hidden transcript tokens', async () => {
+    const onRender = vi.fn();
+    render(<Profiler id="agents" onRender={onRender}><SubagentSessionsPanel /></Profiler>);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    const initialRenders = onRender.mock.calls.length;
+    const recorderVersion = useRuntimeStore.getState().subagentRecorderVersion;
+
+    act(() => useRuntimeStore.getState().applyEvents([{
+      type: 'subagent.event', runId: run.id, timestamp: 30,
+      event: { type: 'assistant.text', messageId: 'answer', delta: ' hidden token', timestamp: 30 },
+    }]));
+
+    expect(onRender).toHaveBeenCalledTimes(initialRenders);
+    expect(useRuntimeStore.getState().subagentRecorderVersion).toBe(recorderVersion);
+    expect(useRuntimeStore.getState().subagentsById[run.id]?.messages).toContainEqual(expect.objectContaining({ id: 'answer', text: '**Boundary confirmed.** hidden token' }));
   });
 
   it('renders and announces an explicitly requested ten-agent team', async () => {
@@ -224,6 +291,24 @@ describe('subagent session inspector', () => {
     act(() => useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', { kind: 'agent', runId: 'not-retained' }));
     await waitFor(() => expect(useUiStore.getState().flightDeckJump).toBeNull());
     expect(useUiStore.getState().toast).toMatchObject({ title: 'Activity not retained' });
+  });
+
+  it('collapses and restores an Agent Team branch directly below the main agent', async () => {
+    const user = userEvent.setup();
+    useRuntimeStore.getState().hydrateRuntime({ ...state, subagents: [], agentTeams: [team] });
+    render(<SubagentSessionsPanel />);
+
+    const toggle = screen.getByRole('button', { name: /Agent Team V2/u });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByLabelText('Reviewer Agent Team node ready')).toBeInTheDocument();
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByLabelText('Reviewer Agent Team node ready')).not.toBeInTheDocument();
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByLabelText('Reviewer Agent Team node ready')).toBeInTheDocument();
   });
 
   it.each([

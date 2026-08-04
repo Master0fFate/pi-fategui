@@ -2,9 +2,11 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { Profiler } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { GoalMaxState } from '../../../shared/contracts/goalmaxxing';
 import type { PiDesktopApi, RuntimeState, SubagentRun } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { clampComposerInputHeight, clearComposerSessionDrafts, Composer, uniqueAttachmentName } from './Composer';
 import { ContextWheel } from './ContextWheel';
 import { AssistantMarkdown, coalesceSubagentWaitPolls, ConversationTimeline, followsMessage, forkEntryForMessage, MessageRow } from './ConversationTimeline';
@@ -36,10 +38,21 @@ const childRun: SubagentRun = {
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 };
 
+const activeGoalFixture = (status: GoalMaxState['status'] = 'active'): GoalMaxState => ({
+  schemaVersion: 2, id: 'goal-1', sessionId: 's1', projectPath: '/project', revision: 1, objective: 'Implement GoalMax', originalBriefRef: null, originalBriefHash: null,
+  status, phase: 'implementation', executionState: 'running-root', verificationLevel: 'normal', agentStrategy: 'auto',
+  criteria: [{ id: 'criterion-1', title: 'Implement', description: '', required: true, status: 'active', evidenceIds: [], ownerNodeIds: [], updatedAt: 1 }],
+  budget: { tokenLimit: null, timeLimitMs: null, source: null }, permission: { permissionLevel: 'edit', projectTrusted: true, revision: 1, resolvedAt: 1 },
+  progress: { meaningfulTurnCount: 0, noProgressTurnCount: 0, repeatedFailureCount: 0, planningOnlyTurnCount: 0, changedFileCount: 0, baselineWorkspaceFingerprint: 'a', latestWorkspaceFingerprint: 'a', latestEvidenceAt: null, latestMeaningfulProgressAt: null, lastFailureFingerprint: null },
+  evidence: [], continuation: { pending: false, attempt: 0, lastScheduledAt: null, lastSettledAt: null, reason: null }, steering: [], childAssignments: [], tokensUsed: 0, tokenBaseline: 0, elapsedMs: 0, timeline: [],
+  createdAt: 1, updatedAt: 1, startedAt: 1, completedAt: null, blockedReason: null, failure: null,
+});
+
 const reset = () => {
   useRuntimeStore.getState().setRuntime({ ...ready(), sessionId: null });
   useRuntimeStore.getState().setRuntime(ready());
-  useUiStore.setState({ sendMessageWithModifier: false, composerDraftRequest: null, toast: null });
+  useUiStore.setState({ sendMessageWithModifier: false, composerDraftRequest: null, toast: null, goalEditorOpen: false });
+  useGoalMaxStore.setState({ projectPath: '/project', sessionId: 's1', goal: null, loading: false, selectionGeneration: 1 });
 };
 
 describe('conversation components', () => {
@@ -895,6 +908,32 @@ describe('conversation components', () => {
     expect(uniqueAttachmentName('wallpaper.png', ['cover.png'])).toBe('wallpaper.png');
   });
 
+  it('routes /goalmaxxing through the control plane without forwarding slash text to Pi', async () => {
+    const created = activeGoalFixture();
+    const createGoalMax = vi.fn(async () => created);
+    const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { getGoalMax: vi.fn(async () => null), createGoalMax, prompt } as unknown as PiDesktopApi });
+    render(<Composer onOpenProject={vi.fn()} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Message Pi'), '/goalmaxxing Implement and verify persistence{Enter}');
+    await waitFor(() => expect(createGoalMax).toHaveBeenCalledWith({ objective: 'Implement and verify persistence', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null }));
+    expect(prompt).not.toHaveBeenCalled();
+    expect(useGoalMaxStore.getState().goal?.id).toBe('goal-1');
+  });
+
+  it('keeps bare /goalmaxxing local and asks for an objective', async () => {
+    const createGoalMax = vi.fn();
+    const prompt = vi.fn();
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { createGoalMax, prompt } as unknown as PiDesktopApi });
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    await userEvent.setup().type(screen.getByLabelText('Message Pi'), '/goalmaxxing{Enter}');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Add an objective after /goalmaxxing.');
+    expect(createGoalMax).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
   it('queues Enter as a follow-up by default during an active Pi run', async () => {
     const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
     const abort = vi.fn(async () => ({ aborted: true }));
@@ -957,6 +996,51 @@ describe('conversation components', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('cancels an active goal after the two-second composer hold', () => {
+    vi.useFakeTimers();
+    try {
+      const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+      const abort = vi.fn(async () => ({ aborted: true }));
+      const cancelled = activeGoalFixture('cancelled');
+      const controlGoalMax = vi.fn(async () => cancelled);
+      Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, abort, controlGoalMax } as unknown as PiDesktopApi });
+      useGoalMaxStore.setState({ goal: activeGoalFixture() });
+      useRuntimeStore.setState({ runtime: ready({ streaming: true }), queue: { steering: 0, followUp: 0, items: [] } });
+      render(<Composer onOpenProject={vi.fn()} />);
+      const send = screen.getByRole('button', { name: 'Queue follow-up message' });
+      fireEvent.pointerDown(send, { button: 0, pointerId: 18, isPrimary: true });
+      vi.advanceTimersByTime(2_000);
+      fireEvent.pointerUp(send, { button: 0, pointerId: 18, isPrimary: true });
+      fireEvent.click(send);
+      expect(controlGoalMax).toHaveBeenCalledOnce();
+      expect(controlGoalMax).toHaveBeenCalledWith({ action: 'cancel', reason: 'Cancelled from the composer hold control.' });
+      expect(abort).not.toHaveBeenCalled();
+      expect(prompt).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps the hold-to-cancel control available while an active goal is idle and the draft is empty', () => {
+    vi.useFakeTimers();
+    try {
+      const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+      const controlGoalMax = vi.fn(async () => activeGoalFixture('cancelled'));
+      Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, controlGoalMax } as unknown as PiDesktopApi });
+      useGoalMaxStore.setState({ goal: activeGoalFixture() });
+      useRuntimeStore.setState({ runtime: ready({ streaming: false }), queue: { steering: 0, followUp: 0, items: [] } });
+      render(<Composer onOpenProject={vi.fn()} />);
+      const send = screen.getByRole('button', { name: 'Goal control; hold to cancel goal' });
+      expect(send).toBeEnabled();
+
+      fireEvent.pointerDown(send, { button: 0, pointerId: 19, isPrimary: true });
+      vi.advanceTimersByTime(2_000);
+      fireEvent.pointerUp(send, { button: 0, pointerId: 19, isPrimary: true });
+      fireEvent.click(send);
+
+      expect(controlGoalMax).toHaveBeenCalledOnce();
+      expect(prompt).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 
   it('cleans streaming arrow holds on cancellation, lost capture, and unmount', () => {

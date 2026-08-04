@@ -11,6 +11,7 @@ import { AppLogService } from './logging/AppLogService';
 import { MusicService, PublicHttpsProxy } from './music/MusicService';
 import { PiRuntimeService } from './pi/PiRuntimeService';
 import { SessionPermissionStore } from './pi/SessionPermissionStore';
+import { GoalMaxRepository } from './pi/goalmaxxing/GoalMaxRepository';
 import { ProjectService } from './projects/ProjectService';
 import { secureWebPreferences } from './security/windowOptions';
 import { createTrustedRendererPolicy, isExternalHttpsUrl, isTrustedAudioPermissionRequest, isTrustedRendererUrl } from './security/trustedRenderer';
@@ -56,6 +57,7 @@ const runtime = new PiRuntimeService(
   new SessionPermissionStore(logs),
   undefined,
   () => settings.get().imageGeneration,
+  new GoalMaxRepository(logs),
 );
 const projects = new ProjectService();
 const files = new FilesystemService();

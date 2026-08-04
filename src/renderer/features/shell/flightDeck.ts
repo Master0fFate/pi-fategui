@@ -24,7 +24,7 @@ export type FlightDeckTarget =
   | { kind: 'file'; path: string };
 
 export interface PulseInput {
-  runtime: RuntimeState;
+  runtime: Pick<RuntimeState, 'queue' | 'contextUsage' | 'sessionOperation' | 'status' | 'error' | 'project' | 'streaming' | 'activeSessionRunning'>;
   tools: readonly RuntimeTool[];
   subagents: readonly SubagentRun[];
   workflows: readonly SubagentWorkflow[];

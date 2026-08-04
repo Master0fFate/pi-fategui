@@ -3,11 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { AGENT_TEAM_MAX_MESSAGE_BYTES } from '../../../shared/contracts/multiAgent';
 import type { ChildSessionInput } from '../SubagentSessionFactory';
 
 const createdInputs: ChildSessionInput[] = [];
 const childSessions: AgentSession[] = [];
 const childUnsubscribes: ReturnType<typeof vi.fn>[] = [];
+let promptBarrier: Promise<void> | null = null;
 
 vi.mock('../SubagentSessionFactory', async () => {
   const actual = await vi.importActual<typeof import('../SubagentSessionFactory')>('../SubagentSessionFactory');
@@ -34,6 +36,7 @@ vi.mock('../SubagentSessionFactory', async () => {
           messages.push({ role: 'user', content: text });
           listener?.({ type: 'tool_execution_start', toolCallId: 'read-1', toolName: 'read', args: { path: 'src/example.ts' } });
           listener?.({ type: 'tool_execution_end', toolCallId: 'read-1', toolName: 'read', result: 'ok', isError: false });
+          if (promptBarrier) await promptBarrier;
           const assistant = { role: 'assistant', content: [{ type: 'text', text: `result:${input.teamIdentity?.path}` }], stopReason: 'stop' };
           messages.push(assistant);
           listener?.({ type: 'message_end', message: assistant });
@@ -61,6 +64,7 @@ beforeEach(async () => {
   createdInputs.length = 0;
   childSessions.length = 0;
   childUnsubscribes.length = 0;
+  promptBarrier = null;
   dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-agent-team-test-'));
 });
 afterEach(async () => { await fs.rm(dataRoot, { recursive: true, force: true }); });
@@ -129,6 +133,99 @@ describe('AgentTeamCoordinator vertical slice', () => {
     await expect(coordinator.spawn(grandchild.nodeId, { task: 'too deep' }, 'spawn-3', modelRuntime)).rejects.toThrow(/maximum descendant depth/);
     expect(emitted.length).toBeGreaterThan(2);
     expect(persisted.length).toBeGreaterThan(0);
+  });
+
+  it('waits for the terminal task result instead of an intermediate child change', async () => {
+    let releasePrompt: () => void = () => undefined;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'verify', name: 'verifier' }, 'settlement-spawn', runtime());
+    const settlement = coordinator.waitForTaskSettlement(rootId, child.path, 1_000);
+    let resolved = false;
+    void settlement.then(() => { resolved = true; });
+
+    await settle();
+    expect(resolved).toBe(false);
+
+    releasePrompt();
+    promptBarrier = null;
+    await expect(settlement).resolves.toMatchObject({
+      task: { assigneeNodeId: child.nodeId, status: 'completed' },
+      envelope: { kind: 'FINAL_ANSWER', content: 'result:/root/verifier' },
+    });
+  });
+
+  it('creates a bounded leaf child without collaboration tools', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+
+    await coordinator.spawn(rootId, { task: 'verify directly', name: 'leaf-verifier' }, 'leaf-spawn', runtime(), undefined, { allowDelegation: false });
+    await settle();
+
+    expect(createdInputs[0]?.collaborationTools).toEqual([]);
+    expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.path === '/root/leaf-verifier')?.status).toBe('ready');
+  });
+
+  it('enforces GoalMax delegation strategy while preserving internal read-only review', async () => {
+    const root = rootSession();
+    let agentStrategy: 'off' | 'read-only' = 'off';
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access', agentStrategy }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+
+    await expect(coordinator.spawn(rootId, { task: 'ordinary delegation', permission: 'edit' }, 'blocked-spawn', runtime()))
+      .rejects.toThrow(/strategy is off/u);
+
+    const review = await coordinator.spawn(
+      rootId,
+      { task: 'internal verification', permission: 'read-only' },
+      'review-spawn',
+      runtime(),
+      undefined,
+      { allowDelegation: false, bypassGoalPolicy: true },
+    );
+    await settle();
+    expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === review.nodeId))
+      .toMatchObject({ permissionLevel: 'read-only' });
+    expect(createdInputs.at(-1)?.collaborationTools).toEqual([]);
+
+    agentStrategy = 'read-only';
+    const child = await coordinator.spawn(rootId, { task: 'requested writer', permission: 'full-access' }, 'read-only-spawn', runtime());
+    await settle();
+    expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === child.nodeId))
+      .toMatchObject({ permissionLevel: 'read-only', writer: false });
+  });
+
+  it('rejects an oversized UTF-8 task before reserving a child node', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const oversized = '🧪'.repeat(Math.floor(AGENT_TEAM_MAX_MESSAGE_BYTES / 4) + 1);
+
+    await expect(coordinator.spawn(rootId, { task: oversized, name: 'too-large' }, 'oversized-spawn', runtime()))
+      .rejects.toThrow(/limited to 32768 UTF-8 bytes/u);
+
+    const team = coordinator.getTeams('root-session')[0]!;
+    expect(team.nodes).toHaveLength(1);
+    expect(team.nodes[0]?.childIds).toEqual([]);
+    expect(team.tasks).toEqual([]);
+    expect(team.envelopes).toEqual([]);
+    expect(childSessions).toHaveLength(0);
   });
 
   it('restores durable team state and reopens retained child context for follow-up', async () => {

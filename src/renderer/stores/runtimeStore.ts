@@ -58,6 +58,7 @@ interface RuntimeStore {
   toolsVersion: number;
   timelineVersion: number;
   waitPollVersion: number;
+  subagentRecorderVersion: number;
   queue: RuntimeQueue;
   lastError: AppError | null;
   /** Last accepted main-process event cursor. Uncursored fixtures do not advance it. */
@@ -279,6 +280,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   toolsVersion: 0,
   timelineVersion: 0,
   waitPollVersion: 0,
+  subagentRecorderVersion: 0,
   queue: emptyQueue(),
   lastError: null,
   sequence: 0,
@@ -318,6 +320,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         queue: runtime.queue ?? current.queue,
         lastError: runtime.error,
         sequence: runtime.eventCursor === undefined ? current.sequence : Math.max(current.sequence, runtime.eventCursor),
+        subagentRecorderVersion: current.subagentRecorderVersion + (runtime.subagents ? 1 : 0),
         pendingSessionSwitch: current.pendingSessionSwitch
           && current.pendingSessionSwitch.projectPath === runtime.project?.path
           && current.pendingSessionSwitch.sessionId === runtime.sessionId
@@ -344,6 +347,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       toolsVersion: current.toolsVersion + 1,
       timelineVersion: current.timelineVersion + 1,
       waitPollVersion: current.waitPollVersion + 1,
+      subagentRecorderVersion: current.subagentRecorderVersion + 1,
       queue: runtime.queue ?? emptyQueue(),
       lastError: runtime.error,
       sequence: runtime.eventCursor ?? 0,
@@ -376,6 +380,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       toolsVersion: current.toolsVersion + 1,
       timelineVersion: current.timelineVersion + 1,
       waitPollVersion: current.waitPollVersion + 1,
+      subagentRecorderVersion: current.subagentRecorderVersion + 1,
       queue: runtime.queue ?? emptyQueue(),
       lastError: runtime.error,
       sequence: runtime.eventCursor ?? 0,
@@ -424,6 +429,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         toolsVersion: current.toolsVersion + 1,
         timelineVersion: current.timelineVersion + 1,
         waitPollVersion: current.waitPollVersion + 1,
+        subagentRecorderVersion: current.subagentRecorderVersion + 1,
         queue: emptyQueue(),
         lastError: null,
         sequence: 0,
@@ -460,6 +466,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         toolsVersion: current.toolsVersion + 1,
         timelineVersion: current.timelineVersion + 1,
         waitPollVersion: current.waitPollVersion + 1,
+        subagentRecorderVersion: current.subagentRecorderVersion + 1,
         queue: runtime.queue ?? emptyQueue(),
         lastError: runtime.error,
         sequence: runtime.eventCursor ?? 0,
@@ -494,6 +501,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         toolsVersion: current.toolsVersion + 1,
         timelineVersion: current.timelineVersion + 1,
         waitPollVersion: current.waitPollVersion + 1,
+        subagentRecorderVersion: current.subagentRecorderVersion + 1,
         queue: runtime.queue ?? emptyQueue(),
         lastError: runtime.error,
         sequence: runtime.eventCursor ?? 0,
@@ -519,6 +527,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     let agentTasksById = current.agentTasksById;
     let agentEnvelopesById = current.agentEnvelopesById;
     let subagentsChanged = false;
+    let subagentRecorderChanged = false;
     let subagentImagePayloadChanged = false;
     let timelineById = current.timelineById;
     let timelineOrder = current.timelineOrder;
@@ -653,6 +662,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           ({ subagentsById, subagentOrder } = indexedSubagents(event.state.subagents));
           ({ agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById } = indexedAgentTeams(event.state.agentTeams));
           subagentsChanged = true;
+          subagentRecorderChanged = true;
           activeCompactionId = null;
           timelineSequence = 0;
           sequence = event.state.eventCursor ?? event.cursor ?? (sameSession ? sequence : 0);
@@ -661,6 +671,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           if (event.state.subagents) {
             ({ subagentsById, subagentOrder } = indexedSubagents(event.state.subagents));
             subagentsChanged = true;
+            subagentRecorderChanged = true;
           }
           if (event.state.agentTeams) ({ agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById } = indexedAgentTeams(event.state.agentTeams));
           runtime = {
@@ -740,9 +751,11 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         });
       } else if (event.type === 'subagent.started') {
         setSubagent(event.run);
+        subagentRecorderChanged = true;
       } else if (event.type === 'subagent.updated') {
         const existing = subagentsById[event.runId];
         if (existing) {
+          subagentRecorderChanged ||= event.status !== existing.status || event.displayName !== undefined;
           const base = { ...existing };
           if (event.status === 'queued' || event.status === 'running') delete base.endedAt;
           setSubagent({
@@ -763,6 +776,10 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       } else if (event.type === 'subagent.event') {
         const existing = subagentsById[event.runId];
         if (existing) {
+          subagentRecorderChanged ||= event.event.type === 'message.started'
+            || event.event.type === 'message.completed'
+            || event.event.type === 'tool.started'
+            || event.event.type === 'tool.completed';
           subagentImagePayloadChanged ||= (event.event.type === 'message.completed' || event.event.type === 'tool.completed')
             && Boolean(event.event.images?.length);
           setSubagent(applySubagentChildEvent(existing, event.event));
@@ -777,6 +794,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           });
         }
       } else if (event.type === 'subagent.completed') {
+        subagentRecorderChanged = true;
         subagentImagePayloadChanged ||= Boolean(
           event.run.messages.some((message) => message.images?.length)
           || event.run.tools.some((tool) => tool.images?.length),
@@ -938,6 +956,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       toolsVersion: current.toolsVersion + (toolsChanged ? 1 : 0),
       timelineVersion: current.timelineVersion + (timelineChanged ? 1 : 0),
       waitPollVersion: current.waitPollVersion + (waitPollChanged ? 1 : 0),
+      subagentRecorderVersion: current.subagentRecorderVersion + (subagentRecorderChanged ? 1 : 0),
       queue, lastError, sequence, timelineSequence, activeCompactionId, pendingSessionSwitch,
     };
   }),

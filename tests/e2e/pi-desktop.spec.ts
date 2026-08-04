@@ -287,6 +287,13 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     const v2Team = agents.getByLabel('Agent Team V2 e2e-agent-team');
     await expect(v2Team).toBeVisible();
     await expect(v2Team).toContainText('2/16 nodes · 1/3 active · writer leased');
+    const teamToggle = v2Team.getByRole('button', { name: /Agent Team V2/u });
+    await expect(teamToggle).toHaveAttribute('aria-expanded', 'true');
+    await teamToggle.click();
+    await expect(teamToggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(agents.getByLabel('Reviewer Agent Team node active')).toHaveCount(0);
+    await teamToggle.click();
+    await expect(teamToggle).toHaveAttribute('aria-expanded', 'true');
     await expect(page.getByLabel(/Activity: Reviewer is writing/u)).toBeVisible();
     await expect(agents.getByLabel('Reviewer Agent Team node active')).toContainText('Review the Agent Teams V2 flow');
     await expect(agents.getByLabel('Verifier Agent Team node ready')).toBeVisible();
@@ -429,7 +436,8 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await composerInput.fill('/');
     const slashPicker = page.getByRole('listbox', { name: 'Skills and commands' });
     await expect(slashPicker).toBeVisible();
-    await expect(slashPicker.getByRole('option')).toHaveCount(3);
+    await expect(slashPicker.getByRole('option')).toHaveCount(4);
+    await expect(slashPicker.getByRole('option', { name: /^goalmaxxing\b/i })).toBeVisible();
     await expect(slashPicker.getByRole('option', { name: /^parallax\b/i })).toBeVisible();
     await expect(slashPicker.getByRole('option', { name: /^review\b/i })).toBeVisible();
     await expect(slashPicker.getByRole('option', { name: /^vibesecurity\b/i })).toBeVisible();
@@ -449,6 +457,59 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await composerInput.fill('Keep this on two lines');
     await composerInput.press('Shift+Enter');
     await expect(composerInput).toHaveValue('Keep this on two lines\n');
+
+    await composerInput.fill('/goalmaxxing Build and verify the persistent goal flow');
+    await composerInput.press('Enter');
+    const goalRail = page.getByRole('region', { name: 'Current GoalMax goal' });
+    await expect(goalRail).toContainText('Build and verify the persistent goal flow');
+    await goalRail.getByRole('button', { name: 'Open Goal Flight Deck' }).click();
+    await expect(page.getByRole('tab', { name: /Goal/ })).toHaveAttribute('data-state', 'active');
+    await expect(page.getByRole('region', { name: 'Goal Flight Deck' })).toContainText('Build and verify the persistent goal flow');
+    const goalLayout = await page.evaluate(() => {
+      const rail = document.querySelector<HTMLElement>('.goalmax-rail')!;
+      const actions = document.querySelector<HTMLElement>('.goalmax-rail-actions')!;
+      const deck = document.querySelector<HTMLElement>('.goalmax-flight-deck')!;
+      const header = document.querySelector<HTMLElement>('.goalmax-deck-header')!;
+      const railBounds = rail.getBoundingClientRect();
+      const actionBounds = actions.getBoundingClientRect();
+      return {
+        railOverflow: rail.scrollWidth - rail.clientWidth,
+        deckOverflow: deck.scrollWidth - deck.clientWidth,
+        headerOverflow: header.scrollWidth - header.clientWidth,
+        actionsInsideRail: actionBounds.left >= railBounds.left && actionBounds.right <= railBounds.right,
+      };
+    });
+    expect(goalLayout).toEqual({ railOverflow: 0, deckOverflow: 0, headerOverflow: 0, actionsInsideRail: true });
+    await page.screenshot({ path: 'test-results/pi-desktop-goal-flight-deck.png' });
+    await goalRail.getByRole('button', { name: 'Pause goal' }).click();
+    await expect(goalRail.getByRole('button', { name: 'Resume goal' })).toBeVisible();
+    await goalRail.getByRole('button', { name: 'Resume goal' }).click();
+    const goalDeck = page.getByRole('region', { name: 'Goal Flight Deck' });
+    await goalDeck.getByRole('tab', { name: 'Timeline' }).click();
+    const goalTimelineRows = goalDeck.locator('.goalmax-timeline-row');
+    await expect(goalTimelineRows).toHaveCount(3);
+    await expect(goalTimelineRows.nth(0)).toHaveAttribute('data-first', 'true');
+    await expect(goalTimelineRows.nth(2)).toHaveAttribute('data-last', 'true');
+    expect(await goalTimelineRows.locator('strong').allTextContents()).toEqual(['Goal created.', 'Goal pause.', 'Goal resume.']);
+    const goalTimelineRail = await goalTimelineRows.nth(1).evaluate((row) => {
+      const line = getComputedStyle(row, '::before');
+      const node = getComputedStyle(row.querySelector<HTMLElement>('.goalmax-timeline-rail > i')!);
+      return { lineWidth: line.width, nodeShape: node.borderRadius, nodeBorder: node.borderTopWidth };
+    });
+    expect(goalTimelineRail).toEqual({ lineWidth: '1px', nodeShape: '50%', nodeBorder: '1px' });
+    await goalRail.getByRole('button', { name: 'Edit goal' }).click();
+    const goalEditor = page.getByRole('dialog', { name: 'Edit goal' });
+    await goalEditor.getByLabel('Token limit').fill('50000');
+    await goalEditor.getByRole('button', { name: 'Save' }).click();
+    await expect(goalEditor).toHaveCount(0);
+    await page.getByRole('tab', { name: /Context/ }).click();
+    await expect(page.getByText('Goal budget')).toBeVisible();
+    await expect(page.getByText(/0 \/ 50k/u)).toBeVisible();
+    await goalRail.getByRole('button', { name: 'Clear goal' }).click();
+    const clearGoal = page.getByRole('dialog', { name: 'Clear this goal?' });
+    await clearGoal.getByRole('button', { name: 'Cancel & clear' }).click();
+    await expect(goalRail).toHaveCount(0);
+
     await composerInput.fill('/parallax status');
     await composerInput.press('Enter');
     await expect(page.locator('.chat-message--system')).toContainText('Parallax is active.');

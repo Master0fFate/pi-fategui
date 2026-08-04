@@ -85,6 +85,15 @@ import {
   type RuntimeImage,
 } from '../../shared/contracts/ipc';
 import { agentTeamControlInputSchema } from '../../shared/contracts/multiAgent';
+import {
+  goalMaxClearResultSchema,
+  goalMaxControlInputSchema,
+  goalMaxCreateInputSchema,
+  goalMaxEventBatchSchema,
+  goalMaxStateSchema,
+  goalMaxUpdateInputSchema,
+  type GoalMaxEvent,
+} from '../../shared/contracts/goalmaxxing';
 import { normalizeError, PiDesktopError } from '../pi/errors';
 import { encodedImageSize, MAX_PROMPT_IMAGE_BYTES, MAX_PROMPT_IMAGE_DIMENSION, MAX_PROMPT_IMAGE_TOTAL_PIXELS } from '../pi/PiPromptImages';
 import type { FilesystemService } from '../files/FilesystemService';
@@ -287,6 +296,27 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     const batch = piEventBatchSchema.parse(events);
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeEvents, batch);
   });
+  let pendingGoalEvents: GoalMaxEvent[] = [];
+  let goalEventTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushGoalEvents = () => {
+    if (goalEventTimer) clearTimeout(goalEventTimer);
+    goalEventTimer = null;
+    if (pendingGoalEvents.length === 0) return;
+    const batch = goalMaxEventBatchSchema.parse(pendingGoalEvents.splice(0, 50));
+    for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeGoalMaxEvents, batch);
+    if (pendingGoalEvents.length > 0) {
+      goalEventTimer = setTimeout(flushGoalEvents, 0);
+      goalEventTimer.unref?.();
+    }
+  };
+  runtime.setGoalEventSink((event) => {
+    pendingGoalEvents.push(event);
+    if (pendingGoalEvents.length >= 50) flushGoalEvents();
+    else if (!goalEventTimer) {
+      goalEventTimer = setTimeout(flushGoalEvents, 16);
+      goalEventTimer.unref?.();
+    }
+  });
   terminal.setEventSink((ownerId, event) => {
     const owner = webContents.fromId(ownerId);
     if (owner && !owner.isDestroyed()) owner.send(ipcChannels.terminalEvents, terminalEventSchema.parse(event));
@@ -423,6 +453,24 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.runtimeMutateQueue, async (_event, input) => runRuntimeMutation('editing queued messages', async () => (
     queueMutationResultSchema.parse(await runtime.mutateQueuedMessage(queueMutationInputSchema.parse(input)))
   )));
+  handle(ipcChannels.runtimeGoalMaxGet, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    const goal = await runtime.getGoalMax();
+    return goal === null ? null : goalMaxStateSchema.parse(goal);
+  });
+  handle(ipcChannels.runtimeGoalMaxCreate, async (_event, input) => runRuntimeMutation('creating a goal', async () => (
+    goalMaxStateSchema.parse(await runtime.createGoalMax(goalMaxCreateInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.runtimeGoalMaxControl, async (_event, input) => runRuntimeMutation('controlling a goal', async () => (
+    goalMaxStateSchema.parse(await runtime.controlGoalMax(goalMaxControlInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.runtimeGoalMaxUpdate, async (_event, input) => runRuntimeMutation('editing a goal', async () => (
+    goalMaxStateSchema.parse(await runtime.updateGoalMax(goalMaxUpdateInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.runtimeGoalMaxClear, async (_event, input) => runRuntimeMutation('clearing a goal', async () => {
+    emptyInputSchema.parse(input);
+    return goalMaxClearResultSchema.parse(await runtime.clearGoalMax());
+  }));
   handle(ipcChannels.runtimeNewSession, async (_event, input) => {
     emptyInputSchema.parse(input);
     return runRuntimeMutation('creating a session', async () => runtimeStateSchema.parse(await runtime.newSession()));

@@ -11,7 +11,7 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { activeToolsForPermission, assertOwnedToolDefinitions, PiRuntimeService, isCanonicalPathInside, selectUserExtensionPaths, type PiSdkAdapter } from './PiRuntimeService';
+import { activeToolsForPermission, assertOwnedToolDefinitions, PiRuntimeService, isCanonicalPathInside, selectUserExtensionPaths, shouldSyncGoalChildrenForPiEvent, type PiSdkAdapter } from './PiRuntimeService';
 import type { PiEvent } from '../../shared/contracts/ipc';
 import { PiSessionRepository } from './PiSessionRepository';
 import type { SessionTitleGenerator } from './PiSessionTitleGenerator';
@@ -131,6 +131,24 @@ function fixture(availableModels: typeof model[] = [model]) {
 afterEach(() => vi.useRealTimers());
 
 describe('PiRuntimeService', () => {
+  it('keeps GoalMax reconciliation off child token deltas while retaining lifecycle and tool evidence', () => {
+    const childEvent = (type: 'assistant.text' | 'assistant.reasoning' | 'tool.updated' | 'tool.completed') => ({
+      type: 'subagent.event', runId: 'child-1', timestamp: 1,
+      event: type === 'tool.completed'
+        ? { type, toolCallId: 'tool-1', name: 'read', output: 'done', error: false, timestamp: 1 }
+        : type === 'tool.updated'
+          ? { type, toolCallId: 'tool-1', output: 'partial', timestamp: 1 }
+          : { type, messageId: 'message-1', delta: 'token', timestamp: 1 },
+    }) as PiEvent;
+
+    expect(shouldSyncGoalChildrenForPiEvent(childEvent('assistant.text'))).toBe(false);
+    expect(shouldSyncGoalChildrenForPiEvent(childEvent('assistant.reasoning'))).toBe(false);
+    expect(shouldSyncGoalChildrenForPiEvent(childEvent('tool.updated'))).toBe(false);
+    expect(shouldSyncGoalChildrenForPiEvent(childEvent('tool.completed'))).toBe(true);
+    expect(shouldSyncGoalChildrenForPiEvent({ type: 'subagent.completed' } as PiEvent)).toBe(true);
+    expect(shouldSyncGoalChildrenForPiEvent({ type: 'subagent.workflow.updated' } as PiEvent)).toBe(true);
+  });
+
   it('gates controlled tools without disabling active extension capabilities', () => {
     expect(activeToolsForPermission(['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen'], 'edit')).toEqual(['read', 'edit', 'write', 'generate_image', 'imagegen']);
     expect(activeToolsForPermission(['read', 'edit', 'write', 'generate_image', 'imagegen'], 'read-only')).toEqual(['read', 'generate_image', 'imagegen']);
@@ -144,7 +162,7 @@ describe('PiRuntimeService', () => {
   });
 
   it('activates one orchestration protocol surface while registering both for restored sessions', async () => {
-    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents'];
+    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'goalmax_status', 'goalmax_report'];
     const legacy = fixture();
     const legacyService = new PiRuntimeService(legacy.adapter);
     await legacyService.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'medium', defaultModel: null, agentTeamMode: 'legacy' });
@@ -826,6 +844,87 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('exposes a deterministic built-in goal command and persists goal control outside prompt text', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    const goalEvents: unknown[] = [];
+    service.setGoalEventSink((event) => goalEvents.push(event));
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    expect(service.getState(false).commands).toContainEqual(expect.objectContaining({ name: 'goalmaxxing', source: 'builtin' }));
+
+    const goal = await service.createGoalMax({ objective: 'Implement and verify GoalMax', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    expect(goal).toMatchObject({ objective: 'Implement and verify GoalMax', status: 'active', budget: { source: null } });
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'fate-goalmax-capsule', display: false }), { triggerTurn: false, deliverAs: 'nextTurn' });
+    expect(fake.session.prompt).toHaveBeenCalledWith('Implement and verify GoalMax', expect.any(Object));
+    expect(await service.getGoalMax()).toMatchObject({ id: goal.id });
+    expect(goalEvents).toContainEqual(expect.objectContaining({ type: 'goalmax.snapshot', goal: expect.objectContaining({ id: goal.id }) }));
+
+    fake.settle();
+    await service.prompt({ text: 'Use the compact rail for controls', behavior: 'prompt' });
+    expect((await service.getGoalMax())?.steering).toContainEqual(expect.objectContaining({ text: 'Use the compact rail for controls', behavior: 'prompt' }));
+    expect(fake.session.sendCustomMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ customType: 'fate-goalmax-capsule', details: expect.objectContaining({ goalId: goal.id }) }),
+      { triggerTurn: false, deliverAs: 'nextTurn' },
+    );
+    fake.settle();
+    await service.controlGoalMax({ action: 'cancel' });
+    await expect(service.clearGoalMax()).resolves.toMatchObject({ cleared: true, archivedGoalId: goal.id });
+    await expect(service.getGoalMax()).resolves.toBeNull();
+    await service.dispose();
+  });
+
+  it('enforces root-only agent policy and restores the session orchestration surface after clear', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    expect(fake.session.getActiveToolNames()).toContain('subagent_start');
+
+    await service.createGoalMax({ objective: 'Complete this without delegation', verificationLevel: 'normal', agentStrategy: 'off', tokenLimit: null, timeLimitMs: null });
+    expect(fake.session.getActiveToolNames().some((name) => ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'spawn_agent'].includes(name))).toBe(false);
+
+    await service.controlGoalMax({ action: 'cancel' });
+    await service.clearGoalMax();
+    expect(fake.session.getActiveToolNames()).toContain('subagent_start');
+    await service.dispose();
+  });
+
+  it('preserves an idle active goal across manual context compaction', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const goal = await service.createGoalMax({ objective: 'Survive context compaction', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    fake.settle();
+    await vi.waitFor(() => expect(fake.session.isStreaming).toBe(false));
+
+    await expect(service.compact()).resolves.toMatchObject({ sessionId: 'session-1' });
+
+    expect(fake.session.compact).toHaveBeenCalledOnce();
+    await expect(service.getGoalMax()).resolves.toMatchObject({ id: goal.id, objective: 'Survive context compaction', status: 'active' });
+    await service.controlGoalMax({ action: 'cancel' });
+    await service.clearGoalMax();
+    await service.dispose();
+  });
+
+  it('applies staged reasoning policy before an automatic goal continuation', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.createGoalMax({ objective: 'Continue with the latest reasoning policy', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    service.setThinkingLevel('high');
+    fake.emitSession({ type: 'agent_start' });
+    fake.settle();
+    fake.emitSession({ type: 'agent_settled' });
+
+    await vi.waitFor(() => expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ customType: 'fate-goalmax-continuation' }),
+      { triggerTurn: true },
+    ));
+    expect(fake.session.setThinkingLevel).toHaveBeenCalledWith('high');
+    await service.controlGoalMax({ action: 'cancel' });
+    await service.clearGoalMax();
+    await service.dispose();
+  });
+
   it('aborts an active run', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
@@ -1110,6 +1209,7 @@ describe('PiRuntimeService', () => {
     const state = await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     expect(state.commands).toEqual([
+      { name: 'goalmaxxing', description: 'Start a persistent, visible, evidence-verified engineering goal', source: 'builtin' },
       { name: 'parallax', description: 'Control Parallax', source: 'extension' },
       { name: 'review', description: 'Review changes', source: 'prompt' },
       { name: 'skill:vibesecurity', description: 'Defensive security review', source: 'skill' },

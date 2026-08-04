@@ -41,7 +41,9 @@ export function slashCommandDescription(command: SlashCommand): string {
     ? 'Load skill instructions'
     : command.source === 'extension'
       ? 'Run extension command'
-      : 'Use prompt template';
+      : command.source === 'builtin'
+        ? 'Use Fate UI command'
+        : 'Use prompt template';
   const clean = (command.description || fallback).replace(/\s+/g, ' ').trim();
   if (clean.length <= 92) return clean;
   const candidate = clean.slice(0, 89);

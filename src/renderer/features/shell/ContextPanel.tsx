@@ -6,9 +6,13 @@ import {
   Database,
   Gauge,
   ShieldCheck,
+  Target,
 } from 'lucide-react';
-import { memo } from 'react';
+import { memo, useEffect, useState } from 'react';
 import type { RuntimeState, TokenMetrics, TokenUsageSample } from '../../../shared/contracts/ipc';
+import { useGoalMaxStore } from '../../stores/goalMaxStore';
+import { useUiStore } from '../../stores/uiStore';
+import { InspectorSectionHeading } from './InspectorPrimitives';
 
 const integerFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 const timeFormatter = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -29,6 +33,13 @@ function formatCost(value: number): string {
   if (value < 0.01) return `$${value.toFixed(4)}`;
   if (value < 100) return `$${value.toFixed(2)}`;
   return `$${integerFormatter.format(value)}`;
+}
+
+function formatGoalDuration(milliseconds: number): string {
+  const minutes = Math.max(0, Math.round(milliseconds / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
 }
 
 function inputTokens(usage: Pick<TokenMetrics, 'input' | 'cacheRead' | 'cacheWrite'>): number {
@@ -185,23 +196,10 @@ function UsageComposition({ usage }: { usage: TokenMetrics }) {
   );
 }
 
-function SectionHeading({ icon: Icon, title, detail }: {
-  icon: typeof Activity;
-  title: string;
-  detail?: string;
-}) {
-  return (
-    <header className="context-section-heading">
-      <span><Icon size={13} /><strong>{title}</strong></span>
-      {detail ? <small>{detail}</small> : null}
-    </header>
-  );
-}
-
 function RuntimeFacts({ runtime }: { runtime: RuntimeState }) {
   return (
     <section className="context-runtime">
-      <SectionHeading icon={Database} title="Runtime" />
+      <InspectorSectionHeading icon={Database} title="Runtime" />
       <dl>
         <div><dt>Model</dt><dd>{runtime.model?.name ?? 'Unavailable'}</dd></div>
         <div><dt>Thinking</dt><dd>{runtime.thinkingLevel}</dd></div>
@@ -217,6 +215,15 @@ function RuntimeFacts({ runtime }: { runtime: RuntimeState }) {
 }
 
 export function ContextPanel({ runtime }: { runtime: RuntimeState }) {
+  const goal = useGoalMaxStore((state) => state.goal);
+  const setGoalEditorOpen = useUiStore((state) => state.setGoalEditorOpen);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!goal || goal.status === 'completed' || goal.status === 'cancelled') return undefined;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [goal?.id, goal?.status]);
   const context = runtime.contextUsage;
   const telemetry = runtime.tokenTelemetry;
   const session = telemetry?.session;
@@ -275,8 +282,22 @@ export function ContextPanel({ runtime }: { runtime: RuntimeState }) {
         </div>
       </section>
 
+      {goal ? (
+        <section className="context-goal-budget">
+          <InspectorSectionHeading icon={Target} title="Goal budget" detail={goal.budget.source === 'user-explicit' ? 'User-set limits' : goal.budget.source === 'system-hard-limit' ? 'System policy' : 'No explicit limit'} />
+          <dl>
+            <div><dt>Tokens</dt><dd>{formatTokens(goal.tokensUsed)} / {goal.budget.tokenLimit === null ? 'none' : formatTokens(goal.budget.tokenLimit)}</dd></div>
+            <div><dt>Time</dt><dd>{formatGoalDuration(goal.elapsedMs + (goal.startedAt && goal.status !== 'completed' && goal.status !== 'cancelled' ? Math.max(0, now - goal.updatedAt) : 0))} / {goal.budget.timeLimitMs === null ? 'none' : formatGoalDuration(goal.budget.timeLimitMs)}</dd></div>
+            <div><dt>Source</dt><dd>{goal.budget.source ?? 'none'}</dd></div>
+            <div><dt>Verification</dt><dd>{goal.verificationLevel}</dd></div>
+            <div><dt>Agents</dt><dd>{goal.agentStrategy}</dd></div>
+          </dl>
+          <button type="button" onClick={() => setGoalEditorOpen(true)}>Edit limits</button>
+        </section>
+      ) : null}
+
       <section className="context-traffic">
-        <SectionHeading
+        <InspectorSectionHeading
           icon={Activity}
           title="Token traffic"
           detail={telemetry?.history.length ? `Active branch · latest ${telemetry.history.length}` : 'Active branch'}
@@ -286,12 +307,12 @@ export function ContextPanel({ runtime }: { runtime: RuntimeState }) {
       </section>
 
       <section className="context-breakdown">
-        <SectionHeading icon={BarChart3} title="Session ledger" detail="All billed session work" />
+        <InspectorSectionHeading icon={BarChart3} title="Session ledger" detail="All billed session work" />
         {session ? <UsageComposition usage={session} /> : <div className="context-inline-empty">Token totals appear after the first completed response.</div>}
       </section>
 
       <section className="context-latest">
-        <SectionHeading
+        <InspectorSectionHeading
           icon={BrainCircuit}
           title="Latest response"
           detail={latest ? timeFormatter.format(latest.timestamp) : 'No response yet'}
@@ -310,7 +331,7 @@ export function ContextPanel({ runtime }: { runtime: RuntimeState }) {
       </section>
 
       <section className="context-definitions">
-        <SectionHeading icon={CircleDollarSign} title="How to read this" />
+        <InspectorSectionHeading icon={CircleDollarSign} title="How to read this" />
         <p><strong>Input</strong> is uncached prompt traffic. <strong>Cache read</strong> was served from provider cache. <strong>Output</strong> already includes reasoning tokens when reported.</p>
       </section>
 

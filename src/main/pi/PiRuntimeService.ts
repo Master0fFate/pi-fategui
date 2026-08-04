@@ -41,8 +41,17 @@ import type {
   SubagentControlInput,
   SubagentParentLivenessReport,
   SubagentNotification,
+  SubagentStatus,
   ThinkingLevel,
 } from '../../shared/contracts/ipc';
+import type {
+  GoalMaxClearResult,
+  GoalMaxControlInput,
+  GoalMaxCreateInput,
+  GoalMaxEvent,
+  GoalMaxState,
+  GoalMaxUpdateInput,
+} from '../../shared/contracts/goalmaxxing';
 import { PiEventBatcher } from './PiEventBatcher';
 import { PiEventNormalizer, messageImages, messageText, safeText, subagentRunIds } from './PiEventNormalizer';
 import { createToolProvenance } from './ToolProvenance';
@@ -61,6 +70,10 @@ import { defaultImageGenerationSettings } from '../../shared/imageGeneration';
 import { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
 import type { AgentTeamControlInput } from '../../shared/contracts/multiAgent';
 import { InMemorySessionPermissionStore, type SessionPermissionPersistence } from './SessionPermissionStore';
+import { GoalMaxCoordinator, type GoalMaxDiagnosticResult, type GoalMaxRuntimeChild, type GoalMaxRuntimeChildObservation, type GoalMaxRuntimeSnapshot, type GoalMaxVerificationResult } from './goalmaxxing/GoalMaxCoordinator';
+import { goalMaxCapsule } from './goalmaxxing/GoalMaxPrompt';
+import { InMemoryGoalMaxRepository, type GoalMaxPersistence } from './goalmaxxing/GoalMaxRepository';
+import { classifyGoalMaxTool } from './goalmaxxing/GoalMaxProgressEngine';
 
 export interface SessionDefaults {
   thinkingLevel: ThinkingLevel;
@@ -163,6 +176,37 @@ export { activeToolsForPermission } from './PiToolPolicy';
 const LEGACY_ORCHESTRATION_TOOLS = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog'] as const;
 const V2_ORCHESTRATION_TOOLS = ['spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'subagent_catalog'] as const;
 const ALL_ORCHESTRATION_TOOLS = new Set<string>([...LEGACY_ORCHESTRATION_TOOLS, ...V2_ORCHESTRATION_TOOLS]);
+
+function goalChildStatus(status: SubagentStatus): GoalMaxRuntimeChild['status'] {
+  if (status === 'queued') return 'pending';
+  if (status === 'running') return 'running';
+  if (status === 'completed') return 'completed';
+  if (status === 'blocked' || status === 'interrupted') return 'blocked';
+  if (status === 'cancelled' || status === 'skipped') return 'cancelled';
+  return 'failed';
+}
+
+export function shouldSyncGoalChildrenForPiEvent(event: PiEvent): boolean {
+  if (event.type === 'subagent.started' || event.type === 'subagent.updated' || event.type === 'subagent.completed' || event.type === 'subagent.workflow.updated') return true;
+  return event.type === 'subagent.event' && event.event.type === 'tool.completed';
+}
+
+function goalObservationFromRuntimeTool(tool: RuntimeTool): GoalMaxRuntimeChildObservation | null {
+  if (tool.status === 'running') return null;
+  const observation = classifyGoalMaxTool(tool.name, tool.input, tool.output, tool.status === 'error');
+  if (!observation) return null;
+  return {
+    key: `tool:${tool.id}`,
+    kind: observation.kind,
+    title: observation.title,
+    summary: observation.summary,
+    timestamp: tool.endedAt ?? tool.updatedAt,
+    meaningful: observation.meaningful || observation.investigation,
+    ...(observation.path ? { path: observation.path } : {}),
+    ...(observation.command ? { command: observation.command } : {}),
+    ...(observation.exitCode === undefined ? {} : { exitCode: observation.exitCode }),
+  };
+}
 
 const toolAccessBySession = new WeakMap<AgentSession, ProjectToolAccess>();
 const ownedCustomToolsBySession = new WeakMap<AgentSession, readonly ToolDefinition[]>();
@@ -655,9 +699,12 @@ export class PiRuntimeService {
   private status: RuntimeState['status'] = 'disconnected';
   private fallbackStateError: AppError | null = null;
   private eventSink: (events: PiEvent[]) => void = () => undefined;
+  private goalEventSink: (event: GoalMaxEvent) => void = () => undefined;
+  private readonly goalSessionEntryCheckpoints = new Map<string, { goalId: string; status: GoalMaxState['status']; phase: GoalMaxState['phase']; revision: number; persistedAt: number }>();
   private readonly batcher: PiEventBatcher;
   private readonly subagents: SubagentCoordinator;
   private readonly agentTeams: AgentTeamCoordinator;
+  private readonly goalMax: GoalMaxCoordinator;
   private readonly disconnectedNormalizer = new PiEventNormalizer(() => null);
   private initialization = 0;
   private sessions: SessionSummary[] = [];
@@ -687,6 +734,7 @@ export class PiRuntimeService {
     private readonly sessionPermissions: SessionPermissionPersistence = new InMemorySessionPermissionStore(),
     private readonly sessionTitleGenerator: SessionTitleGenerator = new PiSessionTitleGenerator(),
     private readonly getImageGenerationSettings: ImageGenerationSettingsResolver = () => defaultImageGenerationSettings,
+    goalPersistence: GoalMaxPersistence = new InMemoryGoalMaxRepository(),
   ) {
     this.batcher = new PiEventBatcher((events) => this.eventSink(events));
     const childSessionFactory = (input: Parameters<typeof createSdkChildSession>[0]) => createSdkChildSession({
@@ -697,7 +745,8 @@ export class PiRuntimeService {
       resolveRoot: (sessionId) => {
         const slot = this.findLiveSlot(sessionId);
         if (!slot || !this.project) return null;
-        return { projectPath: this.project.path, session: slot.runtime.session, permissionLevel: slot.permissionLevel };
+        const agentStrategy = this.goalAgentStrategy(sessionId);
+        return { projectPath: this.project.path, session: slot.runtime.session, permissionLevel: slot.permissionLevel, ...(agentStrategy ? { agentStrategy } : {}) };
       },
       sendRootMessage: (rootSessionId, message, activeDelivery, triggerWhenIdle) => {
         const slot = this.findLiveSlot(rootSessionId);
@@ -706,6 +755,7 @@ export class PiRuntimeService {
       },
       emit: (rootSessionId, team) => {
         const slot = this.findLiveSlot(rootSessionId);
+        this.syncGoalChildren(rootSessionId);
         if (this.selectedSlot === slot) this.enqueue({ type: 'agent-team.updated', team, timestamp: team.updatedAt });
         else if (slot && team.nodes.some((node) => node.depth > 0 && (node.status === 'active' || node.status === 'creating'))) {
           this.setSessionAttention(slot, 'running');
@@ -722,18 +772,21 @@ export class PiRuntimeService {
       settled: (rootSessionId) => {
         const slot = this.findLiveSlot(rootSessionId);
         if (!slot || slot.disposed) return;
+        this.syncGoalChildren(rootSessionId);
         if (this.selectedSlot === slot) this.emitState();
-        else if (!this.agentTeams.hasOwnedWork(rootSessionId) && !this.subagents.hasOwnedWork(rootSessionId) && !this.sessionHasActiveWork(slot.runtime.session)) this.settleInactiveSlot(slot);
+        else if (!this.agentTeams.hasOwnedWork(rootSessionId) && !this.subagents.hasOwnedWork(rootSessionId) && !this.goalMax.hasRunnableGoal(rootSessionId) && !this.sessionHasActiveWork(slot.runtime.session)) this.settleInactiveSlot(slot);
       },
     }, undefined, childSessionFactory);
     this.subagents = new SubagentCoordinator({
       resolveParent: (sessionId) => {
         const slot = this.findLiveSlot(sessionId);
         if (!slot || !this.project) return null;
-        return { projectPath: this.project.path, session: slot.runtime.session, permissionLevel: slot.permissionLevel };
+        const agentStrategy = this.goalAgentStrategy(sessionId);
+        return { projectPath: this.project.path, session: slot.runtime.session, permissionLevel: slot.permissionLevel, ...(agentStrategy ? { agentStrategy } : {}) };
       },
       emit: (parentSessionId, event) => {
         const slot = this.findLiveSlot(parentSessionId);
+        if (shouldSyncGoalChildrenForPiEvent(event)) this.syncGoalChildren(parentSessionId);
         if (this.selectedSlot === slot) {
           this.enqueue(event);
         } else if (slot && event.type === 'subagent.started') {
@@ -784,17 +837,51 @@ export class PiRuntimeService {
       settled: (parentSessionId) => {
         const slot = this.findLiveSlot(parentSessionId);
         if (!slot || slot.disposed) return;
+        this.syncGoalChildren(parentSessionId);
         if (this.selectedSlot === slot) {
           this.emitState();
-        } else if (!this.subagents.hasOwnedWork(parentSessionId) && !this.agentTeams.hasOwnedWork(parentSessionId) && !this.sessionHasActiveWork(slot.runtime.session)) {
+        } else if (!this.subagents.hasOwnedWork(parentSessionId) && !this.agentTeams.hasOwnedWork(parentSessionId) && !this.goalMax.hasRunnableGoal(parentSessionId) && !this.sessionHasActiveWork(slot.runtime.session)) {
           this.settleInactiveSlot(slot);
         }
       },
     }, childSessionFactory);
+    this.goalMax = new GoalMaxCoordinator({
+      runtime: (sessionId) => this.goalRuntimeSnapshot(sessionId),
+      startGoal: (sessionId, objective, capsule) => this.startGoalTurn(sessionId, objective, capsule),
+      continueGoal: (sessionId, capsule, goalId, revision) => this.continueGoalTurn(sessionId, capsule, goalId, revision),
+      steerGoal: (sessionId, capsule, goalId, revision) => this.steerGoalTurn(sessionId, capsule, goalId, revision),
+      abortGoal: (sessionId) => this.abortGoalSession(sessionId),
+      verifyGoal: (sessionId, prompt) => this.verifyGoalWithChild(sessionId, prompt),
+      diagnoseGoal: (sessionId, prompt) => this.diagnoseGoalWithChild(sessionId, prompt),
+      persistSessionEvent: (sessionId, state) => {
+        const slot = this.findLiveSlot(sessionId);
+        if (!slot || slot.disposed) return;
+        const previous = this.goalSessionEntryCheckpoints.get(sessionId);
+        const now = Date.now();
+        if (previous?.goalId === state.id && state.revision <= previous.revision) return;
+        const goalChanged = !previous || previous.goalId !== state.id;
+        const statusChanged = !previous || previous.status !== state.status;
+        const phaseCheckpoint = Boolean(previous && previous.phase !== state.phase && now - previous.persistedAt >= 5_000);
+        const periodicCheckpoint = Boolean(previous && now - previous.persistedAt >= 60_000);
+        const terminal = state.status === 'completed' || state.status === 'cancelled';
+        if (!goalChanged && !statusChanged && !phaseCheckpoint && !periodicCheckpoint && !terminal) return;
+        slot.runtime.session.sessionManager.appendCustomEntry('fate-goalmax-event', {
+          kind: 'fate-goalmax-event', version: 1, goalId: state.id, revision: state.revision,
+          status: state.status, phase: state.phase, updatedAt: state.updatedAt,
+        });
+        this.goalSessionEntryCheckpoints.set(sessionId, { goalId: state.id, status: state.status, phase: state.phase, revision: state.revision, persistedAt: now });
+        slot.modifiedAt = new Date().toISOString();
+      },
+      emit: (event) => this.handleGoalEvent(event),
+    }, goalPersistence);
   }
 
   setEventSink(sink: (events: PiEvent[]) => void): void {
     this.eventSink = sink;
+  }
+
+  setGoalEventSink(sink: (event: GoalMaxEvent) => void): void {
+    this.goalEventSink = sink;
   }
 
   getState(includeMessages = true): RuntimeState {
@@ -812,8 +899,9 @@ export class PiRuntimeService {
       ))
       .filter((message): message is RuntimeMessage => message !== null);
     const tools = toTools(allMessages);
-    let objective = this.objective;
-    if (includeMessages) {
+    const activeGoal = session && this.project ? this.goalMax.get(this.project.path, session.sessionId) : null;
+    let objective = activeGoal?.objective ?? this.objective;
+    if (includeMessages && !activeGoal) {
       objective = '';
       for (let index = allMessages.length - 1; index >= 0; index -= 1) {
         const message = allMessages[index] as { role?: unknown } | undefined;
@@ -1012,7 +1100,7 @@ export class PiRuntimeService {
     }
   }
 
-  async prompt(input: PromptInput): Promise<PromptAcceptance> {
+  async prompt(input: PromptInput, skipCommandExpansion = false): Promise<PromptAcceptance> {
     const session = this.requireSession();
     const slot = this.selectedSlot!;
     if (this.replacementActive) {
@@ -1020,8 +1108,10 @@ export class PiRuntimeService {
     }
     const initialization = this.initialization;
     const runId = randomUUID();
-    const commandPrompt = expandMultipleSkillCommands(input.text, session.resourceLoader.getSkills().skills)
-      ?? promoteInlineResourceCommand(input.text, this.getCommands(session));
+    const commandPrompt = skipCommandExpansion
+      ? input.text
+      : expandMultipleSkillCommands(input.text, session.resourceLoader.getSkills().skills)
+        ?? promoteInlineResourceCommand(input.text, this.getCommands(session));
     const includesProjectResources = hasProjectResourceTags(input.text);
     const promptText = includesProjectResources
       ? await appendProjectResourceContext(commandPrompt, this.project?.path ?? null, input.text)
@@ -1047,6 +1137,13 @@ export class PiRuntimeService {
       throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The model selected for this message does not support image input.', retryable: true });
     }
     const startsRun = !session.isStreaming;
+    let activeGoal = this.project ? this.goalMax.get(this.project.path, session.sessionId) : null;
+    if (startsRun && (activeGoal?.status === 'verifying' || activeGoal?.executionState === 'running-root' || activeGoal?.executionState === 'waiting')) {
+      throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for the active GoalMax turn to settle, or cancel the goal first.', retryable: true });
+    }
+    if (activeGoal && !skipCommandExpansion && activeGoal.status !== 'completed' && activeGoal.status !== 'cancelled') {
+      activeGoal = await this.goalMax.recordSteering(session.sessionId, input.text, input.behavior) ?? activeGoal;
+    }
     const ownsSlot = () => initialization === this.initialization
       && !slot.disposed
       && this.liveSlots.has(slot)
@@ -1134,6 +1231,30 @@ export class PiRuntimeService {
       if (stagedThinkingLevel && slot.pendingThinkingLevel?.token === stagedThinkingLevel.token) {
         slot.pendingThinkingLevel = null;
         this.coldPendingThinkingLevels.delete(session.sessionId);
+      }
+    }
+
+    if (activeGoal && activeGoal.status !== 'completed' && activeGoal.status !== 'cancelled') this.applyGoalAgentPolicy(slot, session, activeGoal);
+
+    if (startsRun && activeGoal && activeGoal.status !== 'completed' && activeGoal.status !== 'cancelled') {
+      try {
+        await session.sendCustomMessage({
+          customType: 'fate-goalmax-capsule',
+          content: [{ type: 'text', text: goalMaxCapsule(activeGoal) }],
+          display: false,
+          details: { kind: 'goal-user-turn', goalId: activeGoal.id, revision: activeGoal.revision },
+        }, { triggerTurn: false, deliverAs: 'nextTurn' });
+      } catch (error) {
+        if (stagedModel) restoreStagedModel(stagedModel);
+        if (stagedThinkingLevel) restoreStagedThinkingLevel(stagedThinkingLevel);
+        clearRunReservation();
+        throw error;
+      }
+      if (!ownsSlot() || this.selectedSlot !== slot) {
+        if (stagedModel) restoreStagedModel(stagedModel);
+        if (stagedThinkingLevel) restoreStagedThinkingLevel(stagedThinkingLevel);
+        clearRunReservation();
+        throw this.replacementSuperseded();
       }
     }
 
@@ -1354,6 +1475,34 @@ export class PiRuntimeService {
     return operation;
   }
 
+  async getGoalMax(): Promise<GoalMaxState | null> {
+    const session = this.runtime?.session;
+    const project = this.project;
+    if (!session || !project) return null;
+    return this.goalMax.get(project.path, session.sessionId) ?? this.goalMax.bind(project.path, session.sessionId);
+  }
+
+  async createGoalMax(input: GoalMaxCreateInput): Promise<GoalMaxState> {
+    const session = this.requireIdleSession('starting a goal');
+    if (this.replacementActive || this.subagents.hasActiveRuns(session.sessionId) || this.agentTeams.hasActiveWork(session.sessionId)) throw this.activeOperationError('starting a goal');
+    return this.goalMax.create(input);
+  }
+
+  async controlGoalMax(input: GoalMaxControlInput): Promise<GoalMaxState> {
+    this.requireSession();
+    return this.goalMax.control(input);
+  }
+
+  async updateGoalMax(input: GoalMaxUpdateInput): Promise<GoalMaxState> {
+    this.requireSession();
+    return this.goalMax.update(input);
+  }
+
+  async clearGoalMax(): Promise<GoalMaxClearResult> {
+    this.requireSession();
+    return this.goalMax.clear();
+  }
+
   newSession(defaults?: SessionDefaults): Promise<RuntimeState> {
     const activeSession = this.runtime?.session;
     const sourceSlot = this.selectedSlot;
@@ -1377,7 +1526,7 @@ export class PiRuntimeService {
       }
     };
     return this.runReplacement(async (runtime, slot) => {
-      const hasManagedChildren = this.subagents.hasOwnedWork(slot.runtime.session.sessionId) || this.agentTeams.hasOwnedWork(slot.runtime.session.sessionId);
+      const hasManagedChildren = this.subagents.hasOwnedWork(slot.runtime.session.sessionId) || this.agentTeams.hasOwnedWork(slot.runtime.session.sessionId) || this.goalMax.hasRunnableGoal(slot.runtime.session.sessionId);
       if (!slot.runtime.session.isStreaming && this.sessionHasNonStreamingWork(slot.runtime.session)) throw this.activeOperationError('creating a session');
       if (slot.runtime.session.isStreaming || hasManagedChildren) {
         const created = await this.createAdditionalSlot();
@@ -1410,7 +1559,7 @@ export class PiRuntimeService {
     const projectPath = this.project?.path;
     if (!projectPath) return Promise.reject(new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before switching sessions.', retryable: true }));
     return this.runReplacement(async (runtime, slot) => {
-      const hasManagedChildren = this.subagents.hasOwnedWork(slot.runtime.session.sessionId) || this.agentTeams.hasOwnedWork(slot.runtime.session.sessionId);
+      const hasManagedChildren = this.subagents.hasOwnedWork(slot.runtime.session.sessionId) || this.agentTeams.hasOwnedWork(slot.runtime.session.sessionId) || this.goalMax.hasRunnableGoal(slot.runtime.session.sessionId);
       if (!slot.runtime.session.isStreaming && this.sessionHasNonStreamingWork(slot.runtime.session)) throw this.activeOperationError('switching sessions');
       if (runtime.session.sessionId === sessionId) {
         this.acknowledgeSession(sessionId);
@@ -1465,6 +1614,11 @@ export class PiRuntimeService {
     if (initialization !== this.initialization || this.project?.path !== projectPath) throw this.replacementSuperseded();
     this.manualSessionNames.add(this.sessionClaimKey(projectPath, sessionId));
     while (this.manualSessionNames.size > MAX_MANUAL_SESSION_NAME_CLAIMS) this.manualSessionNames.delete(this.manualSessionNames.values().next().value!);
+    await this.goalMax.deleteSession(projectPath, sessionId).catch((error: unknown) => {
+      if (initialization === this.initialization && this.project?.path === projectPath) {
+        this.emitSystemMessage(`Deleted goal metadata could not be removed: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+      }
+    });
     try {
       await this.sessionPermissions.delete(projectPath, sessionId);
     } catch (error) {
@@ -1474,6 +1628,7 @@ export class PiRuntimeService {
     }
     if (initialization !== this.initialization || this.project?.path !== projectPath) throw this.replacementSuperseded();
     this.sessionAttention.delete(sessionId);
+    this.goalSessionEntryCheckpoints.delete(sessionId);
     this.coldPendingModels.delete(sessionId);
     this.subagents.releaseParent(sessionId);
     this.agentTeams.releaseRoot(sessionId);
@@ -1486,7 +1641,7 @@ export class PiRuntimeService {
   async forkSession(entryId: string): Promise<{ state: RuntimeState; selectedText?: string }> {
     let selectedText: string | undefined;
     const state = await this.runReplacement(async (runtime) => {
-      if (this.sessionHasActiveWork(runtime.session) || this.subagents.hasOwnedWork(runtime.session.sessionId) || this.agentTeams.hasOwnedWork(runtime.session.sessionId)) throw this.activeOperationError('forking this session');
+      if (this.sessionHasActiveWork(runtime.session) || this.subagents.hasOwnedWork(runtime.session.sessionId) || this.agentTeams.hasOwnedWork(runtime.session.sessionId) || this.goalMax.hasRunnableGoal(runtime.session.sessionId)) throw this.activeOperationError('forking this session');
       if (typeof runtime.fork !== 'function') throw this.unsupported('Session branching');
       const points = runtime.session.getUserMessagesForForking?.() ?? [];
       if (!points.some((point) => point.entryId === entryId)) {
@@ -1501,7 +1656,7 @@ export class PiRuntimeService {
 
   cloneSession(): Promise<RuntimeState> {
     return this.runReplacement(async (runtime) => {
-      if (this.sessionHasActiveWork(runtime.session) || this.subagents.hasOwnedWork(runtime.session.sessionId) || this.agentTeams.hasOwnedWork(runtime.session.sessionId)) throw this.activeOperationError('cloning this session');
+      if (this.sessionHasActiveWork(runtime.session) || this.subagents.hasOwnedWork(runtime.session.sessionId) || this.agentTeams.hasOwnedWork(runtime.session.sessionId) || this.goalMax.hasRunnableGoal(runtime.session.sessionId)) throw this.activeOperationError('cloning this session');
       if (this.adapter.supportsClone !== true || typeof runtime.fork !== 'function') throw this.unsupported('Session cloning');
       const leafId = runtime.session.sessionManager?.getLeafId?.();
       if (!leafId) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The current session has no conversation to clone.', retryable: true });
@@ -1511,7 +1666,7 @@ export class PiRuntimeService {
 
   importSession(filePath: string): Promise<RuntimeState> {
     return this.runReplacement(async (runtime) => {
-      if (this.sessionHasActiveWork(runtime.session) || this.subagents.hasOwnedWork(runtime.session.sessionId) || this.agentTeams.hasOwnedWork(runtime.session.sessionId)) throw this.activeOperationError('importing a session');
+      if (this.sessionHasActiveWork(runtime.session) || this.subagents.hasOwnedWork(runtime.session.sessionId) || this.agentTeams.hasOwnedWork(runtime.session.sessionId) || this.goalMax.hasRunnableGoal(runtime.session.sessionId)) throw this.activeOperationError('importing a session');
       if (typeof runtime.importFromJsonl !== 'function') throw this.unsupported('Session import');
       if ((await runtime.importFromJsonl(filePath, this.project!.path))?.cancelled) throw this.replacementCancelled('Session import');
     });
@@ -1558,8 +1713,10 @@ export class PiRuntimeService {
     }
     const pending = await Promise.allSettled([...this.pendingDisposals]);
     failures.push(...pending.flatMap((result) => result.status === 'rejected' ? [result.reason] : []));
+    try { await this.goalMax.dispose(); } catch (error) { failures.push(error); }
     this.subagents.reset();
     this.agentTeams.reset();
+    this.goalSessionEntryCheckpoints.clear();
     this.batcher.dispose();
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, 'Pi runtime shutdown was incomplete.');
@@ -1662,6 +1819,7 @@ export class PiRuntimeService {
     slot.createdAt = new Date().toISOString();
     slot.modifiedAt = slot.createdAt;
     slot.normalizer.resetSession();
+    this.goalMax.unbind(invalidatedSession.sessionId);
     this.subagents.releaseParent(invalidatedSession.sessionId);
     this.agentTeams.releaseRoot(invalidatedSession.sessionId);
     if (this.selectedSlot === slot) this.batcher.clear();
@@ -1702,7 +1860,7 @@ export class PiRuntimeService {
       feature: string,
       operation: () => Promise<{ cancelled?: boolean }>,
     ): Promise<{ cancelled: boolean }> => {
-      if (!ownsSession() || this.selectedSlot !== slot || this.sessionHasActiveWork(session) || this.subagents.hasOwnedWork(session.sessionId) || this.agentTeams.hasOwnedWork(session.sessionId)) return { cancelled: true };
+      if (!ownsSession() || this.selectedSlot !== slot || this.sessionHasActiveWork(session) || this.subagents.hasOwnedWork(session.sessionId) || this.agentTeams.hasOwnedWork(session.sessionId) || this.goalMax.hasRunnableGoal(session.sessionId)) return { cancelled: true };
       try {
         await this.runReplacement(async (current, currentSlot) => {
           if (current !== runtime || currentSlot !== slot || !ownsSession()) throw this.replacementSuperseded();
@@ -1783,6 +1941,9 @@ export class PiRuntimeService {
     // Loading a session is navigation, not activity. Keep persisted recency so
     // the Recently modified list changes only after the session does work.
     slot.modifiedAt = existingSummary?.modifiedAt ?? slot.modifiedAt;
+    if (this.project) await this.goalMax.bind(this.project.path, session.sessionId);
+    if (!ownsSession()) return;
+    this.syncGoalChildren(session.sessionId);
   }
 
   private installModelBoundary(slot: RuntimeSlot, session: AgentSession, ownsSession: () => boolean): void {
@@ -1926,6 +2087,7 @@ export class PiRuntimeService {
 
   private handleSessionEvent(slot: RuntimeSlot, session: AgentSession, generation: number, event: AgentSessionEvent): void {
     if (this.initialization !== slot.projectGeneration || slot.disposed || generation !== slot.sessionGeneration || slot.runtime.session !== session) return;
+    this.goalMax.observeSessionEvent(session.sessionId, event);
     if (event.type === 'agent_start') slot.sessionTurnPhase = 'active';
     else if (event.type === 'agent_end') slot.sessionTurnPhase = 'ending';
     else if (event.type === 'agent_settled') slot.sessionTurnPhase = 'idle';
@@ -1957,7 +2119,7 @@ export class PiRuntimeService {
       const queuedUserRequest = slot.queuedMessages.length > 0
         || (session.getSteeringMessages?.().length ?? 0) > 0
         || (session.getFollowUpMessages?.().length ?? 0) > 0;
-      if (message.stopReason === 'length' && message.isError !== true && !queuedUserRequest) {
+      if (message.stopReason === 'length' && message.isError !== true && !queuedUserRequest && !this.goalMax.hasRunnableGoal(session.sessionId)) {
         if (slot.lengthContinuationCount < MAX_LENGTH_CONTINUATIONS_PER_USER_TURN) {
           slot.lengthContinuationCount += 1;
           void session.sendCustomMessage({
@@ -2061,7 +2223,7 @@ export class PiRuntimeService {
   }
 
   private settleInactiveSlot(slot: RuntimeSlot): void {
-    if (slot.disposed || this.selectedSlot === slot || this.sessionHasActiveWork(slot.runtime.session) || this.subagents.hasOwnedWork(slot.runtime.session.sessionId) || this.agentTeams.hasOwnedWork(slot.runtime.session.sessionId)) return;
+    if (slot.disposed || this.selectedSlot === slot || this.sessionHasActiveWork(slot.runtime.session) || this.subagents.hasOwnedWork(slot.runtime.session.sessionId) || this.agentTeams.hasOwnedWork(slot.runtime.session.sessionId) || this.goalMax.hasRunnableGoal(slot.runtime.session.sessionId)) return;
     const initialization = this.initialization;
     const sessionId = slot.runtime.session.sessionId;
     const attentionRevision = this.setSessionAttention(slot, slot.runFailed ? 'error' : 'completed');
@@ -2191,12 +2353,17 @@ export class PiRuntimeService {
 
   private getCommands(session: AgentSession | undefined): NonNullable<RuntimeState['commands']> {
     if (!session) return [];
-    const extensionCommands = session.extensionRunner?.getRegisteredCommands?.().map((command) => ({
+    const builtinCommands: NonNullable<RuntimeState['commands']> = [{
+      name: 'goalmaxxing',
+      description: 'Start a persistent, visible, evidence-verified engineering goal',
+      source: 'builtin',
+    }];
+    const extensionCommands = session.extensionRunner?.getRegisteredCommands?.().filter((command) => command.invocationName.toLocaleLowerCase() !== 'goalmaxxing').map((command) => ({
       name: command.invocationName.slice(0, 500),
       description: (command.description ?? '').slice(0, 2_000),
       source: 'extension' as const,
     })) ?? [];
-    const promptCommands = session.promptTemplates?.map((command) => ({
+    const promptCommands = session.promptTemplates?.filter((command) => command.name.toLocaleLowerCase() !== 'goalmaxxing').map((command) => ({
       name: command.name.slice(0, 500),
       description: (command.description ?? '').slice(0, 2_000),
       source: 'prompt' as const,
@@ -2206,7 +2373,7 @@ export class PiRuntimeService {
       description: skill.description.slice(0, 2_000),
       source: 'skill' as const,
     })) ?? [];
-    return [...extensionCommands, ...promptCommands, ...skillCommands].slice(0, 5_000);
+    return [...builtinCommands, ...extensionCommands, ...promptCommands, ...skillCommands].slice(0, 5_000);
   }
 
   private async applyQueueMutation(input: QueueMutationInput, slot: RuntimeSlot): Promise<QueueMutationResult> {
@@ -2296,7 +2463,7 @@ export class PiRuntimeService {
   private async createAdditionalSlot(sessionPath?: string): Promise<RuntimeSlot> {
     if (!this.project || !this.modelRuntime) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open and trust a project before using Pi.', retryable: true });
     for (const slot of [...this.liveSlots]) {
-      if (slot !== this.selectedSlot && !this.sessionHasActiveWork(slot.runtime.session) && !this.subagents.hasOwnedWork(slot.runtime.session.sessionId) && !this.agentTeams.hasOwnedWork(slot.runtime.session.sessionId)) await this.disposeSlot(slot, false);
+      if (slot !== this.selectedSlot && !this.sessionHasActiveWork(slot.runtime.session) && !this.subagents.hasOwnedWork(slot.runtime.session.sessionId) && !this.agentTeams.hasOwnedWork(slot.runtime.session.sessionId) && !this.goalMax.hasRunnableGoal(slot.runtime.session.sessionId)) await this.disposeSlot(slot, false);
     }
     if (this.liveSlots.size + this.pendingDisposals.size >= MAX_LIVE_RUNTIME_SLOTS) {
       throw new PiDesktopError({
@@ -2341,7 +2508,7 @@ export class PiRuntimeService {
     slot.attention = null;
     this.batcher.clear();
     if (previous && !previous.disposed) {
-      if (this.sessionHasActiveWork(previous.runtime.session) || this.subagents.hasOwnedWork(previous.runtime.session.sessionId) || this.agentTeams.hasOwnedWork(previous.runtime.session.sessionId)) {
+      if (this.sessionHasActiveWork(previous.runtime.session) || this.subagents.hasOwnedWork(previous.runtime.session.sessionId) || this.agentTeams.hasOwnedWork(previous.runtime.session.sessionId) || this.goalMax.hasRunnableGoal(previous.runtime.session.sessionId)) {
         this.setSessionAttention(previous, 'running');
       } else {
         const initialization = this.initialization;
@@ -2365,10 +2532,287 @@ export class PiRuntimeService {
     this.mergeLiveSessionSummaries();
   }
 
+  private goalAgentStrategy(sessionId: string): GoalMaxState['agentStrategy'] | undefined {
+    if (!this.project || !this.goalMax) return undefined;
+    const goal = this.goalMax.get(this.project.path, sessionId);
+    return goal && goal.status !== 'completed' && goal.status !== 'cancelled' ? goal.agentStrategy : undefined;
+  }
+
+  private goalOrchestrationTools(sessionId: string): readonly string[] {
+    const restoredV2 = this.agentTeams.getTeams(sessionId).length > 0;
+    const restoredLegacy = this.subagents.getRuns(sessionId).length > 0 || this.subagents.getWorkflowViews(sessionId).length > 0;
+    const mode = restoredV2 ? 'v2' : restoredLegacy ? 'legacy' : this.agentTeamMode;
+    return mode === 'v2' ? V2_ORCHESTRATION_TOOLS : LEGACY_ORCHESTRATION_TOOLS;
+  }
+
+  private applyGoalAgentPolicy(slot: RuntimeSlot, session: AgentSession, goal: GoalMaxState | null): void {
+    const strategy = goal && goal.status !== 'completed' && goal.status !== 'cancelled' ? goal.agentStrategy : undefined;
+    const currentTools = session.getActiveToolNames();
+    const ordinaryTools = currentTools.filter((name) => !ALL_ORCHESTRATION_TOOLS.has(name));
+    const orchestrationTools = strategy === 'off' ? [] : this.goalOrchestrationTools(session.sessionId);
+    const nextTools = activeToolsForPermission([...ordinaryTools, ...orchestrationTools], slot.permissionLevel);
+    if (nextTools.length !== currentTools.length || nextTools.some((name, index) => name !== currentTools[index])) session.setActiveToolsByName(nextTools);
+    if (strategy === 'off' || strategy === 'read-only') {
+      this.subagents.capDelegationPermission(session.sessionId, 'read-only');
+      this.agentTeams.capDelegationPermission(session.sessionId, 'read-only');
+    }
+  }
+
+  private goalRuntimeSnapshot(sessionId: string): GoalMaxRuntimeSnapshot | null {
+    const slot = sessionId ? this.findLiveSlot(sessionId) : this.selectedSlot ?? undefined;
+    if (!slot || slot.disposed || !this.project) return null;
+    const session = slot.runtime.session;
+    const queueCount = slot.queuedMessages.length
+      + (session.getSteeringMessages?.().length ?? 0)
+      + (session.getFollowUpMessages?.().length ?? 0);
+    const children = this.goalChildren(session.sessionId);
+    return {
+      projectPath: this.project.path,
+      sessionId: session.sessionId,
+      projectTrusted: this.project.trusted,
+      permissionLevel: slot.permissionLevel,
+      idle: !this.sessionHasActiveWork(session) && slot.sessionTurnPhase === 'idle',
+      streaming: session.isStreaming,
+      queuedUserMessages: queueCount,
+      tokensUsed: (sessionTokenTelemetry(session)?.session.totalTokens ?? 0) + this.goalChildTokenTotal(session.sessionId),
+      activeChildren: children.filter((child) => child.status === 'pending' || child.status === 'running').length,
+      children,
+    };
+  }
+
+  private goalChildTokenTotal(sessionId: string): number {
+    const legacy = this.subagents.getRuns(sessionId).reduce((total, run) => total
+      + run.usage.input + run.usage.output + run.usage.cacheRead + run.usage.cacheWrite, 0);
+    const teams = this.agentTeams.getTeams(sessionId).reduce((total, team) => total
+      + team.usage.input + team.usage.output + team.usage.cacheRead + team.usage.cacheWrite, 0);
+    return legacy + teams;
+  }
+
+  private goalChildren(sessionId: string): GoalMaxRuntimeChild[] {
+    const legacy = this.subagents.getRuns(sessionId).map((run): GoalMaxRuntimeChild => ({
+      nodeId: run.id,
+      label: run.displayName ?? run.handle ?? run.role,
+      objective: run.task,
+      status: goalChildStatus(run.status),
+      permissionLevel: run.permissionLevel,
+      requestedModel: { provider: run.model.provider, id: run.model.id, name: run.model.name },
+      effectiveModel: { provider: run.model.provider, id: run.model.id, name: run.model.name },
+      requestedThinking: run.thinkingLevel,
+      effectiveThinking: run.thinkingLevel,
+      startedAt: run.startedAt ?? null,
+      endedAt: run.endedAt ?? null,
+      result: run.result ?? null,
+      error: run.error ?? null,
+      observations: run.tools.flatMap((tool) => goalObservationFromRuntimeTool(tool) ?? []).slice(-32),
+    }));
+    const teams = this.agentTeams.getTeams(sessionId).flatMap((team) => {
+      const tasksById = new Map(team.tasks.map((task) => [task.id, task]));
+      const envelopesById = new Map(team.envelopes.map((envelope) => [envelope.id, envelope]));
+      const eventsByNode = new Map<string, typeof team.timeline>();
+      for (const event of team.timeline) {
+        if (event.type !== 'tool.completed' || !event.nodeId) continue;
+        const events = eventsByNode.get(event.nodeId);
+        if (events) events.push(event); else eventsByNode.set(event.nodeId, [event]);
+      }
+      return team.nodes.filter((node) => node.depth > 0).map((node): GoalMaxRuntimeChild => {
+        const task = node.currentTaskId ? tasksById.get(node.currentTaskId) : undefined;
+        const result = task?.resultEnvelopeId ? envelopesById.get(task.resultEnvelopeId)?.content ?? null : null;
+        const observations = (eventsByNode.get(node.id) ?? []).filter((event) => !task || !event.taskId || event.taskId === task.id).slice(-32).map((event): GoalMaxRuntimeChildObservation => {
+          const failed = /\bfailed\b/iu.test(event.summary);
+          const affectedPath = event.provenance?.affectedPaths[0]?.path;
+          const kind = event.toolName === 'write' || event.toolName === 'edit' ? 'file' as const : event.toolName === 'generate_image' ? 'screenshot' as const : 'runtime' as const;
+          return {
+            key: `team-tool:${event.id}`,
+            kind,
+            title: event.summary,
+            summary: affectedPath ? `${event.summary}\n${affectedPath}` : event.summary,
+            timestamp: event.timestamp,
+            meaningful: !failed && (kind === 'file' || kind === 'screenshot' || ['read', 'grep', 'find', 'ls'].includes(event.toolName ?? '')),
+            ...(affectedPath ? { path: affectedPath } : {}),
+            exitCode: failed ? 1 : 0,
+          };
+        });
+        return {
+          nodeId: node.id,
+          label: node.displayName,
+          objective: task?.summary ?? node.role,
+          status: node.status === 'creating' ? 'pending' : node.status === 'active' ? 'running' : node.status === 'ready' ? 'completed' : node.status === 'failed' ? 'failed' : node.status === 'closed' ? 'cancelled' : 'blocked',
+          permissionLevel: node.permissionLevel,
+          requestedModel: { provider: node.model.provider, id: node.model.id, name: node.model.name },
+          effectiveModel: { provider: node.model.provider, id: node.model.id, name: node.model.name },
+          requestedThinking: node.thinkingLevel,
+          effectiveThinking: node.thinkingLevel,
+          startedAt: task?.startedAt ?? null,
+          endedAt: task?.endedAt ?? null,
+          result,
+          error: task?.error ?? node.lastError ?? null,
+          observations,
+        };
+      });
+    });
+    return [...legacy, ...teams];
+  }
+
+  private syncGoalChildren(sessionId: string): void {
+    if (!this.goalMax) return;
+    this.goalMax.syncChildren(sessionId, this.goalChildren(sessionId));
+  }
+
+  private async startGoalTurn(sessionId: string, objective: string, _capsule: string): Promise<boolean> {
+    const slot = this.findLiveSlot(sessionId);
+    if (!slot || slot.disposed || this.selectedSlot !== slot || slot.runtime.session.isStreaming) return false;
+    return (await this.prompt({ text: objective, behavior: 'prompt' }, true)).accepted;
+  }
+
+  private async continueGoalTurn(sessionId: string, capsule: string, goalId: string, revision: number): Promise<void> {
+    const slot = this.findLiveSlot(sessionId);
+    const current = this.project ? this.goalMax.get(this.project.path, sessionId) : null;
+    if (!slot || slot.disposed || !current || current.id !== goalId || current.revision !== revision) throw new Error('The scheduled goal continuation is stale.');
+    const session = slot.runtime.session;
+    if (this.sessionHasActiveWork(session) || slot.sessionTurnPhase !== 'idle' || slot.queuedMessages.length > 0 || (session.getSteeringMessages?.().length ?? 0) > 0 || (session.getFollowUpMessages?.().length ?? 0) > 0) {
+      throw new Error('The goal continuation lost its idle runtime lease.');
+    }
+    await this.applyGoalTurnSettings(slot, session);
+    const refreshed = this.project ? this.goalMax.get(this.project.path, sessionId) : null;
+    if (!refreshed || refreshed.id !== goalId || refreshed.revision !== revision || this.sessionHasActiveWork(session) || slot.sessionTurnPhase !== 'idle' || slot.queuedMessages.length > 0 || (session.getSteeringMessages?.().length ?? 0) > 0 || (session.getFollowUpMessages?.().length ?? 0) > 0) {
+      throw new Error('The goal continuation lost its idle runtime lease.');
+    }
+    await session.sendCustomMessage({
+      customType: 'fate-goalmax-continuation',
+      content: [{ type: 'text', text: capsule }],
+      display: false,
+      details: { goalId, revision },
+    }, { triggerTurn: true });
+  }
+
+  private async applyGoalTurnSettings(slot: RuntimeSlot, session: AgentSession): Promise<void> {
+    const stagedModel = slot.pendingModel;
+    const stagedThinkingLevel = slot.pendingThinkingLevel;
+    if (!stagedModel && !stagedThinkingLevel) return;
+    if (stagedModel) await session.setModel(stagedModel.model);
+    if (stagedThinkingLevel) session.setThinkingLevel(stagedThinkingLevel.level);
+    if (stagedModel && slot.pendingModel?.token === stagedModel.token) {
+      slot.pendingModel = null;
+      this.coldPendingModels.delete(session.sessionId);
+    }
+    if (stagedThinkingLevel && slot.pendingThinkingLevel?.token === stagedThinkingLevel.token) {
+      slot.pendingThinkingLevel = null;
+      this.coldPendingThinkingLevels.delete(session.sessionId);
+    }
+    if (this.selectedSlot === slot) this.emitState();
+  }
+
+  private async steerGoalTurn(sessionId: string, capsule: string, goalId: string, revision: number): Promise<void> {
+    const slot = this.findLiveSlot(sessionId);
+    const current = this.project ? this.goalMax.get(this.project.path, sessionId) : null;
+    if (!slot || slot.disposed || !current || current.id !== goalId || current.revision !== revision) return;
+    const message = {
+      customType: 'fate-goalmax-update',
+      content: [{ type: 'text' as const, text: capsule }],
+      display: false,
+      details: { goalId, revision },
+    };
+    if (slot.runtime.session.isStreaming) await this.sendChildGeneratedMessage(slot, slot.runtime.session, message, 'steer', false);
+    else await slot.runtime.session.sendCustomMessage(message, { triggerTurn: false, deliverAs: 'nextTurn' });
+  }
+
+  private async abortGoalSession(sessionId: string): Promise<void> {
+    const slot = this.findLiveSlot(sessionId);
+    if (!slot || slot.disposed) return;
+    const session = slot.runtime.session;
+    const results = await Promise.allSettled([
+      session.isStreaming ? session.abort() : Promise.resolve(),
+      this.subagents.cancelParent(sessionId),
+      this.agentTeams.cancelRoot(sessionId),
+    ]);
+    const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Goal execution could not be fully cancelled.');
+  }
+
+  private async runGoalReadOnlyLeaf(
+    sessionId: string,
+    input: { name: string; role: string; prompt: string; instructions: string; timeoutMs: number; timeoutReport: string; unavailableReport: string },
+  ): Promise<{ report: string; nodeId: string; infrastructureFailure?: 'timeout' | 'unavailable' }> {
+    const slot = this.findLiveSlot(sessionId);
+    if (!slot || slot.disposed || !this.modelRuntime || this.sessionHasActiveWork(slot.runtime.session)) throw new Error('The runtime is not idle for bounded goal review.');
+    const rootNodeId = this.agentTeams.rootNodeId(sessionId);
+    const receipt = await this.agentTeams.spawn(rootNodeId, {
+      task: input.prompt,
+      name: input.name,
+      role: input.role,
+      permission: 'read-only',
+      tools: ['read', 'grep', 'find', 'ls'],
+      instructions: input.instructions,
+      skillMode: 'none',
+    }, `${input.name}-${randomUUID()}`, this.modelRuntime, undefined, { allowDelegation: false, bypassGoalPolicy: true });
+    const settlement = await this.agentTeams.waitForTaskSettlement(rootNodeId, receipt.path, input.timeoutMs);
+    if (!settlement) {
+      await this.agentTeams.interrupt(rootNodeId, receipt.path, `${input.role} timed out.`).catch(() => undefined);
+      return { report: input.timeoutReport, nodeId: receipt.nodeId, infrastructureFailure: 'timeout' };
+    }
+    const report = settlement.envelope?.content ?? settlement.task.error ?? input.unavailableReport;
+    const unavailable = settlement.task.status !== 'completed' || !settlement.envelope;
+    return {
+      report: report.slice(0, 16_000),
+      nodeId: receipt.nodeId,
+      ...(unavailable ? { infrastructureFailure: 'unavailable' as const } : {}),
+    };
+  }
+
+  private async verifyGoalWithChild(sessionId: string, prompt: string): Promise<GoalMaxVerificationResult> {
+    const result = await this.runGoalReadOnlyLeaf(sessionId, {
+      name: 'goal-verifier',
+      role: 'Goal verifier',
+      prompt,
+      instructions: 'Verify directly and return the compact verdict promptly. Delegation is disabled for this bounded verification task.',
+      timeoutMs: 6 * 60_000,
+      timeoutReport: 'VERDICT: fail\nFINDINGS:\n- major — verification — verifier timed out — retry verification',
+      unavailableReport: 'VERDICT: fail\nFINDINGS:\n- major — verification — no verifier result was retained — retry verification',
+    });
+    return { verdict: /^VERDICT:\s*pass\b/imu.test(result.report) ? 'pass' : 'fail', ...result };
+  }
+
+  private async diagnoseGoalWithChild(sessionId: string, prompt: string): Promise<GoalMaxDiagnosticResult> {
+    return this.runGoalReadOnlyLeaf(sessionId, {
+      name: 'goal-diagnostic',
+      role: 'Goal diagnostic reviewer',
+      prompt,
+      instructions: 'Diagnose the repeated lack of progress directly, do not modify files, do not delegate, and return the requested compact structure.',
+      timeoutMs: 90_000,
+      timeoutReport: 'DIAGNOSIS: diagnostic reviewer timed out\nNEXT_ACTION: change strategy directly from the latest current evidence\nRISK: unresolved pressure point',
+      unavailableReport: 'DIAGNOSIS: diagnostic reviewer result unavailable\nNEXT_ACTION: change strategy directly from the latest current evidence\nRISK: unresolved pressure point',
+    });
+  }
+
+  private handleGoalEvent(event: GoalMaxEvent): void {
+    this.goalEventSink(event);
+    const slot = this.findLiveSlot(event.sessionId);
+    if (!slot || slot.disposed) return;
+    if (event.type === 'goalmax.snapshot' || event.type === 'goalmax.cleared') {
+      try { this.applyGoalAgentPolicy(slot, slot.runtime.session, event.type === 'goalmax.snapshot' ? event.goal : null); }
+      catch (error) {
+        slot.runFailed = true;
+        slot.stateError = normalizeError(error);
+        if (this.selectedSlot === slot) this.emitError(slot.stateError);
+      }
+    }
+    if (this.selectedSlot === slot) return;
+    if (event.type === 'goalmax.snapshot') {
+      const status = event.goal.status;
+      if (status === 'active' || status === 'normalising' || status === 'verifying') this.setSessionAttention(slot, 'running');
+      else if (status === 'completed' || status === 'cancelled') this.setSessionAttention(slot, 'completed');
+      else if (status === 'blocked' || status === 'failed' || status === 'budget-limited' || status === 'usage-limited') this.setSessionAttention(slot, 'error');
+      else if (status === 'paused') this.recordSessionAttention(event.sessionId, null);
+      this.mergeLiveSessionSummaries();
+      this.emitState();
+    }
+  }
+
   private orchestrationTools(modelRuntime: ModelRuntime): ToolDefinition[] {
     const legacy = this.subagents.createTools(modelRuntime);
     const v2 = this.agentTeams.createRootTools(modelRuntime);
-    return [...legacy, ...v2];
+    return [...legacy, ...v2, ...this.goalMax.createTools()];
   }
 
   private findLiveSlot(sessionId: string): RuntimeSlot | undefined {
@@ -2381,7 +2825,7 @@ export class PiRuntimeService {
   private runningSessionCount(): number {
     let count = 0;
     for (const slot of this.liveSlots) {
-      if (!slot.disposed && (this.sessionHasActiveWork(slot.runtime.session) || this.subagents.hasActiveRuns(slot.runtime.session.sessionId) || this.agentTeams.hasActiveWork(slot.runtime.session.sessionId))) count += 1;
+      if (!slot.disposed && (this.sessionHasActiveWork(slot.runtime.session) || this.subagents.hasActiveRuns(slot.runtime.session.sessionId) || this.agentTeams.hasActiveWork(slot.runtime.session.sessionId) || this.goalMax.hasRunnableGoal(slot.runtime.session.sessionId))) count += 1;
     }
     return count;
   }

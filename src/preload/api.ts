@@ -94,6 +94,18 @@ import {
   type WindowState,
 } from '../shared/contracts/ipc';
 import { agentTeamControlInputSchema, type AgentTeamControlInput } from '../shared/contracts/multiAgent';
+import {
+  goalMaxClearResultSchema,
+  goalMaxControlInputSchema,
+  goalMaxCreateInputSchema,
+  goalMaxEventBatchSchema,
+  goalMaxStateSchema,
+  goalMaxUpdateInputSchema,
+  type GoalMaxControlInput,
+  type GoalMaxCreateInput,
+  type GoalMaxEvent,
+  type GoalMaxUpdateInput,
+} from '../shared/contracts/goalmaxxing';
 
 export const piDesktopApi: PiDesktopApi = Object.freeze({
   async getAppInfo() {
@@ -175,6 +187,31 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async mutateQueuedMessage(input: QueueMutationInput) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeMutateQueue, queueMutationInputSchema.parse(input));
     return queueMutationResultSchema.parse(result);
+  },
+  async getGoalMax() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGoalMaxGet, emptyInputSchema.parse({}));
+    return result === null ? null : goalMaxStateSchema.parse(result);
+  },
+  async createGoalMax(input: GoalMaxCreateInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGoalMaxCreate, goalMaxCreateInputSchema.parse(input));
+    return goalMaxStateSchema.parse(result);
+  },
+  async controlGoalMax(input: GoalMaxControlInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGoalMaxControl, goalMaxControlInputSchema.parse(input));
+    return goalMaxStateSchema.parse(result);
+  },
+  async updateGoalMax(input: GoalMaxUpdateInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGoalMaxUpdate, goalMaxUpdateInputSchema.parse(input));
+    return goalMaxStateSchema.parse(result);
+  },
+  async clearGoalMax() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGoalMaxClear, emptyInputSchema.parse({}));
+    return goalMaxClearResultSchema.parse(result);
+  },
+  onGoalMaxEvents(listener: (events: GoalMaxEvent[]) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(goalMaxEventBatchSchema.parse(payload));
+    ipcRenderer.on(ipcChannels.runtimeGoalMaxEvents, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.runtimeGoalMaxEvents, handler);
   },
   async newSession() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeNewSession, emptyInputSchema.parse({}));

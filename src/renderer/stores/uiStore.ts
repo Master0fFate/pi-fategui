@@ -42,8 +42,9 @@ interface UiState {
   speechDownload: SpeechDownloadProgress | null;
   toast: AppToastMessage | null;
   composerDraftRequest: { id: number; text: string; selectAll: boolean; notice?: string } | null;
-  inspectorTab: 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context';
+  inspectorTab: 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context' | 'goal';
   selectedSubagentRunId: string | null;
+  goalEditorOpen: boolean;
   flightDeckJump: FlightDeckJump | null;
   setLeftWidth: (width: number) => void;
   setRightWidth: (width: number) => void;
@@ -64,6 +65,8 @@ interface UiState {
   requestComposerDraft: (text: string, selectAll?: boolean, notice?: string) => void;
   clearComposerDraftRequest: (id: number) => void;
   setInspectorTab: (tab: UiState['inspectorTab']) => void;
+  openGoalMax: () => void;
+  setGoalEditorOpen: (open: boolean) => void;
   openSubagent: (runId: string) => void;
   openSubagentList: () => void;
   closeSubagent: () => void;
@@ -93,6 +96,7 @@ export const useUiStore = create<UiState>()(
       composerDraftRequest: null,
       inspectorTab: 'changes',
       selectedSubagentRunId: null,
+      goalEditorOpen: false,
       flightDeckJump: null,
       setLeftWidth: (leftWidth) => set({ leftWidth: clamp(leftWidth, LEFT_MIN, LEFT_MAX) }),
       setRightWidth: (rightWidth) => set({ rightWidth: clamp(rightWidth, RIGHT_MIN, RIGHT_MAX) }),
@@ -113,6 +117,8 @@ export const useUiStore = create<UiState>()(
       requestComposerDraft: (text, selectAll = false, notice) => set({ composerDraftRequest: { id: ++nextComposerDraftRequestId, text, selectAll, ...(notice ? { notice } : {}) } }),
       clearComposerDraftRequest: (id) => set((state) => state.composerDraftRequest?.id === id ? { composerDraftRequest: null } : state),
       setInspectorTab: (inspectorTab) => set({ inspectorTab }),
+      openGoalMax: () => set({ inspectorTab: 'goal', inspectorCollapsed: false }),
+      setGoalEditorOpen: (goalEditorOpen) => set({ goalEditorOpen }),
       openSubagent: (selectedSubagentRunId) => set({ selectedSubagentRunId, inspectorTab: 'sessions', inspectorCollapsed: false }),
       openSubagentList: () => set({ selectedSubagentRunId: null, inspectorTab: 'sessions', inspectorCollapsed: false }),
       closeSubagent: () => set({ selectedSubagentRunId: null }),

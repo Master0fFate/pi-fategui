@@ -6,25 +6,46 @@ import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { selectActivityPulse } from './flightDeck';
 
 export function WorkspaceActivityPulse() {
-  const { runtime, toolOrder, toolsById, toolsVersion, subagentOrder, subagentsById } = useRuntimeStore(useShallow((state) => ({
-    runtime: state.runtime,
+  const projection = useRuntimeStore(useShallow((state) => ({
+    status: state.runtime.status,
+    project: state.runtime.project,
+    error: state.runtime.error,
+    sessionOperation: state.runtime.sessionOperation,
+    contextUsage: state.runtime.contextUsage,
+    streaming: state.runtime.streaming,
+    activeSessionRunning: state.runtime.activeSessionRunning,
+    queue: state.runtime.queue,
+    workflows: state.runtime.subagentWorkflows,
+    teams: state.runtime.agentTeams,
     toolOrder: state.toolOrder,
     toolsById: state.toolsById,
     toolsVersion: state.toolsVersion,
     subagentOrder: state.subagentOrder,
-    subagentsById: state.subagentsById,
+    subagentRecorderVersion: state.subagentRecorderVersion,
   })));
-  const tools = useMemo(() => toolOrder.flatMap((id) => toolsById[id] ? [toolsById[id]!] : []), [toolOrder, toolsById, toolsVersion]);
-  const subagents = useMemo(() => subagentOrder.flatMap((id) => subagentsById[id] ? [subagentsById[id]!] : []), [subagentOrder, subagentsById]);
+  const tools = useMemo(() => projection.toolOrder.flatMap((id) => projection.toolsById[id] ? [projection.toolsById[id]!] : []), [projection.toolOrder, projection.toolsById, projection.toolsVersion]);
+  const subagents = useMemo(() => {
+    const runsById = useRuntimeStore.getState().subagentsById;
+    return projection.subagentOrder.flatMap((id) => runsById[id] ? [runsById[id]!] : []);
+  }, [projection.subagentOrder, projection.subagentRecorderVersion]);
   const git = useWorkspaceStore((state) => state.git);
   const pulse = useMemo(() => selectActivityPulse({
-    runtime,
+    runtime: {
+      status: projection.status,
+      project: projection.project,
+      error: projection.error,
+      sessionOperation: projection.sessionOperation,
+      contextUsage: projection.contextUsage,
+      streaming: projection.streaming,
+      activeSessionRunning: projection.activeSessionRunning,
+      queue: projection.queue,
+    },
     tools,
     subagents,
-    workflows: runtime.subagentWorkflows ?? [],
-    teams: runtime.agentTeams ?? [],
+    workflows: projection.workflows ?? [],
+    teams: projection.teams ?? [],
     changedFiles: git?.repository ? git.changes.length : null,
-  }), [git, runtime, subagents, tools]);
+  }), [git, projection.activeSessionRunning, projection.contextUsage, projection.error, projection.project, projection.queue, projection.sessionOperation, projection.status, projection.streaming, projection.teams, projection.workflows, subagents, tools]);
   const Icon = pulse.tone === 'active' ? LoaderCircle : pulse.tone === 'attention' ? CircleAlert : pulse.tone === 'success' ? CircleCheck : Activity;
   return (
     <div className="activity-pulse" data-tone={pulse.tone} aria-label={`Activity: ${pulse.label}. ${pulse.context}`}>

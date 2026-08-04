@@ -305,19 +305,27 @@ export function ChangesPanel() {
   const loadHistory = useWorkspaceStore((state) => state.loadHistory);
   const loadCombinedDiff = useWorkspaceStore((state) => state.loadCombinedDiff);
   const select = useWorkspaceStore((state) => state.selectChange);
-  const runtime = useRuntimeStore((state) => state.runtime);
+  const runtime = useRuntimeStore(useShallow((state) => ({
+    project: state.runtime.project,
+    sessionId: state.runtime.sessionId,
+    streaming: state.runtime.streaming,
+    sessionOperation: state.runtime.sessionOperation,
+  })));
   const timelineOrder = useRuntimeStore((state) => state.timelineOrder);
-  const { messagesVersion, timelineVersion, toolsVersion, subagentOrder, subagentsById, agentTeamOrder, agentTeamsById } = useRuntimeStore(useShallow((state) => ({
+  const { messagesVersion, timelineVersion, toolsVersion, subagentOrder, subagentRecorderVersion, agentTeamOrder, agentTeamsById } = useRuntimeStore(useShallow((state) => ({
     messagesVersion: state.messagesVersion,
     timelineVersion: state.timelineVersion,
     toolsVersion: state.toolsVersion,
     subagentOrder: state.subagentOrder,
-    subagentsById: state.subagentsById,
+    subagentRecorderVersion: state.subagentRecorderVersion,
     agentTeamOrder: state.agentTeamOrder,
     agentTeamsById: state.agentTeamsById,
   })));
   const { timelineById, messagesById, toolsById } = useRuntimeStore.getState();
-  const subagents = useMemo(() => subagentOrder.flatMap((id) => subagentsById[id] ? [subagentsById[id]!] : []), [subagentOrder, subagentsById]);
+  const subagents = useMemo(() => {
+    const runsById = useRuntimeStore.getState().subagentsById;
+    return subagentOrder.flatMap((id) => runsById[id] ? [runsById[id]!] : []);
+  }, [subagentOrder, subagentRecorderVersion]);
   const teams = useMemo(() => agentTeamOrder.flatMap((id) => agentTeamsById[id] ? [agentTeamsById[id]!] : []), [agentTeamOrder, agentTeamsById]);
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
   const showToast = useUiStore((state) => state.showToast);
