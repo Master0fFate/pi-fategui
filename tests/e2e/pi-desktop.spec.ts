@@ -807,7 +807,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     expect(timelineScrollable).toBe(true);
     await page.locator('.conversation-virtuoso').evaluate((element) => {
       const scroller = element as HTMLElement;
-      scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight - 120);
+      scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight - 40);
       scroller.dispatchEvent(new Event('scroll'));
     });
     await page.waitForTimeout(50);
