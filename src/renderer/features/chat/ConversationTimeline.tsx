@@ -7,7 +7,7 @@ import { writeClipboardText } from '../../lib/clipboard';
 import { type TimelineEntity, type ToolExecution, useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { MentionText } from './AgentMention';
-import { AssistantMarkdown } from './RichMessageContent';
+import { AssistantMarkdown, ConversationImageViewerProvider } from './RichMessageContent';
 import { ToolCard } from './ToolCard';
 
 export { AssistantMarkdown } from './RichMessageContent';
@@ -541,7 +541,8 @@ export function ConversationTimeline() {
   };
 
   return (
-    <div className="conversation" aria-label="Conversation timeline" aria-live="polite" data-entry-count={order.length} data-visible-entry-count={displayOrder.length}>
+    <ConversationImageViewerProvider>
+      <div className="conversation" aria-label="Conversation timeline" aria-live="polite" data-entry-count={order.length} data-visible-entry-count={displayOrder.length}>
       <Virtuoso
         key={timelineSessionKey ?? 'no-session'}
         ref={virtuosoRef}
@@ -582,7 +583,8 @@ export function ConversationTimeline() {
           className="conversation-scrollbar-thumb"
           style={scrollbarMetrics ? { height: `${scrollbarMetrics.thumbHeight}px`, transform: `translateY(${scrollbarMetrics.thumbOffset}px)` } : undefined}
         />
+        </div>
       </div>
-    </div>
+    </ConversationImageViewerProvider>
   );
 }

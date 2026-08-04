@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { Check, Copy, Download, Expand, Image as ImageIcon, ImageOff, X } from 'lucide-react';
-import { Children, isValidElement, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { Children, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { RuntimeImage } from '../../../shared/contracts/ipc';
@@ -150,17 +150,92 @@ function isLocalImageReference(src: string): boolean {
     || (!/^[A-Za-z][A-Za-z\d+.-]*:/u.test(trimmed) && !/^[/\\]{2}/u.test(trimmed) && !trimmed.startsWith('#'));
 }
 
+interface OpenImage {
+  src: string;
+  label: string;
+}
+
+const ImageViewerContext = createContext<((image: OpenImage) => void) | null>(null);
+
+function CinematicImageViewer({ image, onClose }: { image: OpenImage | null; onClose: () => void }) {
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const downloadable = image ? inlineRasterSource(image.src) : null;
+
+  useEffect(() => {
+    setSaving(false);
+    setSaved(false);
+  }, [image]);
+
+  const saveImage = async () => {
+    if (!image || !downloadable || saving) return;
+    setSaving(true);
+    setSaved(false);
+    try {
+      const result = await window.piDesktop.saveImageAs({ ...downloadable, suggestedName: image.label });
+      setSaved(result.saved);
+    } catch {
+      // Keep the action available so the user can retry.
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog.Root open={Boolean(image)} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="cinematic-image-overlay" />
+        {image ? (
+          <Dialog.Content
+            className="cinematic-image-viewer"
+            aria-describedby={undefined}
+            onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+          >
+            <Dialog.Title className="visually-hidden">{image.label}</Dialog.Title>
+            <img src={image.src} alt={image.label} referrerPolicy="no-referrer" />
+            <footer><span>{image.label}</span><small>Click outside or press Esc to close</small></footer>
+            {downloadable ? (
+              <AppTooltip content={saved ? 'Image saved' : 'Save image as…'}>
+                <button
+                  className="cinematic-image-save"
+                  type="button"
+                  disabled={saving}
+                  aria-label={saving ? 'Saving image' : saved ? 'Image saved' : 'Save image as'}
+                  onClick={() => { void saveImage(); }}
+                >
+                  {saved ? <Check size={18} /> : <Download size={18} />}
+                </button>
+              </AppTooltip>
+            ) : null}
+            <Dialog.Close className="cinematic-image-close" aria-label="Close image viewer"><X size={18} /></Dialog.Close>
+          </Dialog.Content>
+        ) : null}
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+export function ConversationImageViewerProvider({ children }: { children: ReactNode }) {
+  const [image, setImage] = useState<OpenImage | null>(null);
+  const openImage = useCallback((next: OpenImage) => setImage(next), []);
+  const closeImage = useCallback(() => setImage(null), []);
+  return (
+    <ImageViewerContext.Provider value={openImage}>
+      {children}
+      <CinematicImageViewer image={image} onClose={closeImage} />
+    </ImageViewerContext.Provider>
+  );
+}
+
 function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string | undefined }) {
-  const [open, setOpen] = useState(false);
+  const sharedOpenImage = useContext(ImageViewerContext);
+  const [localImage, setLocalImage] = useState<OpenImage | null>(null);
   const [failed, setFailed] = useState(false);
   const [remoteAllowed, setRemoteAllowed] = useState(false);
   const [localSource, setLocalSource] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const label = alt.trim() || 'Generated image';
   const localReference = Boolean(src && isLocalImageReference(src));
   const displaySource = localReference ? localSource ?? undefined : src;
-  const downloadable = displaySource ? inlineRasterSource(displaySource) : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -179,23 +254,10 @@ function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string |
     return () => { cancelled = true; };
   }, [localReference, src]);
 
-  const saveImage = async () => {
-    if (!downloadable || saving) return;
-    setSaving(true);
-    setSaved(false);
-    try {
-      const result = await window.piDesktop.saveImageAs({ ...downloadable, suggestedName: label });
-      setSaved(result.saved);
-    } catch {
-      // Keep the action available so the user can retry.
-    } finally {
-      setSaving(false);
-    }
-  };
   if (!src || failed) {
     return <span className="chat-image-error"><ImageOff size={16} /><span className="icon-label">Image unavailable{alt ? `: ${alt}` : ''}</span></span>;
   }
-  if (localReference && !displaySource) {
+  if (!displaySource) {
     return <span className="chat-image-error" role="status"><ImageIcon size={16} /><span className="icon-label">Loading image: {label}</span></span>;
   }
   if (/^https:/i.test(src) && !remoteAllowed) {
@@ -207,43 +269,15 @@ function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string |
     );
   }
 
+  const image = { src: displaySource, label };
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger asChild>
-        <button className="chat-image-trigger" type="button" aria-label={`Expand image: ${label}`}>
-          <img src={displaySource} alt={label} loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
-          <span aria-hidden="true"><Expand size={14} /><span className="icon-label">View</span></span>
-        </button>
-      </Dialog.Trigger>
-      <Dialog.Portal>
-        <Dialog.Overlay className="cinematic-image-overlay" />
-        <Dialog.Content
-          className="cinematic-image-viewer"
-          aria-describedby={undefined}
-          onOpenAutoFocus={(event) => event.preventDefault()}
-          onCloseAutoFocus={(event) => event.preventDefault()}
-          onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}
-        >
-          <Dialog.Title className="visually-hidden">{label}</Dialog.Title>
-          <img src={displaySource} alt={label} referrerPolicy="no-referrer" />
-          <footer><span>{label}</span><small>Click outside or press Esc to close</small></footer>
-          {downloadable ? (
-            <AppTooltip content={saved ? 'Image saved' : 'Save image as…'}>
-              <button
-                className="cinematic-image-save"
-                type="button"
-                disabled={saving}
-                aria-label={saving ? 'Saving image' : saved ? 'Image saved' : 'Save image as'}
-                onClick={() => { void saveImage(); }}
-              >
-                {saved ? <Check size={18} /> : <Download size={18} />}
-              </button>
-            </AppTooltip>
-          ) : null}
-          <Dialog.Close className="cinematic-image-close" aria-label="Close image viewer"><X size={18} /></Dialog.Close>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+    <>
+      <button className="chat-image-trigger" type="button" aria-label={`Expand image: ${label}`} onClick={() => (sharedOpenImage ?? setLocalImage)(image)}>
+        <img src={displaySource} alt={label} loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
+        <span aria-hidden="true"><Expand size={14} /><span className="icon-label">View</span></span>
+      </button>
+      {!sharedOpenImage ? <CinematicImageViewer image={localImage} onClose={() => setLocalImage(null)} /> : null}
+    </>
   );
 }
 

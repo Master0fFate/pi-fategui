@@ -10,7 +10,7 @@ import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { clampComposerInputHeight, clearComposerSessionDrafts, Composer, uniqueAttachmentName } from './Composer';
 import { ContextWheel } from './ContextWheel';
 import { AssistantMarkdown, coalesceSubagentWaitPolls, ConversationTimeline, followsMessage, forkEntryForMessage, MessageRow } from './ConversationTimeline';
-import { isSafeMermaidSource } from './RichMessageContent';
+import { ConversationImageViewerProvider, isSafeMermaidSource } from './RichMessageContent';
 import { ToolCard } from './ToolCard';
 
 vi.mock('mermaid', () => ({
@@ -296,6 +296,22 @@ describe('conversation components', () => {
     await user.click(trigger);
     await user.click(screen.getByRole('button', { name: 'Close image viewer' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps the cinematic viewer open when its virtualized message row is recycled', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ConversationImageViewerProvider>
+        <AssistantMarkdown text={'![Architecture](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=)'} />
+      </ConversationImageViewerProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'Expand image: Architecture' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    rerender(<ConversationImageViewerProvider><span>Row recycled</span></ConversationImageViewerProvider>);
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close image viewer' })).toBeInTheDocument();
   });
 
   it('does not fetch model-authored remote images without user consent', async () => {
