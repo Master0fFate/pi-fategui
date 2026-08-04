@@ -61,7 +61,7 @@ export function GoalMaxInspector() {
     finally { setBusy(null); }
   };
   if (!goal) {
-    return <div className="inspector-empty goalmax-empty"><Target size={24} /><strong>{loading ? 'Loading goal…' : 'No active goal'}</strong><p>Start one with /goalmaxxing followed by an objective.</p></div>;
+    return <div className="inspector-empty goalmax-empty"><Target size={24} /><strong>{loading ? 'Loading goal…' : 'No active goal'}</strong><p>Start one with /goalmax followed by an objective.</p></div>;
   }
   const required = goal.criteria.filter((criterion) => criterion.required && criterion.status !== 'waived');
   const satisfied = required.filter((criterion) => criterion.status === 'satisfied').length;

@@ -2354,16 +2354,16 @@ export class PiRuntimeService {
   private getCommands(session: AgentSession | undefined): NonNullable<RuntimeState['commands']> {
     if (!session) return [];
     const builtinCommands: NonNullable<RuntimeState['commands']> = [{
-      name: 'goalmaxxing',
+      name: 'goalmax',
       description: 'Start a persistent, visible, evidence-verified engineering goal',
       source: 'builtin',
     }];
-    const extensionCommands = session.extensionRunner?.getRegisteredCommands?.().filter((command) => command.invocationName.toLocaleLowerCase() !== 'goalmaxxing').map((command) => ({
+    const extensionCommands = session.extensionRunner?.getRegisteredCommands?.().filter((command) => command.invocationName.toLocaleLowerCase() !== 'goalmax').map((command) => ({
       name: command.invocationName.slice(0, 500),
       description: (command.description ?? '').slice(0, 2_000),
       source: 'extension' as const,
     })) ?? [];
-    const promptCommands = session.promptTemplates?.filter((command) => command.name.toLocaleLowerCase() !== 'goalmaxxing').map((command) => ({
+    const promptCommands = session.promptTemplates?.filter((command) => command.name.toLocaleLowerCase() !== 'goalmax').map((command) => ({
       name: command.name.slice(0, 500),
       description: (command.description ?? '').slice(0, 2_000),
       source: 'prompt' as const,

@@ -102,7 +102,7 @@ export class FakePiRuntimeService {
       messages: historical ? [{ id: 'history-assistant', role: 'assistant', text: '**Second session** history', timestamp: 1, timelinePosition: 0 }] : [],
       tools: historical ? [{ id: 'history-tool', name: 'read', input: '{"path":"README.md"}', output: 'historical output', outputTruncated: false, status: 'succeeded', startedAt: 2, updatedAt: 3, endedAt: 3, timelinePosition: 0.5 }] : [],
       commands: [
-        { name: 'goalmaxxing', description: 'Start a persistent, visible, evidence-verified engineering goal', source: 'builtin' },
+        { name: 'goalmax', description: 'Start a persistent, visible, evidence-verified engineering goal', source: 'builtin' },
         { name: 'parallax', description: 'Control the Parallax engineering protocol', source: 'extension' },
         { name: 'skill:vibesecurity', description: 'Defensive, evidence-first security review', source: 'skill' },
         { name: 'review', description: 'Review changes', source: 'prompt' },

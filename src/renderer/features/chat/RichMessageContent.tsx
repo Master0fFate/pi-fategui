@@ -220,6 +220,8 @@ function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string |
         <Dialog.Content
           className="cinematic-image-viewer"
           aria-describedby={undefined}
+          onOpenAutoFocus={(event) => event.preventDefault()}
+          onCloseAutoFocus={(event) => event.preventDefault()}
           onClick={(event) => { if (event.target === event.currentTarget) setOpen(false); }}
         >
           <Dialog.Title className="visually-hidden">{label}</Dialog.Title>

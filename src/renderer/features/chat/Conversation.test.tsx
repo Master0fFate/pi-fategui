@@ -908,28 +908,28 @@ describe('conversation components', () => {
     expect(uniqueAttachmentName('wallpaper.png', ['cover.png'])).toBe('wallpaper.png');
   });
 
-  it('routes /goalmaxxing through the control plane without forwarding slash text to Pi', async () => {
+  it('routes /goalmax through the control plane without forwarding slash text to Pi', async () => {
     const created = activeGoalFixture();
     const createGoalMax = vi.fn(async () => created);
     const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { getGoalMax: vi.fn(async () => null), createGoalMax, prompt } as unknown as PiDesktopApi });
     render(<Composer onOpenProject={vi.fn()} />);
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText('Message Pi'), '/goalmaxxing Implement and verify persistence{Enter}');
+    await user.type(screen.getByLabelText('Message Pi'), '/goalmax Implement and verify persistence{Enter}');
     await waitFor(() => expect(createGoalMax).toHaveBeenCalledWith({ objective: 'Implement and verify persistence', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null }));
     expect(prompt).not.toHaveBeenCalled();
     expect(useGoalMaxStore.getState().goal?.id).toBe('goal-1');
   });
 
-  it('keeps bare /goalmaxxing local and asks for an objective', async () => {
+  it('keeps bare /goalmax local and asks for an objective', async () => {
     const createGoalMax = vi.fn();
     const prompt = vi.fn();
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { createGoalMax, prompt } as unknown as PiDesktopApi });
     render(<Composer onOpenProject={vi.fn()} />);
 
-    await userEvent.setup().type(screen.getByLabelText('Message Pi'), '/goalmaxxing{Enter}');
+    await userEvent.setup().type(screen.getByLabelText('Message Pi'), '/goalmax{Enter}');
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Add an objective after /goalmaxxing.');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Add an objective after /goalmax.');
     expect(createGoalMax).not.toHaveBeenCalled();
     expect(prompt).not.toHaveBeenCalled();
   });

@@ -458,7 +458,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await composerInput.press('Shift+Enter');
     await expect(composerInput).toHaveValue('Keep this on two lines\n');
 
-    await composerInput.fill('/goalmaxxing Build and verify the persistent goal flow');
+    await composerInput.fill('/goalmax Build and verify the persistent goal flow');
     await composerInput.press('Enter');
     const goalRail = page.getByRole('region', { name: 'Current GoalMax goal' });
     await expect(goalRail).toContainText('Build and verify the persistent goal flow');

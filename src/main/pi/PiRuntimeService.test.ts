@@ -850,7 +850,7 @@ describe('PiRuntimeService', () => {
     const goalEvents: unknown[] = [];
     service.setGoalEventSink((event) => goalEvents.push(event));
     await service.openProject({ path: '/project', name: 'project', trusted: true });
-    expect(service.getState(false).commands).toContainEqual(expect.objectContaining({ name: 'goalmaxxing', source: 'builtin' }));
+    expect(service.getState(false).commands).toContainEqual(expect.objectContaining({ name: 'goalmax', source: 'builtin' }));
 
     const goal = await service.createGoalMax({ objective: 'Implement and verify GoalMax', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
     expect(goal).toMatchObject({ objective: 'Implement and verify GoalMax', status: 'active', budget: { source: null } });
@@ -1209,7 +1209,7 @@ describe('PiRuntimeService', () => {
     const state = await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     expect(state.commands).toEqual([
-      { name: 'goalmaxxing', description: 'Start a persistent, visible, evidence-verified engineering goal', source: 'builtin' },
+      { name: 'goalmax', description: 'Start a persistent, visible, evidence-verified engineering goal', source: 'builtin' },
       { name: 'parallax', description: 'Control Parallax', source: 'extension' },
       { name: 'review', description: 'Review changes', source: 'prompt' },
       { name: 'skill:vibesecurity', description: 'Defensive security review', source: 'skill' },
