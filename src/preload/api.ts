@@ -52,6 +52,7 @@ import {
   sessionIdInputSchema,
   sessionRenameInputSchema,
   forkSessionResultSchema,
+  navigateSessionBranchResultSchema,
   sessionListSchema,
   sessionSearchInputSchema,
   speechCancelResultSchema,
@@ -236,6 +237,10 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async forkSession(entryId: string) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeForkSession, sessionEntryInputSchema.parse({ entryId }));
     return forkSessionResultSchema.parse(result);
+  },
+  async navigateSessionBranch(entryId: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeNavigateSessionBranch, sessionEntryInputSchema.parse({ entryId }));
+    return navigateSessionBranchResultSchema.parse(result);
   },
   async cloneSession() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeCloneSession, emptyInputSchema.parse({}));

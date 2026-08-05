@@ -67,7 +67,10 @@ beforeEach(async () => {
   promptBarrier = null;
   dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-agent-team-test-'));
 });
-afterEach(async () => { await fs.rm(dataRoot, { recursive: true, force: true }); });
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await fs.rm(dataRoot, { recursive: true, force: true });
+});
 
 function rootSession() {
   const messages: unknown[] = [];
@@ -258,6 +261,51 @@ describe('AgentTeamCoordinator vertical slice', () => {
     await settle();
     expect(second.getTeams('root-session')[0]?.tasks.find((task) => task.id === follow.taskId)?.status).toBe('completed');
     expect(createdInputs.at(-1)?.sessionFile).toMatch(/\.jsonl$/u);
+  });
+
+  it('places default child storage beneath the configured cross-platform Fate GUI data root', async () => {
+    const configuredRoot = path.join(dataRoot, 'portable-profile');
+    vi.stubEnv('FATE_GUI_DATA_DIR', configuredRoot);
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      emit: () => undefined,
+      persist: () => undefined,
+    });
+    const rootId = coordinator.rootNodeId('portable-root-session');
+    await coordinator.spawn(rootId, { task: 'persist portably', name: 'portable' }, 'portable-spawn', runtime());
+    await settle();
+
+    const sessionDirectory = createdInputs[0]?.sessionDirectory;
+    expect(sessionDirectory).toBeTruthy();
+    expect(path.dirname(path.dirname(path.dirname(sessionDirectory!)))).toBe(path.join(path.resolve(configuredRoot), 'agent-teams'));
+    await coordinator.cancelRoot('portable-root-session');
+    coordinator.releaseRoot('portable-root-session');
+  });
+
+  it('deletes every persisted sibling and nested child session when its root session is deleted', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const modelRuntime = runtime();
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'persist first child', name: 'first' }, 'delete-spawn-1', modelRuntime);
+    await settle();
+    await coordinator.spawn(rootId, { task: 'persist sibling', name: 'sibling' }, 'delete-spawn-2', modelRuntime);
+    await settle();
+    await coordinator.spawn(child.nodeId, { task: 'persist grandchild', name: 'nested' }, 'delete-spawn-3', modelRuntime);
+    await settle();
+    const sessionDirectories = createdInputs.map((input) => input.sessionDirectory);
+    expect(sessionDirectories).toHaveLength(3);
+    await Promise.all(sessionDirectories.map((sessionDirectory) => expect(fs.stat(sessionDirectory!)).resolves.toBeDefined()));
+
+    await coordinator.deleteRootStorage('root-session');
+
+    await Promise.all(sessionDirectories.map((sessionDirectory) => expect(fs.stat(sessionDirectory!)).rejects.toMatchObject({ code: 'ENOENT' })));
+    expect(coordinator.getTeams('root-session')).toEqual([]);
+    expect(childSessions).toHaveLength(3);
+    for (const childSession of childSessions) expect(childSession.dispose).toHaveBeenCalled();
   });
 
   it('deduplicates repeated operation IDs and rejects self-targeting', async () => {

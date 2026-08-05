@@ -201,7 +201,7 @@ describe('conversation output auto-scroll', () => {
     expect(virtuosoMock.scrollToIndex).not.toHaveBeenCalled();
   });
 
-  it('consumes retained and missing Flight Recorder jumps exactly once', () => {
+  it('consumes retained and missing inspector jumps exactly once', () => {
     apply([{ type: 'message.completed', messageId: 'retained', role: 'assistant', text: 'Answer', timestamp: 1 }]);
     render(<ConversationTimeline />);
     virtuosoMock.scrollToIndex.mockClear();

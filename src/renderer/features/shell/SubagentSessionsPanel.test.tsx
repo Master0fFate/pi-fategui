@@ -68,8 +68,15 @@ const team: AgentTeam = {
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 }, createdAt: 1, updatedAt: 2,
     },
   ],
-  tasks: [{ id: 'team-task', teamId: 'team-1', assigneeNodeId: 'team-reviewer', requesterNodeId: 'team-root', inputEnvelopeId: 'team-envelope', summary: 'Review the change', status: 'completed', createdAt: 1, startedAt: 1, endedAt: 2 }],
-  envelopes: [], operationReceipts: [], timeline: [], createdAt: 1, updatedAt: 2,
+  tasks: [{ id: 'team-task', teamId: 'team-1', assigneeNodeId: 'team-reviewer', requesterNodeId: 'team-root', inputEnvelopeId: 'team-envelope', resultEnvelopeId: 'team-result', summary: 'Review the change', status: 'completed', createdAt: 1, startedAt: 1, endedAt: 4 }],
+  envelopes: [
+    { id: 'team-envelope', teamId: 'team-1', sequence: 1, kind: 'NEW_TASK', authorNodeId: 'team-root', recipientNodeId: 'team-reviewer', taskId: 'team-task', content: 'Review the change and report concrete risks.', triggerTurn: true, state: 'consumed', createdAt: 1, deliveredAt: 1 },
+    { id: 'team-result', teamId: 'team-1', sequence: 2, kind: 'FINAL_ANSWER', authorNodeId: 'team-reviewer', recipientNodeId: 'team-root', taskId: 'team-task', content: '**Review complete.** No blocking risks found.', triggerTurn: false, state: 'consumed', createdAt: 4, deliveredAt: 4 },
+  ],
+  operationReceipts: [], timeline: [
+    { id: 'team-tool-start', sequence: 3, type: 'tool.started', nodeId: 'team-reviewer', taskId: 'team-task', toolCallId: 'team-read', toolName: 'read', summary: '/root/reviewer started read.', timestamp: 2 },
+    { id: 'team-tool-end', sequence: 4, type: 'tool.completed', nodeId: 'team-reviewer', taskId: 'team-task', toolCallId: 'team-read', toolName: 'read', summary: '/root/reviewer completed read.', timestamp: 3 },
+  ], createdAt: 1, updatedAt: 4,
 };
 
 const state: RuntimeState = {
@@ -86,29 +93,35 @@ const state: RuntimeState = {
   subagents: [run], commands: [], error: null,
 };
 
+async function openAgentsInspector(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: /^Run(?:,|$)/u }));
+  await user.click(screen.getByRole('tab', { name: /^Subagent sessions/u }));
+}
+
 describe('subagent session inspector', () => {
   beforeEach(() => {
     localStorage.clear();
     useRuntimeStore.getState().hydrateRuntime(state);
     useGoalMaxStore.setState({ projectPath: '/project', sessionId: 'parent-1', goal: null, loading: false, selectionGeneration: 1 });
-    useUiStore.setState({ inspectorTab: 'changes', selectedSubagentRunId: null, inspectorCollapsed: false, flightDeckJump: null, toast: null });
+    useUiStore.setState({
+      inspectorTab: 'changes', inspectorLastViews: { work: 'changes', run: 'goal', system: 'context' },
+      selectedAgent: null, inspectorCollapsed: false, flightDeckJump: null, toast: null,
+    });
   });
 
   afterEach(() => {
     Reflect.deleteProperty(window, 'piDesktop');
   });
 
-  it('keeps the Agents tab free of notification-style counters', () => {
-    useGoalMaxStore.setState({ goal: { childAssignments: [{ status: 'running' }] } as never });
+  it('shows only the active destination views and keeps agent counts at the Run entry', async () => {
+    const user = userEvent.setup();
     render(<Inspector onCollapse={vi.fn()} />);
 
-    const tab = screen.getByRole('tab', { name: 'Subagent sessions' });
-    expect(tab).toHaveAttribute('data-layer', 'execution');
-    expect(tab).toHaveAttribute('data-layer-start', 'true');
-    expect(screen.getByRole('tab', { name: 'Changes' })).toHaveAttribute('data-layer', 'workspace');
-    expect(screen.getByRole('tab', { name: 'Resources' })).toHaveAttribute('data-layer', 'system');
-    expect(tab.querySelector('.goalmax-agent-marker')).toBeNull();
-    expect(tab).not.toHaveTextContent('1');
+    expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Changes', 'Files']);
+    await user.click(screen.getByRole('button', { name: 'Run' }));
+    expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Goal', 'Subagent sessions', 'Tools']);
+    expect(screen.queryByRole('tab', { name: 'Changes' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Resources' })).not.toBeInTheDocument();
   });
 
   it('marks goal-owned agents and exposes their assignment scope without duplicating the Flight Deck', async () => {
@@ -173,8 +186,27 @@ describe('subagent session inspector', () => {
     });
     render(<Inspector onCollapse={vi.fn()} />);
 
-    await user.click(screen.getByRole('tab', { name: 'Subagent sessions, 10 active' }));
+    await openAgentsInspector(user);
+    expect(screen.getByRole('button', { name: 'Run, 10 active' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /Open Worker \d+ \(@worker-\d+\) child session: Running/u })).toHaveLength(10);
+  });
+
+  it('resizes the read-only preview between the child list and chat area', async () => {
+    const user = userEvent.setup();
+    useRuntimeStore.getState().hydrateRuntime({ ...state, subagents: [] });
+    render(<SubagentSessionsPanel />);
+
+    const emptySessions = screen.getByText('No child sessions');
+    const handle = screen.getByRole('separator', { name: 'Resize sub-agent chat preview' });
+    const preview = screen.getByRole('region', { name: 'Sub-agent chat preview' });
+    expect(emptySessions.compareDocumentPosition(handle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(handle.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(handle).toHaveAttribute('aria-valuenow', '260');
+
+    handle.focus();
+    await user.keyboard('{ArrowUp}');
+    expect(handle).toHaveAttribute('aria-valuenow', '276');
+    expect(preview).toHaveStyle({ flexBasis: '276px' });
   });
 
   it('renames a display label through the canonical handle without exposing the run ID', async () => {
@@ -186,7 +218,7 @@ describe('subagent session inspector', () => {
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { controlSubagent } });
     render(<Inspector onCollapse={vi.fn()} />);
 
-    await user.click(screen.getByRole('tab', { name: 'Subagent sessions' }));
+    await openAgentsInspector(user);
     await user.click(screen.getByRole('button', { name: 'Rename @architecture-scout-1' }));
     const input = screen.getByRole('textbox', { name: 'Display name for @architecture-scout-1' });
     await user.clear(input);
@@ -206,11 +238,11 @@ describe('subagent session inspector', () => {
     });
     render(<Inspector onCollapse={vi.fn()} />);
 
-    await user.click(screen.getByRole('tab', { name: 'Subagent sessions' }));
+    await openAgentsInspector(user);
     await user.click(screen.getByRole('button', { name: 'Open Architecture Scout (@architecture-scout-1) child session: Completed' }));
-    const detail = screen.getByRole('region', { name: 'Architecture Scout agent session' });
-    await user.click(within(detail).getByText('Full final result'));
-    expect(detail.querySelector('.subagent-final-result pre')).toHaveTextContent(fullResult);
+    const preview = screen.getByRole('region', { name: 'Architecture Scout chat preview' });
+    await user.click(within(preview).getByText('Full final result'));
+    expect(preview.querySelector('.subagent-final-result pre')).toHaveTextContent(fullResult);
   });
 
   it('renders active and restart-paused workflow graphs visibly in the session inspector', async () => {
@@ -242,7 +274,7 @@ describe('subagent session inspector', () => {
     });
     render(<Inspector onCollapse={vi.fn()} />);
 
-    await user.click(screen.getByRole('tab', { name: 'Subagent sessions' }));
+    await openAgentsInspector(user);
     const workflows = screen.getByLabelText('Subagent workflows');
     expect(within(workflows).getByText('paused')).toBeInTheDocument();
     expect(within(workflows).getByText('@foundation')).toBeInTheDocument();
@@ -284,9 +316,9 @@ describe('subagent session inspector', () => {
   it('consumes retained agent-run jumps and resolves missing runs once', async () => {
     act(() => useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', { kind: 'agent', runId: run.id }));
     render(<SubagentSessionsPanel />);
-    const detail = screen.getByRole('region', { name: 'Architecture Scout agent session' });
+    const preview = screen.getByRole('region', { name: 'Architecture Scout chat preview' });
     await waitFor(() => expect(useUiStore.getState().flightDeckJump).toBeNull());
-    expect(detail).toHaveFocus();
+    expect(preview).toHaveFocus();
 
     act(() => useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', { kind: 'agent', runId: 'not-retained' }));
     await waitFor(() => expect(useUiStore.getState().flightDeckJump).toBeNull());
@@ -311,13 +343,33 @@ describe('subagent session inspector', () => {
     expect(screen.getByLabelText('Reviewer Agent Team node ready')).toBeInTheDocument();
   });
 
+  it('opens an Agent Team V2 child and shows its retained conversation', async () => {
+    const user = userEvent.setup();
+    useRuntimeStore.getState().hydrateRuntime({ ...state, subagents: [], agentTeams: [team] });
+    render(<SubagentSessionsPanel />);
+
+    const reviewer = screen.getByRole('button', { name: 'Reviewer Agent Team node ready' });
+    await user.click(reviewer);
+
+    expect(useUiStore.getState().selectedAgent).toEqual({ kind: 'team-node', teamId: team.id, nodeId: 'team-reviewer' });
+    expect(reviewer).toHaveAttribute('aria-current', 'true');
+    const preview = screen.getByRole('region', { name: 'Reviewer chat preview' });
+    expect(within(preview).getByText('Review the change and report concrete risks.')).toBeInTheDocument();
+    expect(within(preview).getByText('Review complete.')).toBeInTheDocument();
+    expect(within(preview).getByText('read')).toBeInTheDocument();
+
+    await user.click(within(preview).getByRole('button', { name: 'Close sub-agent chat preview' }));
+    expect(useUiStore.getState().selectedAgent).toBeNull();
+    expect(screen.getByRole('region', { name: 'Sub-agent chat preview' })).toBeInTheDocument();
+  });
+
   it.each([
     ['team node', { kind: 'team-node' as const, teamId: team.id, nodeId: 'team-reviewer' }],
     ['team task', { kind: 'task' as const, teamId: team.id, taskId: 'team-task' }],
   ])('consumes a retained %s jump after focusing its rendered node', async (_label, target) => {
     useRuntimeStore.getState().hydrateRuntime({ ...state, agentTeams: [team] });
     render(<SubagentSessionsPanel />);
-    expect(screen.getByRole('region', { name: 'Flight Recorder' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Sub-agent chat preview' })).toBeInTheDocument();
     act(() => useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', target));
     const node = screen.getByLabelText('Reviewer Agent Team node ready').closest('article');
     expect(node).not.toBeNull();
@@ -330,7 +382,7 @@ describe('subagent session inspector', () => {
     const user = userEvent.setup();
     const view = render(<><Inspector onCollapse={vi.fn()} /><ToolCard toolCallId="delegate-1" /></>);
 
-    await user.click(screen.getByRole('tab', { name: 'Subagent sessions' }));
+    await openAgentsInspector(user);
     const sessions = screen.getByRole('region', { name: 'Agent sessions' });
     expect(screen.getByText('Main agent')).toBeInTheDocument();
     expect(screen.getByText('Runtime boundaries')).toBeInTheDocument();
@@ -342,24 +394,21 @@ describe('subagent session inspector', () => {
     expect(child).toHaveTextContent('Inspect the runtime');
 
     await user.click(child);
-    const detail = screen.getByRole('region', { name: 'Architecture Scout agent session' });
-    expect(detail.querySelector('.subagent-detail-header small')).toHaveTextContent('@architecture-scout-1');
-    expect(within(detail).getByText('user/architecture-scout')).toBeInTheDocument();
-    expect(within(detail).getByText('test/model')).toBeInTheDocument();
-    expect(within(detail).getByText('high')).toBeInTheDocument();
-    expect(within(detail).getByText('read-only')).toBeInTheDocument();
-    expect(within(detail).getByText('read, grep, find, ls')).toBeInTheDocument();
-    expect(within(detail).getByText('Boundary confirmed.').tagName).toBe('STRONG');
-    expect(within(detail).getByText('Reasoning')).toBeInTheDocument();
-    expect(within(detail).getByText('read')).toBeInTheDocument();
-    expect(within(detail).queryByRole('textbox')).not.toBeInTheDocument();
+    const preview = screen.getByRole('region', { name: 'Architecture Scout chat preview' });
+    expect(screen.getByText('Main agent')).toBeInTheDocument();
+    expect(preview.querySelector('.subagent-chat-preview-copy small')).toHaveTextContent('@architecture-scout-1');
+    expect(within(preview).getByText('Read only')).toBeInTheDocument();
+    expect(within(preview).getByText('Boundary confirmed.').tagName).toBe('STRONG');
+    expect(within(preview).getByText('Reasoning')).toBeInTheDocument();
+    expect(within(preview).getByText('read')).toBeInTheDocument();
+    expect(within(preview).queryByRole('textbox')).not.toBeInTheDocument();
 
-    await user.click(within(detail).getByRole('button', { name: 'Back to child sessions' }));
-    expect(screen.getByRole('button', { name: 'Open Architecture Scout (@architecture-scout-1) child session: Completed' })).toBeInTheDocument();
+    await user.click(within(preview).getByRole('button', { name: 'Close sub-agent chat preview' }));
+    expect(screen.getByRole('region', { name: 'Sub-agent chat preview' })).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'View subagent session' }));
-    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'sessions', selectedSubagentRunId: run.id, inspectorCollapsed: false });
-    expect(screen.getByRole('region', { name: 'Architecture Scout agent session' })).toBeInTheDocument();
+    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'sessions', selectedAgent: { kind: 'subagent', runId: run.id }, inspectorCollapsed: false });
+    expect(screen.getByRole('region', { name: 'Architecture Scout chat preview' })).toBeInTheDocument();
 
     view.unmount();
   });

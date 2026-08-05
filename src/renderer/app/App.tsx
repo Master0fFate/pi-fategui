@@ -81,6 +81,29 @@ const CommandPalette = lazy(() => import('../features/commands/CommandPalette').
 const SettingsDialog = lazy(() => import('../features/settings/SettingsDialog').then((module) => ({ default: module.SettingsDialog })));
 import { AppShell } from './AppShell';
 
+function WorkspaceInitializer() {
+  const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
+  const initializeWorkspace = useWorkspaceStore((state) => state.initialize);
+  const surface = useUiStore((state) => state.inspectorCollapsed
+    ? null
+    : state.inspectorTab === 'files'
+      ? 'files'
+      : state.inspectorTab === 'changes'
+        ? 'changes'
+        : null);
+
+  useEffect(() => {
+    void initializeWorkspace(projectPath, surface).then(() => {
+      const workspace = useWorkspaceStore.getState();
+      const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
+      if (projectPath && workspace.projectPath === projectPath && !workspace.git && typeof desktop?.getGitStatus === 'function') return workspace.refreshGit();
+      return undefined;
+    });
+  }, [initializeWorkspace, projectPath, surface]);
+
+  return null;
+}
+
 export function App() {
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
   const hydrateRuntime = useRuntimeStore((state) => state.hydrateRuntime);
@@ -91,9 +114,6 @@ export function App() {
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
   const projectTrusted = useRuntimeStore((state) => state.runtime.project?.trusted ?? false);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
-  const initializeWorkspace = useWorkspaceStore((state) => state.initialize);
-  const inspectorCollapsed = useUiStore((state) => state.inspectorCollapsed);
-  const inspectorTab = useUiStore((state) => state.inspectorTab);
   const musicPlayerEnabled = useUiStore((state) => state.musicPlayerEnabled);
   const paletteOpen = useUiStore((state) => state.paletteOpen);
   const settingsOpen = useUiStore((state) => state.settingsOpen);
@@ -113,16 +133,6 @@ export function App() {
       useUiStore.getState().clearFlightDeckJump(jump.nonce);
     }
   }, [projectPath, sessionId]);
-
-  useEffect(() => {
-    const surface = inspectorCollapsed ? null : inspectorTab === 'files' ? 'files' : inspectorTab === 'changes' ? 'changes' : null;
-    void initializeWorkspace(projectPath, surface).then(() => {
-      const workspace = useWorkspaceStore.getState();
-      const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
-      if (projectPath && workspace.projectPath === projectPath && !workspace.git && typeof desktop?.getGitStatus === 'function') return workspace.refreshGit();
-      return undefined;
-    });
-  }, [initializeWorkspace, inspectorCollapsed, inspectorTab, projectPath]);
 
   useEffect(() => {
     if (!('piDesktop' in window) || typeof window.piDesktop.getSettings !== 'function') return undefined;
@@ -318,6 +328,7 @@ export function App() {
   return (
     <>
       {hydrationError && <div className="hydration-error-banner" role="alert"><span>{hydrationError}</span><button type="button" onClick={() => setHydrationAttempt((value) => value + 1)}>Retry</button></div>}
+      <WorkspaceInitializer />
       <AppShell />
       <AppToast />
       {musicPlayerEnabled && <Suspense fallback={null}><MusicPlayerDock /></Suspense>}

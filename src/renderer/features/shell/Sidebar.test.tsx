@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, RuntimeState, SessionSummary } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
+import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { Sidebar } from './Sidebar';
 
@@ -32,7 +33,7 @@ const ready = (overrides: Partial<RuntimeState> = {}): RuntimeState => ({
   messages: [],
   commands: [],
   sessions: [session('s1', 'First', true), session('s2', 'Second', false)],
-  sessionCapabilities: { fork: true, clone: true, compact: true, import: true },
+  sessionCapabilities: { fork: true, navigate: true, clone: true, compact: true, import: true },
   sessionOperation: false,
   error: null,
   ...overrides,
@@ -42,6 +43,7 @@ describe('Sidebar sessions', () => {
   beforeEach(() => {
     localStorage.clear();
     useRuntimeStore.getState().setRuntime(ready());
+    useUiStore.setState({ composerDraftRequest: null, toast: null });
     useWorkspaceStore.setState({ projectPath: '/project', git: null });
   });
 
@@ -160,6 +162,37 @@ describe('Sidebar sessions', () => {
     expect(tooltip).toHaveTextContent('Second');
     expect(container.querySelector('.session-drag-handle')).not.toBeInTheDocument();
     expect(openSecond.closest('.session-row')).toHaveAttribute('draggable', 'true');
+  });
+
+  it('presents semantic conversation paths and switches history without exposing raw SDK entries', async () => {
+    const branches = [
+      { id: 'current-leaf', parentId: 'root', depth: 4, label: 'current', preview: 'Current implementation response', kind: 'message', active: true },
+      { id: 'alternate-leaf', parentId: 'root', depth: 7, label: 'message', preview: 'Alternative implementation response', kind: 'custom', active: false },
+    ];
+    const initial = ready({ branches });
+    const switched = ready({
+      branches: branches.map((branch) => ({ ...branch, active: branch.id === 'alternate-leaf' })),
+      messages: [{ id: 'alternate-message', role: 'assistant', text: 'Alternative implementation response', timestamp: 2 }],
+    });
+    useRuntimeStore.getState().hydrateRuntime(initial);
+    const navigateSessionBranch = vi.fn(async () => ({ state: switched, selectedText: 'Continue from this prompt' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { navigateSessionBranch } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    const paths = screen.getByRole('region', { name: 'Conversation paths' });
+    expect(paths).toHaveTextContent('2 saved');
+    expect(paths).toHaveTextContent('Current path');
+    expect(paths).toHaveTextContent('Alternate path 1');
+    expect(paths).not.toHaveTextContent(/^Branches$/u);
+    expect(paths).not.toHaveTextContent('custom');
+
+    await user.click(screen.getByRole('button', { name: /Switch to Alternate path 1/u }));
+
+    await waitFor(() => expect(navigateSessionBranch).toHaveBeenCalledWith('alternate-leaf'));
+    await waitFor(() => expect(useRuntimeStore.getState().runtime.branches?.find((branch) => branch.id === 'alternate-leaf')?.active).toBe(true));
+    expect(useUiStore.getState().composerDraftRequest).toMatchObject({ text: 'Continue from this prompt', selectAll: true });
+    expect(useUiStore.getState().toast).toMatchObject({ kind: 'success', title: 'Conversation path switched' });
   });
 
   it('lets the collapsed Settings tooltip wrapper fill the footer rail', () => {

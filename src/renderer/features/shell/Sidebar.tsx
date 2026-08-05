@@ -17,14 +17,16 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { SessionSummary } from '../../../shared/contracts/ipc';
+import type { SessionBranch, SessionSummary } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
+import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
 import { IconButton } from '../../components/IconButton';
 import { SelectControl } from '../../components/SelectControl';
 import { formatRelativeTime } from '../../lib/relativeTime';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { ConversationPaths } from './ConversationPaths';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -65,11 +67,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [actionBusy, setActionBusy] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const [navigatingBranchId, setNavigatingBranchId] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState('');
   const [sessions, setSessions] = useState<SessionSummary[]>(runtime.sessions ?? []);
   const [renderExpanded, setRenderExpanded] = useState(!collapsed);
   const [expandedVisible, setExpandedVisible] = useState(!collapsed);
   const [relativeNow, setRelativeNow] = useState(() => Date.now());
+  const [branchListHeight, setBranchListHeight] = useState(156);
+  const expandedSectionsRef = useRef<HTMLDivElement>(null);
   const mounted = useRef(true);
   const navigationBusyRef = useRef(false);
   const actionBusyRef = useRef(false);
@@ -88,6 +93,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const orderStorageKey = runtime.project ? `fate-ui:session-order:${runtime.project.path}` : null;
   const manualRanks = useMemo(() => new Map(manualOrder.map((id, index) => [id, index])), [manualOrder]);
   const sessionTitleByPath = useMemo(() => new Map(sessions.map((session) => [session.path, session.title])), [sessions]);
+  const resizeBranchList = (height: number) => {
+    const availableHeight = expandedSectionsRef.current?.clientHeight ?? 0;
+    const maximum = Math.max(96, (availableHeight > 0 ? availableHeight : 520) - 150);
+    setBranchListHeight(Math.min(maximum, Math.max(96, height)));
+  };
   const sortedSessions = useMemo(() => [...sessions].sort((left, right) => {
     if (sort === 'manual') {
       return (manualRanks.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (manualRanks.get(right.id) ?? Number.MAX_SAFE_INTEGER);
@@ -365,6 +375,44 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       if (mounted.current) setActionBusy(false);
     }
   };
+  const navigateConversationPath = (branch: SessionBranch) => {
+    if (branch.active || replacementBusy || capabilities?.navigate !== true) return;
+    if (!('piDesktop' in window) || typeof window.piDesktop.navigateSessionBranch !== 'function') {
+      showToast({ kind: 'error', title: 'Path switching unavailable', message: 'The desktop session bridge cannot navigate conversation paths.' });
+      return;
+    }
+    const origin = useRuntimeStore.getState().runtime;
+    actionBusyRef.current = true;
+    setActionBusy(true);
+    setNavigatingBranchId(branch.id);
+    void window.piDesktop.navigateSessionBranch(branch.id)
+      .then((result) => {
+        if (!mounted.current) return;
+        const current = useRuntimeStore.getState().runtime;
+        const selectionMoved = current.project?.path !== origin.project?.path || current.sessionId !== origin.sessionId;
+        const resultIsCurrent = current.project?.path === result.state.project?.path && current.sessionId === result.state.sessionId;
+        if (selectionMoved && !resultIsCurrent) return;
+        useRuntimeStore.getState().hydrateRuntime(result.state);
+        if (result.selectedText) {
+          requestComposerDraft(result.selectedText, true, 'This path ends at an editable prompt. Edit it, then send to continue from here.');
+        }
+        showToast({ kind: 'success', title: 'Conversation path switched', message: 'The previous path remains saved and can be restored here.' });
+      })
+      .catch((error: unknown) => {
+        if (mounted.current) showToast({
+          kind: 'error',
+          title: 'Could not switch conversation path',
+          message: error instanceof Error ? error.message : 'That saved path could not be opened.',
+        });
+      })
+      .finally(() => {
+        actionBusyRef.current = false;
+        if (mounted.current) {
+          setActionBusy(false);
+          setNavigatingBranchId(null);
+        }
+      });
+  };
   const reorderSession = (targetId: string) => {
     if (!draggingSessionId || draggingSessionId === targetId || query) return;
     const order = sortedSessions.map((session) => session.id).filter((id) => id !== draggingSessionId);
@@ -414,7 +462,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </button>
 
       {renderExpanded && (
-        <div className="sidebar-expanded-sections sidebar-expanded-only">
+        <div ref={expandedSectionsRef} className="sidebar-expanded-sections sidebar-expanded-only">
           <label className="session-search">
             <Search size={15} />
             <input className="icon-label" aria-label="Search sessions" placeholder="Search sessions" value={query} onChange={(event) => setQuery(event.target.value)} disabled={!runtime.project} />
@@ -503,17 +551,17 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             ))}
           </div>
 
-          {(runtime.branches?.length ?? 0) > 1 && (
-            <section className="branch-list" aria-label="Conversation branches">
-              <strong>Branches</strong>
-              {runtime.branches!.slice(-20).map((branch) => (
-                <AppTooltip key={branch.id} content={branch.preview || branch.kind}>
-                  <div className={branch.active ? 'active' : ''} style={{ paddingLeft: Math.min(branch.depth, 5) * 8 }}>
-                    <GitFork size={11} /> <span className="icon-label">{branch.label || branch.preview || branch.kind}</span>
-                  </div>
-                </AppTooltip>
-              ))}
-            </section>
+          {(runtime.branches?.length ?? 0) > 1 && capabilities?.navigate === true && (
+            <>
+              <HorizontalResizeHandle label="Resize sessions and conversation paths" value={branchListHeight} minimum={96} maximum={370} direction={-1} onChange={resizeBranchList} onReset={() => resizeBranchList(156)} />
+              <ConversationPaths
+                branches={runtime.branches!}
+                busy={replacementBusy}
+                pendingId={navigatingBranchId}
+                onSelect={navigateConversationPath}
+                height={branchListHeight}
+              />
+            </>
           )}
           {sessions.length === 0 && (
             <div className="empty-sessions">

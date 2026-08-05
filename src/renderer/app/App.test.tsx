@@ -11,7 +11,12 @@ describe('first-launch shell', () => {
   beforeEach(() => {
     localStorage.clear();
     delete document.documentElement.dataset.platform;
-    useUiStore.setState({ sidebarCollapsed: false, inspectorCollapsed: false, leftWidth: 264, rightWidth: 332, musicPlayerEnabled: false, musicPlaying: false, sendMessageWithModifier: false, paletteOpen: false, settingsOpen: false, toast: null, composerDraftRequest: null, goalEditorOpen: false });
+    useUiStore.setState({
+      sidebarCollapsed: false, inspectorCollapsed: false, leftWidth: 264, rightWidth: 332,
+      inspectorTab: 'changes', inspectorLastViews: { work: 'changes', run: 'goal', system: 'context' }, selectedAgent: null,
+      musicPlayerEnabled: false, musicPlaying: false, sendMessageWithModifier: false,
+      paletteOpen: false, settingsOpen: false, toast: null, composerDraftRequest: null, goalEditorOpen: false,
+    });
     useGoalMaxStore.setState({ projectPath: null, sessionId: null, goal: null, loading: false, selectionGeneration: 0 });
     useRuntimeStore.getState().setRuntime({
       status: 'disconnected', project: null, sessionId: null, sessionFile: null, streaming: false,
@@ -27,7 +32,9 @@ describe('first-launch shell', () => {
     render(<App />);
     expect(screen.getByRole('heading', { name: 'What would you like Pi to do?' })).toBeInTheDocument();
     expect(screen.getByText('No sessions yet')).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /Changes/ })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Inspector destinations' })).toBeInTheDocument();
+    expect(['Work', 'Run', 'System'].map((name) => screen.getByRole('button', { name }).textContent)).toEqual(['Work', 'Run', 'System']);
+    expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Changes', 'Files']);
     expect(screen.getByRole('button', { name: 'Model and reasoning settings' })).toBeDisabled();
   });
 

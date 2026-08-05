@@ -81,6 +81,8 @@ export class FakePiRuntimeService {
   private profileSequence = 0;
   private subagents: SubagentRun[] = [];
   private agentTeams: AgentTeam[] = [];
+  private conversationBranchesEnabled = false;
+  private activeConversationBranchId = 'e2e-path-current';
   private readonly sessionPermissions = new Map<string, PermissionLevel>();
   private sink: (events: PiEvent[]) => void = () => undefined;
   private goalSink: (event: GoalMaxEvent) => void = () => undefined;
@@ -127,8 +129,13 @@ export class FakePiRuntimeService {
         items: this.queuedMessages.map((item) => ({ ...item, ...(item.images ? { images: item.images.map((image) => ({ ...image })) } : {}) })),
       },
       sessions: this.sessions.map((session) => ({ ...session, active: session.id === this.activeSession })),
-      subagents: this.activeSession === 'e2e-session-1' ? this.subagents : [], agentTeams: this.activeSession === 'e2e-session-1' ? this.agentTeams : [], branches: [],
-      forkPoints: [], sessionCapabilities: { fork: true, clone: true, import: true, compact: true }, sessionOperation: false, error: null,
+      subagents: this.activeSession === 'e2e-session-1' ? this.subagents : [],
+      agentTeams: this.activeSession === 'e2e-session-1' ? this.agentTeams : [],
+      branches: this.activeSession === 'e2e-session-1' && this.conversationBranchesEnabled ? [
+        { id: 'e2e-path-current', parentId: 'e2e-path-root', depth: 8, label: 'current', preview: 'Keep the verified implementation', kind: 'message', active: this.activeConversationBranchId === 'e2e-path-current' },
+        { id: 'e2e-path-alternate', parentId: 'e2e-path-root', depth: 11, label: 'custom', preview: 'Explore the alternate implementation', kind: 'custom', active: this.activeConversationBranchId === 'e2e-path-alternate' },
+      ] : [],
+      forkPoints: [], sessionCapabilities: { fork: true, navigate: true, clone: true, import: true, compact: true }, sessionOperation: false, error: null,
     };
   }
   async openProject(project: ProjectState): Promise<RuntimeState> { this.project = project; this.emitState(); return this.getState(); }
@@ -175,6 +182,7 @@ export class FakePiRuntimeService {
     }
     if (input.text === '__FATE_V2_AGENT_FIXTURE__') {
       this.agentTeams = [agentTeamFixture()];
+      this.conversationBranchesEnabled = true;
       this.emitState();
       return { accepted: true, runId };
     }
@@ -245,15 +253,40 @@ export class FakePiRuntimeService {
     const nodes = team.nodes.map((candidate, candidateIndex) => input.action === 'close' && (candidate.id === node.id || candidate.path.startsWith(`${node.path}/`))
       ? { ...candidate, status: 'closed' as const, writer: false, currentTaskId: undefined, updatedAt: now }
       : candidateIndex === index ? next : candidate);
+    const envelopes = input.action === 'message'
+      ? [...team.envelopes, {
+          id: `e2e-team-message-${team.envelopes.length + 1}`,
+          teamId: team.id,
+          sequence: Math.max(0, ...team.envelopes.map((envelope) => envelope.sequence)) + 1,
+          kind: 'MESSAGE' as const,
+          authorNodeId: team.rootNodeId,
+          recipientNodeId: node.id,
+          content: input.message,
+          triggerTurn: false,
+          state: 'delivered' as const,
+          createdAt: now,
+          deliveredAt: now,
+        }]
+      : team.envelopes;
     this.agentTeams = [{
       ...team,
       nodes,
+      envelopes,
       activeTurns: nodes.filter((candidate) => candidate.id !== team.rootNodeId && candidate.status === 'active').length,
       writerNodeId: nodes.find((candidate) => candidate.writer && candidate.status === 'active')?.id ?? null,
       updatedAt: now,
     }];
     this.emitState();
     return this.getState();
+  }
+  async navigateSessionBranch(entryId: string): Promise<{ state: RuntimeState; selectedText?: string }> {
+    if (!this.conversationBranchesEnabled || !['e2e-path-current', 'e2e-path-alternate'].includes(entryId)) throw new Error('Unknown conversation path.');
+    this.activeConversationBranchId = entryId;
+    this.emitState(true);
+    return {
+      state: this.getState(),
+      ...(entryId === 'e2e-path-alternate' ? { selectedText: 'Continue from the alternate implementation prompt' } : {}),
+    };
   }
   async setModel(): Promise<RuntimeState> { return this.getState(); }
   setThinkingLevel(_level: ThinkingLevel): RuntimeState { return this.getState(); }

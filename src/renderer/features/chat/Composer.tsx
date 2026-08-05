@@ -1713,10 +1713,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
               </Popover.Root>
             )}
             {!compactToolbar && (
-              <>
-                <AppTooltip content={runtime.project?.name ?? 'Open project'}><button className="composer-project-button" type="button" onClick={onOpenProject}>{runtime.project?.name ?? 'Project'}</button></AppTooltip>
-                <span className="toolbar-divider" />
-              </>
+              <AppTooltip content={runtime.project?.name ?? 'Open project'}><button className="composer-project-button" type="button" onClick={onOpenProject}>{runtime.project?.name ?? 'Project'}</button></AppTooltip>
             )}
             <Popover.Root
               open={permissionMenuOpen}
@@ -1774,9 +1771,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
             <input ref={fileInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={attachImages} />
             {!compactToolbar && (
               <>
-                <AppTooltip content="Tag a project file or folder with #" wrapTrigger><button type="button" aria-label="Tag project file or folder" disabled={!connected} onClick={startResourceTag}><Hash size={15} /><span className="icon-label">Tag</span></button></AppTooltip>
-                <AppTooltip content={imageCapable ? 'Attach up to four images' : 'The model selected for the next message does not support images'} wrapTrigger><button type="button" aria-label="Attach image" disabled={!imageCapable || images.length >= 4} onClick={() => fileInput.current?.click()}><ImagePlus size={15} /><span className="icon-label">Image</span></button></AppTooltip>
-                {runtime.sessionCapabilities?.fork && forkPoint && <AppTooltip content={forkTooltip} wrapTrigger><button type="button" aria-label="Create new session from latest prompt" disabled={!canFork || forking} onClick={() => void forkConversation()}>{forking ? <LoaderCircle className="tool-spinner" size={15} /> : <GitFork size={15} />}<span className="icon-label">New from prompt</span></button></AppTooltip>}
+                <AppTooltip content="Tag a project file or folder with #" wrapTrigger><button className="composer-icon-action" type="button" aria-label="Tag project file or folder" disabled={!connected} onClick={startResourceTag}><Hash size={15} aria-hidden="true" /></button></AppTooltip>
+                <AppTooltip content={imageCapable ? 'Attach up to four images' : 'The model selected for the next message does not support images'} wrapTrigger><button className="composer-icon-action" type="button" aria-label="Attach image" disabled={!imageCapable || images.length >= 4} onClick={() => fileInput.current?.click()}><ImagePlus size={15} aria-hidden="true" /></button></AppTooltip>
+                {runtime.sessionCapabilities?.fork && forkPoint && <AppTooltip content={forkTooltip} wrapTrigger><button className="composer-icon-action" type="button" aria-label="Create new session from latest prompt" disabled={!canFork || forking} onClick={() => void forkConversation()}>{forking ? <LoaderCircle className="tool-spinner" size={15} aria-label="Creating session" /> : <GitFork size={15} aria-hidden="true" />}</button></AppTooltip>}
               </>
             )}
           </div>

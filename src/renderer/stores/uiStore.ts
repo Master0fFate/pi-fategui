@@ -27,6 +27,25 @@ export const LEFT_MAX = 460;
 export const RIGHT_MIN = 280;
 export const RIGHT_MAX = 560;
 
+export type InspectorTab = 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context' | 'goal';
+export type InspectorDestination = 'work' | 'run' | 'system';
+export type InspectorLastViews = Record<InspectorDestination, InspectorTab>;
+export type SelectedAgent =
+  | { kind: 'subagent'; runId: string }
+  | { kind: 'team-node'; teamId: string; nodeId: string };
+
+export const INSPECTOR_DEFAULT_VIEWS: InspectorLastViews = {
+  work: 'changes',
+  run: 'goal',
+  system: 'context',
+};
+
+export function inspectorDestinationForTab(tab: InspectorTab): InspectorDestination {
+  if (tab === 'changes' || tab === 'files') return 'work';
+  if (tab === 'goal' || tab === 'sessions' || tab === 'tools') return 'run';
+  return 'system';
+}
+
 interface UiState {
   leftWidth: number;
   rightWidth: number;
@@ -42,8 +61,9 @@ interface UiState {
   speechDownload: SpeechDownloadProgress | null;
   toast: AppToastMessage | null;
   composerDraftRequest: { id: number; text: string; selectAll: boolean; notice?: string } | null;
-  inspectorTab: 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context' | 'goal';
-  selectedSubagentRunId: string | null;
+  inspectorTab: InspectorTab;
+  inspectorLastViews: InspectorLastViews;
+  selectedAgent: SelectedAgent | null;
   goalEditorOpen: boolean;
   flightDeckJump: FlightDeckJump | null;
   setLeftWidth: (width: number) => void;
@@ -64,10 +84,12 @@ interface UiState {
   dismissToast: () => void;
   requestComposerDraft: (text: string, selectAll?: boolean, notice?: string) => void;
   clearComposerDraftRequest: (id: number) => void;
-  setInspectorTab: (tab: UiState['inspectorTab']) => void;
+  setInspectorTab: (tab: InspectorTab) => void;
+  openInspectorDestination: (destination: InspectorDestination) => void;
   openGoalMax: () => void;
   setGoalEditorOpen: (open: boolean) => void;
   openSubagent: (runId: string) => void;
+  openAgentTeamNode: (teamId: string, nodeId: string) => void;
   openSubagentList: () => void;
   closeSubagent: () => void;
   requestFlightDeckJump: (projectPath: string, sessionId: string, target: FlightDeckTarget) => void;
@@ -76,6 +98,14 @@ interface UiState {
 
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
+
+function selectInspectorTab(state: Pick<UiState, 'inspectorLastViews'>, inspectorTab: InspectorTab) {
+  const destination = inspectorDestinationForTab(inspectorTab);
+  return {
+    inspectorTab,
+    inspectorLastViews: { ...state.inspectorLastViews, [destination]: inspectorTab },
+  };
+}
 
 export const useUiStore = create<UiState>()(
   persist(
@@ -95,7 +125,8 @@ export const useUiStore = create<UiState>()(
       toast: null,
       composerDraftRequest: null,
       inspectorTab: 'changes',
-      selectedSubagentRunId: null,
+      inspectorLastViews: { ...INSPECTOR_DEFAULT_VIEWS },
+      selectedAgent: null,
       goalEditorOpen: false,
       flightDeckJump: null,
       setLeftWidth: (leftWidth) => set({ leftWidth: clamp(leftWidth, LEFT_MIN, LEFT_MAX) }),
@@ -116,30 +147,42 @@ export const useUiStore = create<UiState>()(
       dismissToast: () => set({ toast: null }),
       requestComposerDraft: (text, selectAll = false, notice) => set({ composerDraftRequest: { id: ++nextComposerDraftRequestId, text, selectAll, ...(notice ? { notice } : {}) } }),
       clearComposerDraftRequest: (id) => set((state) => state.composerDraftRequest?.id === id ? { composerDraftRequest: null } : state),
-      setInspectorTab: (inspectorTab) => set({ inspectorTab }),
-      openGoalMax: () => set({ inspectorTab: 'goal', inspectorCollapsed: false }),
-      setGoalEditorOpen: (goalEditorOpen) => set({ goalEditorOpen }),
-      openSubagent: (selectedSubagentRunId) => set({ selectedSubagentRunId, inspectorTab: 'sessions', inspectorCollapsed: false }),
-      openSubagentList: () => set({ selectedSubagentRunId: null, inspectorTab: 'sessions', inspectorCollapsed: false }),
-      closeSubagent: () => set({ selectedSubagentRunId: null }),
-      requestFlightDeckJump: (projectPath, sessionId, target) => set((state) => ({
-        flightDeckJump: { nonce: ++nextFlightDeckJumpNonce, projectPath, sessionId, target },
-        ...(target.kind === 'file' ? { inspectorTab: 'changes' as const, inspectorCollapsed: false }
-          : target.kind === 'tool' ? { inspectorTab: 'tools' as const, inspectorCollapsed: false }
-            : target.kind === 'agent' ? { inspectorTab: 'sessions' as const, inspectorCollapsed: false, selectedSubagentRunId: target.runId }
-              : target.kind === 'team-node' || target.kind === 'task' ? { inspectorTab: 'sessions' as const, inspectorCollapsed: false, selectedSubagentRunId: null }
-                : {}),
-        ...(target.kind !== 'agent' ? { selectedSubagentRunId: target.kind === 'team-node' || target.kind === 'task' ? null : state.selectedSubagentRunId } : {}),
+      setInspectorTab: (inspectorTab) => set((state) => selectInspectorTab(state, inspectorTab)),
+      openInspectorDestination: (destination) => set((state) => ({
+        ...selectInspectorTab(state, state.inspectorLastViews[destination] ?? INSPECTOR_DEFAULT_VIEWS[destination]),
+        inspectorCollapsed: false,
       })),
+      openGoalMax: () => set((state) => ({ ...selectInspectorTab(state, 'goal'), inspectorCollapsed: false })),
+      setGoalEditorOpen: (goalEditorOpen) => set({ goalEditorOpen }),
+      openSubagent: (runId) => set((state) => ({ ...selectInspectorTab(state, 'sessions'), selectedAgent: { kind: 'subagent', runId }, inspectorCollapsed: false })),
+      openAgentTeamNode: (teamId, nodeId) => set((state) => ({ ...selectInspectorTab(state, 'sessions'), selectedAgent: { kind: 'team-node', teamId, nodeId }, inspectorCollapsed: false })),
+      openSubagentList: () => set((state) => ({ ...selectInspectorTab(state, 'sessions'), selectedAgent: null, inspectorCollapsed: false })),
+      closeSubagent: () => set({ selectedAgent: null }),
+      requestFlightDeckJump: (projectPath, sessionId, target) => set((state) => {
+        const inspectorTab: InspectorTab | null = target.kind === 'file' ? 'changes'
+          : target.kind === 'tool' ? 'tools'
+            : target.kind === 'agent' || target.kind === 'team-node' || target.kind === 'task' ? 'sessions'
+              : null;
+        return {
+          flightDeckJump: { nonce: ++nextFlightDeckJumpNonce, projectPath, sessionId, target },
+          ...(inspectorTab ? { ...selectInspectorTab(state, inspectorTab), inspectorCollapsed: false } : {}),
+          ...(target.kind === 'agent' ? { selectedAgent: { kind: 'subagent' as const, runId: target.runId } }
+            : target.kind === 'team-node' ? { selectedAgent: { kind: 'team-node' as const, teamId: target.teamId, nodeId: target.nodeId } }
+              : target.kind === 'task' ? { selectedAgent: target.nodeId ? { kind: 'team-node' as const, teamId: target.teamId, nodeId: target.nodeId } : null }
+                : { selectedAgent: state.selectedAgent }),
+        };
+      }),
       clearFlightDeckJump: (nonce) => set((state) => !state.flightDeckJump || (nonce !== undefined && state.flightDeckJump.nonce !== nonce) ? state : { flightDeckJump: null }),
     }),
     {
       name: 'pi-desktop-ui-v1',
-      partialize: ({ leftWidth, rightWidth, sidebarCollapsed, inspectorCollapsed }) => ({
+      partialize: ({ leftWidth, rightWidth, sidebarCollapsed, inspectorCollapsed, inspectorTab, inspectorLastViews }) => ({
         leftWidth,
         rightWidth,
         sidebarCollapsed,
         inspectorCollapsed,
+        inspectorTab,
+        inspectorLastViews,
       }),
     },
   ),

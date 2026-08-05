@@ -31,6 +31,7 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { useShallow } from 'zustand/react/shallow';
 import type { GitChange, GitCommitDetails, GitCommitSummary } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
+import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
 import { writeClipboardText } from '../../lib/clipboard';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -272,9 +273,9 @@ function DiffPreview({ origins, onOrigin }: { origins: readonly ChangeOrigin[]; 
     <div className="file-preview">
       <div className="preview-heading review-preview-heading">
         <AppTooltip content={diff.path}><span>{diff.path}</span></AppTooltip>
-        {!deleted && diff.state === 'text' && diff.openable && <AppTooltip content="Open in the system editor"><button type="button" onClick={() => void openPath(diff.path)}><ExternalLink size={13} /><span className="icon-label">Open</span></button></AppTooltip>}
+        {!deleted && diff.state === 'text' && diff.openable && <AppTooltip content="Open in the system editor"><button type="button" aria-label="Open in the system editor" onClick={() => void openPath(diff.path)}><ExternalLink size={13} aria-hidden="true" /></button></AppTooltip>}
         <div className="change-origins" aria-label="Recorded origins">
-          {origins.length ? origins.slice(0, 4).map((origin) => <button type="button" key={origin.id} onClick={() => onOrigin(origin)} title={`${origin.actorLabel} · ${origin.toolName}`}><Wrench size={10} /><span>{origin.actorLabel}</span></button>) : <span>No recorded origin</span>}
+          {origins.length ? origins.slice(0, 4).map((origin) => <button type="button" key={origin.id} aria-label={`Open recorded origin from ${origin.actorLabel}`} onClick={() => onOrigin(origin)} title={`${origin.actorLabel} · ${origin.toolName}`}>{origin.actorLabel}</button>) : <span>No recorded origin</span>}
         </div>
       </div>
       <div className="preview-body">
@@ -333,6 +334,13 @@ export function ChangesPanel() {
   const requestFlightDeckJump = useUiStore((state) => state.requestFlightDeckJump);
   const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
   const requestComposerDraft = useUiStore((state) => state.requestComposerDraft);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [listHeight, setListHeight] = useState(240);
+  const resizeList = (height: number) => {
+    const panelHeight = panelRef.current?.clientHeight ?? 0;
+    const maximum = Math.max(90, (panelHeight > 0 ? panelHeight : 900) - 200);
+    setListHeight(Math.min(maximum, Math.max(90, height)));
+  };
   const [view, setView] = useState<ChangesView>('diff');
   const [focusedChangeIndex, setFocusedChangeIndex] = useState(0);
   const changesListRef = useRef<VirtuosoHandle>(null);
@@ -443,7 +451,7 @@ export function ChangesPanel() {
   const nextViewLabel = nextView === 'diff' ? 'working-tree diff' : 'branch history';
   const ViewIcon = view === 'diff' ? FileDiff : GitGraph;
   return (
-      <div className="changes-panel" data-view={view}>
+      <div ref={panelRef} className="changes-panel" data-view={view}>
         <div className="changes-summary">
           <Popover.Root onOpenChange={(open) => { if (open) void loadWorktrees(); }}>
             <Popover.Trigger asChild>
@@ -477,13 +485,13 @@ export function ChangesPanel() {
         {reviewNotice && <div className="review-notice" role="status">{reviewNotice}</div>}
         {view === 'diff' ? (
           changes.length > 0 ? (
-            <div className="changes-list review-runway-list" aria-label="Changed files" data-review-runway="true" tabIndex={0} onKeyDown={onReviewKeyDown} aria-keyshortcuts="ArrowUp ArrowDown Home End J K O Enter Space">
+            <div className="changes-list review-runway-list" aria-label="Changed files" data-review-runway="true" tabIndex={0} style={{ flexBasis: listHeight }} onKeyDown={onReviewKeyDown} aria-keyshortcuts="ArrowUp ArrowDown Home End J K O Enter Space">
               <Virtuoso ref={changesListRef} data={changes} initialItemCount={Math.min(changes.length, 24)} computeItemKey={(_index, change) => change.path} itemContent={(index, change) => <ChangeRow change={change} selected={selected === change.path} reviewed={reviewedPaths.has(change.path)} onFocus={() => setFocusedChangeIndex(index)} onSelect={() => { setFocusedChangeIndex(index); void select(change.path); }} />} />
               {git?.truncated && <div className="bounded-note">Only the first 10,000 changed files are loaded and navigable</div>}
             </div>
-          ) : <div className="mini-empty">Working tree clean</div>
+          ) : <div className="changes-list changes-list--empty mini-empty" style={{ flexBasis: listHeight }}>Working tree clean</div>
         ) : (
-          <div className="changes-list commit-graph-list" aria-label="Branch history">
+          <div className="changes-list commit-graph-list" aria-label="Branch history" style={{ flexBasis: listHeight }}>
             {historyLoading && !history ? <div className="preview-loading"><span className="preview-spinner" /><span className="icon-label">Loading commit graph…</span></div> : graph.length > 0 ? (
               <Virtuoso data={graph} initialItemCount={Math.min(graph.length, 24)} computeItemKey={(_index, row) => row.commit.hash} itemContent={(_index, row) => <CommitRow row={row} />} />
             ) : <div className="mini-empty"><GitCommit size={16} />No commits yet</div>}
@@ -493,19 +501,20 @@ export function ChangesPanel() {
         {view === 'diff' && changes.length > 0 ? (
           <div className="review-runway-bar" aria-label="Review actions">
             <div className="review-navigation">
-              <button type="button" aria-label="Previous changed file" disabled={focusedChangeIndex <= 0} onClick={() => inspectChange(focusedChangeIndex - 1)}><ArrowUp size={12} /></button>
-              <button type="button" aria-label="Next changed file" disabled={focusedChangeIndex >= changes.length - 1} onClick={() => inspectChange(focusedChangeIndex + 1)}><ArrowDown size={12} /></button>
+              <AppTooltip content="Previous changed file" wrapTrigger><button type="button" aria-label="Previous changed file" disabled={focusedChangeIndex <= 0} onClick={() => inspectChange(focusedChangeIndex - 1)}><ArrowUp size={12} aria-hidden="true" /></button></AppTooltip>
+              <AppTooltip content="Next changed file" wrapTrigger><button type="button" aria-label="Next changed file" disabled={focusedChangeIndex >= changes.length - 1} onClick={() => inspectChange(focusedChangeIndex + 1)}><ArrowDown size={12} aria-hidden="true" /></button></AppTooltip>
               <span>{selected ? `${changes.findIndex((change) => change.path === selected) + 1}/${changes.length}` : `${changes.length} files`}</span>
             </div>
             <div className="review-actions">
-              <button type="button" disabled={!selected} data-active={selected ? reviewedPaths.has(selected) : undefined} onClick={() => { if (selected) toggleReviewed(selected); }}><CheckCircle2 size={11} /><span>{selected && reviewedPaths.has(selected) ? 'Reviewed' : 'Mark reviewed'}</span></button>
-              <button type="button" disabled={!selected} onClick={() => draftReviewAction('explain')}><SearchCode size={11} /><span>Explain</span></button>
-              <button type="button" disabled={!selected} onClick={() => draftReviewAction('test')}><TestTube2 size={11} /><span>Test</span></button>
-              <button type="button" disabled={!selected} onClick={() => draftReviewAction('revise')}><Wrench size={11} /><span>Revise</span></button>
-              <button type="button" disabled={!origins[0]} onClick={() => { if (origins[0]) openTarget(origins[0].target); }}><Route size={11} /><span>Origin</span></button>
+              <AppTooltip content={selected && reviewedPaths.has(selected) ? 'Reviewed' : 'Mark reviewed'} wrapTrigger><button type="button" aria-label={selected && reviewedPaths.has(selected) ? 'Reviewed' : 'Mark reviewed'} disabled={!selected} data-active={selected ? reviewedPaths.has(selected) : undefined} onClick={() => { if (selected) toggleReviewed(selected); }}><CheckCircle2 size={12} aria-hidden="true" /></button></AppTooltip>
+              <AppTooltip content="Explain selected change" wrapTrigger><button type="button" aria-label="Explain selected change" disabled={!selected} onClick={() => draftReviewAction('explain')}><SearchCode size={12} aria-hidden="true" /></button></AppTooltip>
+              <AppTooltip content="Test selected change" wrapTrigger><button type="button" aria-label="Test selected change" disabled={!selected} onClick={() => draftReviewAction('test')}><TestTube2 size={12} aria-hidden="true" /></button></AppTooltip>
+              <AppTooltip content="Revise selected change" wrapTrigger><button type="button" aria-label="Revise selected change" disabled={!selected} onClick={() => draftReviewAction('revise')}><Wrench size={12} aria-hidden="true" /></button></AppTooltip>
+              <AppTooltip content="Open recorded origin" wrapTrigger><button type="button" aria-label="Open recorded origin" disabled={!origins[0]} onClick={() => { if (origins[0]) openTarget(origins[0].target); }}><Route size={12} aria-hidden="true" /></button></AppTooltip>
             </div>
           </div>
         ) : null}
+        <HorizontalResizeHandle label="Resize changes list and preview" value={listHeight} minimum={90} maximum={700} onChange={resizeList} onReset={() => resizeList(240)} />
         <DiffPreview origins={origins} onOrigin={(origin) => openTarget(origin.target)} />
       </div>
   );

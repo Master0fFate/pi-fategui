@@ -968,6 +968,7 @@ export class PiRuntimeService {
         : {}),
       sessionCapabilities: {
         fork: typeof this.runtime?.fork === 'function',
+        navigate: typeof session?.navigateTree === 'function',
         clone: this.adapter.supportsClone === true
           && typeof this.runtime?.fork === 'function'
           && typeof session?.sessionManager?.getLeafId === 'function'
@@ -1610,6 +1611,9 @@ export class PiRuntimeService {
     if (session.sessionId === sessionId) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Switch to another session before deleting this one.', retryable: true });
     if (this.findLiveSlot(sessionId)) throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for that session to finish before deleting it.', retryable: true });
     const initialization = this.initialization;
+    // A successful parent deletion must never strand persistent child transcripts.
+    await this.agentTeams.deleteRootStorage(sessionId);
+    if (initialization !== this.initialization || this.project?.path !== projectPath) throw this.replacementSuperseded();
     await this.sessionRepository.delete(projectPath, sessionId);
     if (initialization !== this.initialization || this.project?.path !== projectPath) throw this.replacementSuperseded();
     this.manualSessionNames.add(this.sessionClaimKey(projectPath, sessionId));
@@ -1650,6 +1654,22 @@ export class PiRuntimeService {
       const result = await runtime.fork(entryId);
       if (result?.cancelled) throw this.replacementCancelled('Session fork');
       selectedText = result.selectedText;
+    });
+    return { state, ...(selectedText === undefined ? {} : { selectedText }) };
+  }
+
+  async navigateSessionBranch(entryId: string): Promise<{ state: RuntimeState; selectedText?: string }> {
+    let selectedText: string | undefined;
+    const state = await this.runReplacement(async (runtime) => {
+      const session = runtime.session;
+      if (this.sessionHasActiveWork(session) || this.subagents.hasOwnedWork(session.sessionId) || this.agentTeams.hasOwnedWork(session.sessionId) || this.goalMax.hasRunnableGoal(session.sessionId)) throw this.activeOperationError('switching conversation paths');
+      if (typeof session.navigateTree !== 'function') throw this.unsupported('Conversation path navigation');
+      const target = this.sessionRepository.branches(session).find((branch) => branch.id === entryId);
+      if (!target) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'That conversation path is no longer available.', retryable: true });
+      if (target.active) return;
+      const result = await session.navigateTree(entryId, { summarize: false });
+      if (result.cancelled) throw this.replacementCancelled('Conversation path switch');
+      selectedText = result.editorText;
     });
     return { state, ...(selectedText === undefined ? {} : { selectedText }) };
   }

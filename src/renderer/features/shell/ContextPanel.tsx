@@ -14,6 +14,11 @@ import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { useUiStore } from '../../stores/uiStore';
 import { InspectorSectionHeading } from './InspectorPrimitives';
 
+type ContextPanelRuntime = Pick<
+  RuntimeState,
+  'contextUsage' | 'model' | 'objective' | 'project' | 'streaming' | 'thinkingLevel' | 'tokenTelemetry'
+>;
+
 const integerFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 const timeFormatter = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 
@@ -196,7 +201,7 @@ function UsageComposition({ usage }: { usage: TokenMetrics }) {
   );
 }
 
-function RuntimeFacts({ runtime }: { runtime: RuntimeState }) {
+function RuntimeFacts({ runtime }: { runtime: ContextPanelRuntime }) {
   return (
     <section className="context-runtime">
       <InspectorSectionHeading icon={Database} title="Runtime" />
@@ -214,7 +219,7 @@ function RuntimeFacts({ runtime }: { runtime: RuntimeState }) {
   );
 }
 
-export function ContextPanel({ runtime }: { runtime: RuntimeState }) {
+export function ContextPanel({ runtime }: { runtime: ContextPanelRuntime }) {
   const goal = useGoalMaxStore((state) => state.goal);
   const setGoalEditorOpen = useUiStore((state) => state.setGoalEditorOpen);
   const [now, setNow] = useState(Date.now());

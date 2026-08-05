@@ -49,6 +49,7 @@ export const ipcChannels = {
   runtimeRenameSession: 'runtime:rename-session',
   runtimeDeleteSession: 'runtime:delete-session',
   runtimeForkSession: 'runtime:fork-session',
+  runtimeNavigateSessionBranch: 'runtime:navigate-session-branch',
   runtimeCloneSession: 'runtime:clone-session',
   runtimeImportSession: 'runtime:import-session',
   runtimeCompact: 'runtime:compact',
@@ -621,6 +622,7 @@ export const sessionBranchSchema = z.object({
 
 export const sessionCapabilitiesSchema = z.object({
   fork: z.boolean(),
+  navigate: z.boolean().optional(),
   clone: z.boolean(),
   import: z.boolean(),
   compact: z.boolean(),
@@ -803,6 +805,7 @@ export const sessionEntryInputSchema = z.object({ entryId: z.string().min(1).max
 export const compactInputSchema = z.object({ instructions: z.string().trim().max(20_000).optional() }).strict();
 export const sessionListSchema = z.array(sessionSummarySchema).max(1_000);
 export const forkSessionResultSchema = z.object({ state: runtimeStateSchema, selectedText: z.string().optional() }).strict();
+export const navigateSessionBranchResultSchema = z.object({ state: runtimeStateSchema, selectedText: z.string().max(200_000).optional() }).strict();
 
 export const terminalIdSchema = z.string().uuid();
 export const terminalCreateInputSchema = z.object({ cols: z.number().int().min(2).max(400), rows: z.number().int().min(1).max(200) }).strict();
@@ -1049,6 +1052,7 @@ export interface PiDesktopApi {
   renameSession: (sessionId: string, name: string) => Promise<RuntimeState>;
   deleteSession: (sessionId: string) => Promise<RuntimeState>;
   forkSession: (entryId: string) => Promise<z.infer<typeof forkSessionResultSchema>>;
+  navigateSessionBranch: (entryId: string) => Promise<z.infer<typeof navigateSessionBranchResultSchema>>;
   cloneSession: () => Promise<RuntimeState>;
   importSession: () => Promise<RuntimeState | null>;
   compact: (instructions?: string) => Promise<RuntimeState>;

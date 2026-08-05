@@ -78,8 +78,7 @@ describe('PiSessionRepository', () => {
     } as unknown as AgentSession;
     const branches = new PiSessionRepository().branches(session);
     expect(branches).toEqual([
-      expect.objectContaining({ id: 'u1', depth: 0, active: true, preview: 'First direction' }),
-      expect.objectContaining({ id: 'a1', depth: 1, active: true, label: 'current' }),
+      expect.objectContaining({ id: 'a1', depth: 1, active: true, label: 'current', preview: 'Current answer' }),
       expect.objectContaining({ id: 'u2', depth: 1, active: false, preview: 'Alternate direction' }),
     ]);
   });

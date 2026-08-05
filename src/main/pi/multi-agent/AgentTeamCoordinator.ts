@@ -53,6 +53,15 @@ function safeDirectoryKey(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 32);
 }
 
+function legacyAgentTeamDataRoot(): string {
+  return path.join(os.homedir(), '.pi', 'fateGUI', 'agent-teams');
+}
+
+function configuredAgentTeamDataRoot(): string | null {
+  const configured = process.env.FATE_GUI_DATA_DIR?.trim();
+  return configured ? path.join(path.resolve(configured), 'agent-teams') : null;
+}
+
 function operationKey(callerNodeId: string, operationId: string): string { return `${callerNodeId}\0${operationId}`; }
 
 function taskSummary(content: string): string { return content.trim().replace(/\s+/gu, ' ').slice(0, 2_000); }
@@ -63,12 +72,20 @@ export class AgentTeamCoordinator {
   private readonly schedulers = new Map<string, AgentTeamScheduler>();
   private readonly mutationQueues = new Map<string, Promise<void>>();
   private readonly listeners = new Map<string, Set<TeamListener>>();
+  private readonly dataRoot: string;
+  private readonly storageRoots: readonly string[];
 
   constructor(
     private readonly host: AgentTeamCoordinatorHost,
-    private readonly dataRoot = path.join(os.homedir(), '.pi', 'fateGUI', 'agent-teams'),
+    dataRoot?: string,
     private readonly childSessionFactory: SubagentChildSessionFactory = createSdkChildSession,
-  ) {}
+  ) {
+    const configuredRoot = configuredAgentTeamDataRoot();
+    this.dataRoot = dataRoot ?? configuredRoot ?? legacyAgentTeamDataRoot();
+    this.storageRoots = dataRoot === undefined && configuredRoot
+      ? [...new Set([this.dataRoot, legacyAgentTeamDataRoot()])]
+      : [this.dataRoot];
+  }
 
   createRootTools(modelRuntime: ModelRuntime): ToolDefinition[] {
     return createAgentCollaborationTools(this, null, modelRuntime);
@@ -505,8 +522,23 @@ export class AgentTeamCoordinator {
     }
     this.teamsByRoot.delete(rootSessionId);
     this.schedulers.delete(runtime.state.id);
+    this.mutationQueues.delete(runtime.state.id);
     this.listeners.delete(runtime.state.id);
     for (const node of runtime.nodes.values()) this.nodeToRoot.delete(node.id);
+  }
+
+  async deleteRootStorage(rootSessionId: string): Promise<void> {
+    if (this.hasActiveWork(rootSessionId)) throw new Error('Cannot delete Agent Team child history while a descendant turn is active.');
+    if (this.teamsByRoot.has(rootSessionId)) {
+      await this.cancelRoot(rootSessionId);
+      this.releaseRoot(rootSessionId);
+    }
+    await Promise.all(this.storageRoots.map((dataRoot) => fs.rm(path.join(dataRoot, safeDirectoryKey(rootSessionId)), {
+      recursive: true,
+      force: true,
+      maxRetries: 2,
+      retryDelay: 50,
+    })));
   }
 
   reset(): void {
@@ -703,13 +735,23 @@ export class AgentTeamCoordinator {
   private async ensureNodeSession(runtime: AgentTeamRuntime, node: AgentTeamNode, modelRuntime: ModelRuntime): Promise<AgentNodeRuntime> {
     const existing = runtime.nodeRuntime.get(node.id);
     if (existing?.session) return existing;
-    const sessionDirectory = existing?.sessionDirectory ?? path.join(this.dataRoot, safeDirectoryKey(runtime.state.rootSessionId), safeDirectoryKey(runtime.state.id), safeDirectoryKey(node.id));
+    const relativeDirectory = path.join(safeDirectoryKey(runtime.state.rootSessionId), safeDirectoryKey(runtime.state.id), safeDirectoryKey(node.id));
+    const candidateDirectories = [...new Set([
+      ...(existing?.sessionDirectory ? [existing.sessionDirectory] : []),
+      ...this.storageRoots.map((dataRoot) => path.join(dataRoot, relativeDirectory)),
+    ])];
+    let sessionDirectory = candidateDirectories[0]!;
     let sessionFile = existing?.sessionFile;
     if (!sessionFile) {
-      try {
-        const files = (await fs.readdir(sessionDirectory)).filter((file) => file.endsWith('.jsonl')).sort();
-        sessionFile = files.length ? path.join(sessionDirectory, files[files.length - 1]!) : undefined;
-      } catch { /* Missing storage is reported below. */ }
+      for (const candidateDirectory of candidateDirectories) {
+        try {
+          const files = (await fs.readdir(candidateDirectory)).filter((file) => file.endsWith('.jsonl')).sort();
+          if (!files.length) continue;
+          sessionDirectory = candidateDirectory;
+          sessionFile = path.join(candidateDirectory, files[files.length - 1]!);
+          break;
+        } catch { /* Try the next compatible storage root. */ }
+      }
     }
     if (!sessionFile) throw new Error(`Persistent child session storage for ${node.path} is unavailable.`);
     const root = this.host.resolveRoot(runtime.state.rootSessionId);

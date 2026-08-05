@@ -300,6 +300,23 @@ describe('workspace inspector panels', () => {
     expect(getGitCommitDetails).toHaveBeenCalledWith(commit.hash);
   });
 
+  it('resizes the Work file and change lists against their previews', () => {
+    useWorkspaceStore.setState({
+      directories: { '': [{ path: 'src/app.ts', name: 'app.ts', kind: 'file', symlink: false }] },
+      git: { repository: true, branch: 'main', upstream: null, pushTarget: null, ahead: 0, behind: 0, changes: [], additions: 0, deletions: 0, truncated: false },
+    });
+    const filesView = render(<div style={{ height: 700 }}><FilesPanel /></div>);
+    const fileHandle = screen.getByRole('separator', { name: 'Resize file tree and preview' });
+    fireEvent.keyDown(fileHandle, { key: 'ArrowDown' });
+    expect(screen.getByLabelText('Project file tree')).toHaveStyle({ flexBasis: '256px' });
+    filesView.unmount();
+
+    render(<div style={{ height: 700 }}><ChangesPanel /></div>);
+    const changesHandle = screen.getByRole('separator', { name: 'Resize changes list and preview' });
+    fireEvent.keyDown(changesHandle, { key: 'ArrowDown' });
+    expect(screen.getByText('Working tree clean')).toHaveStyle({ flexBasis: '256px' });
+  });
+
   it('browses incremental tree entries and shows a lazy text file preview', async () => {
     const readFile = vi.fn(async () => ({ path: 'src/app.ts', name: 'app.ts', size: 12, state: 'text' as const, content: 'export {};', language: 'typescript' }));
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { readFile } as unknown as PiDesktopApi });

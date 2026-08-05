@@ -187,13 +187,19 @@ export class PiSessionRepository {
     if (!manager || typeof manager.getTree !== 'function') return [];
     const activePath = new Set(manager.getBranch().slice(-MAX_BRANCH_NODES_VISITED).map((entry) => entry.id));
     const result: SessionBranch[] = [];
-    const stack: Array<{ node: SessionTreeNode; depth: number }> = manager.getTree()
+    const stack: Array<{
+      node: SessionTreeNode;
+      depth: number;
+      branchPreview: string;
+      latestPreview: string;
+      inheritedLabel?: string;
+    }> = manager.getTree()
       .slice()
       .reverse()
-      .map((node) => ({ node, depth: 0 }));
+      .map((node) => ({ node, depth: 0, branchPreview: '', latestPreview: '' }));
     let visited = 0;
     while (stack.length > 0 && visited < MAX_BRANCH_NODES_VISITED && result.length < MAX_PROJECTED_BRANCHES) {
-      const { node, depth } = stack.pop()!;
+      const { node, depth, branchPreview, latestPreview, inheritedLabel } = stack.pop()!;
       visited += 1;
       const entry = node.entry;
       const preview = entry.type === 'message'
@@ -201,19 +207,29 @@ export class PiSessionRepository {
         : entry.type === 'branch_summary'
           ? entry.summary.replace(/\s+/g, ' ').trim().slice(0, 100)
           : '';
-      if (node.children.length !== 1 || node.label) {
+      const nextBranchPreview = branchPreview || preview;
+      const nextLatestPreview = preview || latestPreview;
+      const label = node.label?.trim() || inheritedLabel;
+      if (node.children.length === 0) {
         result.push({
           id: entry.id.slice(0, 500),
           parentId: entry.parentId?.slice(0, 500) ?? null,
           depth: Math.min(depth, MAX_BRANCH_NODES_VISITED),
-          ...(node.label ? { label: node.label.slice(0, 500) } : {}),
-          preview,
+          ...(label ? { label: label.slice(0, 500) } : {}),
+          preview: nextBranchPreview || nextLatestPreview,
           kind: entry.type.slice(0, 100),
           active: activePath.has(entry.id),
         });
       }
+      const startsDistinctPaths = node.children.length > 1;
       for (let index = node.children.length - 1; index >= 0 && stack.length + visited < MAX_BRANCH_NODES_VISITED; index -= 1) {
-        stack.push({ node: node.children[index]!, depth: depth + 1 });
+        stack.push({
+          node: node.children[index]!,
+          depth: depth + 1,
+          branchPreview: startsDistinctPaths ? '' : nextBranchPreview,
+          latestPreview: nextLatestPreview,
+          ...(label ? { inheritedLabel: label } : {}),
+        });
       }
     }
     return result;

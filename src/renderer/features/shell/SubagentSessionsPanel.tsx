@@ -1,5 +1,4 @@
 import {
-  ArrowLeft,
   Bot,
   Brain,
   Check,
@@ -12,10 +11,11 @@ import {
   OctagonX,
   Target,
   Wrench,
+  X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentTeam, AgentTeamNode } from '../../../shared/contracts/multiAgent';
-import { Virtuoso } from 'react-virtuoso';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { AgentTeam, AgentTeamEnvelope, AgentTeamNode, AgentTeamTimelineEvent } from '../../../shared/contracts/multiAgent';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { useShallow } from 'zustand/react/shallow';
 import type {
   RuntimeMessage,
@@ -27,16 +27,50 @@ import type {
 } from '../../../shared/contracts/ipc';
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AssistantMarkdown, MessageImages } from '../chat/RichMessageContent';
+import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { GoalMaxAgentMarker, GoalMaxAssignmentScope, type GoalMaxAgentLink } from '../goalmaxxing/GoalMaxAgentMarker';
 import { SubagentControls, type SubagentControlTarget } from './SubagentControls';
 import { AgentTeamControls } from './AgentTeamControls';
-import { FlightRecorder } from './FlightRecorder';
 import type { FlightDeckTarget } from './flightDeck';
 
 const activeStatuses = new Set<SubagentStatus>(['queued', 'running']);
+const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 4;
+
+function useBottomAnchoredTranscript(selectionKey: string, itemCount: number) {
+  const listRef = useRef<VirtuosoHandle>(null);
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const anchoredSelectionRef = useRef<string | null>(null);
+  const pinnedToBottomRef = useRef(true);
+  const updatePinnedState = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    pinnedToBottomRef.current = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= TRANSCRIPT_BOTTOM_THRESHOLD_PX;
+  }, []);
+  const bindScroller = useCallback((target: HTMLElement | Window | null) => {
+    const nextScroller = target instanceof HTMLElement ? target : null;
+    if (scrollerRef.current === nextScroller) return;
+    scrollerRef.current?.removeEventListener('scroll', updatePinnedState);
+    scrollerRef.current = nextScroller;
+    nextScroller?.addEventListener('scroll', updatePinnedState, { passive: true });
+    updatePinnedState();
+  }, [updatePinnedState]);
+  useEffect(() => () => scrollerRef.current?.removeEventListener('scroll', updatePinnedState), [updatePinnedState]);
+  useLayoutEffect(() => {
+    if (itemCount === 0) {
+      anchoredSelectionRef.current = null;
+      return;
+    }
+    if (anchoredSelectionRef.current === selectionKey) return;
+    anchoredSelectionRef.current = selectionKey;
+    pinnedToBottomRef.current = true;
+    listRef.current?.scrollToIndex({ index: itemCount - 1, align: 'end', behavior: 'auto' });
+  }, [itemCount, selectionKey]);
+  const followOutput = useCallback(() => pinnedToBottomRef.current ? 'auto' as const : false, []);
+  return { listRef, bindScroller, followOutput };
+}
 
 function statusLabel(status: SubagentStatus): string {
   switch (status) {
@@ -59,38 +93,6 @@ function StatusIcon({ status, size = 13 }: { status: SubagentStatus; size?: numb
   if (status === 'completed') return <Check size={size} aria-hidden="true" />;
   if (status === 'error') return <CircleAlert size={size} aria-hidden="true" />;
   return <OctagonX size={size} aria-hidden="true" />;
-}
-
-function formatSpan(milliseconds: number): string {
-  const bounded = Math.max(0, milliseconds);
-  if (bounded < 1_000) return `${bounded} ms`;
-  const seconds = bounded / 1_000;
-  if (seconds < 60) return `${seconds.toFixed(1)} s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ${minutes % 60}m`;
-  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
-}
-
-function formatDuration(run: SubagentRun): string {
-  return formatSpan((run.endedAt ?? run.updatedAt) - (run.startedAt ?? run.createdAt));
-}
-
-function formatTokens(tokens: number): string {
-  return tokens < 1_000 ? String(tokens) : `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0)}k`;
-}
-
-function mailboxLabel(run: SubagentRun): string {
-  if (run.mailbox.state !== 'available') return run.mailbox.state;
-  if (run.mailbox.expiresAt === undefined) return 'available · until closed';
-  const seconds = Math.max(0, Math.ceil((run.mailbox.expiresAt - Date.now()) / 1_000));
-  return `available · ${seconds}s`;
-}
-
-function thresholdLabel(run: SubagentRun): string {
-  if (!run.budget) return 'none configured';
-  return Object.entries(run.budget).map(([key, value]) => `${key.replace(/^max/u, '')}:${value}`).join(' · ');
 }
 
 type Activity =
@@ -161,68 +163,185 @@ function ActivityRow({ activity }: { activity: Activity }) {
   );
 }
 
-function RunDetail({ run, goalLink }: { run: SubagentRun; goalLink?: GoalMaxAgentLink | undefined }) {
+type AgentTeamChatActivity =
+  | { id: string; kind: 'envelope'; timestamp: number; order: number; envelope: AgentTeamEnvelope }
+  | { id: string; kind: 'tool'; timestamp: number; order: number; started?: AgentTeamTimelineEvent; completed?: AgentTeamTimelineEvent };
+
+type AgentTeamSelection = { team: AgentTeam; node: AgentTeamNode };
+
+function agentTeamActivities(team: AgentTeam, node: AgentTeamNode): AgentTeamChatActivity[] {
+  const activities: AgentTeamChatActivity[] = team.envelopes
+    .filter((envelope) => envelope.authorNodeId === node.id || envelope.recipientNodeId === node.id)
+    .map((envelope) => ({
+      id: `envelope:${envelope.id}`,
+      kind: 'envelope' as const,
+      timestamp: envelope.createdAt,
+      order: envelope.sequence,
+      envelope,
+    }));
+  const tools = new Map<string, Extract<AgentTeamChatActivity, { kind: 'tool' }>>();
+  for (const event of team.timeline) {
+    if (event.nodeId !== node.id || (event.type !== 'tool.started' && event.type !== 'tool.completed')) continue;
+    const toolCallId = event.toolCallId ?? event.id;
+    const current = tools.get(toolCallId) ?? {
+      id: `tool:${toolCallId}`,
+      kind: 'tool' as const,
+      timestamp: event.timestamp,
+      order: event.sequence,
+    };
+    current.timestamp = Math.min(current.timestamp, event.timestamp);
+    current.order = Math.min(current.order, event.sequence);
+    if (event.type === 'tool.started') current.started = event;
+    else current.completed = event;
+    tools.set(toolCallId, current);
+  }
+  activities.push(...tools.values());
+  return activities.sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
+}
+
+function AgentTeamEnvelopeRow({ team, node, envelope }: { team: AgentTeam; node: AgentTeamNode; envelope: AgentTeamEnvelope }) {
+  const authoredByNode = envelope.authorNodeId === node.id;
+  const peerId = authoredByNode ? envelope.recipientNodeId : envelope.authorNodeId;
+  const peer = team.nodes.find((candidate) => candidate.id === peerId);
+  const peerLabel = peer ? `@${peer.handle}` : 'team';
+  const role = envelope.kind === 'CONTROL' ? 'system' : authoredByNode ? 'assistant' : 'user';
+  const label = envelope.kind === 'NEW_TASK'
+    ? authoredByNode ? `Delegated task to ${peerLabel}` : 'Parent task'
+    : envelope.kind === 'FINAL_ANSWER'
+      ? authoredByNode ? 'Child agent' : `Result from ${peerLabel}`
+      : envelope.kind === 'MESSAGE'
+        ? authoredByNode ? `Message to ${peerLabel}` : `Message from ${peerLabel}`
+        : 'System';
+  return (
+    <article className={`subagent-message subagent-message--${role}`}>
+      <span className="subagent-activity-label">{label}</span>
+      {role === 'assistant' ? <AssistantMarkdown text={envelope.content} /> : <p>{envelope.content}</p>}
+    </article>
+  );
+}
+
+function AgentTeamToolRow({ activity }: { activity: Extract<AgentTeamChatActivity, { kind: 'tool' }> }) {
+  const event = activity.completed ?? activity.started;
+  if (!event) return null;
+  const failed = activity.completed?.summary.toLocaleLowerCase().includes(' failed ') ?? false;
+  const status = activity.completed ? failed ? 'error' : 'succeeded' : 'running';
+  const Icon = status === 'running' ? LoaderCircle : status === 'error' ? CircleAlert : Check;
+  const paths = event.provenance?.affectedPaths.map((path) => `${path.operation} ${path.path}`) ?? [];
+  return (
+    <details className={`subagent-tool subagent-tool--${status}`}>
+      <summary>
+        <Icon size={12} className={status === 'running' ? 'tool-spinner' : undefined} aria-hidden="true" />
+        <strong>{event.toolName ?? 'tool'}</strong>
+        <span>{status === 'running' ? 'Running' : status === 'error' ? 'Failed' : 'Done'}</span>
+      </summary>
+      <div>
+        <label>Retained activity</label>
+        <pre>{activity.completed?.summary ?? activity.started?.summary}</pre>
+        {paths.length ? <><label>Affected paths</label><pre>{paths.join('\n')}</pre></> : null}
+      </div>
+    </details>
+  );
+}
+
+function AgentTeamActivityRow({ team, node, activity }: { team: AgentTeam; node: AgentTeamNode; activity: AgentTeamChatActivity }) {
+  return (
+    <div className="subagent-activity-row">
+      {activity.kind === 'envelope'
+        ? <AgentTeamEnvelopeRow team={team} node={node} envelope={activity.envelope} />
+        : <AgentTeamToolRow activity={activity} />}
+    </div>
+  );
+}
+
+function AgentTeamChatPreview({ team, node, goalLink, height }: AgentTeamSelection & { goalLink?: GoalMaxAgentLink | undefined; height: number }) {
+  const close = useUiStore((state) => state.closeSubagent);
+  const activities = useMemo(() => agentTeamActivities(team, node), [node, team]);
+  const transcriptScroll = useBottomAnchoredTranscript(`${team.id}:${node.id}`, activities.length);
+  const status = teamNodeStatus(node);
+  const active = status === 'queued' || status === 'running';
+  const task = node.currentTaskId ? team.tasks.find((candidate) => candidate.id === node.currentTaskId) : undefined;
+  const error = node.lastError ?? task?.error;
+  return (
+    <section className="subagent-chat-preview" aria-label={`${node.displayName} chat preview`} style={{ flexBasis: height }}>
+      <header className="subagent-chat-preview-header">
+        <span className="subagent-chat-preview-status"><StatusIcon status={status} /></span>
+        <span className="subagent-chat-preview-copy">
+          <strong>{node.displayName}</strong>
+          <small>@{node.handle} · {statusLabel(status)}</small>
+        </span>
+        <span className="subagent-chat-readonly">Read only</span>
+        <button type="button" onClick={close} aria-label="Close sub-agent chat preview"><X size={14} /></button>
+      </header>
+      {goalLink ? <GoalMaxAssignmentScope link={goalLink} /> : null}
+      {error ? <div className="subagent-error" role="alert"><CircleAlert size={13} /><span>{error}</span></div> : null}
+      {activities.length === 0 ? (
+        <div className="subagent-transcript-empty" role="status">
+          {active ? <LoaderCircle size={20} className="tool-spinner" /> : <MessagesSquare size={20} />}
+          <span>{active ? 'Waiting for retained team activity…' : 'No retained conversation for this agent.'}</span>
+        </div>
+      ) : (
+        <Virtuoso
+          ref={transcriptScroll.listRef}
+          key={`team:${team.id}:${node.id}`}
+          className="subagent-transcript"
+          aria-label="Read-only child transcript"
+          data={activities}
+          alignToBottom
+          initialItemCount={Math.min(activities.length, 12)}
+          computeItemKey={(_index, activity) => activity.id}
+          itemContent={(_index, activity) => <AgentTeamActivityRow team={team} node={node} activity={activity} />}
+          scrollerRef={transcriptScroll.bindScroller}
+          followOutput={active ? transcriptScroll.followOutput : false}
+        />
+      )}
+    </section>
+  );
+}
+
+function SubagentChatPreview({ runId, teamSelection, goalLink, height }: { runId: string | null; teamSelection: AgentTeamSelection | null; goalLink?: GoalMaxAgentLink | undefined; height: number }) {
+  const run = useRuntimeStore((state) => runId ? state.subagentsById[runId] : undefined);
   const close = useUiStore((state) => state.closeSubagent);
   const jump = useUiStore((state) => state.flightDeckJump);
   const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
-  const focused = Boolean(jump && jump.projectPath === projectPath && jump.sessionId === sessionId && jump.target.kind === 'agent' && jump.target.runId === run.id);
-  const detailRef = useRef<HTMLElement>(null);
-  const activities = useMemo(() => activitiesFor(run), [run]);
+  const focused = Boolean(run && jump && jump.projectPath === projectPath && jump.sessionId === sessionId && jump.target.kind === 'agent' && jump.target.runId === run.id);
+  const previewRef = useRef<HTMLElement>(null);
+  const activities = useMemo(() => run ? activitiesFor(run) : [], [run]);
+  const transcriptScroll = useBottomAnchoredTranscript(run?.id ?? 'empty', activities.length);
   useEffect(() => {
-    const detail = detailRef.current;
-    if (!focused || !jump || !detail) return;
-    if (typeof detail.scrollIntoView === 'function') detail.scrollIntoView({ block: 'nearest' });
-    detail.focus({ preventScroll: true });
-    if (document.activeElement === detail) clearFlightDeckJump(jump.nonce);
+    const preview = previewRef.current;
+    if (!focused || !jump || !preview) return;
+    preview.focus({ preventScroll: true });
+    if (document.activeElement === preview) clearFlightDeckJump(jump.nonce);
   }, [clearFlightDeckJump, focused, jump]);
+
+  if (!run && teamSelection) return <AgentTeamChatPreview {...teamSelection} goalLink={goalLink} height={height} />;
+  if (!run) {
+    return (
+      <section className="subagent-chat-preview subagent-chat-preview--empty" aria-label="Sub-agent chat preview" style={{ flexBasis: height }}>
+        <MessagesSquare size={20} aria-hidden="true" />
+        <strong>Select a child agent</strong>
+        <span>Its read-only conversation will appear here.</span>
+      </section>
+    );
+  }
+
   const isActive = activeStatuses.has(run.status);
-  const usage = run.usage;
-  const latestLiveness = run.livenessReports?.[run.livenessReports.length - 1];
   const handle = subagentHandle(run);
   const displayName = subagentDisplayName(run);
   return (
-    <section ref={detailRef} className="subagent-detail" aria-label={`${displayName} agent session`} tabIndex={-1} data-flight-focus={focused || undefined}>
-      <header className="subagent-detail-header">
-        <button type="button" onClick={close} aria-label="Back to child sessions"><ArrowLeft size={15} /></button>
-        <div>
-          <span><StatusIcon status={run.status} /><strong>{displayName}</strong></span>
-          <small>@{handle} · {statusLabel(run.status)} · {formatDuration(run)}</small>
-        </div>
-        <span className="subagent-profile-badge" title={`${run.agentSource}/${run.agentName}`}><Wrench size={11} />{run.agentName} profile</span>
+    <section ref={previewRef} className="subagent-chat-preview" aria-label={`${displayName} chat preview`} tabIndex={-1} data-flight-focus={focused || undefined} style={{ flexBasis: height }}>
+      <header className="subagent-chat-preview-header">
+        <span className="subagent-chat-preview-status"><StatusIcon status={run.status} /></span>
+        <span className="subagent-chat-preview-copy">
+          <strong>{displayName}</strong>
+          <small>@{handle} · {statusLabel(run.status)}</small>
+        </span>
+        <span className="subagent-chat-readonly">Read only</span>
+        <button type="button" onClick={close} aria-label="Close sub-agent chat preview"><X size={14} /></button>
       </header>
-      <div className="subagent-task">
-        <span>Delegated task</span>
-        <p>{run.task}</p>
-      </div>
       {goalLink ? <GoalMaxAssignmentScope link={goalLink} /> : null}
-      <SubagentControls run={run} />
-      {latestLiveness ? (
-        <details className="subagent-boundary" open={isActive}>
-          <summary>Liveness checkpoint · {latestLiveness.trigger}</summary>
-          <p>{latestLiveness.reason}</p>
-          <pre>{latestLiveness.checkpointSummary}</pre>
-          <small>Child continued automatically · Parent options: {latestLiveness.recommendedOptions.join(', ')}</small>
-        </details>
-      ) : null}
-      <dl className="subagent-meta">
-        <div><dt>Profile</dt><dd title={`${run.agentSource}/${run.agentName}`}>{run.agentSource}/{run.agentName}</dd></div>
-        <div><dt>Role</dt><dd>{run.role}</dd></div>
-        <div><dt>Model</dt><dd title={run.model.name}>{run.model.provider}/{run.model.id}</dd></div>
-        <div><dt>Thinking</dt><dd>{run.thinkingLevel}</dd></div>
-        <div><dt>Access</dt><dd>{run.permissionLevel}</dd></div>
-        <div><dt>Tools</dt><dd title={run.enabledTools.join(', ') || 'No tools'}>{run.enabledTools.join(', ') || 'none'}</dd></div>
-        <div><dt>Skills</dt><dd title={run.skills.join(', ') || run.skillMode}>{run.skills.join(', ') || run.skillMode}{run.preloadedSkills.length ? ' · preloaded' : ''}</dd></div>
-        <div><dt>Mode</dt><dd>{run.executionMode}{run.controlCount ? ` · ${run.controlCount} ${run.controlCount === 1 ? 'control' : 'controls'}` : ''}</dd></div>
-        <div><dt>Attempt</dt><dd>{run.attempt}/{run.maxAttempts}{run.routingModels.length > 1 ? ` · ${run.routingModels.length} routes` : ''}</dd></div>
-        <div><dt>Mailbox</dt><dd>{mailboxLabel(run)}{run.mailbox.followUpCount ? ` · ${run.mailbox.followUpCount} follow-ups` : ''}</dd></div>
-        {run.workflowId ? <div><dt>Workflow</dt><dd title={run.workflowId}>{run.workflowNodeId}{run.dependsOn.length ? ` · after ${run.dependsOn.join(', ')}` : ''}</dd></div> : null}
-        <div><dt>Advisory thresholds</dt><dd title={thresholdLabel(run)}>{thresholdLabel(run)}</dd></div>
-        <div><dt>Liveness</dt><dd>{run.timeoutAt && run.startedAt ? `${formatSpan(run.timeoutAt - run.startedAt)} runtime advisory` : 'no runtime advisory'}{run.idleTimeoutMs ? ` · ${formatSpan(run.idleTimeoutMs)} idle advisory` : ' · no idle advisory'}</dd></div>
-        <div><dt>Usage</dt><dd>{usage.turns} {usage.turns === 1 ? 'turn' : 'turns'} · ↑{formatTokens(usage.input)} ↓{formatTokens(usage.output)}</dd></div>
-        {usage.cost > 0 ? <div><dt>Cost</dt><dd>${usage.cost.toFixed(4)}</dd></div> : null}
-      </dl>
       {run.transcriptTruncated || run.omittedActivity > 0 ? (
         <div className="subagent-boundary">Older child activity was bounded{run.omittedActivity ? ` · ${run.omittedActivity} items omitted` : ''}.</div>
       ) : null}
@@ -236,48 +355,49 @@ function RunDetail({ run, goalLink }: { run: SubagentRun; goalLink?: GoalMaxAgen
       {activities.length === 0 ? (
         <div className="subagent-transcript-empty" role="status">
           {isActive ? <LoaderCircle size={20} className="tool-spinner" /> : <MessagesSquare size={20} />}
-          <span>{run.status === 'queued' ? 'Preparing isolated child session…' : isActive ? 'Starting isolated child session…' : 'No transcript was preserved.'}</span>
+          <span>{run.status === 'queued' ? 'Preparing child conversation…' : isActive ? 'Waiting for child activity…' : 'No transcript was preserved.'}</span>
         </div>
       ) : (
         <Virtuoso
+          ref={transcriptScroll.listRef}
+          key={`subagent:${run.id}`}
           className="subagent-transcript"
           aria-label="Read-only child transcript"
           data={activities}
+          alignToBottom
           initialItemCount={Math.min(activities.length, 12)}
           computeItemKey={(_index, activity) => activity.id}
           itemContent={(_index, activity) => <ActivityRow activity={activity} />}
-          followOutput={isActive ? 'smooth' : false}
+          scrollerRef={transcriptScroll.bindScroller}
+          followOutput={isActive ? transcriptScroll.followOutput : false}
         />
       )}
     </section>
   );
 }
 
-function SelectedRunDetail({ runId, goalLink }: { runId: string; goalLink?: GoalMaxAgentLink | undefined }) {
-  const run = useRuntimeStore((state) => state.subagentsById[runId]);
-  return run ? <RunDetail run={run} goalLink={goalLink} /> : null;
-}
-
 type AgentSessionRowView = SubagentControlTarget & Pick<SubagentRun, 'agentSource' | 'agentName' | 'model'>;
 
 function AgentSessionRowById({ runId, goalLink }: { runId: string; goalLink?: GoalMaxAgentLink | undefined }) {
+  const selected = useUiStore((state) => state.selectedAgent?.kind === 'subagent' && state.selectedAgent.runId === runId);
   const run = useRuntimeStore(useShallow((state): AgentSessionRowView | null => {
     const current = state.subagentsById[runId];
     if (!current) return null;
     const { id, role, task, handle, displayName, status, mailbox, agentSource, agentName, model } = current;
     return { id, role, task, handle, displayName, status, mailbox, agentSource, agentName, model };
   }));
-  return run ? <AgentSessionRow run={run} goalLink={goalLink} /> : null;
+  return run ? <AgentSessionRow run={run} goalLink={goalLink} selected={selected} /> : null;
 }
 
-function AgentSessionRow({ run, goalLink }: { run: AgentSessionRowView; goalLink?: GoalMaxAgentLink | undefined }) {
+function AgentSessionRow({ run, goalLink, selected }: { run: AgentSessionRowView; goalLink?: GoalMaxAgentLink | undefined; selected: boolean }) {
   const displayName = subagentDisplayName(run);
   const handle = subagentHandle(run);
   return (
-    <article className={`subagent-session-row subagent-session-row--${run.status}`}>
+    <article className={`subagent-session-row subagent-session-row--${run.status}`} data-selected={selected || undefined}>
       <button
         className="subagent-session-open"
         type="button"
+        aria-current={selected || undefined}
         onClick={() => useUiStore.getState().openSubagent(run.id)}
         aria-label={`Open ${displayName} (${`@${handle}`}) child session: ${statusLabel(run.status)}`}
       >
@@ -406,6 +526,8 @@ function teamNodeStatus(node: AgentTeamNode): SubagentStatus {
 
 function AgentTeamNodeRow({ team, node, goalLinks }: { team: AgentTeam; node: AgentTeamNode; goalLinks: ReadonlyMap<string, GoalMaxAgentLink> }) {
   const jump = useUiStore((state) => state.flightDeckJump);
+  const selected = useUiStore((state) => state.selectedAgent?.kind === 'team-node' && state.selectedAgent.teamId === team.id && state.selectedAgent.nodeId === node.id);
+  const openNode = useUiStore((state) => state.openAgentTeamNode);
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
   const focused = Boolean(jump && jump.projectPath === projectPath && jump.sessionId === sessionId && teamJumpNodeId(team, jump.target) === node.id);
@@ -413,10 +535,11 @@ function AgentTeamNodeRow({ team, node, goalLinks }: { team: AgentTeam; node: Ag
   useEffect(() => {
     const row = rowRef.current;
     if (!focused || !jump || !row) return;
+    openNode(team.id, node.id);
     if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
     row.focus({ preventScroll: true });
     if (document.activeElement === row) useUiStore.getState().clearFlightDeckJump(jump.nonce);
-  }, [focused, jump]);
+  }, [focused, jump, node.id, openNode, team.id]);
   const children = node.childIds.flatMap((id) => {
     const child = team.nodes.find((candidate) => candidate.id === id);
     return child ? [child] : [];
@@ -424,15 +547,21 @@ function AgentTeamNodeRow({ team, node, goalLinks }: { team: AgentTeam; node: Ag
   const task = node.currentTaskId ? team.tasks.find((candidate) => candidate.id === node.currentTaskId) : undefined;
   return (
     <div className="agent-tree-node" data-depth={node.depth} role="treeitem" aria-level={node.depth + 1} aria-expanded={children.length ? true : undefined}>
-      <article ref={rowRef} className={`subagent-session-row subagent-session-row--${teamNodeStatus(node)}`} data-flight-focus={focused || undefined} tabIndex={-1}>
-        <div className="subagent-session-open" aria-label={`${node.displayName} Agent Team node ${node.status}`}>
+      <article ref={rowRef} className={`subagent-session-row subagent-session-row--${teamNodeStatus(node)}`} data-flight-focus={focused || undefined} data-selected={selected || undefined} tabIndex={-1}>
+        <button
+          className="subagent-session-open"
+          type="button"
+          aria-current={selected || undefined}
+          aria-label={`${node.displayName} Agent Team node ${node.status}`}
+          onClick={() => openNode(team.id, node.id)}
+        >
           <span className="subagent-status-mark"><StatusIcon status={teamNodeStatus(node)} /></span>
           <span className="subagent-session-copy">
             <span><strong>{node.displayName}</strong><code>@{node.handle}</code>{goalLinks.get(node.id) ? <GoalMaxAgentMarker link={goalLinks.get(node.id)!} /> : null}</span>
             <small>{task?.summary ?? node.path}</small>
             <span className="subagent-session-meta"><em>{node.status}{node.writer ? ' · writer' : ''}{node.unreadMessages ? ` · ${node.unreadMessages} unread` : ''}</em><small>{node.agentName} profile · {node.model.name}</small></span>
           </span>
-        </div>
+        </button>
         <AgentTeamControls node={node} />
       </article>
       {children.length ? <div className="agent-tree-children" role="group">{children.map((child) => <AgentTeamNodeRow key={child.id} team={team} node={child} goalLinks={goalLinks} />)}</div> : null}
@@ -494,7 +623,14 @@ export function SubagentSessionsPanel() {
   const runsById = useRuntimeStore.getState().subagentsById;
   const toolProjection = useRuntimeStore(useShallow((state) => ({ toolsById: state.toolsById, version: state.toolsVersion })));
   const toolsById = toolProjection.toolsById;
-  const selectedRunId = useUiStore((state) => state.selectedSubagentRunId);
+  const selectedAgent = useUiStore((state) => state.selectedAgent);
+  const panelRef = useRef<HTMLElement>(null);
+  const [previewHeight, setPreviewHeight] = useState(260);
+  const resizePreview = (height: number) => {
+    const panelHeight = panelRef.current?.clientHeight ?? 0;
+    const maximum = Math.max(140, (panelHeight > 0 ? panelHeight : 900) - 180);
+    setPreviewHeight(Math.min(maximum, Math.max(140, height)));
+  };
   const goalProjection = useGoalMaxStore(useShallow((state) => ({
     hasGoal: Boolean(state.goal),
     criteria: state.goal?.criteria,
@@ -504,8 +640,14 @@ export function SubagentSessionsPanel() {
   const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
   const showToast = useUiStore((state) => state.showToast);
   void runStructure;
-  const selectedExists = selectedRunId ? Boolean(runsById[selectedRunId]) : false;
   const agentTeams = runtime.agentTeams ?? [];
+  const selectedRunId = selectedAgent?.kind === 'subagent' ? selectedAgent.runId : null;
+  const selectedTeamNode = useMemo<AgentTeamSelection | null>(() => {
+    if (selectedAgent?.kind !== 'team-node') return null;
+    const team = agentTeams.find((candidate) => candidate.id === selectedAgent.teamId);
+    const node = team?.nodes.find((candidate) => candidate.id === selectedAgent.nodeId);
+    return team && node ? { team, node } : null;
+  }, [agentTeams, selectedAgent]);
   const goalLinks = useMemo(() => {
     if (!goalProjection.hasGoal) return new Map<string, GoalMaxAgentLink>();
     const criteriaById = new Map((goalProjection.criteria ?? []).map((criterion) => [criterion.id, criterion.title]));
@@ -528,8 +670,6 @@ export function SubagentSessionsPanel() {
     showToast({ kind: 'info', title: 'Activity not retained', message: 'That agent activity is no longer available in the bounded recorder.' });
     clearFlightDeckJump(jump.nonce);
   }, [agentTeams, clearFlightDeckJump, jump, order, runtime.project?.path, runtime.sessionId, showToast]);
-  if (selectedRunId && selectedExists) return <SelectedRunDetail runId={selectedRunId} goalLink={goalLinks.get(selectedRunId)} />;
-
   const runs = order.flatMap((id) => runsById[id] ? [runsById[id]!] : []).reverse();
   const workflows = [...(runtime.subagentWorkflows ?? [])].reverse();
   const groups = new Map<string, SubagentRun[]>();
@@ -551,7 +691,7 @@ export function SubagentSessionsPanel() {
   const hasChildren = runs.length > 0 || workflows.length > 0 || agentTeams.length > 0;
 
   return (
-    <section className={`subagent-sessions${hasChildren ? ' subagent-sessions--has-children' : ''}`} aria-label="Agent sessions">
+    <section ref={panelRef} className={`subagent-sessions${hasChildren ? ' subagent-sessions--has-children' : ''}`} aria-label="Agent sessions">
       <div className="agent-tree-root">
         <span className="agent-tree-root-mark"><Bot size={15} aria-hidden="true" /></span>
         <span className="agent-tree-root-copy"><strong>Main agent</strong><small>{activeSession?.title ?? runtime.objective ?? 'Current Pi session'}</small></span>
@@ -584,7 +724,13 @@ export function SubagentSessionsPanel() {
           ))}
         </div>
       )}
-      <FlightRecorder />
+      <HorizontalResizeHandle label="Resize sub-agent chat preview" value={previewHeight} minimum={140} maximum={720} direction={-1} onChange={resizePreview} onReset={() => resizePreview(260)} />
+      <SubagentChatPreview
+        runId={selectedRunId}
+        teamSelection={selectedTeamNode}
+        goalLink={selectedRunId ? goalLinks.get(selectedRunId) : selectedTeamNode ? goalLinks.get(selectedTeamNode.node.id) : undefined}
+        height={previewHeight}
+      />
     </section>
   );
 }

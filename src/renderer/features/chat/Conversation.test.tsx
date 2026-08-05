@@ -51,7 +51,7 @@ const activeGoalFixture = (status: GoalMaxState['status'] = 'active'): GoalMaxSt
 const reset = () => {
   useRuntimeStore.getState().setRuntime({ ...ready(), sessionId: null });
   useRuntimeStore.getState().setRuntime(ready());
-  useUiStore.setState({ sendMessageWithModifier: false, composerDraftRequest: null, toast: null, goalEditorOpen: false });
+  useUiStore.setState({ sendMessageWithModifier: false, composerDraftRequest: null, toast: null, goalEditorOpen: false, selectedAgent: null });
   useGoalMaxStore.setState({ projectPath: '/project', sessionId: 's1', goal: null, loading: false, selectionGeneration: 1 });
 };
 
@@ -873,7 +873,7 @@ describe('conversation components', () => {
     const mention = screen.getByRole('button', { name: '@auth-reviewer-1' });
     expect(screen.getByText('@missing-agent-1').tagName).toBe('SPAN');
     await user.click(mention);
-    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'sessions', selectedSubagentRunId: childRun.id, inspectorCollapsed: false });
+    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'sessions', selectedAgent: { kind: 'subagent', runId: childRun.id }, inspectorCollapsed: false });
   });
 
   it('renders extension output as a distinct system message', () => {

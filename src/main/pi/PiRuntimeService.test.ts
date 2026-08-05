@@ -95,6 +95,7 @@ function fixture(availableModels: typeof model[] = [model]) {
     setActiveToolsByName: vi.fn((names: string[]) => { activeTools = [...names]; }),
     setSessionName: vi.fn((name: string) => { sessionName = name; }),
     getUserMessagesForForking: vi.fn(() => [{ entryId: 'entry-1', text: 'original prompt' }]),
+    navigateTree: vi.fn(async () => ({ cancelled: false, editorText: 'restored branch prompt' })),
     compact: vi.fn(async () => undefined),
   };
   const runtime = {
@@ -1305,6 +1306,7 @@ describe('PiRuntimeService', () => {
       branches: vi.fn(() => []),
     } as unknown as PiSessionRepository;
     const service = new PiRuntimeService(fake.adapter, repository);
+    const deleteRootStorage = vi.spyOn((service as unknown as { agentTeams: { deleteRootStorage: (sessionId: string) => Promise<void> } }).agentTeams, 'deleteRootStorage').mockResolvedValue();
     await service.openProject({ path: '/project', name: 'project', trusted: true });
     expect(await service.listSessions('saved')).toEqual([{ ...saved, attention: null }]);
     await service.newSession();
@@ -1315,6 +1317,29 @@ describe('PiRuntimeService', () => {
     expect(repository.resolve).not.toHaveBeenCalled();
     await service.deleteSession('saved');
     expect(repository.delete).toHaveBeenCalledWith('/project', 'saved');
+    expect(deleteRootStorage).toHaveBeenCalledWith('saved');
+    await service.dispose();
+  });
+
+  it('does not delete a parent session when persistent Agent Team history cleanup fails', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'saved', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/saved.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const repository = {
+      list: vi.fn(async () => [saved]),
+      resolve: vi.fn(async () => saved),
+      delete: vi.fn(async () => undefined),
+      branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    const cleanupError = Object.assign(new Error('Permission denied'), { code: 'EACCES' });
+    vi.spyOn((service as unknown as { agentTeams: { deleteRootStorage: (sessionId: string) => Promise<void> } }).agentTeams, 'deleteRootStorage').mockRejectedValue(cleanupError);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    await expect(service.deleteSession('saved')).rejects.toBe(cleanupError);
+    expect(repository.delete).not.toHaveBeenCalled();
     await service.dispose();
   });
 
@@ -1607,6 +1632,26 @@ describe('PiRuntimeService', () => {
 
     const result = await service.forkSession('entry-1');
     expect(result.selectedText).toBe('original prompt');
+    expect(result.state.sessionId).toBe('session-1');
+    await service.dispose();
+  });
+
+  it('switches to a validated saved conversation path without creating another session', async () => {
+    const fake = fixture();
+    const repository = {
+      list: vi.fn(async () => []),
+      branches: vi.fn(() => [
+        { id: 'current-leaf', parentId: null, depth: 1, preview: 'Current response', kind: 'message', active: true },
+        { id: 'alternate-leaf', parentId: null, depth: 1, preview: 'Alternate response', kind: 'message', active: false },
+      ]),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    const result = await service.navigateSessionBranch('alternate-leaf');
+
+    expect(fake.session.navigateTree).toHaveBeenCalledWith('alternate-leaf', { summarize: false });
+    expect(result.selectedText).toBe('restored branch prompt');
     expect(result.state.sessionId).toBe('session-1');
     await service.dispose();
   });
@@ -2094,12 +2139,14 @@ describe('PiRuntimeService', () => {
       list: vi.fn(async () => [saved]), resolve: vi.fn(async () => saved), delete: vi.fn(async () => undefined), branches: vi.fn(() => []),
     } as unknown as PiSessionRepository;
     const service = new PiRuntimeService(fake.adapter, repository);
+    const deleteRootStorage = vi.spyOn((service as unknown as { agentTeams: { deleteRootStorage: (sessionId: string) => Promise<void> } }).agentTeams, 'deleteRootStorage').mockResolvedValue();
     await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     await expect(service.renameSession('session-1', 'Offline title')).resolves.toMatchObject({ status: 'auth-required' });
     expect(fake.session.setSessionName).toHaveBeenCalledWith('Offline title');
     await expect(service.deleteSession('saved')).resolves.toMatchObject({ status: 'auth-required' });
     expect(repository.delete).toHaveBeenCalledWith('/project', 'saved');
+    expect(deleteRootStorage).toHaveBeenCalledWith('saved');
     await service.dispose();
   });
 

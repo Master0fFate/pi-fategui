@@ -13,7 +13,8 @@ describe('UI store', () => {
       sendMessageWithModifier: false,
       toast: null,
       inspectorTab: 'changes',
-      selectedSubagentRunId: null,
+      inspectorLastViews: { work: 'changes', run: 'goal', system: 'context' },
+      selectedAgent: null,
       flightDeckJump: null,
     });
   });
@@ -48,16 +49,33 @@ describe('UI store', () => {
     expect(useUiStore.getState().toast).toBeNull();
   });
 
+  it('remembers the last view within each Inspector destination', () => {
+    useUiStore.getState().setInspectorTab('files');
+    useUiStore.getState().openInspectorDestination('run');
+    expect(useUiStore.getState().inspectorTab).toBe('goal');
+
+    useUiStore.getState().setInspectorTab('sessions');
+    useUiStore.getState().openInspectorDestination('work');
+    expect(useUiStore.getState().inspectorTab).toBe('files');
+    useUiStore.getState().openInspectorDestination('run');
+    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'sessions', inspectorCollapsed: false });
+  });
+
   it('opens a child detail or the child-session list in the expanded inspector', () => {
     useUiStore.setState({ inspectorCollapsed: true });
     useUiStore.getState().openSubagent('child-1');
     expect(useUiStore.getState()).toMatchObject({
-      inspectorTab: 'sessions', inspectorCollapsed: false, selectedSubagentRunId: 'child-1',
+      inspectorTab: 'sessions', inspectorCollapsed: false, selectedAgent: { kind: 'subagent', runId: 'child-1' },
+    });
+
+    useUiStore.getState().openAgentTeamNode('team-1', 'node-1');
+    expect(useUiStore.getState()).toMatchObject({
+      inspectorTab: 'sessions', inspectorCollapsed: false, selectedAgent: { kind: 'team-node', teamId: 'team-1', nodeId: 'node-1' },
     });
 
     useUiStore.getState().openSubagentList();
     expect(useUiStore.getState()).toMatchObject({
-      inspectorTab: 'sessions', inspectorCollapsed: false, selectedSubagentRunId: null,
+      inspectorTab: 'sessions', inspectorCollapsed: false, selectedAgent: null,
     });
   });
 
@@ -71,7 +89,7 @@ describe('UI store', () => {
     expect(useUiStore.getState().flightDeckJump).toBeNull();
 
     useUiStore.getState().requestFlightDeckJump('C:/project', 'session-1', { kind: 'agent', runId: 'run-1' });
-    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'sessions', selectedSubagentRunId: 'run-1' });
+    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'sessions', selectedAgent: { kind: 'subagent', runId: 'run-1' } });
   });
 
   it('sets and toggles both collapsible panes independently', () => {

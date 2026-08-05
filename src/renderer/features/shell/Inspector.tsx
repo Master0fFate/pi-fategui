@@ -11,6 +11,8 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { useShallow } from 'zustand/react/shallow';
+import { AppTooltip } from '../../components/AppTooltip';
 import { IconButton } from '../../components/IconButton';
 import { ToolCard } from '../chat/ToolCard';
 import { ChangesPanel } from '../diffs/ChangesPanel';
@@ -19,22 +21,53 @@ import { ResourcesPanel } from '../resources/ResourcesPanel';
 import { ContextPanel } from './ContextPanel';
 import { SubagentSessionsPanel } from './SubagentSessionsPanel';
 import { useRuntimeStore } from '../../stores/runtimeStore';
-import { useUiStore } from '../../stores/uiStore';
+import { inspectorDestinationForTab, useUiStore } from '../../stores/uiStore';
 import { GoalMaxInspector } from '../goalmaxxing/GoalMaxInspector';
 
 interface InspectorProps {
   onCollapse: () => void;
 }
 
-const tabs = [
-  { value: 'changes', label: 'Changes', icon: GitCompareArrows, layer: 'workspace' },
-  { value: 'files', label: 'Files', icon: Files, layer: 'workspace' },
-  { value: 'sessions', label: 'Agents', icon: MessagesSquare, layer: 'execution', layerStart: true },
-  { value: 'goal', label: 'Goal', icon: Target, layer: 'execution' },
-  { value: 'tools', label: 'Tools', icon: ListChecks, layer: 'execution' },
-  { value: 'resources', label: 'Resources', icon: Sparkles, layer: 'system', layerStart: true },
-  { value: 'context', label: 'Context', icon: Info, layer: 'system' },
+const destinations = [
+  {
+    value: 'work',
+    label: 'Work',
+    tabs: [
+      { value: 'changes', label: 'Changes', icon: GitCompareArrows },
+      { value: 'files', label: 'Files', icon: Files },
+    ],
+  },
+  {
+    value: 'run',
+    label: 'Run',
+    tabs: [
+      { value: 'goal', label: 'Goal', icon: Target },
+      { value: 'sessions', label: 'Agents', icon: MessagesSquare },
+      { value: 'tools', label: 'Tools', icon: ListChecks },
+    ],
+  },
+  {
+    value: 'system',
+    label: 'System',
+    tabs: [
+      { value: 'context', label: 'Context', icon: Info },
+      { value: 'resources', label: 'Resources', icon: Sparkles },
+    ],
+  },
 ] as const;
+
+function RuntimeContextPanel() {
+  const runtime = useRuntimeStore(useShallow((state) => ({
+    contextUsage: state.runtime.contextUsage,
+    tokenTelemetry: state.runtime.tokenTelemetry,
+    streaming: state.runtime.streaming,
+    model: state.runtime.model,
+    thinkingLevel: state.runtime.thinkingLevel,
+    project: state.runtime.project,
+    objective: state.runtime.objective,
+  })));
+  return <ContextPanel runtime={runtime} />;
+}
 
 function ToolsPanel() {
   const order = useRuntimeStore((state) => state.toolOrder);
@@ -70,7 +103,6 @@ function ToolsPanel() {
 }
 
 export function Inspector({ onCollapse }: InspectorProps) {
-  const runtime = useRuntimeStore((state) => state.runtime);
   const activeChildren = useRuntimeStore((state) => state.subagentOrder.reduce((count, id) => {
     const status = state.subagentsById[id]?.status;
     return count + (status === 'queued' || status === 'running' ? 1 : 0);
@@ -79,28 +111,53 @@ export function Inspector({ onCollapse }: InspectorProps) {
     + (state.runtime.agentTeams ?? []).reduce((count, team) => count + team.activeTurns, 0));
   const activeTab = useUiStore((state) => state.inspectorTab);
   const setActiveTab = useUiStore((state) => state.setInspectorTab);
+  const openDestination = useUiStore((state) => state.openInspectorDestination);
+  const activeDestinationValue = inspectorDestinationForTab(activeTab);
+  const activeDestination = destinations.find(({ value }) => value === activeDestinationValue) ?? destinations[0];
+
   return (
     <aside className="inspector" aria-label="Project inspector">
       <div className="inspector-heading">
-        <strong>Inspector</strong>
         <IconButton label="Collapse inspector" onClick={onCollapse}>
           <ChevronsRight size={17} />
         </IconButton>
       </div>
-      <Tabs.Root value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)} className="inspector-tabs">
-        <Tabs.List aria-label="Inspector views" className="tab-list">
-          {tabs.map(({ value, label, icon: Icon, layer, ...tab }) => (
-            <Tabs.Trigger
-              value={value}
+      <nav className="inspector-primary-nav" aria-label="Inspector destinations">
+        {destinations.map(({ value, label }) => {
+          const isActive = value === activeDestinationValue;
+          const accessibleLabel = value === 'run' && activeChildren > 0 ? `${label}, ${activeChildren} active` : label;
+          return (
+            <button
+              type="button"
               key={value}
-              className="tab-trigger"
-              data-layer={layer}
-              data-layer-start={'layerStart' in tab || undefined}
-              title={label}
-              aria-label={value === 'sessions' ? `Subagent sessions${activeChildren ? `, ${activeChildren} active` : ''}` : label}
+              className="inspector-primary-trigger"
+              aria-current={isActive ? 'page' : undefined}
+              aria-label={accessibleLabel}
+              onClick={() => {
+                if (!isActive) openDestination(value);
+              }}
             >
-              <Icon size={15} /><span className="icon-label" aria-hidden="true">{label}</span>
-            </Tabs.Trigger>
+              <span className="inspector-primary-label">{label}</span>
+              {value === 'run' && activeChildren > 0 ? (
+                <span className="inspector-run-count" aria-hidden="true">{activeChildren}</span>
+              ) : null}
+            </button>
+          );
+        })}
+      </nav>
+      <Tabs.Root value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)} className="inspector-tabs">
+        <Tabs.List aria-label={`${activeDestination.label} views`} className="inspector-secondary-tabs">
+          {activeDestination.tabs.map(({ value, label, icon: Icon }) => (
+            <AppTooltip content={label} side="bottom" sideOffset={6} wrapTrigger triggerClassName="inspector-secondary-tooltip" key={value}>
+              <Tabs.Trigger
+                value={value}
+                className="inspector-secondary-trigger"
+                aria-label={value === 'sessions' ? `Subagent sessions${activeChildren > 0 ? `, ${activeChildren} active` : ''}` : label}
+              >
+                <Icon size={13} strokeWidth={1.75} aria-hidden="true" />
+                <span className="inspector-secondary-label">{label}</span>
+              </Tabs.Trigger>
+            </AppTooltip>
           ))}
         </Tabs.List>
         <Tabs.Content value="changes" className="tab-content"><ChangesPanel /></Tabs.Content>
@@ -109,7 +166,7 @@ export function Inspector({ onCollapse }: InspectorProps) {
         <Tabs.Content value="goal" className="tab-content"><GoalMaxInspector /></Tabs.Content>
         <Tabs.Content value="tools" className="tab-content"><ToolsPanel /></Tabs.Content>
         <Tabs.Content value="resources" className="tab-content"><ResourcesPanel /></Tabs.Content>
-        <Tabs.Content value="context" className="tab-content"><ContextPanel runtime={runtime} /></Tabs.Content>
+        <Tabs.Content value="context" className="tab-content"><RuntimeContextPanel /></Tabs.Content>
       </Tabs.Root>
     </aside>
   );

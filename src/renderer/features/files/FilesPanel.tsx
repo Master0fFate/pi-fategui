@@ -1,8 +1,9 @@
 import { ChevronDown, ChevronRight, ExternalLink, File, FileWarning, Folder, FolderOpen, Search } from 'lucide-react';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import type { FileEntry } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
+import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
 import { flattenTree, useWorkspaceStore, type VisibleFileEntry } from '../../stores/workspaceStore';
 import { LazyFileViewer } from './LazyMonaco';
 import { RasterImagePreview } from './RasterImagePreview';
@@ -43,7 +44,7 @@ function PreviewState() {
     <div className="file-preview">
       <div className="preview-heading">
         <AppTooltip content={preview.path}><span>{preview.path}</span></AppTooltip>
-        {preview.state === 'text' && preview.openable && <AppTooltip content="Open in the system editor"><button type="button" onClick={() => void open()}><ExternalLink size={13} /><span className="icon-label">Open</span></button></AppTooltip>}
+        {preview.state === 'text' && preview.openable && <AppTooltip content="Open in the system editor"><button type="button" aria-label="Open in the system editor" onClick={() => void open()}><ExternalLink size={13} aria-hidden="true" /></button></AppTooltip>}
       </div>
       <div className="preview-body">
         {preview.state === 'text' && <LazyFileViewer value={preview.content ?? ''} language={preview.language} path={preview.path} />}
@@ -56,6 +57,13 @@ function PreviewState() {
 }
 
 export function FilesPanel() {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [treeHeight, setTreeHeight] = useState(240);
+  const resizeTree = (height: number) => {
+    const panelHeight = panelRef.current?.clientHeight ?? 0;
+    const maximum = Math.max(100, (panelHeight > 0 ? panelHeight : 900) - 180);
+    setTreeHeight(Math.min(maximum, Math.max(100, height)));
+  };
   const directories = useWorkspaceStore((state) => state.directories);
   const expanded = useWorkspaceStore((state) => state.expanded);
   const loadingDirectories = useWorkspaceStore((state) => state.loadingDirectories);
@@ -88,10 +96,10 @@ export function FilesPanel() {
 
   if (!project) return <div className="inspector-empty"><Folder size={24} /><strong>No project files</strong><p>Open a project to browse its file tree.</p></div>;
   return (
-    <div className="files-panel">
+    <div ref={panelRef} className="files-panel">
       <label className="file-search"><Search size={13} /><input className="icon-label" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search project files" aria-label="Search project files" />{searching && <span className="preview-spinner" />}</label>
       {error && <div className="workspace-error" role="alert">{error}</div>}
-      <div className="file-tree" aria-label="Project file tree">
+      <div className="file-tree" aria-label="Project file tree" style={{ flexBasis: treeHeight }}>
         {visible.length > 0 ? (
           <Virtuoso
             data={visible}
@@ -102,6 +110,7 @@ export function FilesPanel() {
         {searchTruncated && <div className="bounded-note">Search is incomplete because a result or directory limit was reached</div>}
         {!query.trim() && treeTruncated.size > 0 && <div className="bounded-note">Some directories contain more than 2,000 entries and are shown partially</div>}
       </div>
+      <HorizontalResizeHandle label="Resize file tree and preview" value={treeHeight} minimum={100} maximum={720} onChange={resizeTree} onReset={() => resizeTree(240)} />
       <PreviewState />
     </div>
   );

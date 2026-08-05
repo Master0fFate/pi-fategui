@@ -58,6 +58,7 @@ import {
   sessionIdInputSchema,
   sessionRenameInputSchema,
   forkSessionResultSchema,
+  navigateSessionBranchResultSchema,
   sessionListSchema,
   sessionSearchInputSchema,
   speechCancelResultSchema,
@@ -494,6 +495,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.runtimeForkSession, async (_event, input) => {
     const parsed = sessionEntryInputSchema.parse(input);
     return runRuntimeMutation('forking a session', async () => forkSessionResultSchema.parse(await runtime.forkSession(parsed.entryId)));
+  });
+  handle(ipcChannels.runtimeNavigateSessionBranch, async (_event, input) => {
+    const parsed = sessionEntryInputSchema.parse(input);
+    return runRuntimeMutation('switching conversation paths', async () => navigateSessionBranchResultSchema.parse(await runtime.navigateSessionBranch(parsed.entryId)));
   });
   handle(ipcChannels.runtimeCloneSession, async (_event, input) => {
     emptyInputSchema.parse(input);
