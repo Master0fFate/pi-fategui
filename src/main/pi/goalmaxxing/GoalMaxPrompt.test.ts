@@ -84,7 +84,8 @@ describe('GoalMax prompts', () => {
     expect(capsule).toContain('constraint-31');
     expect(capsule).not.toContain('constraint-23');
     expect(capsule).not.toContain('�');
-    expect(capsule).toMatch(/Completion is decided by the control plane after verification\.$/u);
+    expect(capsule).toContain('call goalmax_complete exactly once');
+    expect(capsule).toMatch(/Completion is decided by the control plane after independent verification\.$/u);
   });
 
   it('fits the Agent Team UTF-8 envelope while retaining every criterion and the newest evidence', () => {

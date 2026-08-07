@@ -1,21 +1,34 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PiDesktopApi, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
+import type { AppCommand, PiDesktopApi, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
+import { clearComposerSessionDrafts } from '../features/chat/Composer';
 import { useRuntimeStore } from '../stores/runtimeStore';
 import { useGoalMaxStore } from '../stores/goalMaxStore';
 import { LEFT_MAX, LEFT_MIN, RIGHT_MAX, RIGHT_MIN, useUiStore } from '../stores/uiStore';
-import { App, reconcileHydrationEvents } from './App';
+import { App, hasBlockingBrowserOverlay, reconcileHydrationEvents } from './App';
+
+describe('browser overlay ownership', () => {
+  it('blocks only modal surfaces, not inline browser confirmations or popovers', () => {
+    const root = document.createElement('div');
+    root.innerHTML = '<div role="dialog">Popover</div><div class="browser-workspace"><div role="alertdialog">Browser confirmation</div></div>';
+    expect(hasBlockingBrowserOverlay(root)).toBe(false);
+
+    root.insertAdjacentHTML('beforeend', '<div role="dialog" aria-modal="true" data-state="open">Image viewer</div>');
+    expect(hasBlockingBrowserOverlay(root)).toBe(true);
+  });
+});
 
 describe('first-launch shell', () => {
   beforeEach(() => {
     localStorage.clear();
+    clearComposerSessionDrafts();
     delete document.documentElement.dataset.platform;
     useUiStore.setState({
-      sidebarCollapsed: false, inspectorCollapsed: false, leftWidth: 264, rightWidth: 332,
+      sidebarCollapsed: false, sidebarTab: 'sessions', inspectorCollapsed: false, leftWidth: 264, rightWidth: 332,
       inspectorTab: 'changes', inspectorLastViews: { work: 'changes', run: 'goal', system: 'context' }, selectedAgent: null,
-      musicPlayerEnabled: false, musicPlaying: false, sendMessageWithModifier: false,
-      paletteOpen: false, settingsOpen: false, toast: null, composerDraftRequest: null, goalEditorOpen: false,
+      terminalOpen: false, browserOpen: false, musicPlayerEnabled: false, musicPlaying: false, sendMessageWithModifier: false,
+      paletteOpen: false, settingsOpen: false, toast: null, composerDraftRequest: null, automationOpenRequest: null, goalEditorOpen: false,
     });
     useGoalMaxStore.setState({ projectPath: null, sessionId: null, goal: null, loading: false, selectionGeneration: 0 });
     useRuntimeStore.getState().setRuntime({
@@ -34,7 +47,8 @@ describe('first-launch shell', () => {
     expect(screen.getByText('No sessions yet')).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Inspector destinations' })).toBeInTheDocument();
     expect(['Work', 'Run', 'System'].map((name) => screen.getByRole('button', { name }).textContent)).toEqual(['Work', 'Run', 'System']);
-    expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Changes', 'Files']);
+    expect(within(screen.getByRole('tablist', { name: 'Sidebar destinations' })).getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Sessions', 'Automations', 'Resources']);
+    expect(within(screen.getByRole('tablist', { name: 'Work views' })).getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Changes', 'Files']);
     expect(screen.getByRole('button', { name: 'Model and reasoning settings' })).toBeDisabled();
   });
 
@@ -66,6 +80,35 @@ describe('first-launch shell', () => {
     expect(container.querySelector('.welcome-symbol')).toHaveTextContent('ƒ');
   });
 
+  it.each([
+    ['Inspect codebase', 'Inspect this codebase.', 'Codebase inspection prompt ready.'],
+    ['Ship a change', 'Help me ship a focused change', 'Change workflow prompt ready.'],
+  ])('turns the %s first-launch choice into a reviewable workflow prompt', async (action, promptText, notice) => {
+    const initial = useRuntimeStore.getState().runtime;
+    const selected: RuntimeState = {
+      status: 'ready', project: { path: 'C:/selected-project', name: 'selected-project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], sessions: [], error: null,
+    };
+    const selectProject = vi.fn(async () => selected);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => initial),
+        onEvents: vi.fn(() => () => undefined),
+        selectProject,
+      } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: new RegExp(`^${action}`, 'u') }));
+
+    await waitFor(() => expect(selectProject).toHaveBeenCalledOnce());
+    await waitFor(() => expect((screen.getByLabelText('Message Pi') as HTMLTextAreaElement).value).toContain(promptText));
+    expect(screen.getByText(new RegExp(notice, 'u'))).toBeInTheDocument();
+    expect(useRuntimeStore.getState().runtime.messages).toEqual([]);
+  });
+
   it('opens the session list immediately after project selection', async () => {
     const initial = useRuntimeStore.getState().runtime;
     const selected: RuntimeState = {
@@ -91,6 +134,7 @@ describe('first-launch shell', () => {
     await waitFor(() => expect(selectProject).toHaveBeenCalledOnce());
     await waitFor(() => expect(useUiStore.getState().sidebarCollapsed).toBe(false));
     expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('');
   });
 
   it('keeps app and command-palette new/model actions available while streaming', async () => {
@@ -130,6 +174,69 @@ describe('first-launch shell', () => {
     expect(newCommand).toBeEnabled();
     await user.click(newCommand);
     await waitFor(() => expect(newSession).toHaveBeenCalledTimes(2));
+  });
+
+  it('explains unavailable native menu commands instead of silently doing nothing', async () => {
+    let appCommand: ((command: AppCommand) => void) | undefined;
+    const runtime = useRuntimeStore.getState().runtime;
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => runtime),
+        onEvents: vi.fn(() => () => undefined),
+        onAppCommand: vi.fn((listener: (command: AppCommand) => void) => { appCommand = listener; return () => undefined; }),
+      } as unknown as PiDesktopApi,
+    });
+    render(<App />);
+    await waitFor(() => expect(appCommand).toBeTypeOf('function'));
+
+    act(() => appCommand?.('new-session'));
+    expect(useUiStore.getState().toast).toMatchObject({ title: 'New session unavailable', message: 'Open a project before creating a session.' });
+
+    act(() => appCommand?.('toggle-browser'));
+    expect(useUiStore.getState()).toMatchObject({ browserOpen: false, toast: { title: 'Browser unavailable' } });
+
+    act(() => appCommand?.('open-terminal'));
+    expect(useUiStore.getState()).toMatchObject({ terminalOpen: false, toast: { title: 'Terminal unavailable' } });
+
+    act(() => appCommand?.('focus-address'));
+    expect(useUiStore.getState().toast).toMatchObject({ title: 'No input to focus' });
+
+    act(() => appCommand?.('stop-generation'));
+    expect(useUiStore.getState().toast).toMatchObject({ title: 'Nothing to stop' });
+  });
+
+  it('allows a native menu command to create the first session and reports operation failures', async () => {
+    let appCommand: ((command: AppCommand) => void) | undefined;
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: null, sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    };
+    useRuntimeStore.getState().setRuntime(runtime);
+    const newSession = vi.fn(async () => { throw new Error(JSON.stringify({ message: 'Session storage is read-only.' })); });
+    const abort = vi.fn(async () => undefined);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => runtime),
+        onEvents: vi.fn(() => () => undefined),
+        onAppCommand: vi.fn((listener: (command: AppCommand) => void) => { appCommand = listener; return () => undefined; }),
+        newSession,
+        abort,
+      } as unknown as PiDesktopApi,
+    });
+    render(<App />);
+    await waitFor(() => expect(appCommand).toBeTypeOf('function'));
+
+    act(() => appCommand?.('new-session'));
+    await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+    await waitFor(() => expect(useUiStore.getState().toast).toMatchObject({
+      kind: 'error', title: 'Could not create session', message: 'Session storage is read-only.',
+    }));
+
+    act(() => useRuntimeStore.getState().setRuntime({ ...runtime, streaming: true }));
+    act(() => appCommand?.('stop-generation'));
+    await waitFor(() => expect(abort).toHaveBeenCalledOnce());
   });
 
   it('shows playback activity beside the title only while the sidebar is expanded', async () => {

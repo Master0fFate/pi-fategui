@@ -3,11 +3,12 @@ import { Profiler } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GoalMaxState } from '../../../shared/contracts/goalmaxxing';
-import type { PiDesktopApi, RuntimeState, SubagentRun } from '../../../shared/contracts/ipc';
+import type { BrowserAnnotation, PiDesktopApi, RuntimeState, SubagentRun } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
-import { clampComposerInputHeight, clearComposerSessionDrafts, Composer, uniqueAttachmentName } from './Composer';
+import { useBrowserStore } from '../../stores/browserStore';
+import { attachBrowserAnnotationToSession, clampComposerInputHeight, clearComposerSessionDrafts, Composer, uniqueAttachmentName } from './Composer';
 import { ContextWheel } from './ContextWheel';
 import { AssistantMarkdown, coalesceSubagentWaitPolls, ConversationTimeline, followsMessage, forkEntryForMessage, MessageRow } from './ConversationTimeline';
 import { ConversationImageViewerProvider, isSafeMermaidSource } from './RichMessageContent';
@@ -53,6 +54,7 @@ const reset = () => {
   useRuntimeStore.getState().setRuntime(ready());
   useUiStore.setState({ sendMessageWithModifier: false, composerDraftRequest: null, toast: null, goalEditorOpen: false, selectedAgent: null });
   useGoalMaxStore.setState({ projectPath: '/project', sessionId: 's1', goal: null, loading: false, selectionGeneration: 1 });
+  useBrowserStore.getState().reset();
 };
 
 describe('conversation components', () => {
@@ -448,6 +450,21 @@ describe('conversation components', () => {
     expect(container.querySelector('.tool-card--error .tool-status-icon')).toBeInTheDocument();
   });
 
+  it('inserts resource commands at the caret without replacing the current draft', async () => {
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {} as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+    const composer = screen.getByRole('textbox', { name: 'Message Pi' }) as HTMLTextAreaElement;
+    await user.type(composer, 'Keep this draft');
+    composer.setSelectionRange(5, 5);
+
+    act(() => useUiStore.getState().requestComposerInsertion('/review '));
+
+    await waitFor(() => expect(composer).toHaveValue('Keep /review this draft'));
+    expect(composer).toHaveFocus();
+    await waitFor(() => expect(composer).toHaveProperty('selectionStart', 13));
+  });
+
   it('shows actual Pi context usage beside the send action', () => {
     useRuntimeStore.setState({ runtime: ready({ contextUsage: { tokens: 42_000, contextWindow: 100_000, percent: 42 } }) });
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: {} as PiDesktopApi });
@@ -578,6 +595,38 @@ describe('conversation components', () => {
     expect(screen.getByLabelText('Message Pi')).toHaveValue('/review #"src/example file.ts" ');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     expect(prompt).toHaveBeenCalledWith({ text: '/review #"src/example file.ts"', behavior: 'prompt' });
+  });
+
+  it('sends typed browser annotation references and clears only accepted attachments', async () => {
+    const annotation: BrowserAnnotation = {
+      id: 'browser-note-1', tabId: 'browser-main', url: 'https://example.test/', origin: 'https://example.test',
+      documentEpoch: 1, pageRevision: 1, kind: 'element',
+      target: {
+        frameId: 'frame-main', semanticRef: 'e1', role: 'button', accessibleName: 'Save changes', tagName: 'button',
+        rectCssPx: { x: 1, y: 2, width: 30, height: 20 }, rectNormalized: { x: 0, y: 0, width: 0.1, height: 0.1 },
+        locatorHints: {}, fingerprint: { attributesHash: 'a', nearbyTextHash: 'b', ancestorHash: 'c' },
+      },
+      comment: 'Use this exact control', semanticCoverage: 1, reattachConfidence: 0.9, createdAt: 1,
+    };
+    useBrowserStore.getState().hydrate({
+      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, paused: true, controlLevel: 'off', mode: 'agent', tabs: [], grants: [],
+    }, '/project');
+    useBrowserStore.getState().setAnnotations([annotation]);
+    attachBrowserAnnotationToSession('/project', 's1', annotation.id);
+    const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-browser-note' }));
+    const dismissBrowserAnnotations = vi.fn(async () => true);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, dismissBrowserAnnotations } as unknown as PiDesktopApi });
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'Remove browser annotation 1' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Message Pi'), { target: { value: 'Update this component' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => expect(prompt).toHaveBeenCalledWith({
+      text: 'Update this component', behavior: 'prompt', browserAnnotations: [{ id: annotation.id }],
+    }));
+    await waitFor(() => expect(dismissBrowserAnnotations).toHaveBeenCalledWith([annotation.id]));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove browser annotation 1' })).not.toBeInTheDocument());
   });
 
   it('autocompletes project files and folders with canonical # tags', async () => {

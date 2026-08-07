@@ -1,6 +1,6 @@
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { describe, expect, it } from 'vitest';
-import { PiEventNormalizer, safeText } from './PiEventNormalizer';
+import { PiEventNormalizer, safeText, safeToolInput } from './PiEventNormalizer';
 
 const event = (value: unknown) => value as AgentSessionEvent;
 
@@ -71,6 +71,15 @@ describe('PiEventNormalizer', () => {
     expect(longTool).toMatchObject({ type: 'tool.completed' });
     expect(longAssistant && 'text' in longAssistant ? longAssistant.text.length : 0).toBeLessThan(65_000);
     expect(longTool && 'output' in longTool ? longTool.output.length : 0).toBeLessThan(65_000);
+  });
+
+  it('redacts browser typing and sensitive navigation metadata from visible tool history', () => {
+    const typed = safeToolInput('browser_type', { ref: 'e1', text: 'private browser value', reason: 'Fill the field' });
+    expect(typed).toContain('[redacted browser input');
+    expect(typed).not.toContain('private browser value');
+    const navigated = safeToolInput('browser_navigate', { url: 'https://example.test/reset-token/abc?token=secret#fragment' });
+    expect(navigated).toContain('https://example.test/[redacted]/abc');
+    expect(navigated).not.toContain('secret');
   });
 
   it('carries direct-path provenance through start, update, and completion without parsing output', () => {

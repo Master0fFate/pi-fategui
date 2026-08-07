@@ -58,6 +58,30 @@ describe('preload desktop bridge', () => {
     await expect(piDesktopApi.writeClipboardText('Copied response')).rejects.toThrow();
   });
 
+  it('validates project automation mutations on both sides of the isolated bridge', async () => {
+    const definition = {
+      id: '00000000-0000-4000-8000-000000000001', projectPath: '/project', name: 'Review auth', prompt: 'Review auth changes.',
+      permissionLevel: 'read-only', createdAt: 1, updatedAt: 1, lastLaunchedAt: null, lastLaunchOutcome: null, launchCount: 0,
+    };
+    electron.invoke.mockResolvedValueOnce(definition);
+
+    await expect(piDesktopApi.createAutomation({ name: '  Review auth  ', prompt: '  Review auth changes.  ', permissionLevel: 'read-only' })).resolves.toEqual(definition);
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.automationsCreate, {
+      name: 'Review auth', prompt: 'Review auth changes.', permissionLevel: 'read-only',
+    });
+
+    const state = {
+      status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 's2', sessionFile: '/sessions/s2.jsonl',
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', permissionLevel: 'read-only', messages: [], error: null,
+    };
+    electron.invoke.mockResolvedValueOnce({ state, automation: definition });
+    await expect(piDesktopApi.prepareAutomationSession(definition.id)).resolves.toEqual({ state, automation: definition });
+    expect(electron.invoke).toHaveBeenLastCalledWith(ipcChannels.automationsPrepareSession, { id: definition.id });
+
+    electron.invoke.mockResolvedValueOnce([{ ...definition, permissionLevel: 'full-access' }]);
+    await expect(piDesktopApi.listAutomations()).rejects.toThrow();
+  });
+
   it('checks for updates through the pathless typed IPC channel', async () => {
     electron.invoke.mockResolvedValueOnce({
       status: 'available',

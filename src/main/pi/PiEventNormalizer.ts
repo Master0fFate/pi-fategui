@@ -3,6 +3,7 @@ import { subagentToolDetailsSchema, type RuntimeImage, type SubagentChildEvent }
 import type { ToolActor, ToolProvenance } from '../../shared/contracts/provenance';
 import { normalizeError } from './errors';
 import { createToolProvenance } from './ToolProvenance';
+import { modelSafeUrl } from './BrowserAnnotationContext';
 
 const MAX_SERIALIZED_LENGTH = 64_000;
 const MAX_DELTA_LENGTH = 32_000;
@@ -62,6 +63,19 @@ export function safeText(value: unknown, maximum = MAX_SERIALIZED_LENGTH): strin
   const marker = '\n… output truncated by Pi Desktop';
   if (maximum <= marker.length) return result.slice(0, maximum);
   return `${result.slice(0, maximum - marker.length)}${marker}`;
+}
+
+export function safeToolInput(toolName: string, value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return safeText(value);
+  const input = value as Record<string, unknown>;
+  if (toolName === 'browser_type') {
+    const text = typeof input.text === 'string' ? input.text : '';
+    return safeText({ ...input, text: `[redacted browser input${text ? ` · ${text.length} characters` : ''}]` });
+  }
+  if (toolName === 'browser_navigate' && typeof input.url === 'string') {
+    return safeText({ ...input, url: modelSafeUrl(input.url) });
+  }
+  return safeText(value);
 }
 
 export function messageText(message: unknown): string {
@@ -237,7 +251,7 @@ export class PiEventNormalizer {
           type: 'tool.started',
           toolCallId,
           name: event.toolName,
-          input: safeText(event.args),
+          input: safeToolInput(event.toolName, event.args),
           ...(provenance ? { provenance } : {}),
           timestamp: now,
         }];

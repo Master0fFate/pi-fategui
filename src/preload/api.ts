@@ -2,6 +2,7 @@ import { ipcRenderer } from 'electron';
 import {
   abortResultSchema,
   appCommandSchema,
+  automationSessionPreparationResultSchema,
   appInfoSchema,
   appSettingsSchema,
   compactInputSchema,
@@ -96,6 +97,50 @@ import {
 } from '../shared/contracts/ipc';
 import { agentTeamControlInputSchema, type AgentTeamControlInput } from '../shared/contracts/multiAgent';
 import {
+  browserAnnotationCreateInputSchema,
+  browserAnnotationDismissInputSchema,
+  browserAnnotationListSchema,
+  browserAnnotationRemoveInputSchema,
+  browserAnnotationSchema,
+  browserAnnotationUpdateInputSchema,
+  browserBoundsSchema,
+  browserConfirmationResponseSchema,
+  browserControlLevelInputSchema,
+  browserEventBatchSchema,
+  browserHistoryInputSchema,
+  browserNavigateInputSchema,
+  browserNewTabInputSchema,
+  browserOperationResultSchema,
+  browserOriginGrantSchema,
+  browserOriginInputSchema,
+  browserOverlayInputSchema,
+  browserPauseInputSchema,
+  browserSnapshotInputSchema,
+  browserStateSchema,
+  browserTabIdInputSchema,
+  browserUiModeInputSchema,
+  browserVisibilityInputSchema,
+  semanticPageSnapshotSchema,
+  type BrowserBounds,
+  type BrowserControlLevel,
+  type BrowserEvent,
+  type BrowserOriginGrant,
+  type BrowserSnapshotMode,
+  type BrowserUiMode,
+} from '../shared/contracts/browser';
+import {
+  automationCreateInputSchema,
+  automationDefinitionSchema,
+  automationDeleteResultSchema,
+  automationIdInputSchema,
+  automationLaunchRecordInputSchema,
+  automationListSchema,
+  automationUpdateInputSchema,
+  type AutomationCreateInput,
+  type AutomationLaunchOutcome,
+  type AutomationUpdateInput,
+} from '../shared/contracts/automations';
+import {
   goalMaxClearResultSchema,
   goalMaxControlInputSchema,
   goalMaxCreateInputSchema,
@@ -152,6 +197,132 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     const input = clipboardTextInputSchema.parse({ text });
     const result: unknown = await ipcRenderer.invoke(ipcChannels.clipboardWriteText, input);
     clipboardWriteResultSchema.parse(result);
+  },
+  async initializeBrowser() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserInitialize, emptyInputSchema.parse({}));
+    return browserStateSchema.parse(result);
+  },
+  async getBrowserState() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserGetState, emptyInputSchema.parse({}));
+    return browserStateSchema.parse(result);
+  },
+  async setBrowserBounds(bounds: BrowserBounds) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSetBounds, browserBoundsSchema.parse(bounds));
+    return browserStateSchema.parse(result);
+  },
+  async setBrowserVisible(visible: boolean) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSetVisible, browserVisibilityInputSchema.parse({ visible }));
+    return browserStateSchema.parse(result);
+  },
+  async setBrowserOverlayBlocked(blocked: boolean) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSetOverlay, browserOverlayInputSchema.parse({ blocked }));
+    return browserStateSchema.parse(result);
+  },
+  async navigateBrowser(url: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserNavigate, browserNavigateInputSchema.parse({ url }));
+    return browserStateSchema.parse(result);
+  },
+  async openBrowserLocalFile() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserOpenLocalFile, emptyInputSchema.parse({}));
+    return browserStateSchema.nullable().parse(result);
+  },
+  async createBrowserTab(initialUrl?: string) {
+    const input = browserNewTabInputSchema.parse(initialUrl ? { initialUrl } : {});
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserNewTab, input);
+    return browserStateSchema.parse(result);
+  },
+  async activateBrowserTab(tabId: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserActivateTab, browserTabIdInputSchema.parse({ tabId }));
+    return browserStateSchema.parse(result);
+  },
+  async closeBrowserTab(tabId: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserCloseTab, browserTabIdInputSchema.parse({ tabId }));
+    return browserStateSchema.parse(result);
+  },
+  async controlBrowserHistory(action: 'back' | 'forward' | 'reload' | 'stop') {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserHistory, browserHistoryInputSchema.parse({ action }));
+    return browserStateSchema.parse(result);
+  },
+  async setBrowserMode(mode: BrowserUiMode) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSetMode, browserUiModeInputSchema.parse({ mode }));
+    return browserStateSchema.parse(result);
+  },
+  async setBrowserControlLevel(level: BrowserControlLevel) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSetControlLevel, browserControlLevelInputSchema.parse({ level }));
+    return browserStateSchema.parse(result);
+  },
+  async setBrowserPaused(paused: boolean) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSetPaused, browserPauseInputSchema.parse({ paused }));
+    return browserStateSchema.parse(result);
+  },
+  async setBrowserOriginGrant(grant: BrowserOriginGrant) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSetGrant, browserOriginGrantSchema.parse(grant));
+    return browserStateSchema.parse(result);
+  },
+  async revokeBrowserOriginGrant(origin: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserRevokeGrant, browserOriginInputSchema.parse({ origin }));
+    return browserStateSchema.parse(result);
+  },
+  async snapshotBrowser(input: { mode?: BrowserSnapshotMode; scopeRef?: string; query?: string } = {}) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSnapshot, browserSnapshotInputSchema.parse(input));
+    return semanticPageSnapshotSchema.parse(result);
+  },
+  async selectBrowserAnnotation(kind: 'element' | 'region', comment: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSelectAnnotation, browserAnnotationCreateInputSchema.parse({ kind, comment }));
+    return browserAnnotationSchema.parse(result);
+  },
+  async listBrowserAnnotations() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserListAnnotations, emptyInputSchema.parse({}));
+    return browserAnnotationListSchema.parse(result);
+  },
+  async updateBrowserAnnotation(id: string, comment: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserUpdateAnnotation, browserAnnotationUpdateInputSchema.parse({ id, comment }));
+    return browserAnnotationSchema.parse(result);
+  },
+  async removeBrowserAnnotation(id: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserRemoveAnnotation, browserAnnotationRemoveInputSchema.parse({ id }));
+    return browserOperationResultSchema.parse(result).ok;
+  },
+  async dismissBrowserAnnotations(ids: string[]) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserDismissAnnotations, browserAnnotationDismissInputSchema.parse({ ids }));
+    return browserOperationResultSchema.parse(result).ok;
+  },
+  async highlightBrowserAnnotation(id: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserHighlightAnnotation, browserAnnotationRemoveInputSchema.parse({ id }));
+    return browserOperationResultSchema.parse(result).ok;
+  },
+  async respondToBrowserConfirmation(id: string, approved: boolean) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserRespondConfirmation, browserConfirmationResponseSchema.parse({ id, approved }));
+    return browserOperationResultSchema.parse(result).ok;
+  },
+  onBrowserEvents(listener: (events: BrowserEvent[]) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(browserEventBatchSchema.parse(payload));
+    ipcRenderer.on(ipcChannels.browserEvents, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.browserEvents, handler);
+  },
+  async listAutomations() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.automationsList, emptyInputSchema.parse({}));
+    return automationListSchema.parse(result);
+  },
+  async createAutomation(input: AutomationCreateInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.automationsCreate, automationCreateInputSchema.parse(input));
+    return automationDefinitionSchema.parse(result);
+  },
+  async updateAutomation(input: AutomationUpdateInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.automationsUpdate, automationUpdateInputSchema.parse(input));
+    return automationDefinitionSchema.parse(result);
+  },
+  async deleteAutomation(id: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.automationsDelete, automationIdInputSchema.parse({ id }));
+    automationDeleteResultSchema.parse(result);
+  },
+  async recordAutomationLaunch(id: string, outcome: AutomationLaunchOutcome) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.automationsRecordLaunch, automationLaunchRecordInputSchema.parse({ id, outcome }));
+    return automationDefinitionSchema.parse(result);
+  },
+  async prepareAutomationSession(id: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.automationsPrepareSession, automationIdInputSchema.parse({ id }));
+    return automationSessionPreparationResultSchema.parse(result);
   },
   async getRuntimeState() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGetState, emptyInputSchema.parse({}));

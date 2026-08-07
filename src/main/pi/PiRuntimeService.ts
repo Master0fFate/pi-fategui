@@ -53,7 +53,7 @@ import type {
   GoalMaxUpdateInput,
 } from '../../shared/contracts/goalmaxxing';
 import { PiEventBatcher } from './PiEventBatcher';
-import { PiEventNormalizer, messageImages, messageText, safeText, subagentRunIds } from './PiEventNormalizer';
+import { PiEventNormalizer, messageImages, messageText, safeText, safeToolInput, subagentRunIds } from './PiEventNormalizer';
 import { createToolProvenance } from './ToolProvenance';
 import { expandMultipleSkillCommands, promoteInlineResourceCommand } from './PiInlineCommands';
 import { createPiExtensionUiBridge, emptyExtensionUiState, type ExtensionNoticeLevel, type PiExtensionUiBridge } from './PiExtensionUi';
@@ -74,11 +74,17 @@ import { GoalMaxCoordinator, type GoalMaxDiagnosticResult, type GoalMaxRuntimeCh
 import { goalMaxCapsule } from './goalmaxxing/GoalMaxPrompt';
 import { InMemoryGoalMaxRepository, type GoalMaxPersistence } from './goalmaxxing/GoalMaxRepository';
 import { classifyGoalMaxTool } from './goalmaxxing/GoalMaxProgressEngine';
+import type { PiBrowserRuntimeIntegration } from './BrowserRuntimeBridge';
 
 export interface SessionDefaults {
   thinkingLevel: ThinkingLevel;
   defaultModel: string | null;
   agentTeamMode?: 'legacy' | 'v2';
+}
+
+interface RestrictedSessionSetup {
+  sessionName: string;
+  permissionLevel: 'read-only' | 'edit';
 }
 
 export interface PiSdkAdapter {
@@ -398,7 +404,7 @@ function toTools(messages: readonly unknown[]): RuntimeTool[] {
         tools.set(block.id, {
           id: block.id,
           name: block.name,
-          input: safeText(block.arguments ?? {}),
+          input: safeToolInput(block.name, block.arguments ?? {}),
           output: '',
           outputTruncated: false,
           status: 'running',
@@ -735,6 +741,7 @@ export class PiRuntimeService {
     private readonly sessionTitleGenerator: SessionTitleGenerator = new PiSessionTitleGenerator(),
     private readonly getImageGenerationSettings: ImageGenerationSettingsResolver = () => defaultImageGenerationSettings,
     goalPersistence: GoalMaxPersistence = new InMemoryGoalMaxRepository(),
+    private readonly browserIntegration: PiBrowserRuntimeIntegration | null = null,
   ) {
     this.batcher = new PiEventBatcher((events) => this.eventSink(events));
     const childSessionFactory = (input: Parameters<typeof createSdkChildSession>[0]) => createSdkChildSession({
@@ -990,6 +997,7 @@ export class PiRuntimeService {
   }
 
   async closeProject(): Promise<RuntimeState> {
+    this.browserIntegration?.setActiveRoot(null);
     const generation = ++this.initialization;
     this.replacementGeneration += 1;
     this.replacementQueue = Promise.resolve();
@@ -1013,6 +1021,7 @@ export class PiRuntimeService {
   }
 
   async openProject(project: ProjectState, defaults?: SessionDefaults): Promise<RuntimeState> {
+    this.browserIntegration?.setActiveRoot(null);
     const generation = ++this.initialization;
     this.replacementGeneration += 1;
     this.replacementQueue = Promise.resolve();
@@ -1114,11 +1123,18 @@ export class PiRuntimeService {
       : expandMultipleSkillCommands(input.text, session.resourceLoader.getSkills().skills)
         ?? promoteInlineResourceCommand(input.text, this.getCommands(session));
     const includesProjectResources = hasProjectResourceTags(input.text);
-    const promptText = includesProjectResources
+    const resourcePromptText = includesProjectResources
       ? await appendProjectResourceContext(commandPrompt, this.project?.path ?? null, input.text)
       : commandPrompt;
+    const includesBrowserAnnotations = Boolean(input.browserAnnotations?.length);
+    if (includesBrowserAnnotations && !this.browserIntegration) {
+      throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Browser annotation attachments are unavailable. Restart Fate UI and try again.', retryable: true });
+    }
+    const promptText = includesBrowserAnnotations
+      ? await this.browserIntegration!.appendAnnotationContext(resourcePromptText, input.browserAnnotations!.map(({ id }) => id))
+      : resourcePromptText;
     if (
-      includesProjectResources
+      (includesProjectResources || includesBrowserAnnotations)
       && (initialization !== this.initialization || slot.disposed || this.selectedSlot !== slot || slot.runtime.session !== session)
     ) throw this.replacementSuperseded();
     validatePromptImages(input.images);
@@ -1219,6 +1235,7 @@ export class PiRuntimeService {
           ...(stagedModel ? { boundModel: stagedModel } : {}),
           ...(stagedThinkingLevel ? { boundThinkingLevel: stagedThinkingLevel } : {}),
           ...(input.images?.length ? { images: input.images.map((image) => ({ ...image })) } : {}),
+          ...(input.browserAnnotations?.length ? { browserAnnotations: input.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
           createdAt: Date.now(),
         }
       : null;
@@ -1505,6 +1522,21 @@ export class PiRuntimeService {
   }
 
   newSession(defaults?: SessionDefaults): Promise<RuntimeState> {
+    return this.createSession(defaults);
+  }
+
+  prepareAutomationSession(sessionName: string, permissionLevel: 'read-only' | 'edit'): Promise<RuntimeState> {
+    const normalizedName = sessionName.trim();
+    if (!normalizedName || normalizedName.length > 120 || /[\u0000-\u001f\u007f]/u.test(normalizedName)) {
+      return Promise.reject(new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The automation session name is invalid.', retryable: false }));
+    }
+    if (permissionLevel !== 'read-only' && permissionLevel !== 'edit') {
+      return Promise.reject(new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Automation sessions support Read only or Edit project access.', retryable: false }));
+    }
+    return this.createSession(undefined, { sessionName: normalizedName, permissionLevel });
+  }
+
+  private createSession(defaults?: SessionDefaults, restrictedSetup?: RestrictedSessionSetup): Promise<RuntimeState> {
     const activeSession = this.runtime?.session;
     const sourceSlot = this.selectedSlot;
     const stagedModel = sourceSlot?.pendingModel ?? null;
@@ -1531,13 +1563,25 @@ export class PiRuntimeService {
       if (!slot.runtime.session.isStreaming && this.sessionHasNonStreamingWork(slot.runtime.session)) throw this.activeOperationError('creating a session');
       if (slot.runtime.session.isStreaming || hasManagedChildren) {
         const created = await this.createAdditionalSlot();
-        await this.applySessionDefaults(created.runtime.session, nextDefaults, created);
-        await this.selectRuntimeSlot(created);
+        try {
+          await this.applySessionDefaults(created.runtime.session, nextDefaults, created);
+          await this.applyRestrictedSessionSetup(created, restrictedSetup);
+          await this.selectRuntimeSlot(created);
+        } catch (error) {
+          await this.disposeSlot(created, true).catch(() => undefined);
+          throw error;
+        }
         consumeStagedSettings(slot);
         return;
       }
       if ((await runtime.newSession())?.cancelled) throw this.replacementCancelled('New session');
       await this.applySessionDefaults(runtime.session, nextDefaults, slot);
+      try {
+        await this.applyRestrictedSessionSetup(slot, restrictedSetup);
+      } catch (error) {
+        await this.disposeSlot(slot, true).catch(() => undefined);
+        throw error;
+      }
       consumeStagedSettings(slot);
     });
   }
@@ -1721,6 +1765,7 @@ export class PiRuntimeService {
   }
 
   async dispose(): Promise<void> {
+    this.browserIntegration?.setActiveRoot(null);
     ++this.initialization;
     this.replacementGeneration += 1;
     this.replacementQueue = Promise.resolve();
@@ -1964,6 +2009,7 @@ export class PiRuntimeService {
     if (this.project) await this.goalMax.bind(this.project.path, session.sessionId);
     if (!ownsSession()) return;
     this.syncGoalChildren(session.sessionId);
+    this.syncBrowserRoot();
   }
 
   private installModelBoundary(slot: RuntimeSlot, session: AgentSession, ownsSession: () => boolean): void {
@@ -2173,9 +2219,13 @@ export class PiRuntimeService {
 
     if (selected) {
       const normalizedEvents = slot.normalizer.normalize(event);
-      const visibleEvents = event.type === 'agent_end' && event.willRetry
-        ? normalizedEvents.filter((normalizedEvent) => normalizedEvent.type !== 'run.completed')
-        : normalizedEvents;
+      const visibleEvents = normalizedEvents.filter((normalizedEvent) => {
+        if (event.type === 'agent_end' && event.willRetry && normalizedEvent.type === 'run.completed') return false;
+        // A queue mutation clears and rebuilds Pi's queue. Publishing those
+        // intermediate counts would briefly remove the queued row in the UI.
+        if (slot.queueMutationActive && normalizedEvent.type === 'queue.changed') return false;
+        return true;
+      });
       for (const normalizedEvent of visibleEvents) {
         if (normalizedEvent.type === 'error') {
           slot.stateError = normalizedEvent.error;
@@ -2430,7 +2480,11 @@ export class PiRuntimeService {
       return [{ ...item, behavior: input.action }];
     });
     const restored = input.action === 'edit'
-      ? { text: target.text, ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}) }
+      ? {
+          text: target.text,
+          ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}),
+          ...(target.browserAnnotations?.length ? { browserAnnotations: target.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
+        }
       : undefined;
 
     slot.queueMutationActive = true;
@@ -2521,9 +2575,11 @@ export class PiRuntimeService {
     if (previous === slot) {
       this.acknowledgeSession(slot.runtime.session.sessionId);
       this.mergeLiveSessionSummaries();
+      this.syncBrowserRoot();
       return;
     }
     this.selectedSlot = slot;
+    this.syncBrowserRoot();
     this.acknowledgeSession(slot.runtime.session.sessionId);
     slot.attention = null;
     this.batcher.clear();
@@ -2832,7 +2888,16 @@ export class PiRuntimeService {
   private orchestrationTools(modelRuntime: ModelRuntime): ToolDefinition[] {
     const legacy = this.subagents.createTools(modelRuntime);
     const v2 = this.agentTeams.createRootTools(modelRuntime);
-    return [...legacy, ...v2, ...this.goalMax.createTools()];
+    const browser = this.browserIntegration?.createTools() ?? [];
+    return [...legacy, ...v2, ...this.goalMax.createTools(), ...browser];
+  }
+
+  private syncBrowserRoot(): void {
+    const session = this.selectedSlot && !this.selectedSlot.disposed ? this.selectedSlot.runtime.session : null;
+    this.browserIntegration?.setActiveRoot(this.project && session ? {
+      projectPath: this.project.path,
+      sessionId: session.sessionId,
+    } : null);
   }
 
   private findLiveSlot(sessionId: string): RuntimeSlot | undefined {
@@ -3003,6 +3068,31 @@ export class PiRuntimeService {
         this.emitSystemMessage(`Saved agent defaults could not be applied: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
     }
+  }
+
+  private async applyRestrictedSessionSetup(slot: RuntimeSlot, setup: RestrictedSessionSetup | undefined): Promise<void> {
+    if (!setup) return;
+    const projectPath = this.project?.path;
+    const session = slot.runtime.session;
+    if (!projectPath || slot.disposed) throw this.replacementSuperseded();
+    const ownsSession = () => this.project?.path === projectPath
+      && this.initialization === slot.projectGeneration
+      && !slot.disposed
+      && slot.runtime.session === session;
+    const access = toolAccessBySession.get(session);
+
+    // Automation sessions are never allowed to inherit Full access, even for
+    // the brief interval between session creation and the final state event.
+    if (access) access.fullAccess = false;
+    session.setActiveToolsByName(activeToolsForPermission(session.getActiveToolNames(), setup.permissionLevel));
+    slot.permissionLevel = setup.permissionLevel;
+    this.agentTeams.lowerRootPermission(session.sessionId, setup.permissionLevel);
+    await this.sessionPermissions.set(projectPath, session.sessionId, setup.permissionLevel);
+    if (!ownsSession()) throw this.replacementSuperseded();
+
+    session.setSessionName(setup.sessionName);
+    this.manualSessionNames.add(this.sessionClaimKey(projectPath, session.sessionId));
+    while (this.manualSessionNames.size > MAX_MANUAL_SESSION_NAME_CLAIMS) this.manualSessionNames.delete(this.manualSessionNames.values().next().value!);
   }
 
   private activeOperationError(action: string): PiDesktopError {

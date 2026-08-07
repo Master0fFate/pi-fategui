@@ -7,7 +7,30 @@ import {
 import { themeCatalogSchema, type ThemeDefinition } from '../themes';
 import { agentTeamSchema, agentTeamControlInputSchema, type AgentTeamControlInput } from './multiAgent';
 import { toolProvenanceSchema } from './provenance';
+import {
+  browserAnnotationReferenceSchema,
+  type BrowserAnnotation,
+  type BrowserBounds,
+  type BrowserConfirmation,
+  type BrowserControlLevel,
+  type BrowserEvent,
+  type BrowserOriginGrant,
+  type BrowserSnapshotMode,
+  type BrowserState,
+  type BrowserUiMode,
+  type SemanticPageSnapshot,
+} from './browser';
 import { imageGenerationProviderIds } from '../imageGeneration';
+
+export * from './browser';
+export * from './automations';
+import {
+  automationDefinitionSchema,
+  type AutomationCreateInput,
+  type AutomationDefinition,
+  type AutomationLaunchOutcome,
+  type AutomationUpdateInput,
+} from './automations';
 import type {
   GoalMaxClearResult,
   GoalMaxControlInput,
@@ -28,6 +51,37 @@ export const ipcChannels = {
   imageReadLocal: 'image:read-local',
   imageSaveAs: 'image:save-as',
   clipboardWriteText: 'clipboard:write-text',
+  browserInitialize: 'browser:initialize',
+  browserGetState: 'browser:get-state',
+  browserSetBounds: 'browser:set-bounds',
+  browserSetVisible: 'browser:set-visible',
+  browserSetOverlay: 'browser:set-overlay',
+  browserNavigate: 'browser:navigate',
+  browserOpenLocalFile: 'browser:open-local-file',
+  browserNewTab: 'browser:new-tab',
+  browserActivateTab: 'browser:activate-tab',
+  browserCloseTab: 'browser:close-tab',
+  browserHistory: 'browser:history',
+  browserSetMode: 'browser:set-mode',
+  browserSetControlLevel: 'browser:set-control-level',
+  browserSetPaused: 'browser:set-paused',
+  browserSetGrant: 'browser:set-grant',
+  browserRevokeGrant: 'browser:revoke-grant',
+  browserSnapshot: 'browser:snapshot',
+  browserSelectAnnotation: 'browser:select-annotation',
+  browserListAnnotations: 'browser:list-annotations',
+  browserUpdateAnnotation: 'browser:update-annotation',
+  browserRemoveAnnotation: 'browser:remove-annotation',
+  browserDismissAnnotations: 'browser:dismiss-annotations',
+  browserHighlightAnnotation: 'browser:highlight-annotation',
+  browserRespondConfirmation: 'browser:respond-confirmation',
+  browserEvents: 'browser:events',
+  automationsList: 'automations:list',
+  automationsCreate: 'automations:create',
+  automationsUpdate: 'automations:update',
+  automationsDelete: 'automations:delete',
+  automationsRecordLaunch: 'automations:record-launch',
+  automationsPrepareSession: 'automations:prepare-session',
   runtimeGetState: 'runtime:get-state',
   runtimePrompt: 'runtime:prompt',
   runtimeAbort: 'runtime:abort',
@@ -645,6 +699,7 @@ export const queuedMessageSchema = z.object({
   behavior: z.enum(['steer', 'followUp']),
   text: z.string().min(1).max(200_000),
   images: promptImagesSchema.optional(),
+  browserAnnotations: z.array(browserAnnotationReferenceSchema).max(24).optional(),
   createdAt: z.number().finite(),
 });
 export const runtimeQueueSchema = z.object({
@@ -700,6 +755,11 @@ export const runtimeStateSchema = z.object({
   eventCursor: z.number().int().nonnegative().optional(),
   error: appErrorSchema.nullable(),
 });
+
+export const automationSessionPreparationResultSchema = z.object({
+  state: runtimeStateSchema,
+  automation: automationDefinitionSchema,
+}).strict();
 
 const eventBaseSchema = z.object({ timestamp: z.number().finite(), cursor: z.number().int().nonnegative().optional() }).strict();
 const runStartedEventSchema = eventBaseSchema.extend({ type: z.literal('run.started'), runId: z.string().min(1) });
@@ -772,6 +832,7 @@ export const promptInputSchema = z.object({
   text: z.string().trim().min(1).max(200_000),
   behavior: z.enum(['prompt', 'steer', 'followUp']).default('prompt'),
   images: promptImagesSchema.optional(),
+  browserAnnotations: z.array(browserAnnotationReferenceSchema).max(24).optional(),
 }).strict();
 export const promptAcceptanceSchema = z.object({ accepted: z.boolean(), runId: z.string().min(1) });
 export const abortResultSchema = z.object({ aborted: z.boolean() });
@@ -793,7 +854,11 @@ export const queueMutationInputSchema = z.object({
 }).strict();
 export const queueMutationResultSchema = z.object({
   state: runtimeStateSchema,
-  restored: z.object({ text: z.string().min(1).max(200_000), images: promptImagesSchema.optional() }).optional(),
+  restored: z.object({
+    text: z.string().min(1).max(200_000),
+    images: promptImagesSchema.optional(),
+    browserAnnotations: z.array(browserAnnotationReferenceSchema).max(24).optional(),
+  }).optional(),
 }).strict();
 export const sessionSearchInputSchema = z.object({ query: z.string().max(500).default('') }).strict();
 export const sessionIdInputSchema = z.object({ sessionId: z.string().min(1).max(500) }).strict();
@@ -936,7 +1001,7 @@ export const diagnosticsSchema = z.object({
 });
 export const logEntrySchema = z.object({ timestamp: z.string().datetime(), level: z.enum(['info', 'warn', 'error']), scope: z.string(), message: z.string() });
 export const logListSchema = z.array(logEntrySchema).max(500);
-export const appCommandSchema = z.enum(['open-project', 'new-session', 'focus-composer', 'stop-generation', 'toggle-sidebar', 'toggle-inspector', 'open-settings', 'open-terminal', 'open-palette']);
+export const appCommandSchema = z.enum(['open-project', 'new-session', 'focus-composer', 'focus-address', 'stop-generation', 'toggle-sidebar', 'toggle-inspector', 'toggle-browser', 'open-settings', 'open-terminal', 'open-palette', 'pause-browser']);
 
 export type AppInfo = z.infer<typeof appInfoSchema>;
 export type AppError = z.infer<typeof appErrorSchema>;
@@ -961,6 +1026,7 @@ export type TokenMetrics = z.infer<typeof tokenMetricsSchema>;
 export type TokenUsageSample = z.infer<typeof tokenUsageSampleSchema>;
 export type RuntimeTokenTelemetry = z.infer<typeof runtimeTokenTelemetrySchema>;
 export type RuntimeState = z.infer<typeof runtimeStateSchema>;
+export type AutomationSessionPreparationResult = z.infer<typeof automationSessionPreparationResultSchema>;
 export type SubagentRole = z.infer<typeof subagentRoleSchema>;
 export type SubagentAgentSource = z.infer<typeof subagentAgentSourceSchema>;
 export type SubagentStatus = z.infer<typeof subagentStatusSchema>;
@@ -1031,6 +1097,37 @@ export interface PiDesktopApi {
   readLocalImage: (path: string) => Promise<RuntimeImage>;
   saveImageAs: (input: ImageSaveInput) => Promise<ImageSaveResult>;
   writeClipboardText: (text: string) => Promise<void>;
+  initializeBrowser: () => Promise<BrowserState>;
+  getBrowserState: () => Promise<BrowserState>;
+  setBrowserBounds: (bounds: BrowserBounds) => Promise<BrowserState>;
+  setBrowserVisible: (visible: boolean) => Promise<BrowserState>;
+  setBrowserOverlayBlocked: (blocked: boolean) => Promise<BrowserState>;
+  navigateBrowser: (url: string) => Promise<BrowserState>;
+  openBrowserLocalFile: () => Promise<BrowserState | null>;
+  createBrowserTab: (initialUrl?: string) => Promise<BrowserState>;
+  activateBrowserTab: (tabId: string) => Promise<BrowserState>;
+  closeBrowserTab: (tabId: string) => Promise<BrowserState>;
+  controlBrowserHistory: (action: 'back' | 'forward' | 'reload' | 'stop') => Promise<BrowserState>;
+  setBrowserMode: (mode: BrowserUiMode) => Promise<BrowserState>;
+  setBrowserControlLevel: (level: BrowserControlLevel) => Promise<BrowserState>;
+  setBrowserPaused: (paused: boolean) => Promise<BrowserState>;
+  setBrowserOriginGrant: (grant: BrowserOriginGrant) => Promise<BrowserState>;
+  revokeBrowserOriginGrant: (origin: string) => Promise<BrowserState>;
+  snapshotBrowser: (input?: { mode?: BrowserSnapshotMode; scopeRef?: string; query?: string }) => Promise<SemanticPageSnapshot>;
+  selectBrowserAnnotation: (kind: 'element' | 'region', comment: string) => Promise<BrowserAnnotation>;
+  listBrowserAnnotations: () => Promise<BrowserAnnotation[]>;
+  updateBrowserAnnotation: (id: string, comment: string) => Promise<BrowserAnnotation>;
+  removeBrowserAnnotation: (id: string) => Promise<boolean>;
+  dismissBrowserAnnotations: (ids: string[]) => Promise<boolean>;
+  highlightBrowserAnnotation: (id: string) => Promise<boolean>;
+  respondToBrowserConfirmation: (id: BrowserConfirmation['id'], approved: boolean) => Promise<boolean>;
+  onBrowserEvents: (listener: (events: BrowserEvent[]) => void) => () => void;
+  listAutomations: () => Promise<AutomationDefinition[]>;
+  createAutomation: (input: AutomationCreateInput) => Promise<AutomationDefinition>;
+  updateAutomation: (input: AutomationUpdateInput) => Promise<AutomationDefinition>;
+  deleteAutomation: (id: string) => Promise<void>;
+  recordAutomationLaunch: (id: string, outcome: AutomationLaunchOutcome) => Promise<AutomationDefinition>;
+  prepareAutomationSession: (id: string) => Promise<AutomationSessionPreparationResult>;
   getRuntimeState: () => Promise<RuntimeState>;
   prompt: (input: PromptInput) => Promise<PromptAcceptance>;
   abort: () => Promise<{ aborted: boolean }>;

@@ -89,10 +89,12 @@ describe('GoalMax coordinator', () => {
     coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'test-1', toolName: 'bash', result: 'passed', isError: false } as never);
     const evidenceState = (await coordinator.statusForModel('session-1')).details;
     const testEvidence = evidenceState.evidence.find((item) => item.kind === 'test')!;
-    await coordinator.report('session-1', {
-      outcome: 'completion-candidate', summary: 'Implementation and tests are ready',
-      criterionUpdates: evidenceState.criteria.filter((criterion) => criterion.required).map((criterion) => ({ criterionId: criterion.id, status: 'satisfied', evidenceIds: [testEvidence.id] })),
+    const completion = await coordinator.requestCompletion('session-1', {
+      summary: 'Implementation and tests are ready',
+      criterionEvidence: evidenceState.criteria.filter((criterion) => criterion.required).map((criterion) => ({ criterionId: criterion.id, evidenceIds: [testEvidence.id] })),
     });
+    expect(completion).toMatchObject({ details: { status: 'verifying', phase: 'verification', executionState: 'waiting' } });
+    expect(completion.text).toContain('end the current root turn');
     runtime.idle = true; runtime.streaming = false;
     coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
 
@@ -112,6 +114,12 @@ describe('GoalMax coordinator', () => {
     const completed = (await coordinator.statusForModel('session-1')).details;
     expect(completed.criteria.filter((criterion) => criterion.required).every((criterion) => criterion.status === 'satisfied')).toBe(true);
     expect(completed.evidence.at(-1)).toMatchObject({ kind: 'verification', current: true });
+    expect(completed.timeline.slice(-2).map((event) => event.type)).toEqual(['verification.passed', 'goal.completed']);
+    await expect(coordinator.requestCompletion('session-1', { summary: 'Already done' })).resolves.toMatchObject({
+      text: expect.stringContaining('already completed'),
+      details: { status: 'completed' },
+    });
+    expect(host.verifyGoal).toHaveBeenCalledOnce();
   });
 
   it('targets the selected runtime instead of the first bound background goal', async () => {
@@ -284,6 +292,54 @@ describe('GoalMax coordinator', () => {
     const edited = await coordinator.update({ expectedRevision: candidate.revision, objective: 'Revised completion candidate' });
 
     expect(edited).toMatchObject({ status: 'active', executionState: 'idle', objective: 'Revised completion candidate' });
+  });
+
+  it('blocks instead of leaving the goal in process when root settlement fails', async () => {
+    const { coordinator, host, progress } = fixture();
+    await coordinator.create({ objective: 'Settle the final root turn safely', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    progress.capture.mockRejectedValueOnce(new Error('workspace snapshot unavailable'));
+    coordinator.observeSessionEvent('session-1', { type: 'agent_start' } as never);
+    await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.executionState).toBe('running-root'));
+    coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
+
+    await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.status).toBe('blocked'));
+    const state = (await coordinator.statusForModel('session-1')).details;
+    expect(state).toMatchObject({
+      executionState: 'idle',
+      failure: { code: 'GOALMAX_SETTLEMENT_FAILED', retryable: true },
+    });
+    expect(state.blockedReason).toContain('workspace snapshot unavailable');
+    expect(host.continueGoal).not.toHaveBeenCalled();
+  });
+
+  it('fails closed in memory when settlement recovery cannot be persisted', async () => {
+    const { coordinator, host, progress, repository } = fixture();
+    await coordinator.create({ objective: 'Stop safely when durable settlement fails', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    coordinator.observeSessionEvent('session-1', { type: 'agent_start' } as never);
+    await vi.waitFor(async () => expect((await repository.load('/project', 'session-1'))?.executionState).toBe('running-root'));
+    progress.capture.mockRejectedValueOnce(new Error('workspace snapshot unavailable'));
+    const save = vi.spyOn(repository, 'save').mockRejectedValue(new Error('goal storage is read-only'));
+
+    coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
+
+    await vi.waitFor(() => expect(coordinator.get('/project', 'session-1')?.status).toBe('blocked'));
+    const visible = coordinator.get('/project', 'session-1')!;
+    expect(visible).toMatchObject({
+      status: 'blocked',
+      executionState: 'idle',
+      failure: { code: 'GOALMAX_SETTLEMENT_FAILED', retryable: true },
+    });
+    expect(visible.blockedReason).toContain('goal storage is read-only');
+    expect(coordinator.hasRunnableGoal('session-1')).toBe(false);
+    expect(host.emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'goalmax.snapshot', goal: expect.objectContaining({ status: 'blocked' }) }));
+    expect(host.continueGoal).not.toHaveBeenCalled();
+
+    save.mockRestore();
+    await expect(coordinator.control({ action: 'checkpoint' })).resolves.toMatchObject({ status: 'blocked' });
+    expect(coordinator.hasRunnableGoal('session-1')).toBe(false);
+    await coordinator.control({ action: 'resume' });
+    expect(coordinator.get('/project', 'session-1')).toMatchObject({ status: 'active', failure: null });
+    expect(coordinator.hasRunnableGoal('session-1')).toBe(true);
   });
 
   it('blocks cleanly without root continuation spam when the independent verifier is unavailable', async () => {

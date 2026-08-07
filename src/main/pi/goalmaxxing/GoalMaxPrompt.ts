@@ -61,8 +61,9 @@ export function goalMaxCapsule(goal: GoalMaxState, recovery?: GoalMaxRecovery): 
     'NEXT-TURN CONTRACT',
     instruction,
     'Use tools and change or verify real artefacts. Do not produce another plan unless new uncertainty requires it.',
-    'Use goalmax_status to inspect current evidence IDs. Use goalmax_report to report progress, an exact blocker, or a completion candidate.',
-    'Never create a budget, elevate permissions, or claim completion directly. Completion is decided by the control plane after verification.',
+    'Use goalmax_status to inspect current evidence IDs. Use goalmax_report for interim progress or an exact blocker.',
+    'When all requested work and checks are finished, call goalmax_complete exactly once with current evidence, then stop tool use and end the root turn so the completion gate can run.',
+    'Never create a budget, elevate permissions, or claim completion in prose. Completion is decided by the control plane after independent verification.',
   ].join('\n');
   return clipUtf8(capsule, GOALMAX_CAPSULE_MAX_BYTES);
 }

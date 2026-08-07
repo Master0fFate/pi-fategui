@@ -163,7 +163,7 @@ describe('PiRuntimeService', () => {
   });
 
   it('activates one orchestration protocol surface while registering both for restored sessions', async () => {
-    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'goalmax_status', 'goalmax_report'];
+    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'goalmax_status', 'goalmax_report', 'goalmax_complete'];
     const legacy = fixture();
     const legacyService = new PiRuntimeService(legacy.adapter);
     await legacyService.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'medium', defaultModel: null, agentTeamMode: 'legacy' });
@@ -536,6 +536,44 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('does not publish transient queue counts while changing a queued message', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'work', behavior: 'prompt' });
+    await service.prompt({ text: 'change direction', behavior: 'followUp' });
+    const target = service.getState(false).queue?.items?.[0];
+    const emitted: PiEvent[] = [];
+    service.setEventSink((events) => emitted.push(...events));
+
+    const clearQueue = fake.session.clearQueue.getMockImplementation()!;
+    fake.session.clearQueue.mockImplementation(() => {
+      const previous = clearQueue();
+      fake.emitSession({ type: 'queue_update', steering: [], followUp: [] });
+      return previous;
+    });
+    const steer = fake.session.steer.getMockImplementation()!;
+    fake.session.steer.mockImplementation(async (text: string) => {
+      await steer(text);
+      fake.emitSession({
+        type: 'queue_update',
+        steering: fake.session.getSteeringMessages(),
+        followUp: fake.session.getFollowUpMessages(),
+      });
+    });
+
+    await service.mutateQueuedMessage({ id: target!.id, action: 'steer' });
+    service.getHydrationState();
+
+    expect(emitted.filter((event) => event.type === 'queue.changed')).toEqual([]);
+    expect(emitted).toContainEqual(expect.objectContaining({
+      type: 'state.changed',
+      state: expect.objectContaining({ queue: expect.objectContaining({ steering: 1, followUp: 0 }) }),
+    }));
+    fake.settle();
+    await service.dispose();
+  });
+
   it('edits and cancels duplicate queued messages by stable ID', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
@@ -765,6 +803,58 @@ describe('PiRuntimeService', () => {
     expect(fake.session.setModel).toHaveBeenCalledWith(alternate);
     expect(fake.session.setModel.mock.invocationCallOrder[0]).toBeLessThan(fake.session.setThinkingLevel.mock.invocationCallOrder[0]!);
     expect(state).toMatchObject({ sessionOperation: false, pendingModel: null, pendingThinkingLevel: null });
+    await service.dispose();
+  });
+
+  it('prepares automation sessions behind their final restricted boundary before publishing them', async () => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    const service = new PiRuntimeService(fake.adapter, undefined, permissions);
+    const emitted: PiEvent[] = [];
+    service.setEventSink((events) => emitted.push(...events));
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as ((session: typeof fake.session) => Promise<void>) | undefined;
+    fake.runtime.newSession.mockImplementationOnce(async () => {
+      fake.session.sessionId = 'automation-session';
+      fake.session.sessionFile = '/sessions/automation-session.jsonl';
+      await rebind?.(fake.session);
+      return { cancelled: false };
+    });
+
+    const state = await service.prepareAutomationSession('Review auth', 'read-only');
+    service.getHydrationState();
+
+    expect(state).toMatchObject({ sessionId: 'automation-session', permissionLevel: 'read-only', sessionOperation: false });
+    expect(fake.session.setSessionName).toHaveBeenCalledWith('Review auth');
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(expect.not.arrayContaining(['write', 'edit', 'bash']));
+    await expect(permissions.get('/project', 'automation-session')).resolves.toBe('read-only');
+    const publishedAutomationStates = emitted.flatMap((event) => event.type === 'state.changed' && event.state.sessionId === 'automation-session' ? [event.state] : []);
+    expect(publishedAutomationStates.length).toBeGreaterThan(0);
+    expect(publishedAutomationStates.every((published) => published.permissionLevel === 'read-only')).toBe(true);
+    await service.dispose();
+  });
+
+  it('disposes an automation session instead of publishing it when its restricted permission cannot persist', async () => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    const service = new PiRuntimeService(fake.adapter, undefined, permissions);
+    const emitted: PiEvent[] = [];
+    service.setEventSink((events) => emitted.push(...events));
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as ((session: typeof fake.session) => Promise<void>) | undefined;
+    fake.runtime.newSession.mockImplementationOnce(async () => {
+      fake.session.sessionId = 'unsafe-automation-session';
+      await rebind?.(fake.session);
+      return { cancelled: false };
+    });
+    vi.spyOn(permissions, 'set').mockRejectedValueOnce(new Error('permission storage unavailable'));
+
+    await expect(service.prepareAutomationSession('Review auth', 'edit')).rejects.toThrow('permission storage unavailable');
+    service.getHydrationState();
+
+    expect(fake.runtime.dispose).toHaveBeenCalledOnce();
+    expect(service.getState(false).sessionId).toBeNull();
+    expect(emitted.some((event) => event.type === 'state.changed' && event.state.sessionId === 'unsafe-automation-session')).toBe(false);
     await service.dispose();
   });
 

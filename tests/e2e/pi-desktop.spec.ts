@@ -1,5 +1,8 @@
 import { _electron as electron, expect, test, type Locator, type Page } from '@playwright/test';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
+import type { Socket } from 'node:net';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -17,8 +20,77 @@ async function expectHoverTooltip(page: Page, trigger: Locator, content: string)
 }
 
 async function openInspectorView(page: Page, destination: 'Work' | 'Run' | 'System', view: string | RegExp): Promise<void> {
-  await page.getByRole('button', { name: new RegExp(`^${destination}(?:,|$)`, 'u') }).click();
+  await page.locator('.inspector-primary-nav').getByRole('button', { name: new RegExp(`^${destination}(?:,|$)`, 'u') }).click();
   await page.getByRole('tab', { name: view }).click();
+}
+
+async function sidebarSearchVisual(input: Locator): Promise<Record<string, string>> {
+  return input.evaluate((node) => {
+    const field = node.closest('label');
+    const icon = field?.querySelector('svg');
+    if (!field || !icon) throw new Error('Sidebar search field is incomplete.');
+    const fieldStyle = getComputedStyle(field);
+    const inputStyle = getComputedStyle(node);
+    const iconStyle = getComputedStyle(icon);
+    return {
+      width: fieldStyle.width,
+      height: fieldStyle.height,
+      gap: fieldStyle.gap,
+      paddingInlineStart: fieldStyle.paddingInlineStart,
+      paddingInlineEnd: fieldStyle.paddingInlineEnd,
+      borderWidth: fieldStyle.borderWidth,
+      borderRadius: fieldStyle.borderRadius,
+      backgroundColor: fieldStyle.backgroundColor,
+      color: fieldStyle.color,
+      inputFontSize: inputStyle.fontSize,
+      iconWidth: iconStyle.width,
+      iconHeight: iconStyle.height,
+    };
+  });
+}
+
+async function writeBrowserPreview(root: string): Promise<void> {
+  await mkdir(path.join(root, 'preview'), { recursive: true });
+  await writeFile(path.join(root, 'preview/index.html'), `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fate Local Preview</title>
+  <link rel="stylesheet" href="./preview.css">
+</head>
+<body>
+  <main>
+    <p class="eyebrow">LOCAL APP</p>
+    <h1 id="preview-title">Browser annotation fixture</h1>
+    <p>Inspect the rendered interface, then attach exact elements to the conversation.</p>
+    <div class="actions">
+      <button id="save" class="primary" data-testid="save-button" type="button">Save changes</button>
+      <button id="publish" type="button">Publish preview</button>
+    </div>
+    <output id="click-count">0</output>
+  </main>
+  <script>
+    window.__saveClicks = 0;
+    document.querySelector('#save').addEventListener('click', (event) => {
+      window.__saveClicks += 1;
+      event.currentTarget.textContent = 'Saved ' + window.__saveClicks;
+      document.querySelector('#click-count').textContent = String(window.__saveClicks);
+    });
+  </script>
+</body>
+</html>`);
+  await writeFile(path.join(root, 'preview/preview.css'), `
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #0b0d14; color: #f6f7fb; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: start center; }
+    main { width: min(680px, calc(100% - 64px)); margin-top: 56px; padding: 36px; border: 1px solid #2d3345; border-radius: 18px; background: #141824; }
+    .eyebrow { color: #9e91ff; font-size: 12px; font-weight: 700; letter-spacing: .14em; }
+    h1 { margin: 8px 0; font-size: 34px; }
+    p { color: #adb5c8; }
+    .actions { display: flex; gap: 12px; margin-top: 28px; }
+    button { padding: 12px 18px; border: 1px solid #424a61; border-radius: 10px; color: #eff1f8; background: #202637; }
+    button.primary { border-color: #7c6cff; background: rgb(124, 108, 255); color: white; }
+    output { display: block; margin-top: 20px; color: #727b91; }
+  `);
 }
 
 async function fixtureRepository(): Promise<{ root: string; worktree: string }> {
@@ -40,6 +112,289 @@ async function fixtureRepository(): Promise<{ root: string; worktree: string }> 
   await writeFile(path.join(root, 'assets/icon.png'), png);
   return { root, worktree };
 }
+
+test('left sidebar unifies real resources and persisted project automations', async () => {
+  const fixture = await fixtureRepository();
+  const userData = await mkdtemp(path.join(tmpdir(), 'pi-desktop-resource-profile-'));
+  const application = await electron.launch({
+    args: [path.resolve('.test-dist/main/index.js')],
+    env: { ...process.env, PI_DESKTOP_E2E_PROJECT: fixture.root, PI_DESKTOP_E2E_USER_DATA: userData, FATE_GUI_DATA_DIR: path.join(userData, 'fateGUI'), PI_OFFLINE: '1' },
+  });
+
+  try {
+    const page = await application.firstWindow();
+    await page.getByRole('button', { name: /Open project/u }).first().click();
+    await expect(page.getByText(path.basename(fixture.root)).first()).toBeVisible();
+
+    const sidebarTabs = page.getByRole('tablist', { name: 'Sidebar destinations' });
+    await expect(sidebarTabs.getByRole('tab')).toHaveText(['Sessions', 'Automations', 'Resources']);
+    const sessionSearchVisual = await sidebarSearchVisual(page.getByLabel('Search sessions'));
+    await sidebarTabs.getByRole('tab', { name: 'Resources' }).click();
+    await expect(page.getByRole('button', { name: /Files.*Browse and preview project files/u })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Browser.*Built-in Chromium workspace/u })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Computer/u })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Pi Library/u })).toHaveCount(1);
+    await expect(page.locator('.resource-preview-group').filter({ hasText: 'Pi Library' })).toHaveCount(0);
+
+    const resourceSearch = page.getByRole('searchbox', { name: 'Search resources' });
+    expect(await sidebarSearchVisual(resourceSearch)).toEqual(sessionSearchVisual);
+    await resourceSearch.fill('example');
+    await page.getByRole('button', { name: /example\.ts.*src\/example\.ts/u }).click();
+    await expect(page.getByRole('tab', { name: 'Files' })).toHaveAttribute('data-state', 'active');
+    await expect(page.locator('.preview-heading')).toContainText('src/example.ts');
+
+    await sidebarTabs.getByRole('tab', { name: 'Automations' }).click();
+    expect(await sidebarSearchVisual(page.getByRole('searchbox', { name: 'Search automations' }))).toEqual(sessionSearchVisual);
+    const automationPanel = page.locator('.sidebar-automation-panel');
+    const automationEmpty = automationPanel.locator('.sidebar-tab-empty');
+    await expect(automationEmpty).toContainText('No automations yet');
+    const [panelBox, emptyBox] = await Promise.all([automationPanel.boundingBox(), automationEmpty.boundingBox()]);
+    expect(panelBox).not.toBeNull();
+    expect(emptyBox).not.toBeNull();
+    expect(emptyBox!.height).toBeGreaterThan(panelBox!.height * 0.6);
+    await page.getByRole('button', { name: 'New automation' }).click();
+    const editor = page.getByRole('dialog', { name: 'New automation' });
+    await editor.getByLabel('Name').fill('Review fixture');
+    await editor.getByLabel('Prompt').fill('Review the fixture changes and report focused test coverage.');
+    await editor.getByRole('button', { name: 'Create automation' }).click();
+    await expect(page.getByRole('button', { name: /^Review fixture/u })).toBeVisible();
+
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+K' : 'Control+K');
+    const commandCenter = page.getByRole('dialog', { name: 'Command center' });
+    await commandCenter.getByRole('textbox', { name: 'Search commands and resources' }).fill('Review fixture');
+    await commandCenter.getByRole('option', { name: /^Review fixture/u }).click();
+    const exactAutomation = page.getByRole('dialog', { name: 'Edit automation' });
+    await expect(exactAutomation.getByLabel('Name')).toHaveValue('Review fixture');
+    await exactAutomation.getByRole('button', { name: 'Cancel' }).click();
+
+    const saved = await page.evaluate(() => window.piDesktop.listAutomations());
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ name: 'Review fixture', permissionLevel: 'read-only' });
+
+    await page.getByRole('button', { name: /^Review fixture/u }).click();
+    await expect(page.getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByLabel('Message Pi')).toHaveValue('Review the fixture changes and report focused test coverage.');
+    await expect.poll(async () => (await page.evaluate(() => window.piDesktop.listAutomations()))[0]?.launchCount).toBe(1);
+  } finally {
+    await application.close();
+    await rm(fixture.root, { recursive: true, force: true });
+    await rm(fixture.worktree, { recursive: true, force: true });
+    await rm(userData, { recursive: true, force: true });
+  }
+});
+
+test('built-in Chromium opens local HTML and attaches DevTools-style element annotations to chat', async () => {
+  const fixture = await fixtureRepository();
+  await writeBrowserPreview(fixture.root);
+  const userData = await mkdtemp(path.join(tmpdir(), 'pi-desktop-browser-profile-'));
+  const localEntry = path.join(fixture.root, 'preview/index.html');
+  const privatePreviewSockets = new Set<Socket>();
+  const privatePreview = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    response.end(`<!doctype html><title>Private proxy probe</title><script>
+      const socket = new WebSocket('ws://' + location.host + '/events');
+      socket.addEventListener('open', () => { document.title = 'Private proxy ready'; });
+      socket.addEventListener('message', (event) => {
+        if (event.data === 'hot-update') { document.title = 'Private live update ready'; socket.close(); }
+      });
+      socket.addEventListener('error', () => { document.title = 'Private proxy failed'; });
+    </script>`);
+  });
+  privatePreview.on('connection', (socket) => {
+    privatePreviewSockets.add(socket);
+    socket.once('close', () => privatePreviewSockets.delete(socket));
+  });
+  privatePreview.on('upgrade', (request, socket) => {
+    const key = request.headers['sec-websocket-key'];
+    if (typeof key !== 'string') { socket.destroy(); return; }
+    const accept = createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    const update = Buffer.from('hot-update');
+    setTimeout(() => socket.write(Buffer.concat([Buffer.from([0x81, update.length]), update])), 50).unref();
+    setTimeout(() => socket.end(), 250).unref();
+  });
+  await new Promise<void>((resolve) => privatePreview.listen(0, '127.0.0.1', resolve));
+  const privateAddress = privatePreview.address();
+  if (!privateAddress || typeof privateAddress === 'string') throw new Error('Private browser probe did not bind.');
+  const privateOrigin = `http://127.0.0.1:${privateAddress.port}`;
+  const application = await electron.launch({
+    args: [path.resolve('.test-dist/main/index.js')],
+    env: { ...process.env, PI_DESKTOP_E2E_PROJECT: fixture.root, PI_DESKTOP_E2E_USER_DATA: userData, FATE_GUI_DATA_DIR: path.join(userData, 'fateGUI'), PI_OFFLINE: '1' },
+  });
+
+  const clickNativeElement = async (selector: string) => application.evaluate(async ({ webContents }, targetSelector) => {
+    const browser = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('fate-local://'));
+    if (!browser?.debugger.isAttached()) throw new Error('The built-in Chromium debugger is unavailable.');
+    const document = await browser.debugger.sendCommand('DOM.getDocument', { depth: -1, pierce: true }) as { root: { nodeId: number } };
+    const selected = await browser.debugger.sendCommand('DOM.querySelector', {
+      nodeId: document.root.nodeId,
+      selector: targetSelector,
+    }) as { nodeId: number };
+    if (!selected.nodeId) throw new Error(`Could not find ${targetSelector} in the local preview.`);
+    const box = await browser.debugger.sendCommand('DOM.getBoxModel', { nodeId: selected.nodeId }) as { model?: { border?: number[] } };
+    const quad = box.model?.border;
+    if (!quad || quad.length < 8) throw new Error(`Could not locate ${targetSelector} in the local preview.`);
+    const x = Math.round(((quad[0] ?? 0) + (quad[2] ?? 0) + (quad[4] ?? 0) + (quad[6] ?? 0)) / 4);
+    const y = Math.round(((quad[1] ?? 0) + (quad[3] ?? 0) + (quad[5] ?? 0) + (quad[7] ?? 0)) / 4);
+    browser.focus();
+    browser.sendInputEvent({ type: 'mouseMove', x, y, movementX: 0, movementY: 0 });
+    browser.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+    browser.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+    return { x, y };
+  }, selector);
+
+  const readSaveClicks = () => application.evaluate(async ({ webContents }) => {
+    const browser = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('fate-local://'));
+    return browser ? await browser.executeJavaScript('globalThis.__saveClicks ?? -1') as number : -1;
+  });
+
+  try {
+    const page = await application.firstWindow();
+    await page.getByRole('button', { name: /Open project/u }).first().click();
+    await expect(page.getByText(path.basename(fixture.root)).first()).toBeVisible();
+
+    await page.getByRole('button', { name: 'Open browser' }).click();
+    await expect(page.getByTestId('browser-workspace')).toBeVisible();
+    await expect(page.getByLabel('Message Pi')).toBeVisible();
+    await expect(page.locator('.workspace-mode-switch')).toHaveCount(0);
+    await expect(page.locator('.inspector-primary-nav').getByRole('button', { name: /^Browser(?:,|$)/u })).toHaveCount(0);
+
+    const addressInput = page.getByRole('textbox', { name: 'Browser address' });
+    await addressInput.fill(localEntry);
+    await addressInput.press('Enter');
+    await expect(page.getByRole('tab', { name: 'Fate Local Preview' })).toBeVisible();
+    await expect.poll(() => application.evaluate(({ webContents }) => (
+      webContents.getAllWebContents().some((contents) => contents.getURL().startsWith('fate-local://'))
+    ))).toBe(true);
+
+    const snapshot = await page.evaluate(async () => window.piDesktop.snapshotBrowser({ mode: 'interactive' }));
+    expect(snapshot.serialized).toContain('Browser annotation fixture');
+    expect(snapshot.serialized).toContain('Save changes');
+    expect(snapshot.serialized).toContain('Publish preview');
+    expect(snapshot.url).toBe('file:///index.html');
+    expect(snapshot.serialized).not.toContain(fixture.root);
+
+    const primaryButtonColor = await application.evaluate(async ({ webContents }) => {
+      const browser = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('fate-local://'));
+      return browser ? await browser.executeJavaScript("getComputedStyle(document.querySelector('#save')).backgroundColor") as string : '';
+    });
+    expect(primaryButtonColor).toBe('rgb(124, 108, 255)');
+
+    const browserProxy = await application.evaluate(async ({ webContents }) => {
+      const browser = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('fate-local://'));
+      return browser ? await browser.session.resolveProxy('https://example.test/') : '';
+    });
+    expect(browserProxy).toMatch(/^PROXY 127\.0\.0\.1:\d+/u);
+
+    const localEgressPolicy = await application.evaluate(async ({ webContents }) => {
+      const browser = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('fate-local://'));
+      if (!browser) return null;
+      return browser.executeJavaScript(`new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve({ directive: '', blocked: '' }), 1000);
+        document.addEventListener('securitypolicyviolation', (event) => {
+          clearTimeout(timeout);
+          resolve({ directive: event.effectiveDirective, blocked: event.blockedURI });
+        }, { once: true });
+        fetch('https://example.invalid/collect', { method: 'POST', body: 'preview-data' }).catch(() => undefined);
+      })`);
+    });
+    expect(localEgressPolicy).toEqual({ directive: 'connect-src', blocked: 'https://example.invalid/collect' });
+
+    await expect.poll(async () => {
+      const [reservation, nativeBounds, zoom] = await Promise.all([
+        page.locator('.browser-viewport-reservation').boundingBox(),
+        application.evaluate(({ BrowserWindow }) => {
+          const owner = BrowserWindow.getAllWindows()[0];
+          const child = owner?.contentView.children[0];
+          return child?.getBounds() ?? null;
+        }),
+        application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.webContents.getZoomFactor() ?? 1),
+      ]);
+      if (!reservation || !nativeBounds) return Number.POSITIVE_INFINITY;
+      return Math.max(
+        Math.abs(nativeBounds.x - Math.round(reservation.x * zoom)),
+        Math.abs(nativeBounds.y - Math.round(reservation.y * zoom)),
+        Math.abs(nativeBounds.width - Math.round(reservation.width * zoom)),
+        Math.abs(nativeBounds.height - Math.round(reservation.height * zoom)),
+      );
+    }).toBeLessThanOrEqual(1);
+
+    const primaryModifier: 'meta' | 'control' = process.platform === 'darwin' ? 'meta' : 'control';
+    await application.evaluate(({ webContents }, input) => {
+      const browser = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('fate-local://'));
+      browser?.focus();
+      browser?.sendInputEvent({ type: 'keyDown', keyCode: 'L', modifiers: [input.primaryModifier] });
+      browser?.sendInputEvent({ type: 'keyUp', keyCode: 'L', modifiers: [input.primaryModifier] });
+    }, { primaryModifier });
+    await expect(addressInput).toBeFocused();
+
+    await page.getByRole('button', { name: 'New browser tab' }).click();
+    await expect(page.getByRole('tablist', { name: 'Browser tabs' }).getByRole('tab')).toHaveCount(2);
+    await page.getByRole('tab', { name: 'Fate Local Preview' }).click();
+
+    const annotate = page.getByRole('button', { name: 'Annotate' });
+    await annotate.click();
+    await expect(annotate).toHaveAttribute('aria-pressed', 'true');
+    await clickNativeElement('#save');
+
+    const attachments = page.getByTestId('browser-annotation-attachment');
+    await expect(attachments).toHaveCount(1);
+    await expect(attachments.first()).toContainText('Save changes');
+    await expect(attachments.first().locator('pre code')).toContainText('<button');
+    await expect(attachments.first().locator('pre code')).toContainText('data-testid="save-button"');
+    expect(await readSaveClicks()).toBe(0);
+
+    const note = page.getByRole('textbox', { name: 'Note for browser annotation 1' });
+    await note.fill('Keep this as the primary action');
+    await note.press('Enter');
+    await clickNativeElement('#publish');
+    await expect(attachments).toHaveCount(2);
+    await expect(attachments.nth(1)).toContainText('Publish preview');
+
+    await page.screenshot({ path: 'test-results/pi-desktop-browser.png' });
+
+    const agent = page.getByRole('button', { name: 'Agent', exact: true });
+    await agent.click();
+    await expect(agent).toHaveAttribute('aria-pressed', 'true');
+    await clickNativeElement('#save');
+    await expect.poll(readSaveClicks).toBe(1);
+    await expect(page.getByRole('button', { name: 'Resume browser agent' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Close Fate Local Preview' }).click();
+    await expect(page.getByRole('tablist', { name: 'Browser tabs' }).getByRole('tab')).toHaveCount(1);
+    await expect(attachments).toHaveCount(2);
+
+    await addressInput.fill(privateOrigin);
+    await addressInput.press('Enter');
+    await expect(page.getByRole('tab', { name: 'Private live update ready' })).toBeVisible();
+    await expect(page.getByText('Let Pi use this site?')).toHaveCount(0);
+    await expect(page.getByText('Browser paused behind an app dialog')).toHaveCount(0);
+
+    await page.locator('.workspace-browser-toggle').click();
+    await expect(page.getByTestId('browser-workspace')).toHaveCount(0);
+    await expect(attachments).toHaveCount(2);
+
+    await page.getByLabel('Message Pi').fill('Polish these exact controls');
+    await page.getByRole('button', { name: 'Send message' }).click();
+    await expect(attachments).toHaveCount(0);
+
+    await expect(page.getByLabel('Message Pi')).toBeVisible();
+
+    const browserShortcut = process.platform === 'darwin' ? 'Meta+Shift+B' : 'Control+Shift+B';
+    await page.keyboard.press(browserShortcut);
+    await expect(page.getByTestId('browser-workspace')).toBeVisible();
+    await page.keyboard.press(browserShortcut);
+    await expect(page.getByTestId('browser-workspace')).toHaveCount(0);
+  } finally {
+    await application.close();
+    for (const socket of privatePreviewSockets) socket.destroy();
+    privatePreview.closeAllConnections();
+    await new Promise<void>((resolve) => privatePreview.close(() => resolve()));
+    await rm(fixture.worktree, { recursive: true, force: true });
+    await rm(fixture.root, { recursive: true, force: true });
+    await rm(userData, { recursive: true, force: true });
+  }
+});
 
 test('first launch, project, prompt, tool, diff, Git graph, worktrees, and session switching', async () => {
   const fixture = await fixtureRepository();
@@ -226,7 +581,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.screenshot({ path: 'test-results/pi-desktop-extension-status-hover.png' });
     await page.mouse.move(1, 1);
 
-    const sessionList = page.getByLabel('Sessions', { exact: true });
+    const sessionList = page.locator('.session-list');
     const firstSessionRow = page.locator('.session-row').filter({ hasText: 'First session' });
     await expect(sessionList).toBeVisible();
     await expect(firstSessionRow).toContainText(/main.*messages.*updated (?:now|.* ago)/iu);

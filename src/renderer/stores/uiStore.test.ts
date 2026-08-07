@@ -8,6 +8,7 @@ describe('UI store', () => {
       leftWidth: 264,
       rightWidth: 332,
       sidebarCollapsed: false,
+      sidebarTab: 'sessions',
       inspectorCollapsed: false,
       musicPlaying: false,
       sendMessageWithModifier: false,
@@ -15,6 +16,7 @@ describe('UI store', () => {
       inspectorTab: 'changes',
       inspectorLastViews: { work: 'changes', run: 'goal', system: 'context' },
       selectedAgent: null,
+      automationOpenRequest: null,
       flightDeckJump: null,
     });
   });
@@ -42,6 +44,33 @@ describe('UI store', () => {
     expect(useUiStore.getState().sendMessageWithModifier).toBe(true);
   });
 
+  it('persists the selected sidebar destination and distinguishes draft insertion from replacement', () => {
+    useUiStore.getState().setSidebarTab('resources');
+    expect(useUiStore.getState().sidebarTab).toBe('resources');
+    expect(JSON.parse(localStorage.getItem('pi-desktop-ui-v1') ?? '{}').state?.sidebarTab).toBe('resources');
+
+    useUiStore.getState().requestComposerInsertion('/review ');
+    expect(useUiStore.getState().composerDraftRequest).toMatchObject({ text: '/review ', mode: 'insert', selectAll: false });
+    useUiStore.getState().requestComposerDraft('Replace me', true);
+    expect(useUiStore.getState().composerDraftRequest).toMatchObject({ text: 'Replace me', mode: 'replace', selectAll: true });
+  });
+
+  it('opens an exact automation through a transient sidebar request', () => {
+    useUiStore.setState({ sidebarCollapsed: true, sidebarTab: 'sessions' });
+    useUiStore.getState().openAutomation('C:/project', 'automation-1');
+    const request = useUiStore.getState().automationOpenRequest;
+
+    expect(useUiStore.getState()).toMatchObject({
+      sidebarCollapsed: false,
+      sidebarTab: 'automations',
+      automationOpenRequest: { projectPath: 'C:/project', automationId: 'automation-1' },
+    });
+    expect(JSON.parse(localStorage.getItem('pi-desktop-ui-v1') ?? '{}').state?.automationOpenRequest).toBeUndefined();
+
+    useUiStore.getState().clearAutomationOpenRequest(request!.nonce);
+    expect(useUiStore.getState().automationOpenRequest).toBeNull();
+  });
+
   it('keeps transient notifications outside persisted pane state', () => {
     useUiStore.getState().showToast({ kind: 'warning', title: 'Microphone changed', message: 'Using the system default.' });
     expect(useUiStore.getState().toast).toMatchObject({ kind: 'warning', title: 'Microphone changed' });
@@ -59,6 +88,10 @@ describe('UI store', () => {
     expect(useUiStore.getState().inspectorTab).toBe('files');
     useUiStore.getState().openInspectorDestination('run');
     expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'sessions', inspectorCollapsed: false });
+
+    useUiStore.setState({ inspectorCollapsed: true });
+    useUiStore.getState().openInspectorTab('resources');
+    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'resources', inspectorCollapsed: false });
   });
 
   it('opens a child detail or the child-session list in the expanded inspector', () => {

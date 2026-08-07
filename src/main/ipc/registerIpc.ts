@@ -54,6 +54,7 @@ import {
   queueMutationResultSchema,
   runtimeImageSchema,
   runtimeStateSchema,
+  automationSessionPreparationResultSchema,
   sessionEntryInputSchema,
   sessionIdInputSchema,
   sessionRenameInputSchema,
@@ -87,6 +88,15 @@ import {
 } from '../../shared/contracts/ipc';
 import { agentTeamControlInputSchema } from '../../shared/contracts/multiAgent';
 import {
+  automationCreateInputSchema,
+  automationDefinitionSchema,
+  automationDeleteResultSchema,
+  automationIdInputSchema,
+  automationLaunchRecordInputSchema,
+  automationListSchema,
+  automationUpdateInputSchema,
+} from '../../shared/contracts/automations';
+import {
   goalMaxClearResultSchema,
   goalMaxControlInputSchema,
   goalMaxCreateInputSchema,
@@ -108,6 +118,33 @@ import type { MusicService } from '../music/MusicService';
 import type { SpeechService } from '../speech/SpeechService';
 import type { UpdateService } from '../updates/UpdateService';
 import { isTrustedRendererUrl, type TrustedRendererPolicy } from '../security/trustedRenderer';
+import type { BrowserHost } from '../browser/BrowserHost';
+import type { AutomationRepository } from '../automations/AutomationRepository';
+import {
+  browserAnnotationCreateInputSchema,
+  browserAnnotationDismissInputSchema,
+  browserAnnotationListSchema,
+  browserAnnotationRemoveInputSchema,
+  browserAnnotationSchema,
+  browserAnnotationUpdateInputSchema,
+  browserBoundsSchema,
+  browserConfirmationResponseSchema,
+  browserControlLevelInputSchema,
+  browserHistoryInputSchema,
+  browserNavigateInputSchema,
+  browserNewTabInputSchema,
+  browserOperationResultSchema,
+  browserOriginGrantSchema,
+  browserOriginInputSchema,
+  browserOverlayInputSchema,
+  browserPauseInputSchema,
+  browserSnapshotInputSchema,
+  browserStateSchema,
+  browserTabIdInputSchema,
+  browserUiModeInputSchema,
+  browserVisibilityInputSchema,
+  semanticPageSnapshotSchema,
+} from '../../shared/contracts/browser';
 
 const imageSaveFormats: Record<RuntimeImage['mimeType'], { extension: string; name: string }> = {
   'image/png': { extension: 'png', name: 'PNG image' },
@@ -138,6 +175,8 @@ export interface IpcServices {
   music: Pick<MusicService, 'getStatus' | 'load' | 'resolveTrack' | 'clearQueue' | 'reset'>;
   speech: Pick<SpeechService, 'setEventSink' | 'getStatus' | 'download' | 'cancelDownload' | 'remove' | 'transcribe' | 'cancel'>;
   updates: Pick<UpdateService, 'check' | 'openDownload'>;
+  browser: Pick<BrowserHost, 'ensure' | 'current' | 'setAppOverlay' | 'respondToConfirmation' | 'reset'>;
+  automations: Pick<AutomationRepository, 'list' | 'create' | 'update' | 'remove' | 'recordLaunch'>;
   rendererPolicy: TrustedRendererPolicy;
 }
 
@@ -147,6 +186,7 @@ interface ProjectActivationServices {
   settings: { load: () => Promise<Pick<Awaited<ReturnType<SettingsService['load']>>, 'thinkingLevel' | 'defaultModel'> & Partial<Pick<Awaited<ReturnType<SettingsService['load']>>, 'agentTeamMode'>>> };
   terminal: Pick<TerminalService, 'disposeProjectTerminals'>;
   logs: Pick<AppLogService, 'write'>;
+  browser?: Pick<BrowserHost, 'reset'>;
 }
 
 function errorMessage(error: unknown): string {
@@ -224,7 +264,7 @@ export function createProjectPathOpener(
 
 export async function activatePreparedProject(
   activation: ProjectActivation,
-  { runtime, files, settings, terminal, logs }: ProjectActivationServices,
+  { runtime, files, settings, terminal, logs, browser }: ProjectActivationServices,
   action: string,
 ) {
   assertProjectActivationIdle(runtime, action);
@@ -269,6 +309,13 @@ export async function activatePreparedProject(
     }
     throw activationError(error, rollbackFailures);
   }
+  if (browser) {
+    try {
+      await browser.reset();
+    } catch (error) {
+      logs.write('warn', 'browser', `The previous project browser could not be fully disposed: ${errorMessage(error)}`);
+    }
+  }
   try {
     terminal.disposeProjectTerminals();
   } catch (error) {
@@ -292,7 +339,7 @@ function register(channel: string, rendererPolicy: TrustedRendererPolicy, handle
   });
 }
 
-export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, updates, rendererPolicy }: IpcServices) {
+export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, updates, browser, automations, rendererPolicy }: IpcServices) {
   runtime.setEventSink((events) => {
     const batch = piEventBatchSchema.parse(events);
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeEvents, batch);
@@ -328,7 +375,7 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   });
 
   const handle = (channel: string, handler: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown | Promise<unknown>) => register(channel, rendererPolicy, handler);
-  const activationServices = { runtime, files, settings, terminal, logs };
+  const activationServices = { runtime, files, settings, terminal, logs, browser };
   const queueProjectActivation = createProjectActivationQueue();
   const openProjectPath = createProjectPathOpener(projects, activationServices, queueProjectActivation);
   const runRuntimeMutation = <T>(action: string, operation: () => T | Promise<T>) => queueProjectActivation.runRuntimeMutation(action, operation);
@@ -365,6 +412,209 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     }
     else owner.close();
     return windowState(owner);
+  });
+  const activeBrowser = async (event: Electron.IpcMainInvokeEvent) => browser.ensure(ownerWindow(event));
+  const activeBrowserTab = async (event: Electron.IpcMainInvokeEvent) => {
+    const service = await activeBrowser(event);
+    const tabId = service.getState().activeTabId;
+    if (!tabId) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'The built-in browser has no active tab.', retryable: true });
+    return { service, tabId };
+  };
+  handle(ipcChannels.browserInitialize, async (event, input) => {
+    emptyInputSchema.parse(input);
+    return browserStateSchema.parse((await activeBrowser(event)).getState());
+  });
+  handle(ipcChannels.browserGetState, async (event, input) => {
+    emptyInputSchema.parse(input);
+    return browserStateSchema.parse((await activeBrowser(event)).getState());
+  });
+  handle(ipcChannels.browserSetBounds, async (event, input) => {
+    const bounds = browserBoundsSchema.parse(input);
+    const service = await activeBrowser(event);
+    service.setBounds(bounds);
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserSetVisible, async (event, input) => {
+    const { visible } = browserVisibilityInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    service.setVisible(visible);
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserSetOverlay, async (event, input) => {
+    const { blocked } = browserOverlayInputSchema.parse(input);
+    const owner = ownerWindow(event);
+    const service = await activeBrowser(event);
+    browser.setAppOverlay(owner, blocked);
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserNavigate, async (event, input) => {
+    const { url } = browserNavigateInputSchema.parse(input);
+    const { service, tabId } = await activeBrowserTab(event);
+    await service.navigate(tabId, url, 'user');
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserOpenLocalFile, async (event, input) => {
+    emptyInputSchema.parse(input);
+    const owner = ownerWindow(event);
+    const { service, tabId } = await activeBrowserTab(event);
+    const projectPath = runtime.getState(false).project?.path;
+    const result = await dialog.showOpenDialog(owner, {
+      title: 'Open local page',
+      ...(projectPath ? { defaultPath: projectPath } : {}),
+      properties: ['openFile'],
+      filters: [
+        { name: 'Web pages', extensions: ['html', 'htm', 'xhtml', 'svg'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled || !result.filePaths[0]) return browserStateSchema.nullable().parse(null);
+    await service.navigate(tabId, result.filePaths[0], 'user');
+    return browserStateSchema.nullable().parse(service.getState());
+  });
+  handle(ipcChannels.browserNewTab, async (event, input) => {
+    const { initialUrl } = browserNewTabInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    await service.createUserTab(initialUrl ?? 'about:blank');
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserActivateTab, async (event, input) => {
+    const { tabId } = browserTabIdInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    service.activateTab(tabId);
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserCloseTab, async (event, input) => {
+    const { tabId } = browserTabIdInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    await service.closeTab(tabId);
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserHistory, async (event, input) => {
+    const { action } = browserHistoryInputSchema.parse(input);
+    const { service, tabId } = await activeBrowserTab(event);
+    if (action === 'back') service.back(tabId);
+    else if (action === 'forward') service.forward(tabId);
+    else if (action === 'reload') service.reload(tabId);
+    else service.stop(tabId);
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserSetMode, async (event, input) => {
+    const { mode } = browserUiModeInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    service.setMode(mode);
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserSetControlLevel, async (event, input) => {
+    const { level } = browserControlLevelInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    service.setControlLevel(level);
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserSetPaused, async (event, input) => {
+    const { paused } = browserPauseInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    service.setPaused(paused);
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserSetGrant, async (event, input) => {
+    const grant = browserOriginGrantSchema.parse(input);
+    const service = await activeBrowser(event);
+    service.setOriginGrant(grant);
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserRevokeGrant, async (event, input) => {
+    const { origin } = browserOriginInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    service.revokeOriginGrant(origin);
+    return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserSnapshot, async (event, input) => {
+    const snapshotInput = browserSnapshotInputSchema.parse(input);
+    const { service, tabId } = await activeBrowserTab(event);
+    return semanticPageSnapshotSchema.parse(await service.snapshot(tabId, {
+      mode: snapshotInput.mode,
+      ...(snapshotInput.scopeRef ? { scopeRef: snapshotInput.scopeRef } : {}),
+      ...(snapshotInput.query ? { query: snapshotInput.query } : {}),
+    }));
+  });
+  handle(ipcChannels.browserSelectAnnotation, async (event, input) => {
+    const annotation = browserAnnotationCreateInputSchema.parse(input);
+    const { service, tabId } = await activeBrowserTab(event);
+    return browserAnnotationSchema.parse(annotation.kind === 'element'
+      ? await service.selectElementAnnotation(tabId, annotation.comment)
+      : await service.selectRegionAnnotation(tabId, annotation.comment));
+  });
+  handle(ipcChannels.browserListAnnotations, async (event, input) => {
+    emptyInputSchema.parse(input);
+    const { service, tabId } = await activeBrowserTab(event);
+    return browserAnnotationListSchema.parse(service.listAnnotations(tabId));
+  });
+  handle(ipcChannels.browserUpdateAnnotation, async (event, input) => {
+    const update = browserAnnotationUpdateInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    const annotation = service.updateAnnotationComment(update.id, update.comment);
+    if (!annotation) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'That browser annotation no longer exists.', retryable: true });
+    return browserAnnotationSchema.parse(annotation);
+  });
+  handle(ipcChannels.browserRemoveAnnotation, async (event, input) => {
+    const { id } = browserAnnotationRemoveInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    return browserOperationResultSchema.parse({ ok: service.removeAnnotation(id) });
+  });
+  handle(ipcChannels.browserDismissAnnotations, async (event, input) => {
+    const { ids } = browserAnnotationDismissInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    await service.dismissAnnotationOverlays(ids);
+    return browserOperationResultSchema.parse({ ok: true });
+  });
+  handle(ipcChannels.browserHighlightAnnotation, async (event, input) => {
+    const { id } = browserAnnotationRemoveInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    return browserOperationResultSchema.parse({ ok: await service.highlightAnnotation(id) });
+  });
+  handle(ipcChannels.browserRespondConfirmation, (event, input) => {
+    const response = browserConfirmationResponseSchema.parse(input);
+    const ok = browser.respondToConfirmation(ownerWindow(event), response.id, response.approved);
+    return browserOperationResultSchema.parse({ ok });
+  });
+  const activeAutomationProject = (trusted = false) => {
+    const project = runtime.getState(false).project;
+    if (!project) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before managing automations.', retryable: true });
+    if (trusted && !project.trusted) throw new PiDesktopError({ code: 'PROJECT_NOT_TRUSTED', message: 'Trust the active project before opening an automation session.', retryable: false });
+    return project.path;
+  };
+  handle(ipcChannels.automationsList, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    return automationListSchema.parse(await automations.list(activeAutomationProject()));
+  });
+  handle(ipcChannels.automationsCreate, async (_event, input) => (
+    automationDefinitionSchema.parse(await automations.create(activeAutomationProject(), automationCreateInputSchema.parse(input)))
+  ));
+  handle(ipcChannels.automationsUpdate, async (_event, input) => (
+    automationDefinitionSchema.parse(await automations.update(activeAutomationProject(), automationUpdateInputSchema.parse(input)))
+  ));
+  handle(ipcChannels.automationsDelete, async (_event, input) => {
+    const { id } = automationIdInputSchema.parse(input);
+    await automations.remove(activeAutomationProject(), id);
+    return automationDeleteResultSchema.parse({ deleted: true });
+  });
+  handle(ipcChannels.automationsRecordLaunch, async (_event, input) => {
+    const { id, outcome } = automationLaunchRecordInputSchema.parse(input);
+    return automationDefinitionSchema.parse(await automations.recordLaunch(activeAutomationProject(), id, outcome));
+  });
+  handle(ipcChannels.automationsPrepareSession, async (_event, input) => {
+    const { id } = automationIdInputSchema.parse(input);
+    const projectPath = activeAutomationProject(true);
+    const automation = (await automations.list(projectPath)).find((candidate) => candidate.id === id);
+    if (!automation) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'That automation no longer exists in this project.', retryable: true });
+    try {
+      const state = await runtime.prepareAutomationSession(automation.name, automation.permissionLevel);
+      const launched = await automations.recordLaunch(projectPath, id, 'accepted').catch(() => automation);
+      return automationSessionPreparationResultSchema.parse({ state, automation: launched });
+    } catch (error) {
+      await automations.recordLaunch(projectPath, id, 'failed').catch(() => undefined);
+      throw error;
+    }
   });
   handle(ipcChannels.projectSelect, async (event, input) => {
     emptyInputSchema.parse(input);
@@ -449,7 +699,13 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   });
   handle(ipcChannels.runtimeSetPermission, async (_event, input) => {
     const parsed = setPermissionInputSchema.parse(input);
-    return runRuntimeMutation('changing permissions', async () => runtimeStateSchema.parse(await runtime.setPermissionLevel(parsed.level)));
+    return runRuntimeMutation('changing permissions', async () => {
+      const state = await runtime.setPermissionLevel(parsed.level);
+      // Browser authority follows the selected session immediately; the host
+      // emits a browser-state update when this changes.
+      browser.current();
+      return runtimeStateSchema.parse(state);
+    });
   });
   handle(ipcChannels.runtimeMutateQueue, async (_event, input) => runRuntimeMutation('editing queued messages', async () => (
     queueMutationResultSchema.parse(await runtime.mutateQueuedMessage(queueMutationInputSchema.parse(input)))

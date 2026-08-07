@@ -101,7 +101,7 @@ export interface ToolObservation {
 
 export function classifyGoalMaxTool(name: string, input: string, output: string, error: boolean): ToolObservation | null {
   const normalizedName = name.toLocaleLowerCase();
-  if (normalizedName === 'goalmax_status' || normalizedName === 'goalmax_report') return null;
+  if (normalizedName === 'goalmax_status' || normalizedName === 'goalmax_report' || normalizedName === 'goalmax_complete') return null;
   const parsed = safeObject(input);
   const command = typeof parsed?.command === 'string' ? parsed.command.trim() : undefined;
   const filePath = typeof parsed?.path === 'string' ? parsed.path.replace(/\\/gu, '/').slice(0, 4_096) : undefined;

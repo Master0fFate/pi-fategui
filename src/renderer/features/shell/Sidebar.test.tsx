@@ -2,6 +2,8 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, RuntimeState, SessionSummary } from '../../../shared/contracts/ipc';
+import { useAutomationStore } from '../../stores/automationStore';
+import { useBrowserStore } from '../../stores/browserStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -43,8 +45,10 @@ describe('Sidebar sessions', () => {
   beforeEach(() => {
     localStorage.clear();
     useRuntimeStore.getState().setRuntime(ready());
-    useUiStore.setState({ composerDraftRequest: null, toast: null });
+    useUiStore.setState({ sidebarTab: 'sessions', composerDraftRequest: null, automationOpenRequest: null, toast: null });
     useWorkspaceStore.setState({ projectPath: '/project', git: null });
+    useAutomationStore.getState().reset();
+    useBrowserStore.getState().reset();
   });
 
   afterEach(() => {
@@ -78,6 +82,26 @@ describe('Sidebar sessions', () => {
     await waitFor(() => expect(create).toBeEnabled());
     await user.click(create);
     await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+  });
+
+  it('moves project and session creation into the Sessions search toolbar', async () => {
+    const state = ready();
+    const selectProject = vi.fn(async () => state);
+    const newSession = vi.fn(async () => state);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { selectProject, newSession } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    const { container } = render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    expect(container.querySelector('.sidebar > .primary-button')).not.toBeInTheDocument();
+    expect(container.querySelector('.sidebar > .new-session')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'New session' }));
+    await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+    await user.click(screen.getByRole('button', { name: 'Open project' }));
+    await waitFor(() => expect(selectProject).toHaveBeenCalledOnce());
   });
 
   it('updates the selected session shell immediately while the desktop history load is pending', async () => {
@@ -316,5 +340,125 @@ describe('Sidebar sessions', () => {
     }));
     await waitFor(() => expect(screen.getByLabelText('Session error — needs attention')).toBeInTheDocument());
     expect(screen.queryByLabelText('Session running')).not.toBeInTheDocument();
+  });
+
+  it('orders the persistent navigator by workflow and centers the empty Automations state', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Sessions', 'Automations', 'Resources']);
+    expect(screen.getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true');
+
+    await user.click(screen.getByRole('tab', { name: 'Automations' }));
+    expect(screen.getByRole('searchbox', { name: 'Search automations' })).toBeInTheDocument();
+    expect(screen.getByText('No automations yet')).toBeInTheDocument();
+    expect(container.querySelector('.automation-list')).not.toBeInTheDocument();
+    expect(useUiStore.getState().sidebarTab).toBe('automations');
+
+    await user.click(screen.getByRole('tab', { name: 'Resources' }));
+    expect(screen.getByRole('searchbox', { name: 'Search resources' })).toBeInTheDocument();
+    expect(useUiStore.getState().sidebarTab).toBe('resources');
+  });
+
+  it('searches the confined filesystem and opens a real Files preview from Resources', async () => {
+    const searchFiles = vi.fn(async () => ({ entries: [{ path: 'src/App.tsx', name: 'App.tsx', kind: 'file' as const, symlink: false }], truncated: false }));
+    const listFiles = vi.fn(async () => ({ path: '', entries: [], truncated: false }));
+    const readFile = vi.fn(async () => ({ path: 'src/App.tsx', name: 'App.tsx', size: 12, state: 'text' as const, content: 'export {}', language: 'typescript', openable: true }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { searchFiles, listFiles, readFile } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('tab', { name: 'Resources' }));
+    await user.type(screen.getByRole('searchbox', { name: 'Search resources' }), 'app');
+    await waitFor(() => expect(searchFiles).toHaveBeenCalledWith('app', 40));
+    await user.click(await screen.findByRole('button', { name: /App\.tsx/u }));
+
+    await waitFor(() => expect(readFile).toHaveBeenCalledWith('src/App.tsx'));
+    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'files', inspectorCollapsed: false });
+    expect(useWorkspaceStore.getState().selectedFile).toBe('src/App.tsx');
+  });
+
+  it('activates real Browser tabs without changing grants or resuming agent control', async () => {
+    const browserState = {
+      activeTabId: 'tab-1', visible: false, viewBlocked: false, sessionFullAccess: false, paused: true,
+      controlLevel: 'observe' as const, mode: 'agent' as const, grants: [],
+      tabs: [{ id: 'tab-1', profileId: 'project', url: 'https://example.test/auth', title: 'Auth callback', loading: false, canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true }],
+    };
+    useBrowserStore.getState().hydrate(browserState, '/project');
+    const activateBrowserTab = vi.fn(async () => browserState);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { activateBrowserTab } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('tab', { name: 'Resources' }));
+    await user.click(screen.getByRole('button', { name: /Auth callback/u }));
+
+    await waitFor(() => expect(activateBrowserTab).toHaveBeenCalledWith('tab-1'));
+    expect(useUiStore.getState().browserOpen).toBe(true);
+    expect(useBrowserStore.getState().state).toMatchObject({ paused: true, controlLevel: 'observe', grants: [] });
+  });
+
+  it('shows one Pi Library launcher without duplicating its contents as a category', async () => {
+    useRuntimeStore.getState().setRuntime(ready({ commands: [{ name: 'review', description: 'Review current changes', source: 'prompt' }] }));
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('tab', { name: 'Resources' }));
+    const launchers = screen.getAllByRole('button', { name: /^Pi Library/u });
+    expect(launchers).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: /\/review/u })).not.toBeInTheDocument();
+    await user.click(launchers[0]!);
+
+    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'resources', inspectorCollapsed: false });
+  });
+
+  it('opens the exact automation editor requested by a resource deep link', async () => {
+    const definition = {
+      id: '00000000-0000-4000-8000-000000000001', projectPath: '/project', name: 'Review auth', prompt: 'Review authentication changes.',
+      permissionLevel: 'read-only' as const, createdAt: 1, updatedAt: 1, lastLaunchedAt: null, lastLaunchOutcome: null, launchCount: 0,
+    };
+    const listAutomations = vi.fn(async () => [definition]);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { listAutomations } as unknown as PiDesktopApi });
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+    await waitFor(() => expect(useAutomationStore.getState().items).toHaveLength(1));
+
+    act(() => useUiStore.getState().openAutomation('/another-project', definition.id));
+    await waitFor(() => expect(useUiStore.getState().automationOpenRequest).toBeNull());
+    expect(screen.queryByRole('dialog', { name: 'Edit automation' })).not.toBeInTheDocument();
+
+    act(() => useUiStore.getState().openAutomation('/project', definition.id));
+
+    await waitFor(() => expect(useUiStore.getState().sidebarTab).toBe('automations'));
+    const editor = await screen.findByRole('dialog', { name: 'Edit automation' });
+    expect(editor).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Review auth');
+    expect(useUiStore.getState().automationOpenRequest).toBeNull();
+  });
+
+  it('opens a saved automation in a renamed permission-scoped session without auto-sending', async () => {
+    const definition = {
+      id: '00000000-0000-4000-8000-000000000001', projectPath: '/project', name: 'Review auth', prompt: 'Review authentication changes.',
+      permissionLevel: 'read-only' as const, createdAt: 1, updatedAt: 1, lastLaunchedAt: null, lastLaunchOutcome: null, launchCount: 0,
+    };
+    const scoped = ready({ sessionId: 's3', sessionFile: '/sessions/s3.jsonl', permissionLevel: 'read-only', sessions: [session('s3', 'Review auth', true)] });
+    const launched = { ...definition, launchCount: 1, lastLaunchedAt: 2, lastLaunchOutcome: 'accepted' as const };
+    const listAutomations = vi.fn().mockResolvedValueOnce([definition]).mockResolvedValue([launched]);
+    const prepareAutomationSession = vi.fn(async () => ({ state: scoped, automation: launched }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { listAutomations, prepareAutomationSession } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('tab', { name: 'Automations' }));
+    await user.click(await screen.findByRole('button', { name: /^Review auth/u }));
+
+    await waitFor(() => expect(prepareAutomationSession).toHaveBeenCalledWith(definition.id));
+    expect(useRuntimeStore.getState().runtime).toMatchObject({ sessionId: 's3', permissionLevel: 'read-only' });
+    expect(useUiStore.getState().composerDraftRequest).toMatchObject({
+      text: 'Review authentication changes.', mode: 'replace', selectAll: true,
+    });
+    expect(useUiStore.getState().sidebarTab).toBe('sessions');
   });
 });

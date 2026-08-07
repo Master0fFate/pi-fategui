@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createFindToolDefinition, createLsToolDefinition, createReadToolDefinition, createWriteToolDefinition } from '@earendil-works/pi-coding-agent';
-import { createProjectConfinedTools, ProjectPathPolicy } from './PiToolPolicy';
+import { activeToolsForPermission, createProjectConfinedTools, ProjectPathPolicy } from './PiToolPolicy';
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -38,6 +38,12 @@ describe('ProjectPathPolicy', () => {
     await expect(policy.existing('escape/secret.txt')).rejects.toThrow(/active project/i);
     await expect(policy.writable('escape/new.txt')).rejects.toThrow(/active project/i);
     expect(parent).toBeTruthy();
+  });
+
+  it('keeps browser tools outside repository permission filtering', () => {
+    const browserTools = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_tabs'];
+
+    expect(activeToolsForPermission(browserTools, 'read-only')).toEqual(expect.arrayContaining(browserTools));
   });
 
   it('registers Bash so explicit Full access can activate command execution', async () => {

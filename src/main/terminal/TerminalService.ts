@@ -49,6 +49,51 @@ export function resolveTerminalShell(configured: string | null | undefined, proj
   throw new Error('Configure an installed shell outside the active project directory.');
 }
 
+/** Start the same interactive PTY used by the app, exchange data, and exit. */
+export async function smokeTerminalRuntime(projectRoot: string, timeoutMs = 15_000): Promise<string> {
+  const cwd = path.resolve(projectRoot);
+  const shell = resolveTerminalShell(undefined, cwd);
+  const marker = `FATE_PTY_SMOKE_${randomUUID().replace(/-/gu, '')}`;
+  const processHandle = pty.spawn(shell, [], {
+    name: 'xterm-256color',
+    cols: 80,
+    rows: 24,
+    cwd,
+    env: { ...process.env, TERM: 'xterm-256color' },
+  });
+  await new Promise<void>((resolve, reject) => {
+    let output = '';
+    let settled = false;
+    let dataSubscription: pty.IDisposable | undefined;
+    let exitSubscription: pty.IDisposable | undefined;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      dataSubscription?.dispose();
+      exitSubscription?.dispose();
+      if (error) reject(error);
+      else resolve();
+    };
+    const timeout = setTimeout(() => {
+      try { processHandle.kill(); } catch { /* The PTY may already be exiting. */ }
+      finish(new Error(`Manual terminal PTY smoke timed out after ${timeoutMs} ms.`));
+    }, timeoutMs);
+    dataSubscription = processHandle.onData((data) => {
+      output = `${output}${data}`.slice(-65_536);
+    });
+    exitSubscription = processHandle.onExit(({ exitCode }) => {
+      if (exitCode !== 0) finish(new Error(`Manual terminal PTY smoke exited with code ${exitCode}.`));
+      else if (!output.includes(marker)) finish(new Error('Manual terminal PTY smoke did not exchange data with the shell.'));
+      else finish();
+    });
+    processHandle.write(process.platform === 'win32'
+      ? `echo ${marker}\r\nexit\r\n`
+      : `printf '${marker}\\n'\nexit\n`);
+  });
+  return shell;
+}
+
 const TERMINAL_CHUNK_CHARACTERS = 65_536;
 const TERMINAL_HIGH_WATER_CHARACTERS = 512 * 1024;
 const TERMINAL_LOW_WATER_CHARACTERS = 128 * 1024;

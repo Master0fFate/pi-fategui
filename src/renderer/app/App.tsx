@@ -6,10 +6,27 @@ import { useRuntimeStore } from '../stores/runtimeStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useUiStore } from '../stores/uiStore';
 import { useGoalMaxStore } from '../stores/goalMaxStore';
+import { useBrowserStore } from '../stores/browserStore';
 import { fallbackThemes } from '../theme';
+import { attachBrowserAnnotationToSession } from '../features/chat/Composer';
 
 const MAX_HYDRATION_BUFFER_EVENTS = 1_000;
 const MAX_HYDRATION_BUFFER_BYTES = 32 * 1024 * 1024;
+
+function appCommandErrorMessage(error: unknown, fallback: string): string {
+  if (!(error instanceof Error)) return fallback;
+  try {
+    const parsed = JSON.parse(error.message) as { message?: unknown };
+    return typeof parsed.message === 'string' ? parsed.message : error.message;
+  } catch {
+    return error.message || fallback;
+  }
+}
+
+export function hasBlockingBrowserOverlay(root: ParentNode = document): boolean {
+  return [...root.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')]
+    .some((element) => element.dataset.state !== 'closed' && !element.closest('.browser-workspace'));
+}
 
 export function reconcileHydrationEvents(runtime: RuntimeState, events: readonly PiEvent[]): PiEvent[] {
   const watermark = runtime.eventCursor;
@@ -81,6 +98,53 @@ const CommandPalette = lazy(() => import('../features/commands/CommandPalette').
 const SettingsDialog = lazy(() => import('../features/settings/SettingsDialog').then((module) => ({ default: module.SettingsDialog })));
 import { AppShell } from './AppShell';
 
+function BrowserInitializer() {
+  const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
+  const projectTrusted = useRuntimeStore((state) => state.runtime.project?.trusted ?? false);
+  const hydrate = useBrowserStore((state) => state.hydrate);
+  const applyEvents = useBrowserStore((state) => state.applyEvents);
+  const setAnnotations = useBrowserStore((state) => state.setAnnotations);
+  const reset = useBrowserStore((state) => state.reset);
+  const setBrowserOpen = useUiStore((state) => state.setBrowserOpen);
+
+  useEffect(() => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.onBrowserEvents !== 'function') return undefined;
+    return window.piDesktop.onBrowserEvents((events) => {
+      applyEvents(events);
+      for (const event of events) {
+        if (event.type === 'annotation-created') {
+          attachBrowserAnnotationToSession(event.projectPath, event.sessionId, event.annotation.id);
+        }
+      }
+    });
+  }, [applyEvents]);
+
+  useEffect(() => {
+    const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
+    if (!projectPath || !projectTrusted || typeof desktop?.initializeBrowser !== 'function') {
+      reset();
+      if (!projectPath || !projectTrusted) setBrowserOpen(false);
+      return undefined;
+    }
+    let active = true;
+    void desktop.initializeBrowser().then(async (state) => {
+      const current = useRuntimeStore.getState().runtime.project;
+      if (!active || current?.path !== projectPath || !current.trusted) return;
+      hydrate(state, projectPath);
+      if (typeof desktop.listBrowserAnnotations === 'function') {
+        const annotations = await desktop.listBrowserAnnotations();
+        const latest = useRuntimeStore.getState().runtime.project;
+        if (active && latest?.path === projectPath && latest.trusted) setAnnotations(annotations);
+      }
+    }).catch((error: unknown) => {
+      if (active) useBrowserStore.getState().setError(error instanceof Error ? error.message : 'The built-in browser could not start.');
+    });
+    return () => { active = false; };
+  }, [hydrate, projectPath, projectTrusted, reset, setAnnotations, setBrowserOpen]);
+
+  return null;
+}
+
 function WorkspaceInitializer() {
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
   const initializeWorkspace = useWorkspaceStore((state) => state.initialize);
@@ -117,6 +181,9 @@ export function App() {
   const musicPlayerEnabled = useUiStore((state) => state.musicPlayerEnabled);
   const paletteOpen = useUiStore((state) => state.paletteOpen);
   const settingsOpen = useUiStore((state) => state.settingsOpen);
+  const browserOpen = useUiStore((state) => state.browserOpen);
+  const goalEditorOpen = useUiStore((state) => state.goalEditorOpen);
+  const [portalDialogOpen, setPortalDialogOpen] = useState(false);
   const [paletteActivated, setPaletteActivated] = useState(false);
   const [settingsActivated, setSettingsActivated] = useState(false);
   const [themeCatalog, setThemeCatalog] = useState(() => fallbackThemes);
@@ -126,6 +193,39 @@ export function App() {
 
   useEffect(() => { if (paletteOpen) setPaletteActivated(true); }, [paletteOpen]);
   useEffect(() => { if (settingsOpen) setSettingsActivated(true); }, [settingsOpen]);
+
+  useEffect(() => {
+    if (!browserOpen || !projectTrusted) {
+      setPortalDialogOpen(false);
+      return undefined;
+    }
+    let frame = 0;
+    const update = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        setPortalDialogOpen(hasBlockingBrowserOverlay());
+      });
+    };
+    const observer = new MutationObserver(update);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['role', 'aria-modal', 'data-state'] });
+    setPortalDialogOpen(hasBlockingBrowserOverlay());
+    return () => {
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [browserOpen, projectTrusted]);
+
+  useEffect(() => {
+    const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
+    if (!projectPath || !projectTrusted || typeof desktop?.setBrowserOverlayBlocked !== 'function') return undefined;
+    let active = true;
+    void desktop.setBrowserOverlayBlocked(paletteOpen || settingsOpen || goalEditorOpen || portalDialogOpen).then((state) => {
+      const project = useRuntimeStore.getState().runtime.project;
+      if (active && project?.path === projectPath && project.trusted) useBrowserStore.getState().hydrate(state, projectPath);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [goalEditorOpen, paletteOpen, portalDialogOpen, projectPath, projectTrusted, settingsOpen]);
 
   useEffect(() => {
     const jump = useUiStore.getState().flightDeckJump;
@@ -269,14 +369,26 @@ export function App() {
     const run = (command: AppCommand) => {
       const ui = useUiStore.getState();
       const runtime = useRuntimeStore.getState().runtime;
+      const unavailable = (title: string, message: string) => ui.showToast({ kind: 'info', title, message });
+      const failed = (title: string, error: unknown, fallback: string) => ui.showToast({
+        kind: 'error', title, message: appCommandErrorMessage(error, fallback),
+      });
       if (command === 'open-project') {
         void window.piDesktop.selectProject().then((state) => {
           if (!active) return;
           setRuntime(state);
           if (state.project) ui.setSidebarCollapsed(false);
-        });
+        }).catch((error: unknown) => failed('Could not open project', error, 'The project could not be opened.'));
       }
-      else if (command === 'new-session' && runtime.project && !runtime.sessionOperation && !sessionReplacementBusy.current) {
+      else if (command === 'new-session') {
+        if (!runtime.project) {
+          unavailable('New session unavailable', 'Open a project before creating a session.');
+          return;
+        }
+        if (runtime.sessionOperation || sessionReplacementBusy.current) {
+          unavailable('Session change in progress', 'Wait for the current session change to finish.');
+          return;
+        }
         sessionReplacementBusy.current = true;
         let pending: Promise<RuntimeState>;
         try {
@@ -284,14 +396,66 @@ export function App() {
         } catch (error) {
           pending = Promise.reject(error);
         }
-        void pending.then((state) => applyReplacement(runtime, state)).catch(() => undefined).finally(() => { sessionReplacementBusy.current = false; });
+        void pending
+          .then((state) => applyReplacement(runtime, state))
+          .catch((error: unknown) => failed('Could not create session', error, 'The new session could not be created.'))
+          .finally(() => { sessionReplacementBusy.current = false; });
       }
-      else if (command === 'focus-composer') document.querySelector<HTMLTextAreaElement>('#pi-composer')?.focus();
-      else if (command === 'stop-generation' && runtime.streaming && !ui.settingsOpen && !ui.paletteOpen) void window.piDesktop.abort();
+      else if (command === 'focus-composer') {
+        const composer = document.querySelector<HTMLTextAreaElement>('#pi-composer');
+        if (runtime.status === 'ready' && composer && !composer.disabled) composer.focus();
+        else unavailable('Composer unavailable', 'Open and trust a project before focusing the composer.');
+      }
+      else if (command === 'focus-address') {
+        if (runtime.project?.trusted && ui.browserOpen) {
+          requestAnimationFrame(() => document.querySelector<HTMLInputElement>('.browser-address input')?.select());
+        } else {
+          const composer = document.querySelector<HTMLTextAreaElement>('#pi-composer');
+          if (runtime.status === 'ready' && composer && !composer.disabled) composer.focus();
+          else unavailable('No input to focus', 'Open and trust a project before focusing the browser address or composer.');
+        }
+      }
+      else if (command === 'toggle-browser') {
+        if (!runtime.project?.trusted) {
+          unavailable('Browser unavailable', 'Open and trust a project before opening the Browser workspace.');
+          return;
+        }
+        const opening = !ui.browserOpen;
+        const operation = opening
+          ? window.piDesktop.setBrowserMode('agent')
+          : window.piDesktop.setBrowserPaused(true);
+        void operation.then((state) => {
+          useBrowserStore.getState().hydrate(state);
+          ui.setBrowserOpen(opening);
+        }).catch((error: unknown) => {
+          const message = appCommandErrorMessage(error, 'The Browser workspace could not change state.');
+          useBrowserStore.getState().setError(message);
+          failed('Browser command failed', error, message);
+        });
+      }
+      else if (command === 'pause-browser') {
+        const browser = useBrowserStore.getState().state;
+        const operation = browser.mode === 'annotate'
+          ? window.piDesktop.setBrowserMode('agent').then(() => window.piDesktop.setBrowserPaused(true))
+          : window.piDesktop.setBrowserPaused(true);
+        void operation
+          .then((state) => useBrowserStore.getState().hydrate(state))
+          .catch((error: unknown) => useBrowserStore.getState().setError(appCommandErrorMessage(error, 'Browser control could not be paused.')));
+      }
+      else if (command === 'stop-generation') {
+        if (!runtime.streaming) {
+          unavailable('Nothing to stop', 'Pi is not currently generating a response.');
+          return;
+        }
+        void window.piDesktop.abort().catch((error: unknown) => failed('Could not stop generation', error, 'The active response could not be stopped.'));
+      }
       else if (command === 'toggle-sidebar') ui.toggleSidebar();
       else if (command === 'toggle-inspector') ui.toggleInspector();
       else if (command === 'open-settings') ui.setSettingsOpen(true);
-      else if (command === 'open-terminal') ui.toggleTerminal();
+      else if (command === 'open-terminal') {
+        if (runtime.project?.trusted) ui.toggleTerminal();
+        else unavailable('Terminal unavailable', 'Open and trust a project before opening the manual terminal.');
+      }
       else if (command === 'open-palette') ui.setPaletteOpen(true);
     };
     const unsubscribe = typeof window.piDesktop.onAppCommand === 'function'
@@ -304,7 +468,7 @@ export function App() {
       if (primary && event.key.toLocaleLowerCase() === 'k') command = 'open-palette';
       else if (primary && event.key === '`') command = 'open-terminal';
       else if (primary && event.key === ',') command = 'open-settings';
-      else if (primary && event.key.toLocaleLowerCase() === 'b' && event.shiftKey) command = 'toggle-inspector';
+      else if (primary && event.key.toLocaleLowerCase() === 'b' && event.shiftKey) command = 'toggle-browser';
       else if (primary && event.key.toLocaleLowerCase() === 'b') command = 'toggle-sidebar';
       else if (primary && event.key.toLocaleLowerCase() === 'o') command = 'open-project';
       else if (primary && event.key.toLocaleLowerCase() === 'n') command = 'new-session';
@@ -313,7 +477,24 @@ export function App() {
         && !useUiStore.getState().paletteOpen
         && !useUiStore.getState().settingsOpen
         && !document.querySelector('[role="dialog"], [role="listbox"], [data-radix-popper-content-wrapper], .music-dock[data-open="true"]')
-      ) command = 'stop-generation';
+      ) {
+        const browser = useBrowserStore.getState().state;
+        const browserUi = useUiStore.getState();
+        if (browserUi.browserOpen && browser.mode === 'annotate' && typeof window.piDesktop.setBrowserMode === 'function') {
+          event.preventDefault();
+          void window.piDesktop.setBrowserMode('agent')
+            .then(() => window.piDesktop.setBrowserPaused(true))
+            .then((state) => useBrowserStore.getState().hydrate(state))
+            .catch(() => undefined);
+          return;
+        }
+        if (browserUi.browserOpen && !browser.paused && typeof window.piDesktop.setBrowserPaused === 'function') {
+          event.preventDefault();
+          void window.piDesktop.setBrowserPaused(true).then((state) => useBrowserStore.getState().hydrate(state)).catch(() => undefined);
+          return;
+        }
+        if (useRuntimeStore.getState().runtime.streaming) command = 'stop-generation';
+      }
       if (command) { event.preventDefault(); run(command); }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -328,6 +509,7 @@ export function App() {
   return (
     <>
       {hydrationError && <div className="hydration-error-banner" role="alert"><span>{hydrationError}</span><button type="button" onClick={() => setHydrationAttempt((value) => value + 1)}>Retry</button></div>}
+      <BrowserInitializer />
       <WorkspaceInitializer />
       <AppShell />
       <AppToast />

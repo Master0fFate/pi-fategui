@@ -1,3 +1,4 @@
+import * as Tabs from '@radix-ui/react-tabs';
 import {
   Check,
   ChevronLeft,
@@ -9,6 +10,7 @@ import {
   GitFork,
   MessageSquarePlus,
   Pencil,
+  Plus,
   Search,
   Settings,
   Shrink,
@@ -23,9 +25,12 @@ import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle'
 import { IconButton } from '../../components/IconButton';
 import { SelectControl } from '../../components/SelectControl';
 import { formatRelativeTime } from '../../lib/relativeTime';
+import { useAutomationStore } from '../../stores/automationStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { SidebarAutomations } from '../automations/SidebarAutomations';
+import { SidebarResources } from '../resources/SidebarResources';
 import { ConversationPaths } from './ConversationPaths';
 
 interface SidebarProps {
@@ -53,10 +58,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   })));
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
   const openSettings = useUiStore((state) => state.setSettingsOpen);
+  const sidebarTab = useUiStore((state) => state.sidebarTab);
+  const setSidebarTab = useUiStore((state) => state.setSidebarTab);
   const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed);
   const showToast = useUiStore((state) => state.showToast);
   const requestComposerDraft = useUiStore((state) => state.requestComposerDraft);
   const musicPlaying = useUiStore((state) => state.musicPlaying);
+  const initializeAutomations = useAutomationStore((state) => state.initialize);
   const gitBranch = useWorkspaceStore((state) => state.git?.repository && state.git.branch ? state.git.branch : null);
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<'manual' | 'recent' | 'oldest' | 'alphabetical'>('recent');
@@ -107,6 +115,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     return (sort === 'oldest' ? difference : -difference) || left.id.localeCompare(right.id);
   }), [manualRanks, sessions, sort]);
 
+  useEffect(() => {
+    void initializeAutomations(runtime.project?.path ?? null);
+  }, [initializeAutomations, runtime.project?.path]);
   useEffect(() => {
     const projectPath = runtime.project?.path ?? null;
     const latest = runtime.sessions ?? [];
@@ -286,6 +297,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       return state;
     }, 'navigation');
   };
+  const createSession = () => {
+    if (!('piDesktop' in window)) return;
+    invokeState('Creating session', () => window.piDesktop.newSession(), 'navigation');
+  };
   const beginRename = (session: SessionSummary) => {
     setEditingSessionId(session.id);
     // Pi-generated titles can exceed the user-facing rename contract. Native
@@ -446,27 +461,35 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </IconButton>
       </div>
 
-      {renderExpanded && (
-        <button className="primary-button sidebar-expanded-only" type="button" disabled={replacementBusy} onClick={selectProject}>
-          <FolderOpen size={16} /><span className="icon-label">Open project</span>
-        </button>
+      {collapsed && !renderExpanded && (
+        <AppTooltip content="New session" wrapTrigger>
+          <button className="new-session icon-only" type="button" aria-label="New session" disabled={!runtime.project || replacementBusy} onClick={createSession}>
+            <MessageSquarePlus size={17} />
+          </button>
+        </AppTooltip>
       )}
-      <button
-        className={`new-session ${collapsed ? 'icon-only' : ''}`}
-        type="button"
-        disabled={!runtime.project || replacementBusy}
-        onClick={() => 'piDesktop' in window && invokeState('Creating session', () => window.piDesktop.newSession(), 'navigation')}
-      >
-        <MessageSquarePlus size={17} />
-        {renderExpanded && <span className="sidebar-expanded-only icon-label">New session</span>}
-      </button>
 
       {renderExpanded && (
         <div ref={expandedSectionsRef} className="sidebar-expanded-sections sidebar-expanded-only">
-          <label className="session-search">
-            <Search size={15} />
-            <input className="icon-label" aria-label="Search sessions" placeholder="Search sessions" value={query} onChange={(event) => setQuery(event.target.value)} disabled={!runtime.project} />
-          </label>
+          <Tabs.Root value={sidebarTab} onValueChange={(value) => setSidebarTab(value as typeof sidebarTab)} className="sidebar-tabs">
+            <Tabs.List className="sidebar-primary-nav" aria-label="Sidebar destinations">
+              <Tabs.Trigger value="sessions" className="sidebar-primary-trigger">Sessions</Tabs.Trigger>
+              <Tabs.Trigger value="automations" className="sidebar-primary-trigger">Automations</Tabs.Trigger>
+              <Tabs.Trigger value="resources" className="sidebar-primary-trigger">Resources</Tabs.Trigger>
+            </Tabs.List>
+            <Tabs.Content value="sessions" className="sidebar-tab-content sidebar-session-panel">
+          <div className="sidebar-tab-toolbar session-toolbar">
+            <label className="session-search sidebar-search">
+              <Search size={15} aria-hidden="true" />
+              <input className="icon-label" type="search" aria-label="Search sessions" placeholder="Search sessions" value={query} onChange={(event) => setQuery(event.target.value)} disabled={!runtime.project} />
+            </label>
+            <AppTooltip content="Open project" wrapTrigger triggerClassName="sidebar-toolbar-action">
+              <button type="button" aria-label="Open project" disabled={replacementBusy} onClick={selectProject}><FolderOpen size={15} /></button>
+            </AppTooltip>
+            <AppTooltip content="New session" wrapTrigger triggerClassName="sidebar-toolbar-action sidebar-toolbar-action--primary">
+              <button type="button" aria-label="New session" disabled={!runtime.project || replacementBusy} onClick={createSession}><Plus size={15} /></button>
+            </AppTooltip>
+          </div>
           <div className="session-sort-row">
             <span>Sessions</span>
             <SelectControl
@@ -570,6 +593,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <span>{runtime.status === 'auth-required' ? 'Saved sessions remain available; authenticate to prompt Pi.' : runtime.project ? 'Create a session to start working with Pi.' : 'Open a project to start working with Pi.'}</span>
             </div>
           )}
+            </Tabs.Content>
+            <Tabs.Content value="automations" className="sidebar-tab-content"><SidebarAutomations /></Tabs.Content>
+            <Tabs.Content value="resources" className="sidebar-tab-content"><SidebarResources onOpenProject={selectProject} projectSelectionBusy={replacementBusy} /></Tabs.Content>
+          </Tabs.Root>
         </div>
       )}
 

@@ -7,6 +7,7 @@ describe('GoalMax progress evidence', () => {
     expect(classifyGoalMaxTool('bash', JSON.stringify({ command: 'pnpm test:e2e' }), 'passed', false)).toMatchObject({ kind: 'test', verification: true });
     expect(classifyGoalMaxTool('read', JSON.stringify({ path: 'README.md' }), 'text', false)).toMatchObject({ kind: 'runtime', investigation: true, meaningful: false, path: 'README.md' });
     expect(classifyGoalMaxTool('goalmax_report', '{}', 'reported', false)).toBeNull();
+    expect(classifyGoalMaxTool('goalmax_complete', '{}', 'requested', false)).toBeNull();
   });
 
   it('keeps the current path from Git rename records', () => {

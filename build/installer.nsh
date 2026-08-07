@@ -60,22 +60,26 @@
 
   Function FateRemoveUserPath
     ReadRegStr $0 HKCU "Environment" "Path"
-    ${If} $0 == "$INSTDIR"
-      StrCpy $0 ""
-    ${Else}
-      ${StrRep} $0 "$0" "$INSTDIR;" ""
-      ${StrRep} $0 "$0" ";$INSTDIR" ""
+    StrCpy $0 ";$0;"
+    ${StrRep} $0 "$0" ";$INSTDIR;" ";"
+    StrCpy $0 "$0" "" 1
+    StrLen $1 "$0"
+    ${If} $1 > 0
+      IntOp $1 $1 - 1
+      StrCpy $0 "$0" $1
     ${EndIf}
     WriteRegExpandStr HKCU "Environment" "Path" "$0"
   FunctionEnd
 
   Function FateRemoveMachinePath
     ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
-    ${If} $0 == "$INSTDIR"
-      StrCpy $0 ""
-    ${Else}
-      ${StrRep} $0 "$0" "$INSTDIR;" ""
-      ${StrRep} $0 "$0" ";$INSTDIR" ""
+    StrCpy $0 ";$0;"
+    ${StrRep} $0 "$0" ";$INSTDIR;" ";"
+    StrCpy $0 "$0" "" 1
+    StrLen $1 "$0"
+    ${If} $1 > 0
+      IntOp $1 $1 - 1
+      StrCpy $0 "$0" $1
     ${EndIf}
     WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$0"
   FunctionEnd
@@ -112,22 +116,26 @@
 
   Function un.FateRemoveUserPath
     ReadRegStr $0 HKCU "Environment" "Path"
-    ${If} $0 == "$INSTDIR"
-      StrCpy $0 ""
-    ${Else}
-      ${UnStrRep} $0 "$0" "$INSTDIR;" ""
-      ${UnStrRep} $0 "$0" ";$INSTDIR" ""
+    StrCpy $0 ";$0;"
+    ${UnStrRep} $0 "$0" ";$INSTDIR;" ";"
+    StrCpy $0 "$0" "" 1
+    StrLen $1 "$0"
+    ${If} $1 > 0
+      IntOp $1 $1 - 1
+      StrCpy $0 "$0" $1
     ${EndIf}
     WriteRegExpandStr HKCU "Environment" "Path" "$0"
   FunctionEnd
 
   Function un.FateRemoveMachinePath
     ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
-    ${If} $0 == "$INSTDIR"
-      StrCpy $0 ""
-    ${Else}
-      ${UnStrRep} $0 "$0" "$INSTDIR;" ""
-      ${UnStrRep} $0 "$0" ";$INSTDIR" ""
+    StrCpy $0 ";$0;"
+    ${UnStrRep} $0 "$0" ";$INSTDIR;" ";"
+    StrCpy $0 "$0" "" 1
+    StrLen $1 "$0"
+    ${If} $1 > 0
+      IntOp $1 $1 - 1
+      StrCpy $0 "$0" $1
     ${EndIf}
     WriteRegExpandStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path" "$0"
   FunctionEnd

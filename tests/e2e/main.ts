@@ -1,10 +1,14 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, protocol } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { AppSettings, ProjectState, TerminalEvent } from '../../src/shared/contracts/ipc';
+import { appCommandSchema, ipcChannels, type AppSettings, type ProjectState, type TerminalEvent } from '../../src/shared/contracts/ipc';
+import { browserEventBatchSchema } from '../../src/shared/contracts/browser';
 import { builtInThemes } from '../../src/shared/themes';
+import { AutomationRepository } from '../../src/main/automations/AutomationRepository';
 import { FilesystemService } from '../../src/main/files/FilesystemService';
 import { GitService } from '../../src/main/git/GitService';
+import { BrowserHost } from '../../src/main/browser/BrowserHost';
+import { LOCAL_PAGE_SCHEME } from '../../src/main/browser/LocalPageRegistry';
 import { registerIpc } from '../../src/main/ipc/registerIpc';
 import type { AppLogService } from '../../src/main/logging/AppLogService';
 import type { MusicService } from '../../src/main/music/MusicService';
@@ -18,6 +22,11 @@ import type { TerminalService } from '../../src/main/terminal/TerminalService';
 import { installWindowZoomShortcuts } from '../../src/main/windowZoom';
 import { MINIMUM_WINDOW_SIZE } from '../../src/main/windowState';
 import { FakePiRuntimeService } from './FakePiRuntimeService';
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: LOCAL_PAGE_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+}]);
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const projectPath = process.env.PI_DESKTOP_E2E_PROJECT;
@@ -45,6 +54,7 @@ const settings = {
   loadThemes: async () => [...builtInThemes, e2ePiTheme],
 } as unknown as SettingsService;
 const logs = { list: () => [], write: () => undefined } as unknown as AppLogService;
+const automations = new AutomationRepository(logs, path.join(process.env.PI_DESKTOP_E2E_USER_DATA ?? app.getPath('userData'), 'automations'));
 const music = {
   getStatus: async () => ({ available: false, version: null, message: 'yt-dlp is unavailable in the E2E harness.' }),
   load: async () => { throw new Error('Music loading is disabled in the E2E harness.'); },
@@ -70,6 +80,30 @@ const updates = {
   check: async () => ({ status: 'current' as const, message: 'FateGUI is up to date.' }),
   openDownload: async () => undefined,
 };
+let browser: BrowserHost;
+browser = new BrowserHost({
+  currentProject: () => runtime.getState().project,
+  currentPermissionLevel: () => runtime.getState().permissionLevel ?? 'full-access',
+  bridge: {
+    currentRoot: () => {
+      const state = runtime.getState();
+      return state.project && state.sessionId ? { projectPath: state.project.path, sessionId: state.sessionId } : null;
+    },
+    syncService: () => {
+      const service = browser.current();
+      const sessionId = runtime.getState().sessionId;
+      if (!service || !sessionId) return;
+      service.beginTask(sessionId);
+      service.lease.acquire(sessionId);
+    },
+  },
+  emit: (owner, event) => {
+    if (!owner.isDestroyed()) owner.webContents.send(ipcChannels.browserEvents, browserEventBatchSchema.parse([event]));
+  },
+  command: (owner, command) => {
+    if (!owner.isDestroyed()) owner.webContents.send(ipcChannels.appCommand, appCommandSchema.parse(command));
+  },
+});
 const terminal = {
   setEventSink: (_sink: (ownerId: number, event: TerminalEvent) => void) => undefined,
   create: () => ({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', shell: 'test-shell', cwd: projectPath }),
@@ -78,6 +112,8 @@ const terminal = {
 } as unknown as TerminalService;
 
 let window: BrowserWindow | null = null;
+let quitReady = false;
+let shutdown: Promise<void> | null = null;
 app.whenReady().then(() => {
   const rendererPath = path.resolve(directory, '../../dist/renderer/index.html');
   registerIpc({
@@ -91,6 +127,8 @@ app.whenReady().then(() => {
     music,
     speech,
     updates,
+    browser,
+    automations,
     rendererPolicy: createTrustedRendererPolicy(rendererPath),
   });
   window = new BrowserWindow({
@@ -102,5 +140,17 @@ app.whenReady().then(() => {
   installWindowZoomShortcuts(window);
   window.once('ready-to-show', () => window?.show());
   void window.loadFile(rendererPath);
+});
+app.on('before-quit', (event) => {
+  if (quitReady) return;
+  event.preventDefault();
+  if (shutdown) return;
+  shutdown = Promise.race([
+    browser.reset(),
+    new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+  ]).catch(() => undefined).finally(() => {
+    quitReady = true;
+    app.exit(0);
+  });
 });
 app.on('window-all-closed', () => app.quit());

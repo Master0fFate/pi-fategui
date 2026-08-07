@@ -1,15 +1,16 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
-import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, Ellipsis, FileText, FolderOpen, GitFork, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
+import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, Ellipsis, FileText, FolderOpen, GitFork, Globe2, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
 import { type ChangeEvent, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { FileEntry, PromptInput, QueueMutationInput } from '../../../shared/contracts/ipc';
+import type { BrowserAnnotation, FileEntry, PromptInput, QueueMutationInput } from '../../../shared/contracts/ipc';
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AppTooltip } from '../../components/AppTooltip';
 import { SelectControl } from '../../components/SelectControl';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
+import { useBrowserStore } from '../../stores/browserStore';
 import { GoalMaxRail } from '../goalmaxxing/GoalMaxRail';
 import { parseGoalMaxCommand } from '../goalmaxxing/parseGoalMaxCommand';
 import { ContextWheel } from './ContextWheel';
@@ -30,6 +31,8 @@ interface SessionDraft {
   textRevision: number;
   images: Attachment[];
   imagesRevision: number;
+  browserAnnotationIds: string[];
+  browserAnnotationsRevision: number;
   forkNotice: string | null;
   selectionStart: number;
   selectionEnd: number;
@@ -37,7 +40,8 @@ interface SessionDraft {
 }
 
 const emptySessionDraft = (): SessionDraft => ({
-  text: '', textRevision: 0, images: [], imagesRevision: 0, forkNotice: null,
+  text: '', textRevision: 0, images: [], imagesRevision: 0,
+  browserAnnotationIds: [], browserAnnotationsRevision: 0, forkNotice: null,
   selectionStart: 0, selectionEnd: 0, scrollTop: 0,
 });
 
@@ -77,6 +81,18 @@ export function clearComposerSessionDrafts(): void {
 
 const sessionDraftKey = (projectPath: string | null, sessionId: string | null): string | null =>
   sessionId === null ? null : JSON.stringify([projectPath, sessionId]);
+
+export function attachBrowserAnnotationToSession(projectPath: string | null, sessionId: string | null, id: string): void {
+  const key = sessionDraftKey(projectPath, sessionId);
+  if (!key) return;
+  const current = sessionDraftsByIdentity.get(key) ?? emptySessionDraft();
+  if (current.browserAnnotationIds.includes(id)) return;
+  cacheSessionDraft(key, {
+    ...current,
+    browserAnnotationIds: [...current.browserAnnotationIds, id].slice(-24),
+    browserAnnotationsRevision: current.browserAnnotationsRevision + 1,
+  });
+}
 
 const MAX_ATTACHMENT_BYTES = 10_000_000;
 const MAX_TOTAL_ATTACHMENT_BYTES = 15_000_000;
@@ -166,6 +182,7 @@ export async function resampleVoiceAudioOptimized(buffer: AudioBuffer, targetRat
 export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const [draft, setDraft] = useState('');
   const [images, setImages] = useState<Attachment[]>([]);
+  const [browserAnnotationIds, setBrowserAnnotationIds] = useState<string[]>([]);
   const [previewImage, setPreviewImage] = useState<Attachment | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [forking, setForking] = useState(false);
@@ -200,8 +217,10 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const activeRecording = useRef<ActiveRecording | null>(null);
   const draftRef = useRef(draft);
   const imagesRef = useRef(images);
+  const browserAnnotationIdsRef = useRef(browserAnnotationIds);
   const draftRevision = useRef(0);
   const imagesRevision = useRef(0);
+  const browserAnnotationsRevision = useRef(0);
   const sessionDrafts = useRef(sessionDraftsByIdentity);
   const activeDraftKey = useRef<string | null>(null);
   const pendingDraftSelection = useRef<{ key: string | null; text: string; start: number; end: number; scrollTop: number; focus?: boolean } | null>(null);
@@ -243,6 +262,14 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const cachedActiveDraft = activeSessionDraftKey === null ? undefined : sessionDraftsByIdentity.get(activeSessionDraftKey);
   const editorDraft = activeDraftKey.current === activeSessionDraftKey ? draft : cachedActiveDraft?.text ?? '';
   const queue = useRuntimeStore((state) => state.queue);
+  const browserAnnotations = useBrowserStore((state) => state.annotations);
+  const attachedBrowserAnnotations = useMemo(() => {
+    const byId = new Map(browserAnnotations.map((annotation) => [annotation.id, annotation]));
+    return browserAnnotationIds.flatMap((id) => {
+      const annotation = byId.get(id);
+      return annotation ? [annotation] : [];
+    });
+  }, [browserAnnotationIds, browserAnnotations]);
   const activeGoal = useGoalMaxStore((state) => state.goal);
   const setActiveGoal = useGoalMaxStore((state) => state.setGoal);
   const subagentOrder = useRuntimeStore((state) => state.subagentOrder);
@@ -290,6 +317,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       textRevision: draftRevision.current,
       images: imagesRef.current,
       imagesRevision: imagesRevision.current,
+      browserAnnotationIds: browserAnnotationIdsRef.current,
+      browserAnnotationsRevision: browserAnnotationsRevision.current,
       forkNotice: forkNoticeRef.current,
       selectionStart: caretPositionRef.current,
       selectionEnd: selectionEndRef.current,
@@ -314,6 +343,20 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const updateImages = useCallback((update: Attachment[] | ((current: Attachment[]) => Attachment[])) => {
     updateImagesForKey(activeDraftKey.current, update);
   }, [updateImagesForKey]);
+  const updateBrowserAnnotationsForKey = useCallback((key: string | null, update: string[] | ((current: string[]) => string[])) => {
+    if (key === null) return;
+    const stored = sessionDrafts.current.get(key) ?? emptySessionDraft();
+    const next = typeof update === 'function' ? update(stored.browserAnnotationIds) : update;
+    if (next === stored.browserAnnotationIds) return;
+    cacheSessionDraft(key, {
+      ...stored,
+      browserAnnotationIds: [...new Set(next)].slice(-24),
+      browserAnnotationsRevision: stored.browserAnnotationsRevision + 1,
+    });
+  }, []);
+  const updateBrowserAnnotations = useCallback((update: string[] | ((current: string[]) => string[])) => {
+    updateBrowserAnnotationsForKey(activeDraftKey.current, update);
+  }, [updateBrowserAnnotationsForKey]);
   const updateForkNoticeForKey = useCallback((key: string | null, next: string | null) => {
     if (key === null) return;
     const current = sessionDrafts.current.get(key) ?? emptySessionDraft();
@@ -386,9 +429,12 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       draftRevision.current = next.textRevision;
       imagesRef.current = next.images;
       imagesRevision.current = next.imagesRevision;
+      browserAnnotationIdsRef.current = next.browserAnnotationIds;
+      browserAnnotationsRevision.current = next.browserAnnotationsRevision;
       forkNoticeRef.current = next.forkNotice;
       setDraft(next.text);
       setImages(next.images);
+      setBrowserAnnotationIds(next.browserAnnotationIds);
       setForkNotice(next.forkNotice);
     };
     sessionDraftListeners.add(synchronize);
@@ -432,12 +478,15 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     draftRevision.current = next.textRevision;
     imagesRef.current = next.images;
     imagesRevision.current = next.imagesRevision;
+    browserAnnotationIdsRef.current = next.browserAnnotationIds;
+    browserAnnotationsRevision.current = next.browserAnnotationsRevision;
     forkNoticeRef.current = next.forkNotice;
     caretPositionRef.current = next.selectionStart;
     selectionEndRef.current = next.selectionEnd;
     draftScrollTopRef.current = next.scrollTop;
     setDraft(next.text);
     setImages(next.images);
+    setBrowserAnnotationIds(next.browserAnnotationIds);
     setForkNotice(next.forkNotice);
     setCaretPosition(next.selectionStart);
     setPreviewImage(null);
@@ -471,18 +520,33 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   useEffect(() => {
     if (!composerDraftRequest) return;
     const targetKey = activeDraftKey.current;
-    updateDraft(composerDraftRequest.text);
-    updateImages([]);
-    updateForkNotice(composerDraftRequest.notice ?? null);
-    setCaretPosition(composerDraftRequest.selectAll ? 0 : composerDraftRequest.text.length);
+    const input = textarea.current;
+    const currentDraft = draftRef.current;
+    const insertionStart = input && document.activeElement === input ? input.selectionStart : currentDraft.length;
+    const insertionEnd = input && document.activeElement === input ? input.selectionEnd : insertionStart;
+    const nextDraft = composerDraftRequest.mode === 'insert'
+      ? `${currentDraft.slice(0, insertionStart)}${composerDraftRequest.text}${currentDraft.slice(insertionEnd)}`
+      : composerDraftRequest.text;
+    const nextCaret = composerDraftRequest.mode === 'insert'
+      ? insertionStart + composerDraftRequest.text.length
+      : composerDraftRequest.selectAll ? 0 : nextDraft.length;
+
+    updateDraft(nextDraft);
+    if (composerDraftRequest.mode === 'replace') {
+      updateImages([]);
+      updateBrowserAnnotations([]);
+      updateForkNotice(composerDraftRequest.notice ?? null);
+    } else if (composerDraftRequest.notice) {
+      updateForkNotice(composerDraftRequest.notice);
+    }
+    setCaretPosition(nextCaret);
     clearComposerDraftRequest(composerDraftRequest.id);
     requestAnimationFrame(() => {
-      if (!mounted.current || activeDraftKey.current !== targetKey || draftRef.current !== composerDraftRequest.text) return;
+      if (!mounted.current || activeDraftKey.current !== targetKey || draftRef.current !== nextDraft) return;
       textarea.current?.focus({ preventScroll: true });
-      const end = composerDraftRequest.text.length;
-      textarea.current?.setSelectionRange(composerDraftRequest.selectAll ? 0 : end, end);
+      textarea.current?.setSelectionRange(composerDraftRequest.selectAll ? 0 : nextCaret, composerDraftRequest.selectAll ? nextDraft.length : nextCaret);
     });
-  }, [clearComposerDraftRequest, composerDraftRequest, updateDraft, updateForkNotice, updateImages]);
+  }, [clearComposerDraftRequest, composerDraftRequest, updateBrowserAnnotations, updateDraft, updateForkNotice, updateImages]);
 
   useLayoutEffect(() => {
     const element = composer.current;
@@ -662,7 +726,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     const submittedDraftRevision = draftRevision.current;
     const submittedImages = imagesRef.current;
     const submittedImagesRevision = imagesRevision.current;
-    const text = submittedDraft.trim();
+    const submittedBrowserAnnotationIds = [...browserAnnotationIdsRef.current];
+    const submittedBrowserAnnotationsRevision = browserAnnotationsRevision.current;
+    const text = submittedDraft.trim() || (submittedBrowserAnnotationIds.length > 0 ? 'Address the attached browser annotations.' : '');
     if (!text || runtimeNow.status !== 'ready' || submittingRef.current || !('piDesktop' in window)) return;
     submittingRef.current = true;
     if (mounted.current) {
@@ -685,11 +751,17 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
           return remaining.length === current.length ? current : remaining;
         });
       }
+      if (originDraft?.browserAnnotationsRevision === submittedBrowserAnnotationsRevision) {
+        updateBrowserAnnotationsForKey(originDraftKey, []);
+      } else if (submittedBrowserAnnotationIds.length > 0) {
+        const submittedIds = new Set(submittedBrowserAnnotationIds);
+        updateBrowserAnnotationsForKey(originDraftKey, (current) => current.filter((id) => !submittedIds.has(id)));
+      }
     };
     try {
       const goalCommand = parseGoalMaxCommand(text);
       if (goalCommand) {
-        if (submittedImages.length > 0) throw new Error('Remove image attachments before starting GoalMax.');
+        if (submittedImages.length > 0 || submittedBrowserAnnotationIds.length > 0) throw new Error('Remove image and browser annotation attachments before starting GoalMax.');
         if (goalCommand.kind === 'invalid') throw new Error(goalCommand.message);
         if (typeof window.piDesktop.createGoalMax !== 'function') throw new Error('Restart Fate UI to create persistent goals.');
         setActiveGoal(await window.piDesktop.createGoalMax({
@@ -702,7 +774,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         clearSubmittedDraft();
         return;
       }
-      const stopCommand = submittedImages.length === 0 ? parseAgentStopCommand(text) : null;
+      const stopCommand = submittedImages.length === 0 && submittedBrowserAnnotationIds.length === 0 ? parseAgentStopCommand(text) : null;
       if (stopCommand) {
         if (typeof window.piDesktop.controlSubagent !== 'function') throw new Error('Restart Fate UI to use direct agent controls.');
         const state = await window.piDesktop.controlSubagent({ action: 'cancel', target: stopCommand.target });
@@ -714,8 +786,21 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         return;
       }
       const promptImages = submittedImages.map(({ name, mimeType, data }) => ({ name, mimeType, data }));
-      const acceptance = await window.piDesktop.prompt({ text, behavior, ...(promptImages.length ? { images: promptImages } : {}) });
+      const browserAnnotationRefs = submittedBrowserAnnotationIds.map((id) => ({ id }));
+      const acceptance = await window.piDesktop.prompt({
+        text,
+        behavior,
+        ...(promptImages.length ? { images: promptImages } : {}),
+        ...(browserAnnotationRefs.length ? { browserAnnotations: browserAnnotationRefs } : {}),
+      });
       if (!acceptance.accepted) return;
+      if (submittedBrowserAnnotationIds.length > 0 && typeof window.piDesktop.dismissBrowserAnnotations === 'function') {
+        try {
+          await window.piDesktop.dismissBrowserAnnotations(submittedBrowserAnnotationIds);
+        } catch (error) {
+          useBrowserStore.getState().setError(error instanceof Error ? error.message : 'Sent page markers could not be cleared.');
+        }
+      }
       clearSubmittedDraft();
     } catch (error) {
       if (mounted.current && activeDraftKey.current === originDraftKey) {
@@ -1316,8 +1401,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
 
   const mutateQueuedMessage = async (id: string, action: QueueMutationInput['action']) => {
     if (!('piDesktop' in window) || queueBusyRef.current) return;
-    if (action === 'edit' && (draftRef.current.trim() || imagesRef.current.length > 0)) {
-      setComposerError('Finish or clear the current draft before editing a queued message.');
+    if (action === 'edit' && (draftRef.current.trim() || imagesRef.current.length > 0 || browserAnnotationIdsRef.current.length > 0)) {
+      setComposerError('Finish or clear the current draft and attachments before editing a queued message.');
       textarea.current?.focus({ preventScroll: true });
       return;
     }
@@ -1346,6 +1431,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
           bytes: Math.floor(image.data.length * 3 / 4),
           pixels: 0,
         })));
+        updateBrowserAnnotations((result.restored.browserAnnotations ?? []).map(({ id: annotationId }) => annotationId));
         requestAnimationFrame(() => {
           if (!mounted.current) return;
           textarea.current?.focus({ preventScroll: true });
@@ -1570,6 +1656,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 <AppTooltip content={item.text}><span className="queued-message-preview icon-label">{item.text}</span></AppTooltip>
                 <div className="queued-message-actions">
                   {item.images?.length ? <span className="queued-message-attachments">{item.images.length} image{item.images.length === 1 ? '' : 's'}</span> : null}
+                  {item.browserAnnotations?.length ? <span className="queued-message-attachments">{item.browserAnnotations.length} page note{item.browserAnnotations.length === 1 ? '' : 's'}</span> : null}
                   {item.behavior === 'followUp' ? (
                     <button className="queued-message-steer" type="button" disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'steer')}>Steer</button>
                   ) : (
@@ -1625,6 +1712,18 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
             <GitFork size={14} aria-hidden="true" />
             <span><strong>Fork ready</strong><small>{forkNotice}</small></span>
             <button type="button" aria-label="Dismiss fork instructions" onClick={() => updateForkNotice(null)}><X size={12} /></button>
+          </div>
+        )}
+        {attachedBrowserAnnotations.length > 0 && (
+          <div className="composer-browser-annotations" aria-label="Attached browser annotations">
+            {attachedBrowserAnnotations.map((annotation, index) => (
+              <BrowserAnnotationAttachment
+                key={annotation.id}
+                annotation={annotation}
+                index={index + 1}
+                onRemove={() => updateBrowserAnnotations((current) => current.filter((id) => id !== annotation.id))}
+              />
+            ))}
           </div>
         )}
         {images.length > 0 && <div className="composer-attachments">{images.map((image, index) => (
@@ -1855,7 +1954,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                     aria-label={runtime.streaming ? 'Queue follow-up message' : goalCancelable && !draft.trim() ? 'Goal control; hold to cancel goal' : 'Send message'}
                     aria-describedby={runtime.streaming || goalCancelable ? 'streaming-send-instructions' : undefined}
                     aria-busy={submitting}
-                    disabled={!connected || (!runtime.streaming && submitting) || (!runtime.streaming && !goalCancelable && !draft.trim())}
+                    disabled={!connected || (!runtime.streaming && submitting) || (!runtime.streaming && !goalCancelable && !draft.trim() && browserAnnotationIds.length === 0)}
                     onPointerDown={startSendHold}
                     onPointerUp={(event) => finishSendHold(normalizedPointerId(event.pointerId))}
                     onPointerCancel={(event) => cancelSendHold(normalizedPointerId(event.pointerId))}
@@ -1890,5 +1989,85 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         </Dialog.Portal>
       </Dialog.Root>
     </div>
+  );
+}
+
+function BrowserAnnotationAttachment({
+  annotation,
+  index,
+  onRemove,
+}: {
+  annotation: BrowserAnnotation;
+  index: number;
+  onRemove: () => void;
+}) {
+  const [comment, setComment] = useState(annotation.comment);
+  const [busy, setBusy] = useState(false);
+  const target = annotation.target.accessibleName || annotation.target.role || annotation.target.tagName || 'Page element';
+  const element = annotation.target.tagName
+    ? `<${annotation.target.tagName}${annotation.target.locatorHints.id ? `#${annotation.target.locatorHints.id}` : ''}>`
+    : annotation.kind === 'region' ? 'selected region' : 'page element';
+  const excerpt = annotation.domExcerpt?.trim() || `${element} ${target}`;
+
+  useEffect(() => setComment(annotation.comment), [annotation.comment]);
+
+  const saveComment = async () => {
+    const next = comment.trim();
+    if (next === annotation.comment || !('piDesktop' in window)) return;
+    setBusy(true);
+    try {
+      const updated = await window.piDesktop.updateBrowserAnnotation(annotation.id, next);
+      useBrowserStore.getState().replaceAnnotation(updated);
+    } catch (error) {
+      useBrowserStore.getState().setError(error instanceof Error ? error.message : 'The browser note could not be saved.');
+      setComment(annotation.comment);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!('piDesktop' in window) || busy) return;
+    setBusy(true);
+    try {
+      const removed = await window.piDesktop.removeBrowserAnnotation(annotation.id);
+      if (!removed) throw new Error('That browser annotation no longer exists.');
+      useBrowserStore.getState().removeAnnotation(annotation.id);
+      onRemove();
+    } catch (error) {
+      useBrowserStore.getState().setError(error instanceof Error ? error.message : 'The browser attachment could not be removed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <article className="composer-browser-annotation" data-testid="browser-annotation-attachment">
+      <button
+        type="button"
+        className="composer-browser-annotation-preview"
+        aria-label={`Show browser annotation ${index}: ${target}`}
+        onClick={() => { if ('piDesktop' in window) void window.piDesktop.highlightBrowserAnnotation(annotation.id); }}
+      >
+        <span><Globe2 size={12} aria-hidden="true" /><em>{index}</em><strong>{target}</strong><code>{element}</code></span>
+        <pre><code>{excerpt}</code></pre>
+      </button>
+      <div className="composer-browser-annotation-note">
+        <input
+          value={comment}
+          disabled={busy}
+          aria-label={`Note for browser annotation ${index}`}
+          placeholder="Add a note for Pi…"
+          maxLength={8_000}
+          onChange={(event) => setComment(event.target.value)}
+          onBlur={() => void saveComment()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
+            if (event.key === 'Escape') { setComment(annotation.comment); event.currentTarget.blur(); }
+          }}
+        />
+        <button type="button" aria-label={`Remove browser annotation ${index}`} onClick={() => void remove()}><X size={12} /></button>
+      </div>
+    </article>
   );
 }

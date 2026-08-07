@@ -127,9 +127,23 @@ jobs:
           $installer = (Resolve-Path "artifacts/Fate-UI-$version-Windows-${{ matrix.arch }}.exe").Path
           $installDirectory = Join-Path $env:RUNNER_TEMP 'fate-ui-installed'
           $uninstaller = Join-Path $installDirectory 'Uninstall Fate UI.exe'
+          $environmentKey = 'HKCU:\Environment'
+          $pathProperty = Get-ItemProperty -Path $environmentKey -Name Path -ErrorAction SilentlyContinue
+          $hadUserPath = $null -ne $pathProperty
+          $originalUserPath = if ($hadUserPath) { [string]$pathProperty.Path } else { $null }
+          $sentinelPath = "$installDirectory-tools"
+          $seededUserPath = @($originalUserPath, $sentinelPath) | Where-Object { -not [string]::IsNullOrEmpty($_) }
+          Set-ItemProperty -Path $environmentKey -Name Path -Value ($seededUserPath -join ';')
+          function Assert-UserPathEntry([string]$entry, [bool]$present) {
+            $current = [string](Get-ItemProperty -Path $environmentKey -Name Path -ErrorAction Stop).Path
+            $found = ($current -split ';') -contains $entry
+            if ($found -ne $present) { throw "Expected PATH entry '$entry' presence to be $present, received '$current'." }
+          }
           try {
             $install = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$installDirectory" -Wait -PassThru
             if ($install.ExitCode -ne 0) { throw "NSIS installer exited with code $($install.ExitCode)." }
+            Assert-UserPathEntry $sentinelPath $true
+            Assert-UserPathEntry $installDirectory $true
             $executable = Join-Path $installDirectory 'fate-ui.exe'
             $launcher = Join-Path $installDirectory 'fate.cmd'
             if (-not (Test-Path -Path $executable -PathType Leaf)) { throw "Installed executable was not found at $executable." }
@@ -148,9 +162,16 @@ jobs:
               Start-Sleep -Seconds 5
             }
           } finally {
-            if (Test-Path -Path $uninstaller -PathType Leaf) {
-              $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
-              if ($uninstall.ExitCode -ne 0) { Write-Warning "NSIS uninstaller exited with code $($uninstall.ExitCode)." }
+            try {
+              if (Test-Path -Path $uninstaller -PathType Leaf) {
+                $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+                if ($uninstall.ExitCode -ne 0) { Write-Warning "NSIS uninstaller exited with code $($uninstall.ExitCode)." }
+              }
+              Assert-UserPathEntry $sentinelPath $true
+              Assert-UserPathEntry $installDirectory $false
+            } finally {
+              if ($hadUserPath) { Set-ItemProperty -Path $environmentKey -Name Path -Value $originalUserPath }
+              else { Remove-ItemProperty -Path $environmentKey -Name Path -ErrorAction SilentlyContinue }
             }
           }
       - name: Mount and smoke macOS DMG

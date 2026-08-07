@@ -15,13 +15,20 @@ const child = spawn(executable, applicationArguments, {
   env: { ...process.env, PI_DESKTOP_SMOKE: '1', PI_OFFLINE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
+const requiredMarkers = ['PI_DESKTOP_SPEECH_OK', 'PI_DESKTOP_YT_DLP_OK', 'PI_DESKTOP_THEMES_OK', 'PI_DESKTOP_TERMINAL_OK', 'PI_DESKTOP_SMOKE_OK'];
+const seenMarkers = new Set();
 let output = '';
+const capture = (chunk) => {
+  const combined = `${output}${chunk.toString()}`;
+  for (const marker of requiredMarkers) if (combined.includes(marker)) seenMarkers.add(marker);
+  output = combined.slice(-1_000_000);
+};
 child.stdout.on('data', (chunk) => {
-  output += chunk;
+  capture(chunk);
   process.stdout.write(chunk);
 });
 child.stderr.on('data', (chunk) => {
-  output += chunk;
+  capture(chunk);
   process.stderr.write(chunk);
 });
 
@@ -32,8 +39,8 @@ const result = await new Promise((resolve, reject) => {
 });
 clearTimeout(timeout);
 
-for (const marker of ['PI_DESKTOP_SPEECH_OK', 'PI_DESKTOP_YT_DLP_OK', 'PI_DESKTOP_THEMES_OK', 'PI_DESKTOP_SMOKE_OK']) {
-  if (!output.includes(marker)) {
+for (const marker of requiredMarkers) {
+  if (!seenMarkers.has(marker)) {
     throw new Error(`Installed application did not emit ${marker} (exit ${String(result.code)}, signal ${String(result.signal)}).`);
   }
 }

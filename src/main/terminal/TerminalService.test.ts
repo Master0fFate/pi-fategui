@@ -18,7 +18,7 @@ const ptyMock = vi.hoisted(() => {
 
 vi.mock('node-pty', () => ({ spawn: ptyMock.spawn }));
 
-import { TerminalService } from './TerminalService';
+import { smokeTerminalRuntime, TerminalService } from './TerminalService';
 
 function createService(trusted = true) {
   const logs = new AppLogService();
@@ -44,6 +44,20 @@ describe('TerminalService', () => {
   it('requires a trusted project', () => {
     expect(() => createService(false).service.create(1, 80, 24)).toThrow(/trust a project/i);
     expect(ptyMock.spawn).not.toHaveBeenCalled();
+  });
+
+  it('smokes the host default shell through a real PTY-shaped exchange', async () => {
+    const pending = smokeTerminalRuntime(process.cwd());
+    const command = ptyMock.handle.write.mock.calls.at(-1)?.[0] as string;
+    const marker = command.match(/FATE_PTY_SMOKE_[a-f0-9]+/u)?.[0];
+    expect(marker).toBeTruthy();
+    ptyMock.state.onData?.(`${marker}\r\n`);
+    ptyMock.state.onExit?.({ exitCode: 0 });
+
+    await expect(pending).resolves.toEqual(expect.any(String));
+    expect(ptyMock.spawn).toHaveBeenCalledWith(expect.any(String), [], expect.objectContaining({ cwd: process.cwd(), cols: 80, rows: 24 }));
+    expect(ptyMock.state.dataDispose).toHaveBeenCalledOnce();
+    expect(ptyMock.state.exitDispose).toHaveBeenCalledOnce();
   });
 
   it('owns PTYs per renderer and batches output before exit', () => {

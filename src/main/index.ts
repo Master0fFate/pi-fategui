@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, screen, session, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, Menu, protocol, screen, session, shell, systemPreferences } from 'electron';
 import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,8 +8,12 @@ import { registerIpc } from './ipc/registerIpc';
 import { parseLaunchProjectPath } from './launchProject';
 import { acquireInstanceProfile } from './instanceProfile';
 import { AppLogService } from './logging/AppLogService';
+import { AutomationRepository } from './automations/AutomationRepository';
 import { MusicService, PublicHttpsProxy } from './music/MusicService';
+import { BrowserHost } from './browser/BrowserHost';
+import { LOCAL_PAGE_SCHEME } from './browser/LocalPageRegistry';
 import { PiRuntimeService } from './pi/PiRuntimeService';
+import { BrowserRuntimeBridge } from './pi/BrowserRuntimeBridge';
 import { SessionPermissionStore } from './pi/SessionPermissionStore';
 import { GoalMaxRepository } from './pi/goalmaxxing/GoalMaxRepository';
 import { ProjectService } from './projects/ProjectService';
@@ -17,11 +21,17 @@ import { secureWebPreferences } from './security/windowOptions';
 import { createTrustedRendererPolicy, isExternalHttpsUrl, isTrustedAudioPermissionRequest, isTrustedRendererUrl } from './security/trustedRenderer';
 import { SettingsService } from './settings/SettingsService';
 import { SpeechService } from './speech/SpeechService';
-import { TerminalService } from './terminal/TerminalService';
+import { smokeTerminalRuntime, TerminalService } from './terminal/TerminalService';
 import { UpdateService } from './updates/UpdateService';
 import { MINIMUM_WINDOW_SIZE, WindowStateService, type WindowPlacement } from './windowState';
 import { installWindowZoomShortcuts } from './windowZoom';
 import { appCommandSchema, ipcChannels, windowStateSchema, type AppCommand } from '../shared/contracts/ipc';
+import { browserEventBatchSchema } from '../shared/contracts/browser';
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: LOCAL_PAGE_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+}]);
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 
@@ -51,6 +61,9 @@ const instanceProfile = acquireInstanceProfile(app);
 configurePackagedSpeechLibrary();
 const logs = new AppLogService();
 const settings = new SettingsService(logs);
+const automations = new AutomationRepository(logs);
+let browserHost: BrowserHost | null = null;
+const browserBridge = new BrowserRuntimeBridge(() => browserHost?.current() ?? null);
 const runtime = new PiRuntimeService(
   undefined,
   undefined,
@@ -58,6 +71,7 @@ const runtime = new PiRuntimeService(
   undefined,
   () => settings.get().imageGeneration,
   new GoalMaxRepository(logs),
+  browserBridge,
 );
 const projects = new ProjectService();
 const files = new FilesystemService();
@@ -116,7 +130,8 @@ function installMenu(): void {
     { label: 'View', submenu: [
       { label: 'Command Palette', accelerator: 'CmdOrCtrl+K', click: () => sendCommand('open-palette') },
       { label: 'Toggle Sidebar', accelerator: 'CmdOrCtrl+B', click: () => sendCommand('toggle-sidebar') },
-      { label: 'Toggle Inspector', accelerator: 'CmdOrCtrl+Shift+B', click: () => sendCommand('toggle-inspector') },
+      { label: 'Toggle Browser', accelerator: 'CmdOrCtrl+Shift+B', click: () => sendCommand('toggle-browser') },
+      { label: 'Toggle Inspector', click: () => sendCommand('toggle-inspector') },
       { label: 'Toggle Terminal', accelerator: 'CmdOrCtrl+`', click: () => sendCommand('open-terminal') },
       { type: 'separator' },
       { role: 'zoomIn' },
@@ -125,7 +140,7 @@ function installMenu(): void {
       { type: 'separator' }, { role: 'reload' }, { role: 'toggleDevTools', visible: !app.isPackaged },
     ] },
     { label: 'Agent', submenu: [
-      { label: 'Focus Composer', accelerator: 'CmdOrCtrl+L', click: () => sendCommand('focus-composer') },
+      { label: 'Focus Browser Address / Composer', accelerator: 'CmdOrCtrl+L', click: () => sendCommand('focus-address') },
       { label: 'Stop Generation', click: () => sendCommand('stop-generation') },
     ] },
     { label: 'Help', submenu: [{ label: 'Settings', accelerator: 'CmdOrCtrl+,', click: () => sendCommand('open-settings') }] },
@@ -208,7 +223,7 @@ function createWindow(): BrowserWindow {
 
   if (process.env.PI_DESKTOP_SMOKE === '1') {
     window.webContents.once('did-finish-load', () => {
-      void Promise.all([speech.getStatus(), music.getStatus(), settings.loadThemes()]).then(([speechStatus, musicStatus, themes]) => {
+      void Promise.all([speech.getStatus(), music.getStatus(), settings.loadThemes(), smokeTerminalRuntime(process.cwd())]).then(([speechStatus, musicStatus, themes, terminalShell]) => {
         if (!musicStatus.available) throw new Error(musicStatus.message ?? 'Bundled yt-dlp is unavailable.');
         if (!themes.some((theme) => theme.name === 'Pi · dark') || !themes.some((theme) => theme.name === 'Pi · light')) {
           throw new Error('Bundled Pi themes are unavailable.');
@@ -216,6 +231,7 @@ function createWindow(): BrowserWindow {
         console.log(`PI_DESKTOP_SPEECH_OK ${speechStatus.backend}`);
         console.log(`PI_DESKTOP_YT_DLP_OK ${musicStatus.version}`);
         console.log('PI_DESKTOP_THEMES_OK');
+        console.log(`PI_DESKTOP_TERMINAL_OK ${terminalShell}`);
         console.log('PI_DESKTOP_SMOKE_OK');
         setTimeout(() => app.quit(), 100);
       }).catch((error: unknown) => {
@@ -235,6 +251,9 @@ function createWindow(): BrowserWindow {
   window.on('closed', () => {
     removeWindowZoomShortcuts();
     if (mainWindow === window) {
+      void browserHost?.reset().catch((error: unknown) => {
+        logs.write('warn', 'browser', `Browser shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
       mainWindow = null;
       rendererReady = false;
     }
@@ -244,6 +263,17 @@ function createWindow(): BrowserWindow {
 
 app.whenReady().then(async () => {
   const proxyUrl = await rendererNetworkProxy.start();
+  browserHost = new BrowserHost({
+    currentProject: () => runtime.getState(false).project,
+    currentPermissionLevel: () => runtime.getState(false).permissionLevel ?? 'full-access',
+    bridge: browserBridge,
+    emit: (owner, event) => {
+      if (!owner.isDestroyed()) owner.webContents.send(ipcChannels.browserEvents, browserEventBatchSchema.parse([event]));
+    },
+    command: (owner, command) => {
+      if (!owner.isDestroyed()) owner.webContents.send(ipcChannels.appCommand, appCommandSchema.parse(command));
+    },
+  });
   const developmentUrl = process.env.VITE_DEV_SERVER_URL;
   const developmentBypass = developmentUrl ? new URL(developmentUrl).host : null;
   await session.defaultSession.setProxy({
@@ -285,7 +315,7 @@ app.whenReady().then(async () => {
       logs.write('warn', 'microphone', `macOS microphone permission could not be requested: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, updates, rendererPolicy });
+  const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, updates, browser: browserHost, automations, rendererPolicy });
   projectPathOpener = mainCommands.openProjectPath;
   installMenu();
   mainWindow = createWindow();
@@ -303,7 +333,7 @@ app.on('before-quit', (event) => {
   music.dispose();
   rendererNetworkProxy.dispose();
   shutdown = Promise.race([
-    Promise.all([runtime.dispose(), speech.dispose(), windowState.flush()]).then(() => undefined),
+    Promise.all([runtime.dispose(), speech.dispose(), windowState.flush(), browserHost?.reset()]).then(() => undefined),
     new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
   ]).catch((error: unknown) => {
     logs.write('warn', 'app', `Application shutdown failed: ${error instanceof Error ? error.message : String(error)}`);

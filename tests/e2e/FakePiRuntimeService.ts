@@ -380,6 +380,18 @@ export class FakePiRuntimeService {
     return { cleared: true, archivedGoalId: goal.id };
   }
   async newSession(): Promise<RuntimeState> { this.activeSession = 'e2e-session-1'; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(this.activeSession) ?? 'full-access'; this.emitState(); return this.getState(); }
+  async prepareAutomationSession(name: string, permissionLevel: 'read-only' | 'edit'): Promise<RuntimeState> {
+    const sessionId = 'e2e-automation-session';
+    if (!this.sessions.some((session) => session.id === sessionId)) {
+      this.sessions.push({ id: sessionId, title: name, firstMessage: '', path: 'test://automation-session', createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString(), messageCount: 0, active: true });
+    }
+    this.activeSession = sessionId;
+    this.queuedMessages = [];
+    this.permissionLevel = permissionLevel;
+    this.sessionPermissions.set(sessionId, permissionLevel);
+    this.emitState();
+    return this.getState();
+  }
   async listSessions(query = ''): Promise<SessionSummary[]> { return this.getState().sessions!.filter((session) => session.title.toLowerCase().includes(query.toLowerCase())); }
   async switchSession(sessionId: string): Promise<RuntimeState> { this.activeSession = sessionId; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(sessionId) ?? 'full-access'; this.emitState(true); return this.getState(); }
   async renameSession(): Promise<RuntimeState> { return this.getState(); }
