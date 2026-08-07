@@ -267,6 +267,35 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
       webContents.getAllWebContents().some((contents) => contents.getURL().startsWith('fate-local://'))
     ))).toBe(true);
 
+    await expect.poll(async () => {
+      const [reservation, nativeBounds, zoom] = await Promise.all([
+        page.locator('.browser-viewport-reservation').boundingBox(),
+        application.evaluate(({ BrowserWindow }) => {
+          const owner = BrowserWindow.getAllWindows()[0];
+          const child = owner?.contentView.children[0];
+          return child?.getBounds() ?? null;
+        }),
+        application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.webContents.getZoomFactor() ?? 1),
+      ]);
+      if (!reservation || !nativeBounds) return Number.POSITIVE_INFINITY;
+      return Math.max(
+        Math.abs(nativeBounds.x - Math.round(reservation.x * zoom)),
+        Math.abs(nativeBounds.y - Math.round(reservation.y * zoom)),
+        Math.abs(nativeBounds.width - Math.round(reservation.width * zoom)),
+        Math.abs(nativeBounds.height - Math.round(reservation.height * zoom)),
+      );
+    }).toBeLessThanOrEqual(1);
+    await expect.poll(() => application.evaluate(async ({ webContents }) => {
+      const browser = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('fate-local://'));
+      if (!browser) return false;
+      return browser.executeJavaScript(`document.readyState === 'complete' && ['#preview-title', '#save', '#publish'].every((selector) => {
+        const element = document.querySelector(selector);
+        if (!element) return false;
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight;
+      })`);
+    })).toBe(true);
+
     const snapshot = await page.evaluate(async () => window.piDesktop.snapshotBrowser({ mode: 'interactive' }));
     expect(snapshot.serialized).toContain('Browser annotation fixture');
     expect(snapshot.serialized).toContain('Save changes');
@@ -299,25 +328,6 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
       })`);
     });
     expect(localEgressPolicy).toEqual({ directive: 'connect-src', blocked: 'https://example.invalid/collect' });
-
-    await expect.poll(async () => {
-      const [reservation, nativeBounds, zoom] = await Promise.all([
-        page.locator('.browser-viewport-reservation').boundingBox(),
-        application.evaluate(({ BrowserWindow }) => {
-          const owner = BrowserWindow.getAllWindows()[0];
-          const child = owner?.contentView.children[0];
-          return child?.getBounds() ?? null;
-        }),
-        application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.webContents.getZoomFactor() ?? 1),
-      ]);
-      if (!reservation || !nativeBounds) return Number.POSITIVE_INFINITY;
-      return Math.max(
-        Math.abs(nativeBounds.x - Math.round(reservation.x * zoom)),
-        Math.abs(nativeBounds.y - Math.round(reservation.y * zoom)),
-        Math.abs(nativeBounds.width - Math.round(reservation.width * zoom)),
-        Math.abs(nativeBounds.height - Math.round(reservation.height * zoom)),
-      );
-    }).toBeLessThanOrEqual(1);
 
     const primaryModifier: 'meta' | 'control' = process.platform === 'darwin' ? 'meta' : 'control';
     await application.evaluate(({ webContents }, input) => {
@@ -1155,12 +1165,18 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
       (element) => element.scrollHeight > element.clientHeight,
     );
     expect(timelineScrollable).toBe(true);
-    await page.locator('.conversation-virtuoso').evaluate((element) => {
+    await expect.poll(() => page.locator('.conversation-virtuoso').evaluate((element) => {
       const scroller = element as HTMLElement;
-      scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight - 40);
-      scroller.dispatchEvent(new Event('scroll'));
-    });
-    await page.waitForTimeout(50);
+      const composer = document.querySelector<HTMLElement>('.composer-wrap');
+      const lastRow = [...document.querySelectorAll<HTMLElement>('.timeline-row')].at(-1);
+      if (!composer || !lastRow) return Number.NEGATIVE_INFINITY;
+      const overlap = lastRow.getBoundingClientRect().bottom - composer.getBoundingClientRect().top;
+      if (overlap <= 0 && scroller.scrollTop > 0) {
+        scroller.scrollTop = Math.max(0, scroller.scrollTop - Math.ceil(16 - overlap));
+        scroller.dispatchEvent(new Event('scroll'));
+      }
+      return overlap;
+    }), { timeout: 5_000 }).toBeGreaterThan(0);
     const conversationScrollLayers = await page.evaluate(() => {
       const scroller = document.querySelector<HTMLElement>('.conversation-virtuoso');
       const scrollbar = document.querySelector<HTMLElement>('.conversation-scrollbar');
