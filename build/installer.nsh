@@ -142,13 +142,10 @@
 
   !macro customUnInstall
     ${IfNot} ${isUpdated}
-      ReadRegStr $0 HKCU "${INSTALL_REGISTRY_KEY}" "FateCliPath"
-      ${If} $0 == "1"
-        Call un.FateRemoveUserPath
-      ${EndIf}
-      ReadRegStr $0 HKLM "${INSTALL_REGISTRY_KEY}" "FateCliPath"
-      ${If} $0 == "1"
+      ${If} $installMode == "all"
         Call un.FateRemoveMachinePath
+      ${Else}
+        Call un.FateRemoveUserPath
       ${EndIf}
       SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
     ${EndIf}
