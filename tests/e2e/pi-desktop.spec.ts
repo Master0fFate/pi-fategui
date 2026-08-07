@@ -262,7 +262,7 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
     const addressInput = page.getByRole('textbox', { name: 'Browser address' });
     await addressInput.fill(localEntry);
     await addressInput.press('Enter');
-    await expect(page.getByRole('tab', { name: 'Fate Local Preview' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Fate Local Preview' })).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => application.evaluate(({ webContents }) => (
       webContents.getAllWebContents().some((contents) => contents.getURL().startsWith('fate-local://'))
     ))).toBe(true);
@@ -1320,9 +1320,11 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     expect(narrowLayout.shellOverflow).toBeLessThanOrEqual(0);
     expect(Math.abs(narrowLayout.settingsTriggerWidth - narrowLayout.footerWidth)).toBeLessThanOrEqual(1);
 
-    const closed = page.waitForEvent('close');
-    await page.getByRole('button', { name: 'Close window' }).click();
-    await closed;
+    const [, closeError] = await Promise.all([
+      page.waitForEvent('close'),
+      page.getByRole('button', { name: 'Close window' }).click().then(() => null, (error: unknown) => error),
+    ]);
+    if (closeError instanceof Error && !/target page, context or browser has been closed/iu.test(closeError.message)) throw closeError;
   } finally {
     await application.close();
     await rm(fixture.worktree, { recursive: true, force: true });

@@ -94,17 +94,25 @@ export class SemanticSnapshotEngine {
     }
     if (this.captureInFlight) throw new BrowserError('ACTION_BLOCKED', 'A semantic snapshot is already being captured.', true);
     this.refs.beginDocument(input.tabId, input.documentEpoch);
-    const operation = Promise.all([
-      this.cdp.send<AxTreeResult>('Accessibility.getFullAXTree'),
-      this.cdp.send<DomSnapshotResult>('DOMSnapshot.captureSnapshot', {
-        computedStyles: [...SNAPSHOT_STYLE_PROPERTIES], includePaintOrder: true, includeDOMRects: true,
-      }),
-      this.cdp.send<FrameTreeResult>('Page.getFrameTree'),
-      this.cdp.send<LayoutMetricsResult>('Page.getLayoutMetrics'),
-      this.cdp.supports('Target')
-        ? this.cdp.send<TargetListResult>('Target.getTargets').catch(() => ({ targetInfos: [] }))
-        : Promise.resolve({ targetInfos: [] } as TargetListResult),
-    ]);
+    const operation = (async () => {
+      // Capture DOM layout first so Chromium has flushed the current document
+      // before we read its accessibility tree and viewport. Running all three
+      // commands together can return a newly laid-out DOM with an older AX tree.
+      const [domResult, frameTree, targets] = await Promise.all([
+        this.cdp.send<DomSnapshotResult>('DOMSnapshot.captureSnapshot', {
+          computedStyles: [...SNAPSHOT_STYLE_PROPERTIES], includePaintOrder: true, includeDOMRects: true,
+        }),
+        this.cdp.send<FrameTreeResult>('Page.getFrameTree'),
+        this.cdp.supports('Target')
+          ? this.cdp.send<TargetListResult>('Target.getTargets').catch(() => ({ targetInfos: [] }))
+          : Promise.resolve({ targetInfos: [] } as TargetListResult),
+      ]);
+      const [axResult, metrics] = await Promise.all([
+        this.cdp.send<AxTreeResult>('Accessibility.getFullAXTree'),
+        this.cdp.send<LayoutMetricsResult>('Page.getLayoutMetrics'),
+      ]);
+      return [axResult, domResult, frameTree, metrics, targets] as const;
+    })();
     const tracked = operation.then(() => undefined, () => undefined).finally(() => {
       if (this.captureInFlight === tracked) this.captureInFlight = null;
     });

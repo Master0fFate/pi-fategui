@@ -9,6 +9,31 @@ const cdp: BrowserCdpClient = {
 };
 
 describe('SemanticSnapshotEngine', () => {
+  it('flushes DOM layout before reading the accessibility tree and viewport', async () => {
+    const calls: string[] = [];
+    const captureCdp = {
+      supports: () => true,
+      send: async (method: string) => {
+        calls.push(method);
+        if (method === 'DOMSnapshot.captureSnapshot') return { strings: [], documents: [] };
+        if (method === 'Accessibility.getFullAXTree') return { nodes: [] };
+        if (method === 'Target.getTargets') return { targetInfos: [] };
+        return {};
+      },
+    } as unknown as BrowserCdpClient;
+    const engine = new SemanticSnapshotEngine(captureCdp, new BrowserRefRegistry());
+
+    const result = await engine.capture({
+      tabId: 'tab-1', targetId: 'target-1', documentEpoch: 1,
+      url: 'https://example.test/', title: 'Page', mode: 'interactive',
+    });
+
+    const domCapture = calls.indexOf('DOMSnapshot.captureSnapshot');
+    expect(result.nodeCount).toBe(0);
+    expect(calls.indexOf('Accessibility.getFullAXTree')).toBeGreaterThan(domCapture);
+    expect(calls.indexOf('Page.getLayoutMetrics')).toBeGreaterThan(domCapture);
+  });
+
   it('redacts password values and sensitive URL components', () => {
     const engine = new SemanticSnapshotEngine(cdp, new BrowserRefRegistry());
     const strings = ['https://example.test/login?token=secret#otp', 'frame-1', 'INPUT', 'type', 'password', 'block', 'visible', '1'];

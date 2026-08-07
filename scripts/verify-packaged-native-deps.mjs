@@ -357,6 +357,12 @@ function normalizeArch(arch) {
   return ARCH_ALIASES.get(raw) ?? raw;
 }
 
+export function nodePtyRuntimeRelativeBases(platform, arch) {
+  const targetPlatform = normalizePlatform(platform);
+  const targetArch = normalizeArch(arch);
+  return ['build/Release', 'build/Debug', `prebuilds/${targetPlatform}-${targetArch}`];
+}
+
 export function verifyPackagedNativeDeps({ appOutDir, platform, arch }) {
   const targetPlatform = normalizePlatform(platform);
   const targetArch = normalizeArch(arch);
@@ -492,7 +498,11 @@ export function verifyPackagedNativeDeps({ appOutDir, platform, arch }) {
   for (const relative of ['package.json', 'LICENSE', 'lib/index.js', 'lib/utils.js']) requireFile(index, errors, `${nodePty}/${relative}`, { unpacked: true });
   const nodePtyPackage = readJson(index, errors, `${nodePty}/package.json`, { unpacked: true });
   validatePackageMetadata(errors, nodePtyPackage, 'node-pty', `${nodePty}/package.json`);
-  const nodePtyBases = [`${nodePty}/prebuilds/${targetPlatform}-${targetArch}`, `${nodePty}/build/Release`];
+  // Match node-pty's runtime loader order exactly. A local build takes
+  // precedence over a prebuild, so validating only the prebuild can miss the
+  // helper binary the packaged app will actually execute.
+  const nodePtyBases = nodePtyRuntimeRelativeBases(targetPlatform, targetArch)
+    .map((relativeBase) => `${nodePty}/${relativeBase}`);
   const nodePtyBase = nodePtyBases.find((candidate) => index.has(`${candidate}/pty.node`, true));
   if (!nodePtyBase) errors.push(`${nodePtyBases.join(' or ')}/pty.node (must be unpacked)`);
   const nodePtyAddons = nodePtyBase
@@ -508,7 +518,13 @@ export function verifyPackagedNativeDeps({ appOutDir, platform, arch }) {
       requireTargetBinary(index, errors, `${nodePtyBase}/pty.node`, targetPlatform, targetArch);
       // node-pty builds and uses spawn-helper only on macOS. Linux passes the
       // path through its shared JS layer but the native implementation ignores it.
-      if (targetPlatform === 'darwin') requireTargetBinary(index, errors, `${nodePtyBase}/spawn-helper`, targetPlatform, targetArch);
+      if (targetPlatform === 'darwin') {
+        const helper = `${nodePtyBase}/spawn-helper`;
+        if (requireTargetBinary(index, errors, helper, targetPlatform, targetArch)) {
+          const helperPath = index.physicalPath(helper);
+          if (!helperPath || (statSync(helperPath).mode & 0o111) === 0) errors.push(`${helper} (must be executable)`);
+        }
+      }
     }
   }
 
@@ -559,11 +575,13 @@ export function verifyPackagedNativeDeps({ appOutDir, platform, arch }) {
 export async function afterPack(context) {
   if (context.electronPlatformName === 'darwin') {
     const nodePtyRoot = path.resolve(import.meta.dirname, '..', 'node_modules', 'node-pty');
-    const relativeBases = [`prebuilds/darwin-${context.arch}`, 'build/Release'];
-    const relativeBase = relativeBases.find((candidate) => existsSync(path.join(nodePtyRoot, candidate, 'pty.node')));
-    const source = relativeBase ? path.join(nodePtyRoot, relativeBase, 'spawn-helper') : null;
-    if (source && existsSync(source)) {
-      const target = path.join(findResourcesDir(context.appOutDir), 'app.asar.unpacked', 'node_modules', 'node-pty', relativeBase, 'spawn-helper');
+    const relativeBases = nodePtyRuntimeRelativeBases('darwin', context.arch);
+    const resourcesDir = findResourcesDir(context.appOutDir);
+    for (const relativeBase of relativeBases) {
+      if (!existsSync(path.join(nodePtyRoot, relativeBase, 'pty.node'))) continue;
+      const source = path.join(nodePtyRoot, relativeBase, 'spawn-helper');
+      if (!existsSync(source)) throw new Error(`[native-deps] node-pty ${relativeBase}/spawn-helper is missing`);
+      const target = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules', 'node-pty', relativeBase, 'spawn-helper');
       mkdirSync(path.dirname(target), { recursive: true });
       copyFileSync(source, target);
       chmodSync(target, 0o755);
