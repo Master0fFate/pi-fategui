@@ -3,6 +3,7 @@ import { Check, Copy, Download, Expand, Image as ImageIcon, ImageOff, X } from '
 import { Children, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { normalizeBrowserWebUrl } from '../../../shared/contracts/browser';
 import type { RuntimeImage } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
 import { writeClipboardText } from '../../lib/clipboard';
@@ -287,6 +288,10 @@ function safeMarkdownUrl(url: string, key: string): string {
   if (/^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(trimmed)) return trimmed.length <= MAX_INLINE_IMAGE_URL_LENGTH ? trimmed : '';
   if (/^blob:/i.test(trimmed) || trimmed.startsWith('#')) return trimmed;
   if (key === 'src' && isLocalImageReference(trimmed)) return trimmed;
+  if (key !== 'src') {
+    const browserUrl = normalizeBrowserWebUrl(trimmed);
+    if (browserUrl) return browserUrl;
+  }
   try {
     const parsed = new URL(trimmed);
     if (parsed.protocol === 'https:' || parsed.protocol === 'mailto:') return parsed.toString();

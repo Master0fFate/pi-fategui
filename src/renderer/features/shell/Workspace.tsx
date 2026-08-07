@@ -7,7 +7,7 @@ import { ConversationTimeline } from '../chat/ConversationTimeline';
 import { ExtensionStatusRail } from '../chat/ExtensionStatusRail';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useBrowserStore } from '../../stores/browserStore';
-import { useUiStore } from '../../stores/uiStore';
+import { BROWSER_PANE_MAX, BROWSER_PANE_MIN, useUiStore } from '../../stores/uiStore';
 import { BrowserWorkspace } from '../browser/BrowserWorkspace';
 import { WorkspaceActivityPulse } from './WorkspaceActivityPulse';
 
@@ -149,8 +149,8 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
           <ResizeHandle
             label="Resize chat and browser"
             value={browserPaneWidth}
-            minimum={360}
-            maximum={900}
+            minimum={BROWSER_PANE_MIN}
+            maximum={BROWSER_PANE_MAX}
             direction={-1}
             onChange={setBrowserPaneWidth}
             onReset={() => setBrowserPaneWidth(520)}

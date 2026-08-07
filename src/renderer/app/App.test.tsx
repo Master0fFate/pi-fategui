@@ -52,6 +52,34 @@ describe('first-launch shell', () => {
     expect(screen.getByRole('button', { name: 'Model and reasoning settings' })).toBeDisabled();
   });
 
+  it('opens a link in the Browser workspace when the native link menu requests it', async () => {
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    };
+    const browserState = {
+      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, paused: true, controlLevel: 'off' as const, mode: 'agent' as const,
+      tabs: [{ id: 'browser-main', profileId: 'project', url: 'http://localhost:4173/', title: 'Preview', loading: false, canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true }], grants: [],
+    };
+    let openLink: ((url: string) => void) | undefined;
+    const navigateBrowser = vi.fn(async () => browserState);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => runtime), onEvents: vi.fn(() => () => undefined), initializeBrowser: vi.fn(async () => browserState),
+        onBrowserLinkOpen: vi.fn((listener: (url: string) => void) => { openLink = listener; return () => undefined; }), navigateBrowser,
+      } as unknown as PiDesktopApi,
+    });
+    useRuntimeStore.getState().setRuntime(runtime);
+
+    render(<App />);
+    await waitFor(() => expect(openLink).toBeTypeOf('function'));
+    act(() => openLink?.('localhost:4173'));
+
+    await waitFor(() => expect(navigateBrowser).toHaveBeenCalledWith('http://localhost:4173/'));
+    expect(useUiStore.getState().browserOpen).toBe(true);
+  });
+
   it('routes every first-launch action through project selection', async () => {
     const user = userEvent.setup();
     const runtime = useRuntimeStore.getState().runtime;

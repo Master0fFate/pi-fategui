@@ -52,6 +52,22 @@ describe('preload desktop bridge', () => {
     expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.clipboardWriteText, { text: 'Copied response' });
   });
 
+  it('routes link context actions through the validated browser bridge', async () => {
+    electron.invoke.mockResolvedValueOnce({ shown: true });
+
+    await expect(piDesktopApi.showBrowserLinkContextMenu('localhost:4173/preview')).resolves.toBeUndefined();
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.browserShowLinkContextMenu, { url: 'http://localhost:4173/preview' });
+
+    const listener = vi.fn();
+    const unsubscribe = piDesktopApi.onBrowserLinkOpen(listener);
+    const handler = electron.on.mock.calls.find(([channel]) => channel === ipcChannels.browserOpenLink)?.[1] as ((event: unknown, payload: unknown) => void);
+    handler({}, 'https://example.test/docs');
+    expect(listener).toHaveBeenCalledWith('https://example.test/docs');
+    expect(() => handler({}, 'javascript:alert(1)')).toThrow();
+    unsubscribe();
+    expect(electron.removeListener).toHaveBeenCalledWith(ipcChannels.browserOpenLink, handler);
+  });
+
   it('rejects malformed clipboard responses instead of reporting false success', async () => {
     electron.invoke.mockResolvedValueOnce({ written: false });
 

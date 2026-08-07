@@ -127,6 +127,19 @@ function installMenu(): void {
       { type: 'separator' },
       { role: 'quit' },
     ] },
+    // The Edit submenu is required for clipboard/edit keyboard shortcuts to work
+    // on every platform. On macOS, Cmd+C/Cmd+V/Cmd+X/Cmd+A/Cmd+Z are only routed
+    // to the focused field when role menu items exist; Windows and Linux route
+    // them natively, and the roles are harmless there.
+    { label: 'Edit', submenu: [
+      { role: 'undo' },
+      { role: 'redo' },
+      { type: 'separator' },
+      { role: 'cut' },
+      { role: 'copy' },
+      { role: 'paste' },
+      { role: 'selectAll' },
+    ] },
     { label: 'View', submenu: [
       { label: 'Command Palette', accelerator: 'CmdOrCtrl+K', click: () => sendCommand('open-palette') },
       { label: 'Toggle Sidebar', accelerator: 'CmdOrCtrl+B', click: () => sendCommand('toggle-sidebar') },
@@ -146,6 +159,19 @@ function installMenu(): void {
     { label: 'Help', submenu: [{ label: 'Settings', accelerator: 'CmdOrCtrl+,', click: () => sendCommand('open-settings') }] },
   ]);
   Menu.setApplicationMenu(menu);
+}
+
+function buildEditorContextMenu(params: Electron.ContextMenuParams): Menu {
+  return Menu.buildFromTemplate([
+    { role: 'undo', enabled: params.editFlags.canUndo },
+    { role: 'redo', enabled: params.editFlags.canRedo },
+    { type: 'separator' },
+    { role: 'cut', enabled: params.editFlags.canCut },
+    { role: 'copy', enabled: params.editFlags.canCopy },
+    { role: 'paste', enabled: params.editFlags.canPaste },
+    { type: 'separator' },
+    { role: 'selectAll', enabled: params.editFlags.canSelectAll },
+  ]);
 }
 
 function rememberWindowPlacement(window: BrowserWindow | null): void {
@@ -182,6 +208,15 @@ function createWindow(): BrowserWindow {
   });
   window.webContents.on('will-navigate', (event, url) => {
     if (!isTrustedRendererUrl(url, rendererPolicy)) event.preventDefault();
+  });
+  // Right-click edit menu (Cut/Copy/Paste/Select All + undo/redo). This gives a
+  // consistent clipboard menu on Windows, macOS and Linux. Monaco and the
+  // embedded browser render their own menus (they cancel the native event), so
+  // this never duplicates them; it only shows for editable fields and selected
+  // text in the app's own UI.
+  window.webContents.on('context-menu', (_event, params) => {
+    if (!params.isEditable && !params.selectionText) return;
+    buildEditorContextMenu(params).popup({ window });
   });
   const removeWindowZoomShortcuts = installWindowZoomShortcuts(window);
   window.once('ready-to-show', () => {

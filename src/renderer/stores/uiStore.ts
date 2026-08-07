@@ -33,6 +33,11 @@ export const LEFT_MIN = 220;
 export const LEFT_MAX = 460;
 export const RIGHT_MIN = 280;
 export const RIGHT_MAX = 560;
+export const BROWSER_PANE_MIN = 360;
+// Generous upper bound so the browser pane can expand far enough left to reach a
+// ~16:9 viewport aspect ratio on large windows. The flex layout naturally clamps
+// to the available width, so a high cap is harmless and just removes the cap.
+export const BROWSER_PANE_MAX = 2400;
 
 export type SidebarTab = 'sessions' | 'resources' | 'automations';
 export type InspectorTab = 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context' | 'goal';
@@ -165,7 +170,7 @@ export const useUiStore = create<UiState>()(
       toggleTerminal: () => set((state) => ({ terminalOpen: !state.terminalOpen })),
       setBrowserOpen: (browserOpen) => set((state) => ({ browserOpen, inspectorCollapsed: browserOpen ? true : state.inspectorCollapsed })),
       toggleBrowser: () => set((state) => ({ browserOpen: !state.browserOpen, inspectorCollapsed: !state.browserOpen ? true : state.inspectorCollapsed })),
-      setBrowserPaneWidth: (browserPaneWidth) => set({ browserPaneWidth: clamp(browserPaneWidth, 360, 900) }),
+      setBrowserPaneWidth: (browserPaneWidth) => set({ browserPaneWidth: clamp(browserPaneWidth, BROWSER_PANE_MIN, BROWSER_PANE_MAX) }),
       setMusicPlayerEnabled: (musicPlayerEnabled) => set({ musicPlayerEnabled }),
       setMusicPlaying: (musicPlaying) => set({ musicPlaying }),
       setSendMessageWithModifier: (sendMessageWithModifier) => set({ sendMessageWithModifier }),

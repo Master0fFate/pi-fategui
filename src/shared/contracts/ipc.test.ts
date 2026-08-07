@@ -24,6 +24,8 @@ describe('IPC contracts', () => {
 
   it('uses an explicit allowlist without duplicate channels', () => {
     expect(ipcChannels.systemGetInfo).toBe('system:get-info');
+    expect(ipcChannels.browserShowLinkContextMenu).toBe('browser:show-link-context-menu');
+    expect(ipcChannels.browserOpenLink).toBe('browser:open-link');
     expect(ipcChannels.runtimePrompt).toBe('runtime:prompt');
     expect(ipcChannels.projectReveal).toBe('project:reveal');
     expect(ipcChannels.imageReadLocal).toBe('image:read-local');

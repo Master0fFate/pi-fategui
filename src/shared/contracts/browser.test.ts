@@ -2,12 +2,21 @@ import { describe, expect, it } from 'vitest';
 import {
   browserAnnotationDismissInputSchema,
   browserAnnotationSchema,
+  browserLinkContextMenuInputSchema,
   browserOriginGrantSchema,
+  normalizeBrowserWebUrl,
   browserSnapshotInputSchema,
   browserTypeInputSchema,
 } from './browser';
 
 describe('browser contracts', () => {
+  it('normalizes only credential-free HTTP(S) links, including localhost', () => {
+    expect(normalizeBrowserWebUrl('localhost:4173/preview')).toBe('http://localhost:4173/preview');
+    expect(browserLinkContextMenuInputSchema.parse({ url: 'https://example.test/docs' })).toEqual({ url: 'https://example.test/docs' });
+    expect(() => browserLinkContextMenuInputSchema.parse({ url: 'javascript:alert(1)' })).toThrow();
+    expect(() => browserLinkContextMenuInputSchema.parse({ url: 'https://user:pass@example.test' })).toThrow();
+  });
+
   it('keeps grants and snapshot inputs strict and bounded', () => {
     expect(browserOriginGrantSchema.parse({
       origin: 'https://example.test', read: true, interact: true, scope: 'task',

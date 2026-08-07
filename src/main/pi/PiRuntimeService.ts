@@ -1242,14 +1242,13 @@ export class PiRuntimeService {
     let queuedReservationActive = queuedRecord !== null;
     if (queuedRecord) {
       slot.queuedMessages.push(queuedRecord);
-      if (stagedModel && slot.pendingModel?.token === stagedModel.token) {
-        slot.pendingModel = null;
-        this.coldPendingModels.delete(session.sessionId);
-      }
-      if (stagedThinkingLevel && slot.pendingThinkingLevel?.token === stagedThinkingLevel.token) {
-        slot.pendingThinkingLevel = null;
-        this.coldPendingThinkingLevels.delete(session.sessionId);
-      }
+      // Keep pendingModel/pendingThinkingLevel staged. A queued message is still
+      // the next user turn, so the staged model and reasoning must remain visible
+      // in the composer (and re-staged onto a rebound session) until the queued
+      // message is actually consumed or cancelled. Clearing them here made the
+      // model pill snap back to the previous setting the moment a message was
+      // queued, even though the bound setting was still pending. The staged
+      // values are released when the bound message is consumed or cancelled.
     }
 
     if (activeGoal && activeGoal.status !== 'completed' && activeGoal.status !== 'cancelled') this.applyGoalAgentPolicy(slot, session, activeGoal);
@@ -2052,9 +2051,23 @@ export class PiRuntimeService {
       }
       if (!queued?.boundModel && !queued?.boundThinkingLevel) return;
       try {
-        if (queued.boundModel) await session.setModel(queued.boundModel.model);
+        if (queued.boundModel) {
+          await session.setModel(queued.boundModel.model);
+          // The staged setting has now been consumed by the turn it was bound to;
+          // release it so a later idle prompt does not re-apply a stale stage.
+          if (slot.pendingModel?.token === queued.boundModel.token) {
+            slot.pendingModel = null;
+            this.coldPendingModels.delete(session.sessionId);
+          }
+        }
         if (!ownsSession()) return;
-        if (queued.boundThinkingLevel) session.setThinkingLevel(queued.boundThinkingLevel.level);
+        if (queued.boundThinkingLevel) {
+          session.setThinkingLevel(queued.boundThinkingLevel.level);
+          if (slot.pendingThinkingLevel?.token === queued.boundThinkingLevel.token) {
+            slot.pendingThinkingLevel = null;
+            this.coldPendingThinkingLevels.delete(session.sessionId);
+          }
+        }
         slot.boundaryModelOverride = queued.boundModel ?? null;
         slot.stateError = null;
         if (this.selectedSlot === slot) this.emitState();
@@ -2506,6 +2519,17 @@ export class PiRuntimeService {
       this.reconcileQueuedMessagesForSlot(slot, session.getSteeringMessages?.().length ?? 0, session.getFollowUpMessages?.().length ?? 0, false);
       if (input.action === 'edit' && target.boundModel && !slot.pendingModel) slot.pendingModel = target.boundModel;
       if (input.action === 'edit' && target.boundThinkingLevel && !slot.pendingThinkingLevel) slot.pendingThinkingLevel = target.boundThinkingLevel;
+      // Cancelling a queued message releases the setting it had captured back to
+      // the session defaults, but only when the staged value still matches the
+      // cancelled binding (a later change by the user is left intact).
+      if (input.action === 'cancel' && target.boundModel && slot.pendingModel?.token === target.boundModel.token) {
+        slot.pendingModel = null;
+        this.coldPendingModels.delete(session.sessionId);
+      }
+      if (input.action === 'cancel' && target.boundThinkingLevel && slot.pendingThinkingLevel?.token === target.boundThinkingLevel.token) {
+        slot.pendingThinkingLevel = null;
+        this.coldPendingThinkingLevels.delete(session.sessionId);
+      }
       slot.stateError = null;
       this.emitState();
       return { state: this.getState(false), ...(restored ? { restored } : {}) };

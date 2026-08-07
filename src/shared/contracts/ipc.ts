@@ -57,6 +57,8 @@ export const ipcChannels = {
   browserSetVisible: 'browser:set-visible',
   browserSetOverlay: 'browser:set-overlay',
   browserNavigate: 'browser:navigate',
+  browserShowLinkContextMenu: 'browser:show-link-context-menu',
+  browserOpenLink: 'browser:open-link',
   browserOpenLocalFile: 'browser:open-local-file',
   browserNewTab: 'browser:new-tab',
   browserActivateTab: 'browser:activate-tab',
@@ -1103,6 +1105,8 @@ export interface PiDesktopApi {
   setBrowserVisible: (visible: boolean) => Promise<BrowserState>;
   setBrowserOverlayBlocked: (blocked: boolean) => Promise<BrowserState>;
   navigateBrowser: (url: string) => Promise<BrowserState>;
+  showBrowserLinkContextMenu: (url: string) => Promise<void>;
+  onBrowserLinkOpen: (listener: (url: string) => void) => () => void;
   openBrowserLocalFile: () => Promise<BrowserState | null>;
   createBrowserTab: (initialUrl?: string) => Promise<BrowserState>;
   activateBrowserTab: (tabId: string) => Promise<BrowserState>;

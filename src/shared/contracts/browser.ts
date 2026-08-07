@@ -9,6 +9,28 @@ const browserIdSchema = z.string().trim().min(1).max(160).refine(
 );
 const boundedUrlSchema = z.string().trim().min(1).max(8_192);
 const boundedOriginSchema = z.string().trim().min(1).max(2_048);
+const bareLocalhostUrlPattern = /^(?:localhost|(?:[a-z\d-]+\.)*localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)(?::\d+)?(?:[/?#]|$)/iu;
+
+/** Normalize a web link that is safe to send to the built-in or system browser. */
+export function normalizeBrowserWebUrl(value: string): string | null {
+  const input = value.trim();
+  if (!input || input.length > 8_192 || /[\u0000-\u001f\u007f]/u.test(input)) return null;
+  const candidate = bareLocalhostUrlPattern.test(input) ? `http://${input}` : input;
+  try {
+    const url = new URL(candidate);
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+export const browserWebUrlSchema = z.string().transform((value, context) => {
+  const normalized = normalizeBrowserWebUrl(value);
+  if (normalized) return normalized;
+  context.addIssue({ code: z.ZodIssueCode.custom, message: 'Links must be credential-free HTTP(S) URLs.' });
+  return z.NEVER;
+});
 const finiteNumberSchema = z.number().finite();
 
 export const browserControlLevelSchema = z.enum(['off', 'observe', 'interact']);
@@ -39,6 +61,10 @@ export const browserTabIdInputSchema = z.object({ tabId: browserIdSchema }).stri
 export const browserNavigateInputSchema = z.object({
   url: boundedUrlSchema,
 }).strict();
+export const browserLinkContextMenuInputSchema = z.object({
+  url: browserWebUrlSchema,
+}).strict();
+export const browserLinkContextMenuResultSchema = z.object({ shown: z.literal(true) }).strict();
 export const browserSnapshotModeSchema = z.enum(['interactive', 'content', 'full']);
 export const browserSnapshotInputSchema = z.object({
   mode: browserSnapshotModeSchema.default('interactive'),

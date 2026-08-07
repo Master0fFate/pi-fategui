@@ -5,6 +5,8 @@ vi.mock('electron', () => ({
   BrowserWindow: { fromWebContents: vi.fn(), getAllWindows: vi.fn(() => []) },
   clipboard: { writeText: vi.fn() },
   dialog: { showOpenDialog: vi.fn(), showSaveDialog: vi.fn() },
+  Menu: { buildFromTemplate: vi.fn() },
+  shell: { openExternal: vi.fn() },
   ipcMain: { handle: vi.fn() },
   webContents: { fromId: vi.fn() },
 }));

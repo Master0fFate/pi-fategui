@@ -9,6 +9,7 @@ import { useGoalMaxStore } from '../stores/goalMaxStore';
 import { useBrowserStore } from '../stores/browserStore';
 import { fallbackThemes } from '../theme';
 import { attachBrowserAnnotationToSession } from '../features/chat/Composer';
+import { openBrowserLink } from '../features/browser/browserLink';
 
 const MAX_HYDRATION_BUFFER_EVENTS = 1_000;
 const MAX_HYDRATION_BUFFER_BYTES = 32 * 1024 * 1024;
@@ -118,6 +119,11 @@ function BrowserInitializer() {
       }
     });
   }, [applyEvents]);
+
+  useEffect(() => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.onBrowserLinkOpen !== 'function') return undefined;
+    return window.piDesktop.onBrowserLinkOpen((url) => { void openBrowserLink(url); });
+  }, []);
 
   useEffect(() => {
     const desktop = 'piDesktop' in window ? window.piDesktop : undefined;

@@ -1,5 +1,7 @@
-import { Fragment, type AnchorHTMLAttributes, type ClassAttributes, type ReactNode } from 'react';
+import { Fragment, type AnchorHTMLAttributes, type ClassAttributes, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { normalizeBrowserWebUrl } from '../../../shared/contracts/browser';
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
+import { openBrowserLink } from '../browser/browserLink';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 
@@ -77,12 +79,35 @@ export function AgentMentionChip({ handle, children }: { handle: string; childre
 
 type AgentMentionLinkProps = ClassAttributes<HTMLAnchorElement> & AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown };
 
-export function AgentMentionLink({ href, children, node: _node, ...props }: AgentMentionLinkProps) {
+export function AgentMentionLink({ href, children, node: _node, onClick, onContextMenu, onAuxClick, target: _target, rel: _rel, ...props }: AgentMentionLinkProps) {
   if (href?.startsWith(agentUrlPrefix)) {
     const handle = href.slice(agentUrlPrefix.length).toLocaleLowerCase();
     return <AgentMentionChip handle={handle}>{children}</AgentMentionChip>;
   }
-  return <a {...props} href={href} target="_blank" rel="noreferrer">{children}</a>;
+  const browserUrl = href ? normalizeBrowserWebUrl(href) : null;
+  if (!browserUrl) return <a {...props} href={href} onClick={onClick} onContextMenu={onContextMenu} onAuxClick={onAuxClick} target="_blank" rel="noreferrer">{children}</a>;
+
+  const openInBrowser = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    onClick?.(event);
+    if (event.defaultPrevented) return;
+    event.preventDefault();
+    void openBrowserLink(browserUrl);
+  };
+  const openMenu = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    onContextMenu?.(event);
+    if (event.defaultPrevented) return;
+    event.preventDefault();
+    if ('piDesktop' in window && typeof window.piDesktop.showBrowserLinkContextMenu === 'function') {
+      void window.piDesktop.showBrowserLinkContextMenu(browserUrl);
+    }
+  };
+  const openFromMiddleClick = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    onAuxClick?.(event);
+    if (event.defaultPrevented || event.button !== 1) return;
+    event.preventDefault();
+    void openBrowserLink(browserUrl);
+  };
+  return <a {...props} href={browserUrl} onClick={openInBrowser} onContextMenu={openMenu} onAuxClick={openFromMiddleClick}>{children}</a>;
 }
 
 export function MentionText({ text }: { text: string }) {

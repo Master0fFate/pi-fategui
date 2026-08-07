@@ -3,6 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import { TerminalSquare, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { writeClipboardText } from '../../lib/clipboard';
 import { useUiStore } from '../../stores/uiStore';
 
 export function TerminalPanel() {
@@ -36,6 +37,19 @@ export function TerminalPanel() {
     terminal.loadAddon(fit);
     terminal.open(host.current);
     fit.fit();
+    terminal.attachCustomKeyEventHandler((event) => {
+      const copyShortcut = event.key.toLowerCase() === 'c'
+        && ((event.ctrlKey && event.shiftKey && !event.altKey) || (event.metaKey && !event.ctrlKey && !event.altKey));
+      if (event.type !== 'keydown' || !copyShortcut) return true;
+      const selection = terminal.getSelection();
+      if (!selection) return true;
+      event.preventDefault();
+      event.stopPropagation();
+      void writeClipboardText(selection).catch(() => {
+        useUiStore.getState().showToast({ kind: 'error', title: 'Copy failed', message: 'The system clipboard is unavailable.' });
+      });
+      return false;
+    });
     let terminalId: string | null = null;
     let disposed = false;
     let resizeFrame: number | null = null;

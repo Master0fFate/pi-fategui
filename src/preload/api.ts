@@ -108,8 +108,11 @@ import {
   browserControlLevelInputSchema,
   browserEventBatchSchema,
   browserHistoryInputSchema,
+  browserLinkContextMenuInputSchema,
+  browserLinkContextMenuResultSchema,
   browserNavigateInputSchema,
   browserNewTabInputSchema,
+  browserWebUrlSchema,
   browserOperationResultSchema,
   browserOriginGrantSchema,
   browserOriginInputSchema,
@@ -221,6 +224,15 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async navigateBrowser(url: string) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.browserNavigate, browserNavigateInputSchema.parse({ url }));
     return browserStateSchema.parse(result);
+  },
+  async showBrowserLinkContextMenu(url: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserShowLinkContextMenu, browserLinkContextMenuInputSchema.parse({ url }));
+    browserLinkContextMenuResultSchema.parse(result);
+  },
+  onBrowserLinkOpen(listener: (url: string) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(browserWebUrlSchema.parse(payload));
+    ipcRenderer.on(ipcChannels.browserOpenLink, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.browserOpenLink, handler);
   },
   async openBrowserLocalFile() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.browserOpenLocalFile, emptyInputSchema.parse({}));

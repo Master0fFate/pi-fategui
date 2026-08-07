@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, webContents } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, webContents } from 'electron';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import packageManifest from '../../../package.json';
 import { promises as fs } from 'node:fs';
@@ -131,6 +131,8 @@ import {
   browserConfirmationResponseSchema,
   browserControlLevelInputSchema,
   browserHistoryInputSchema,
+  browserLinkContextMenuInputSchema,
+  browserLinkContextMenuResultSchema,
   browserNavigateInputSchema,
   browserNewTabInputSchema,
   browserOperationResultSchema,
@@ -452,6 +454,25 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     const { service, tabId } = await activeBrowserTab(event);
     await service.navigate(tabId, url, 'user');
     return browserStateSchema.parse(service.getState());
+  });
+  handle(ipcChannels.browserShowLinkContextMenu, (event, input) => {
+    const { url } = browserLinkContextMenuInputSchema.parse(input);
+    const owner = ownerWindow(event);
+    Menu.buildFromTemplate([
+      {
+        label: 'Open in Browser workspace',
+        click: () => {
+          if (!owner.isDestroyed()) owner.webContents.send(ipcChannels.browserOpenLink, url);
+        },
+      },
+      {
+        label: 'Open in external browser',
+        click: () => { void shell.openExternal(url).catch(() => undefined); },
+      },
+      { type: 'separator' },
+      { label: 'Copy link', click: () => clipboard.writeText(url) },
+    ]).popup({ window: owner });
+    return browserLinkContextMenuResultSchema.parse({ shown: true });
   });
   handle(ipcChannels.browserOpenLocalFile, async (event, input) => {
     emptyInputSchema.parse(input);

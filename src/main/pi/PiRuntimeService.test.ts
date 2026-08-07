@@ -714,7 +714,11 @@ describe('PiRuntimeService', () => {
     expect(fake.session.setModel).not.toHaveBeenCalled();
 
     await service.prompt({ text: 'next direction', behavior: 'followUp' });
-    expect(service.getState(false).pendingModel).toBeNull();
+    // The staged model and reasoning stay visible while the message is queued:
+    // a queued message is still the next user turn. They must not be applied to
+    // the running session until the bound message is consumed.
+    expect(service.getState(false).pendingModel?.id).toBe('fast');
+    expect(service.getState(false).pendingThinkingLevel).toBe('high');
     expect(fake.session.setModel).not.toHaveBeenCalled();
     fake.setQueue([], []);
     fake.emitSession({ type: 'queue_update', steering: [], followUp: [] });

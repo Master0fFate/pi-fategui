@@ -123,6 +123,29 @@ describe('conversation components', () => {
     expect(container.querySelectorAll('.markdown-content li')).toHaveLength(2);
   });
 
+  it('opens HTTP(S) and localhost links in the built-in browser, with a native link menu on right click', async () => {
+    const browserState = {
+      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, paused: true, controlLevel: 'off' as const, mode: 'agent' as const,
+      tabs: [{ id: 'browser-main', profileId: 'project', url: 'http://localhost:4173/preview', title: 'Preview', loading: false, canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true }], grants: [],
+    };
+    const navigateBrowser = vi.fn(async () => browserState);
+    const showBrowserLinkContextMenu = vi.fn(async () => undefined);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { navigateBrowser, showBrowserLinkContextMenu } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    render(<AssistantMarkdown text={'[Open local preview](localhost:4173/preview)'} />);
+    const link = screen.getByRole('link', { name: 'Open local preview' });
+
+    await user.click(link);
+
+    expect(navigateBrowser).toHaveBeenCalledWith('http://localhost:4173/preview');
+    expect(useUiStore.getState().browserOpen).toBe(true);
+    fireEvent.contextMenu(link);
+    expect(showBrowserLinkContextMenu).toHaveBeenCalledWith('http://localhost:4173/preview');
+  });
+
   it('links agent mentions in Markdown without touching inline code', () => {
     useRuntimeStore.getState().hydrateRuntime(ready({ subagents: [childRun] }));
     render(<AssistantMarkdown text={'Ping @auth-reviewer-1, then run `@auth-reviewer-1`.'} />);
