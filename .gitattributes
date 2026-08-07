@@ -1,0 +1,10 @@
+* text=auto
+
+# Keep executable launchers valid regardless of the contributor's checkout settings.
+*.sh text eol=lf
+build/cli/fate text eol=lf
+build/cli/fate-linux text eol=lf
+build/pkg-scripts/* text eol=lf
+
+# Native Windows command launchers use Windows line endings.
+*.cmd text eol=crlf

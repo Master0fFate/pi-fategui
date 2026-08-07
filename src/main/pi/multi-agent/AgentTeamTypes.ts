@@ -1,0 +1,96 @@
+import type { AgentSession, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
+import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
+import type { AgentTeam, AgentTeamEnvelope, AgentTeamNode, AgentTeamTask } from '../../../shared/contracts/multiAgent';
+import type { ToolProvenance } from '../../../shared/contracts/provenance';
+import type { ChildToolName } from '../SubagentProtocol';
+import type { SelectedSubagentSkill } from '../SubagentSkills';
+import type { TurnLease } from './AgentTeamScheduler';
+
+export interface AgentNodeRuntime {
+  session: AgentSession | null;
+  sessionFile?: string;
+  sessionDirectory: string;
+  unsubscribe?: () => void;
+  toolProvenanceByCall: Map<string, ToolProvenance>;
+  lease?: TurnLease;
+  turn?: Promise<void>;
+  controlQueue: Promise<void>;
+  retentionTimer?: ReturnType<typeof setTimeout>;
+  modelRuntime: ModelRuntime;
+  profileSystemPrompt: string;
+  allowDelegation: boolean;
+  instructions?: string;
+  selectedSkills: SelectedSubagentSkill[];
+  skillMode: 'all' | 'selected' | 'none';
+}
+
+export interface AgentTeamRuntime {
+  state: AgentTeam;
+  nodes: Map<string, AgentTeamNode>;
+  tasks: Map<string, AgentTeamTask>;
+  envelopes: Map<string, AgentTeamEnvelope>;
+  nodeRuntime: Map<string, AgentNodeRuntime>;
+  pathToNode: Map<string, string>;
+  operationReceipts: Map<string, unknown>;
+  waitEdges: Map<string, Set<string>>;
+  sequence: number;
+}
+
+export interface SpawnAgentRequest {
+  task: string;
+  name?: string;
+  role?: string;
+  agent?: string;
+  permission?: PermissionLevel;
+  model?: { provider: string; id: string };
+  thinkingLevel?: ThinkingLevel;
+  tools?: ChildToolName[];
+  instructions?: string;
+  skills?: string[];
+  skillMode?: 'all' | 'selected' | 'none';
+  preloadSkills?: boolean;
+  contextTurns?: number;
+}
+
+export interface PreparedAgentRequest extends SpawnAgentRequest {
+  role: string;
+  agentName: string;
+  permission: PermissionLevel;
+  modelInfo: ModelInfo;
+  modelValue: NonNullable<AgentSession['model']>;
+  thinkingLevel: ThinkingLevel;
+  tools: ChildToolName[];
+  profileSystemPrompt: string;
+  selectedSkills: SelectedSubagentSkill[];
+  skillMode: 'all' | 'selected' | 'none';
+}
+
+export interface AgentTeamCoordinatorHost {
+  resolveRoot(sessionId: string): { projectPath: string; session: AgentSession; permissionLevel: PermissionLevel; agentStrategy?: 'auto' | 'off' | 'read-only' } | null;
+  /**
+   * Routes child-generated messages through the root session's lifecycle gate.
+   * A message arriving after `agent_end` must wait for `agent_settled`; queueing
+   * it directly would make Pi continue from a terminal assistant message.
+   */
+  sendRootMessage?(
+    rootSessionId: string,
+    message: Parameters<AgentSession['sendCustomMessage']>[0],
+    activeDelivery: 'steer' | 'followUp',
+    triggerWhenIdle: boolean,
+  ): Promise<void>;
+  emit(rootSessionId: string, team: AgentTeam): void;
+  persist(rootSessionId: string, event: AgentTeamLedgerEvent): void;
+  settled?(rootSessionId: string): void;
+}
+
+export type AgentTeamLedgerEvent = {
+  kind: 'fate-agent-team-event';
+  version: 1;
+  teamId: string;
+  sequence: number;
+  timestamp: number;
+  type: string;
+  payload: Record<string, unknown>;
+};
+
+export type CollaborationToolFactory = (callerNodeId: string, modelRuntime: ModelRuntime) => ToolDefinition[];

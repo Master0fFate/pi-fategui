@@ -1,0 +1,19 @@
+Fate UI
+Copyright 2026 Master0fFate and Fate UI contributors
+
+Fate UI is licensed under the Apache License, Version 2.0.
+
+This product includes and interoperates with the Pi coding agent,
+Copyright 2025 Mario Zechner, distributed under the MIT License.
+Pi source and license information: https://github.com/earendil-works/pi
+The complete Pi MIT license is reproduced in THIRD_PARTY_NOTICES.md and is
+included with packaged Fate UI distributions.
+
+Fate UI is an independent community project. It is not an official Pi
+distribution and is not endorsed by the Pi maintainers.
+
+The Fate UI name, visual identity, and application mark identify the original
+project. The Apache License does not grant permission to use those identifiers
+to imply that a modified build is an official, unmodified, or endorsed release.
+Reasonable use to describe the origin of the software and reproduce this NOTICE
+is permitted.

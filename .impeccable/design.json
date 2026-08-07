@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-23T00:00:00.000Z",
+  "title": "Design System: Pi Desktop",
+  "extensions": {
+    "colorMeta": {
+      "canvas": { "role": "neutral", "displayName": "Workbench Canvas", "canonical": "#090b12", "tonalRamp": ["#090b12", "#0f121c", "#171b28", "#272c3a", "#596277", "#8992a7", "#c4c9d4", "#eef0f7"] },
+      "accent": { "role": "primary", "displayName": "Pi Violet", "canonical": "#7c6cff", "tonalRamp": ["#17132b", "#242039", "#332b5e", "#514a86", "#7063d9", "#7c6cff", "#a99dff", "#d1ccfb"] },
+      "success": { "role": "success", "displayName": "Ready Green", "canonical": "#55c78a", "tonalRamp": ["#13241a", "#192b21", "#23452f", "#376a4a", "#55c78a", "#71d09b", "#ace7c3", "#e4f8eb"] },
+      "warning": { "role": "warning", "displayName": "Attention Amber", "canonical": "#d2a94b", "tonalRamp": ["#241d10", "#2b251a", "#4b3d1d", "#7c642c", "#d2a94b", "#dfbd6f", "#edd79e", "#faf0d5"] },
+      "danger": { "role": "danger", "displayName": "Failure Red", "canonical": "#e35d6a", "tonalRamp": ["#261216", "#311d22", "#54272f", "#8b3a43", "#c45a65", "#e35d6a", "#ee9ca4", "#f9dadd"] }
+    },
+    "typographyMeta": {
+      "title": { "displayName": "Workbench title", "purpose": "Session titles and primary headings." },
+      "body": { "displayName": "Interface body", "purpose": "Conversation, navigation, and controls." },
+      "code": { "displayName": "Literal content", "purpose": "Code, paths, diffs, terminal output, and shortcuts." }
+    },
+    "shadows": [{ "name": "floating-surface", "value": "0 18px 48px rgba(0,0,0,.5)", "purpose": "Dialogs and command palette only." }],
+    "motion": [{ "name": "state", "value": "140ms ease", "purpose": "Immediate hover, collapse, and state acknowledgement; disabled under reduced motion." }],
+    "breakpoints": [{ "name": "compact", "value": "900px" }]
+  },
+  "components": [
+    {
+      "name": "Primary Button", "kind": "button", "refersTo": "button-primary", "description": "The one dominant action in a local region.",
+      "html": "<button class=\"ds-primary\">Open project</button>",
+      "css": ".ds-primary{height:38px;padding:0 16px;border:0;border-radius:7px;background:#7c6cff;color:#eef0f7;font:600 13px ui-sans-serif,system-ui;cursor:pointer}.ds-primary:hover{background:#897bff}.ds-primary:focus-visible{outline:2px solid #a99dff;outline-offset:2px}"
+    },
+    {
+      "name": "Search Input", "kind": "input", "refersTo": "input", "description": "Compact project and session filtering.",
+      "html": "<input class=\"ds-input\" placeholder=\"Search sessions\" />",
+      "css": ".ds-input{box-sizing:border-box;width:240px;height:34px;padding:0 11px;border:1px solid #272c3a;border-radius:7px;background:#090b12;color:#eef0f7;font:400 12px ui-sans-serif,system-ui}.ds-input:hover{border-color:#3f465a}.ds-input:focus-visible{border-color:#7c6cff;outline:2px solid rgba(124,108,255,.25)}"
+    },
+    {
+      "name": "Status Chip", "kind": "chip", "description": "Connection and operation status without decorative emphasis.",
+      "html": "<span class=\"ds-status\">● Connected</span>",
+      "css": ".ds-status{display:inline-flex;align-items:center;height:24px;padding:0 8px;border-radius:999px;background:#192b21;color:#71d09b;font:500 11px ui-sans-serif,system-ui}"
+    },
+    {
+      "name": "Tool Card", "kind": "card", "description": "A bounded chronological Pi tool execution.",
+      "html": "<section class=\"ds-tool\"><strong>Read</strong><code>src/main/index.ts</code><small>Completed · 42 ms</small></section>",
+      "css": ".ds-tool{display:grid;gap:7px;padding:12px;border:1px solid #272c3a;border-radius:8px;background:#0f121c;color:#eef0f7;font:400 12px ui-sans-serif,system-ui}.ds-tool code{color:#c4c9d4;font-family:'Cascadia Mono',Consolas,monospace}.ds-tool small{color:#8992a7}.ds-tool:hover{border-color:#3f465a}.ds-tool:focus-within{outline:2px solid rgba(124,108,255,.25)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Focused Workbench",
+    "overview": "Pi Desktop is a purpose-built instrument for sustained coding work: quiet when idle, precise when active, and transparent when Pi uses tools. A continuous blue-charcoal shell joins navigation, conversation, inspector, and terminal rather than presenting a dashboard of floating cards.",
+    "keyCharacteristics": ["Continuous joined panes with fine structural separators.", "Cool near-white type over charcoal tonal layers.", "Violet reserved for focus, selection, streaming, and primary action.", "Spacious first launch; compact, stable density during work.", "Motion acknowledges state without delaying input or moving layout."],
+    "rules": [
+      { "name": "The One Signal Rule", "body": "Violet marks the current action or location, never ambient decoration across every surface.", "section": "colors" },
+      { "name": "The Tool, Not Costume Rule", "body": "Monospace communicates literal machine content, never generic technical flavor.", "section": "typography" },
+      { "name": "The Flat-by-Default Rule", "body": "A surface earns elevation only when it must sit above another interaction layer.", "section": "elevation" }
+    ],
+    "dos": ["Do keep project trust, connection, model, thinking, active run, and errors findable.", "Do preserve alignment and stable dimensions while text or tool output streams."],
+    "donts": ["Don't imitate Pi's TUI or another coding desktop product.", "Don't use decorative glass, neon glows, fake metrics, gradient text, or visual noise."]
+  }
+}

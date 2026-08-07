@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title description">
+  <title id="title">Fate UI minimal music player concept</title>
+  <desc id="description">A compact bottom-right yt-dlp music dock and composer context wheel in the Catppuccin Mocha interface.</desc>
+  <defs>
+    <filter id="shadow" x="-30%" y="-40%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#000000" flood-opacity="0.58"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="700" fill="#11111b"/>
+  <rect x="18" y="18" width="1164" height="664" rx="18" fill="#181825" stroke="#313244"/>
+  <path d="M244 18V682" stroke="#313244"/>
+  <path d="M886 18V682" stroke="#313244"/>
+  <text x="52" y="72" fill="#cdd6f4" font-family="Segoe UI, sans-serif" font-size="20" font-weight="650">ƒ  Fate UI</text>
+  <text x="52" y="126" fill="#6c7086" font-family="Segoe UI, sans-serif" font-size="10" font-weight="650">SESSIONS</text>
+  <rect x="42" y="144" width="174" height="54" rx="8" fill="#1e1e2e"/>
+  <text x="58" y="168" fill="#cdd6f4" font-family="Segoe UI, sans-serif" font-size="12">Redesign settings smoothly…</text>
+  <text x="58" y="185" fill="#6c7086" font-family="Segoe UI, sans-serif" font-size="9">18 messages · today</text>
+  <text x="276" y="66" fill="#6c7086" font-family="Segoe UI, sans-serif" font-size="10" font-weight="650">SESSION</text>
+  <text x="276" y="88" fill="#cdd6f4" font-family="Segoe UI, sans-serif" font-size="14" font-weight="600">Redesign settings smoothly…</text>
+
+  <rect x="300" y="480" width="550" height="126" rx="15" fill="#181825" stroke="#cba6f7"/>
+  <text x="320" y="512" fill="#6c7086" font-family="Segoe UI, sans-serif" font-size="13">Ask Pi about your project…</text>
+  <text x="320" y="578" fill="#a6adc8" font-family="Segoe UI, sans-serif" font-size="10">Project</text>
+  <text x="380" y="578" fill="#45475a" font-family="Segoe UI, sans-serif" font-size="10">|</text>
+  <text x="397" y="578" fill="#a6adc8" font-family="Segoe UI, sans-serif" font-size="10">File</text>
+  <text x="442" y="578" fill="#a6adc8" font-family="Segoe UI, sans-serif" font-size="10">Image</text>
+  <text x="672" y="578" fill="#bac2de" font-family="Segoe UI, sans-serif" font-size="10" font-weight="600">GPT 5.5</text>
+  <g transform="translate(752 560)">
+    <circle cx="14" cy="14" r="11" fill="none" stroke="#45475a" stroke-width="2"/>
+    <path d="M14 3a11 11 0 0 1 10.7 8.5" fill="none" stroke="#cba6f7" stroke-width="2" stroke-linecap="round"/>
+    <text x="14" y="17" text-anchor="middle" fill="#cdd6f4" font-family="Segoe UI, sans-serif" font-size="7" font-weight="700">22</text>
+  </g>
+  <rect x="800" y="555" width="34" height="34" rx="10" fill="#cba6f7"/>
+  <path d="M817 578V565M812 570l5-5 5 5" fill="none" stroke="#11111b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g filter="url(#shadow)">
+    <rect x="822" y="356" width="330" height="244" rx="12" fill="#1e1e2e"/>
+  </g>
+  <g transform="translate(842 378)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 9a4 4 0 0 1 4-4h5a4 4 0 0 1 0 8H9" stroke="#a6adc8" stroke-width="1.6"/>
+    <path d="M15 9a4 4 0 0 1-4 4H6a4 4 0 0 1 0-8h3" stroke="#a6adc8" stroke-width="1.6"/>
+  </g>
+  <text x="870" y="392" fill="#6c7086" font-family="Segoe UI, sans-serif" font-size="10">Paste media or playlist link</text>
+  <path d="M842 410H1132" stroke="#45475a"/>
+  <path d="M1118 389h10m-4-4 4 4-4 4" fill="none" stroke="#a6adc8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="842" y="442" fill="#a6adc8" font-family="Segoe UI, sans-serif" font-size="9">Deep focus queue</text>
+  <text x="842" y="461" fill="#cdd6f4" font-family="Segoe UI, sans-serif" font-size="12" font-weight="600">Ambient Systems — Night Signal</text>
+  <path d="M842 491H1132" stroke="#45475a" stroke-width="2" stroke-linecap="round"/>
+  <path d="M842 491H1012" stroke="#cba6f7" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="1012" cy="491" r="4" fill="#cdd6f4"/>
+  <text x="842" y="510" fill="#6c7086" font-family="Consolas, monospace" font-size="8">2:18</text>
+  <text x="986" y="510" text-anchor="middle" fill="#a6adc8" font-family="Consolas, monospace" font-size="8">3 / 12</text>
+  <text x="1132" y="510" text-anchor="end" fill="#6c7086" font-family="Consolas, monospace" font-size="8">4:02</text>
+  <g fill="none" stroke="#a6adc8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M955 538v18M951 547l-10-7v14z"/>
+    <path d="M1041 538v18M1045 547l10-7v14z"/>
+  </g>
+  <g fill="#cdd6f4"><rect x="990" y="537" width="4" height="20" rx="1"/><rect x="998" y="537" width="4" height="20" rx="1"/></g>
+  <text x="987" y="584" text-anchor="middle" fill="#6c7086" font-family="Segoe UI, sans-serif" font-size="8">yt-dlp ready · playback stays outside Pi</text>
+  <path d="M1130 621l8 8 8-8" fill="none" stroke="#a6adc8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="1146" cy="615" r="2.5" fill="#cba6f7"/>
+
+  <text x="282" y="648" fill="#6c7086" font-family="Segoe UI, sans-serif" font-size="9">CONCEPT: one elevated micro-surface · borderless controls · lazy playlist resolution · reduced motion collapses instantly</text>
+</svg>

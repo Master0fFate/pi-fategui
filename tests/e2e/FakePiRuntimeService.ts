@@ -1,0 +1,494 @@
+import type { GoalMaxClearResult, GoalMaxControlInput, GoalMaxCreateInput, GoalMaxEvent, GoalMaxState, GoalMaxUpdateInput } from '../../src/shared/contracts/goalmaxxing';
+import type { PermissionLevel, PiEvent, ProjectState, PromptAcceptance, PromptInput, QueuedMessage, QueueMutationInput, QueueMutationResult, RuntimeState, SessionSummary, SubagentControlInput, SubagentRun, ThinkingLevel } from '../../src/shared/contracts/ipc';
+import type { AgentTeam, AgentTeamControlInput } from '../../src/shared/contracts/multiAgent';
+
+const model = { provider: 'test', id: 'deterministic', name: 'Deterministic Test Model', reasoning: true, contextWindow: 100_000, supportsImages: true };
+const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+const tokenHistory = Array.from({ length: 24 }, (_value, index) => {
+  const input = 720 + index * 91;
+  const output = 180 + index * 23;
+  const cacheRead = index < 3 ? 0 : 1_200 + index * 240;
+  const cacheWrite = index % 7 === 0 ? 460 : 0;
+  return {
+    input, output, cacheRead, cacheWrite,
+    ...(index > 8 ? { reasoning: Math.floor(output * 0.42) } : {}),
+    totalTokens: input + output + cacheRead + cacheWrite,
+    cost: 0.006 + index * 0.0017,
+    timestamp: Date.UTC(2026, 0, 1, 12, index * 2),
+  };
+});
+const tokenTelemetry: NonNullable<RuntimeState['tokenTelemetry']> = {
+  session: { input: 41_200, output: 14_800, cacheRead: 82_000, cacheWrite: 6_400, totalTokens: 144_400, cost: 0.4283, turns: 24 },
+  latest: tokenHistory.at(-1)!,
+  history: tokenHistory,
+};
+
+function agentFixture(id: string, handle: string, displayName: string, task: string, status: SubagentRun['status'], mailbox: SubagentRun['mailbox']): SubagentRun {
+  const now = Date.now();
+  return {
+    id, parentSessionId: 'e2e-session-1', parentToolCallId: 'e2e-agent-fixture', task, role: handle.includes('reviewer') ? 'reviewer' : 'runner',
+    handle, displayName, agentName: 'direct', agentSource: 'direct', permissionLevel: 'read-only', enabledTools: ['read', 'grep'],
+    skills: [], skillMode: 'all', preloadedSkills: [], status, model, routingModels: [model], thinkingLevel: 'medium', executionMode: 'managed',
+    controlCount: 0, attempt: 1, maxAttempts: 1, mailbox, notification: 'never', dependsOn: [], createdAt: now - 4_000, updatedAt: now,
+    ...(status === 'running' ? { startedAt: now - 3_500 } : { startedAt: now - 3_500, endedAt: now - 500 }),
+    messages: status === 'running'
+      ? [{ id: `${id}-task`, role: 'user', text: task, timestamp: now - 3_500 }]
+      : [{ id: `${id}-result`, role: 'assistant', text: '**Checks passed.** The assigned task is complete.', timestamp: now - 500 }],
+    tools: [], ...(status === 'completed' ? { result: 'Checks passed. The assigned task is complete.' } : {}),
+    omittedActivity: 0, transcriptTruncated: false, usage: { ...emptyUsage, input: 180, output: 42, contextTokens: 222, turns: 1 },
+  };
+}
+
+function agentTeamFixture(): AgentTeam {
+  const now = Date.now();
+  const teamId = 'e2e-agent-team';
+  const rootId = 'e2e-team-root';
+  const reviewerId = 'e2e-team-reviewer';
+  const verifierId = 'e2e-team-verifier';
+  return {
+    id: teamId, rootSessionId: 'e2e-session-1', protocolVersion: 2, status: 'active', rootNodeId: rootId,
+    limits: { maxDepth: 2, maxNodes: 16, maxActiveTurns: 3, maxMessages: 256, maxMessageBytes: 32 * 1024 }, activeTurns: 1, writerNodeId: reviewerId, usage: { ...emptyUsage },
+    nodes: [
+      { id: rootId, teamId, parentNodeId: null, path: '/root', handle: 'root', displayName: 'Main agent', depth: 0, role: 'root', agentName: 'direct', permissionLevel: 'full-access', enabledTools: ['read'], model, thinkingLevel: 'medium', status: 'active', childIds: [reviewerId], unreadMessages: 0, writer: false, usage: { ...emptyUsage }, createdAt: now, updatedAt: now },
+      { id: reviewerId, teamId, parentNodeId: rootId, path: '/root/reviewer', handle: 'reviewer', displayName: 'Reviewer', depth: 1, role: 'reviewer', agentName: 'direct', permissionLevel: 'edit', enabledTools: ['read', 'grep', 'edit'], model, thinkingLevel: 'high', status: 'active', currentTaskId: 'e2e-team-review-task', childIds: [verifierId], unreadMessages: 0, writer: true, usage: { ...emptyUsage, turns: 1 }, createdAt: now, updatedAt: now },
+      { id: verifierId, teamId, parentNodeId: reviewerId, path: '/root/reviewer/verifier', handle: 'verifier', displayName: 'Verifier', depth: 2, role: 'verifier', agentName: 'direct', permissionLevel: 'read-only', enabledTools: ['read', 'grep'], model, thinkingLevel: 'medium', status: 'ready', childIds: [], unreadMessages: 0, writer: false, usage: { ...emptyUsage, turns: 1 }, createdAt: now, updatedAt: now },
+    ],
+    tasks: [{ id: 'e2e-team-review-task', teamId, assigneeNodeId: reviewerId, requesterNodeId: rootId, inputEnvelopeId: 'e2e-team-review-envelope', summary: 'Review the Agent Teams V2 flow', status: 'running', createdAt: now, startedAt: now }],
+    envelopes: [{ id: 'e2e-team-review-envelope', teamId, sequence: 1, kind: 'NEW_TASK', authorNodeId: rootId, recipientNodeId: reviewerId, taskId: 'e2e-team-review-task', content: 'Review the Agent Teams V2 flow', triggerTurn: true, state: 'consumed', createdAt: now, deliveredAt: now }],
+    operationReceipts: [], timeline: [
+      { id: 'e2e-team-created', sequence: 1, type: 'team.created', summary: 'Agent Team V2 test fixture created.', timestamp: now },
+      {
+        id: 'e2e-team-edit-started', sequence: 2, type: 'tool.started', summary: '/root/reviewer started edit.', timestamp: now + 1,
+        nodeId: reviewerId, taskId: 'e2e-team-review-task', toolCallId: 'e2e-team-edit', toolName: 'edit',
+        provenance: { actor: { kind: 'team', teamId, nodeId: reviewerId, taskId: 'e2e-team-review-task' }, affectedPaths: [{ path: 'src/example.ts', operation: 'edit' }] },
+      },
+      {
+        id: 'e2e-team-edit-completed', sequence: 3, type: 'tool.completed', summary: '/root/reviewer completed edit.', timestamp: now + 2,
+        nodeId: reviewerId, taskId: 'e2e-team-review-task', toolCallId: 'e2e-team-edit', toolName: 'edit',
+        provenance: { actor: { kind: 'team', teamId, nodeId: reviewerId, taskId: 'e2e-team-review-task' }, affectedPaths: [{ path: 'src/example.ts', operation: 'edit' }] },
+      },
+    ], createdAt: now, updatedAt: now,
+  };
+}
+
+export class FakePiRuntimeService {
+  private project: ProjectState | null = null;
+  private activeSession = 'e2e-session-1';
+  private streaming = false;
+  private permissionLevel: PermissionLevel = 'full-access';
+  private queuedMessages: QueuedMessage[] = [];
+  private queueSequence = 0;
+  private profileSequence = 0;
+  private subagents: SubagentRun[] = [];
+  private agentTeams: AgentTeam[] = [];
+  private conversationBranchesEnabled = false;
+  private activeConversationBranchId = 'e2e-path-current';
+  private readonly sessionPermissions = new Map<string, PermissionLevel>();
+  private sink: (events: PiEvent[]) => void = () => undefined;
+  private goalSink: (event: GoalMaxEvent) => void = () => undefined;
+  private readonly goals = new Map<string, GoalMaxState>();
+  private readonly sessions: SessionSummary[] = [
+    { id: 'e2e-session-1', title: 'First session', firstMessage: '', path: 'test://session-1', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 0, active: true },
+    { id: 'e2e-session-2', title: 'Second session', firstMessage: 'Second', path: 'test://session-2', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-03T00:00:00.000Z', messageCount: 1, active: false },
+  ];
+
+  setEventSink(sink: (events: PiEvent[]) => void): void { this.sink = sink; }
+  setGoalEventSink(sink: (event: GoalMaxEvent) => void): void { this.goalSink = sink; }
+  getHydrationState(): RuntimeState { return this.getState(); }
+  getState(): RuntimeState {
+    const historical = this.activeSession === 'e2e-session-2';
+    return {
+      status: this.project ? 'ready' : 'disconnected', project: this.project, sessionId: this.project ? this.activeSession : null,
+      sessionFile: null, streaming: this.streaming, activeSessionRunning: this.streaming, model: this.project ? model : null, models: this.project ? [model] : [],
+      thinkingLevel: 'medium', permissionLevel: this.permissionLevel,
+      messages: historical ? [{ id: 'history-assistant', role: 'assistant', text: '**Second session** history', timestamp: 1, timelinePosition: 0 }] : [],
+      tools: historical ? [{ id: 'history-tool', name: 'read', input: '{"path":"README.md"}', output: 'historical output', outputTruncated: false, status: 'succeeded', startedAt: 2, updatedAt: 3, endedAt: 3, timelinePosition: 0.5 }] : [],
+      commands: [
+        { name: 'goalmax', description: 'Start a persistent, visible, evidence-verified engineering goal', source: 'builtin' },
+        { name: 'parallax', description: 'Control the Parallax engineering protocol', source: 'extension' },
+        { name: 'skill:vibesecurity', description: 'Defensive, evidence-first security review', source: 'skill' },
+        { name: 'review', description: 'Review changes', source: 'prompt' },
+      ],
+      objective: 'Review the deliberately long session objective without allowing it to collide with the Objective label in the narrow inspector.',
+      contextUsage: { tokens: 42_000, contextWindow: 100_000, percent: 42 },
+      ...(this.project ? {
+        tokenTelemetry,
+        extensionUi: {
+          statuses: [
+            { key: 'mcp', text: 'MCP: 2 servers ready' },
+            { key: 'plugin', text: 'PLUGIN: output ready' },
+          ],
+          widgets: [{ key: 'output', lines: ['Output channel connected'] }],
+          working: null,
+          title: null,
+        },
+      } : {}),
+      queue: {
+        steering: this.queuedMessages.filter((item) => item.behavior === 'steer').length,
+        followUp: this.queuedMessages.filter((item) => item.behavior === 'followUp').length,
+        items: this.queuedMessages.map((item) => ({ ...item, ...(item.images ? { images: item.images.map((image) => ({ ...image })) } : {}) })),
+      },
+      sessions: this.sessions.map((session) => ({ ...session, active: session.id === this.activeSession })),
+      subagents: this.activeSession === 'e2e-session-1' ? this.subagents : [],
+      agentTeams: this.activeSession === 'e2e-session-1' ? this.agentTeams : [],
+      branches: this.activeSession === 'e2e-session-1' && this.conversationBranchesEnabled ? [
+        { id: 'e2e-path-current', parentId: 'e2e-path-root', depth: 8, label: 'current', preview: 'Keep the verified implementation', kind: 'message', active: this.activeConversationBranchId === 'e2e-path-current' },
+        { id: 'e2e-path-alternate', parentId: 'e2e-path-root', depth: 11, label: 'custom', preview: 'Explore the alternate implementation', kind: 'custom', active: this.activeConversationBranchId === 'e2e-path-alternate' },
+      ] : [],
+      forkPoints: [], sessionCapabilities: { fork: true, navigate: true, clone: true, import: true, compact: true }, sessionOperation: false, error: null,
+    };
+  }
+  async openProject(project: ProjectState): Promise<RuntimeState> { this.project = project; this.emitState(); return this.getState(); }
+  async prompt(input: PromptInput): Promise<PromptAcceptance> {
+    const runId = 'e2e-run';
+    if (this.streaming && input.behavior !== 'prompt') {
+      this.queueSequence += 1;
+      this.queuedMessages.push({
+        id: `00000000-0000-4000-8000-${String(this.queueSequence).padStart(12, '0')}`,
+        behavior: input.behavior,
+        text: input.text,
+        ...(input.images?.length ? { images: input.images.map((image) => ({ ...image })) } : {}),
+        createdAt: Date.now(),
+      });
+      this.sink([{ type: 'run.accepted', runId, timestamp: Date.now() }]);
+      this.emitState();
+      return { accepted: true, runId };
+    }
+    const profileRequest = /^__FATE_LIVE_PROFILE__(?::(\d+):(\d+))?$/u.exec(input.text);
+    if (profileRequest) {
+      const historyCount = Math.max(0, Math.min(20_000, Number.parseInt(profileRequest[1] ?? '600', 10)));
+      const deltaCount = Math.max(1, Math.min(100_000, Number.parseInt(profileRequest[2] ?? '6000', 10)));
+      this.runLiveProfile(runId, historyCount, deltaCount);
+      return { accepted: true, runId };
+    }
+    if (input.text === '__FATE_AGENT_FIXTURE__') {
+      this.subagents = [
+        agentFixture('e2e-auth-reviewer', 'auth-reviewer-1', 'Auth Reviewer', 'Review the authentication flow', 'running', { state: 'closed', ttlMs: 300_000, followUpCount: 0 }),
+        {
+          ...agentFixture('e2e-test-runner', 'test-runner-1', 'Test Runner', 'Run the desktop regression suite', 'completed', { state: 'available', ttlMs: 300_000, expiresAt: Date.now() + 300_000, followUpCount: 0 }),
+          omittedActivity: 1,
+          transcriptTruncated: true,
+        },
+      ];
+      const timestamp = Date.now();
+      const runIds = this.subagents.map((run) => run.id);
+      this.sink([
+        { type: 'tool.started', toolCallId: 'e2e-agent-fixture', name: 'subagent_start', input: '{"tasks":["auth review","regression suite"]}', timestamp },
+        ...this.subagents.map((run) => ({ type: 'subagent.started' as const, run, timestamp })),
+        { type: 'tool.completed', toolCallId: 'e2e-agent-fixture', name: 'subagent_start', output: 'Started @auth-reviewer-1 and @test-runner-1.', subagentRunIds: runIds, error: false, timestamp: timestamp + 1 },
+      ]);
+      this.emitState();
+      return { accepted: true, runId };
+    }
+    if (input.text === '__FATE_V2_AGENT_FIXTURE__') {
+      this.agentTeams = [agentTeamFixture()];
+      this.conversationBranchesEnabled = true;
+      this.emitState();
+      return { accepted: true, runId };
+    }
+    if (input.text.startsWith('/parallax')) {
+      this.sink([
+        { type: 'run.accepted', runId, timestamp: 1 },
+        { type: 'message.completed', messageId: 'system-parallax', role: 'system', text: '**Parallax** is active.', timestamp: 2 },
+      ]);
+      return { accepted: true, runId };
+    }
+    this.streaming = true;
+    this.sink([{ type: 'run.accepted', runId, timestamp: 1 }, { type: 'run.started', runId, timestamp: 2 }, { type: 'message.started', messageId: 'user-e2e', role: 'user', timestamp: 3 }, { type: 'message.completed', messageId: 'user-e2e', role: 'user', text: 'Inspect this project', timestamp: 4 }]);
+    setTimeout(() => this.sink([
+      { type: 'message.started', messageId: 'assistant-e2e', role: 'assistant', timestamp: 5 },
+      { type: 'assistant.text', messageId: 'assistant-e2e', delta: 'I inspected the project. ', timestamp: 6 },
+      { type: 'tool.started', toolCallId: 'tool-e2e', name: 'read', input: '{"path":"src/example.ts"}', timestamp: 7 },
+      { type: 'tool.updated', toolCallId: 'tool-e2e', output: 'Reading src/example.ts', timestamp: 8 },
+      { type: 'tool.completed', toolCallId: 'tool-e2e', name: 'read', output: 'export const answer = 42;', error: false, timestamp: 9 },
+      { type: 'assistant.text', messageId: 'assistant-e2e', delta: 'Everything is ready.\n\n![Project preview](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=)\n\n```mermaid\nflowchart LR\n  Project --> Ready\n```', timestamp: 10 },
+      { type: 'message.completed', messageId: 'assistant-e2e', role: 'assistant', text: 'I inspected the project. Everything is ready.\n\n![Project preview](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=)\n\n```mermaid\nflowchart LR\n  Project --> Ready\n```', timestamp: 11 },
+      { type: 'run.completed', runId, aborted: false, timestamp: 12 },
+    ]), 1_200);
+    setTimeout(() => { this.streaming = false; this.emitState(); }, 1_210);
+    return { accepted: true, runId };
+  }
+  async abort(): Promise<{ aborted: boolean }> { const aborted = this.streaming; this.streaming = false; this.emitState(); return { aborted }; }
+  async controlSubagent(input: SubagentControlInput): Promise<RuntimeState> {
+    const target = input.target.replace(/^@/u, '').toLocaleLowerCase();
+    const indexes = target === 'all'
+      ? this.subagents.map((_run, index) => index)
+      : this.subagents.flatMap((run, index) => run.id === input.target || run.handle === target ? [index] : []);
+    if (!indexes.length) throw new Error(`Unknown child target ${input.target}.`);
+    const now = Date.now();
+    for (const index of indexes) {
+      const run = this.subagents[index]!;
+      if (input.action === 'rename') this.subagents[index] = { ...run, displayName: input.displayName, updatedAt: now };
+      else if (input.action === 'close') this.subagents[index] = { ...run, mailbox: { ...run.mailbox, state: 'closed', expiresAt: undefined }, updatedAt: now };
+      else if (input.action === 'cancel') this.subagents[index] = { ...run, status: 'cancelled', mailbox: { ...run.mailbox, state: 'closed', expiresAt: undefined }, updatedAt: now, endedAt: now };
+      else {
+        const message = { id: `${run.id}-control-${now}`, role: input.action === 'steer' ? 'system' as const : 'user' as const, text: input.message, timestamp: now };
+        this.subagents[index] = {
+          ...run,
+          status: input.action === 'followUp' ? 'completed' : run.status,
+          controlCount: run.controlCount + 1,
+          mailbox: input.action === 'followUp' ? { ...run.mailbox, state: 'available', expiresAt: now + run.mailbox.ttlMs, followUpCount: run.mailbox.followUpCount + 1 } : run.mailbox,
+          messages: [...run.messages, message], updatedAt: now,
+        };
+      }
+    }
+    this.emitState();
+    return this.getState();
+  }
+  async controlAgentTeam(input: AgentTeamControlInput): Promise<RuntimeState> {
+    const team = this.agentTeams[0];
+    const index = team?.nodes.findIndex((node) => node.id === input.target) ?? -1;
+    if (!team || index < 0) throw new Error(`Unknown Agent Team node ${input.target}.`);
+    const now = Date.now();
+    const node = team.nodes[index]!;
+    const followUp = input.action === 'followUp' || input.action === 'resume';
+    if (followUp && node.parentNodeId !== team.rootNodeId) throw new Error('Follow-up work may target only a direct child.');
+    const next = input.action === 'message'
+      ? { ...node, unreadMessages: node.unreadMessages + 1, updatedAt: now }
+      : followUp
+        ? { ...node, status: 'active' as const, writer: node.permissionLevel !== 'read-only', updatedAt: now }
+        : input.action === 'interrupt'
+          ? { ...node, status: 'interrupted' as const, writer: false, currentTaskId: undefined, updatedAt: now }
+          : { ...node, status: 'closed' as const, writer: false, currentTaskId: undefined, updatedAt: now };
+    const nodes = team.nodes.map((candidate, candidateIndex) => input.action === 'close' && (candidate.id === node.id || candidate.path.startsWith(`${node.path}/`))
+      ? { ...candidate, status: 'closed' as const, writer: false, currentTaskId: undefined, updatedAt: now }
+      : candidateIndex === index ? next : candidate);
+    const envelopes = input.action === 'message'
+      ? [...team.envelopes, {
+          id: `e2e-team-message-${team.envelopes.length + 1}`,
+          teamId: team.id,
+          sequence: Math.max(0, ...team.envelopes.map((envelope) => envelope.sequence)) + 1,
+          kind: 'MESSAGE' as const,
+          authorNodeId: team.rootNodeId,
+          recipientNodeId: node.id,
+          content: input.message,
+          triggerTurn: false,
+          state: 'delivered' as const,
+          createdAt: now,
+          deliveredAt: now,
+        }]
+      : team.envelopes;
+    this.agentTeams = [{
+      ...team,
+      nodes,
+      envelopes,
+      activeTurns: nodes.filter((candidate) => candidate.id !== team.rootNodeId && candidate.status === 'active').length,
+      writerNodeId: nodes.find((candidate) => candidate.writer && candidate.status === 'active')?.id ?? null,
+      updatedAt: now,
+    }];
+    this.emitState();
+    return this.getState();
+  }
+  async navigateSessionBranch(entryId: string): Promise<{ state: RuntimeState; selectedText?: string }> {
+    if (!this.conversationBranchesEnabled || !['e2e-path-current', 'e2e-path-alternate'].includes(entryId)) throw new Error('Unknown conversation path.');
+    this.activeConversationBranchId = entryId;
+    this.emitState(true);
+    return {
+      state: this.getState(),
+      ...(entryId === 'e2e-path-alternate' ? { selectedText: 'Continue from the alternate implementation prompt' } : {}),
+    };
+  }
+  async setModel(): Promise<RuntimeState> { return this.getState(); }
+  setThinkingLevel(_level: ThinkingLevel): RuntimeState { return this.getState(); }
+  async setPermissionLevel(level: PermissionLevel): Promise<RuntimeState> { this.permissionLevel = level; this.sessionPermissions.set(this.activeSession, level); this.emitState(); return this.getState(); }
+  async mutateQueuedMessage(input: QueueMutationInput): Promise<QueueMutationResult> {
+    const target = this.queuedMessages.find((item) => item.id === input.id);
+    if (!target) throw new Error('That queued message is no longer waiting.');
+    if (input.action === 'cancel' || input.action === 'edit') {
+      this.queuedMessages = this.queuedMessages.filter((item) => item.id !== input.id);
+    } else {
+      const behavior: QueuedMessage['behavior'] = input.action;
+      this.queuedMessages = this.queuedMessages.map((item) => item.id === input.id ? { ...item, behavior } : item);
+    }
+    this.emitState();
+    return {
+      state: this.getState(),
+      ...(input.action === 'edit' ? { restored: { text: target.text, ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}) } } : {}),
+    };
+  }
+  async getGoalMax(): Promise<GoalMaxState | null> { return this.goals.get(this.activeSession) ?? null; }
+  async createGoalMax(input: GoalMaxCreateInput): Promise<GoalMaxState> {
+    if (this.goals.has(this.activeSession)) throw new Error('This session already has an active goal.');
+    const now = Date.now();
+    const goal: GoalMaxState = {
+      schemaVersion: 2, id: `goal-${this.activeSession}`, sessionId: this.activeSession, projectPath: this.project?.path ?? '', revision: 1,
+      objective: input.objective.trim(), originalBriefRef: null, originalBriefHash: null, status: 'active', phase: 'implementation', executionState: 'running-root',
+      verificationLevel: input.verificationLevel, agentStrategy: input.agentStrategy,
+      criteria: [
+        { id: 'e2e-goal-criterion', title: 'Deliver the objective', description: input.objective.trim(), required: true, status: 'active', evidenceIds: [], ownerNodeIds: [], updatedAt: now },
+        { id: 'e2e-goal-verify', title: 'Verify the delivered result', description: 'Run the completion gate.', required: true, status: 'pending', evidenceIds: [], ownerNodeIds: [], updatedAt: now },
+      ],
+      budget: { tokenLimit: input.tokenLimit, timeLimitMs: input.timeLimitMs, source: input.tokenLimit !== null || input.timeLimitMs !== null ? 'user-explicit' : null },
+      permission: { permissionLevel: this.permissionLevel, projectTrusted: true, revision: 1, resolvedAt: now },
+      progress: { meaningfulTurnCount: 0, noProgressTurnCount: 0, repeatedFailureCount: 0, planningOnlyTurnCount: 0, changedFileCount: 0, baselineWorkspaceFingerprint: 'e2e', latestWorkspaceFingerprint: 'e2e', latestEvidenceAt: null, latestMeaningfulProgressAt: null, lastFailureFingerprint: null },
+      evidence: [], continuation: { pending: false, attempt: 0, lastScheduledAt: now, lastSettledAt: null, reason: 'Goal started' }, steering: [], childAssignments: [],
+      tokensUsed: 0, tokenBaseline: 0, elapsedMs: 0, timeline: [{ id: 'e2e-goal-created', type: 'goal.created', summary: 'Goal created.', timestamp: now, revision: 1 }],
+      createdAt: now, updatedAt: now, startedAt: now, completedAt: null, blockedReason: null, failure: null,
+    };
+    this.goals.set(this.activeSession, goal);
+    this.emitGoal(goal);
+    await this.prompt({ text: goal.objective, behavior: 'prompt' });
+    return goal;
+  }
+  async controlGoalMax(input: GoalMaxControlInput): Promise<GoalMaxState> {
+    const goal = this.goals.get(this.activeSession);
+    if (!goal) throw new Error('This session has no GoalMax objective.');
+    const now = Date.now();
+    let status = goal.status;
+    let phase = goal.phase;
+    if (input.action === 'pause') status = 'paused';
+    else if (input.action === 'resume') status = 'active';
+    else if (input.action === 'cancel') { status = 'cancelled'; await this.abort(); }
+    else if (input.action === 'verify') { status = 'completed'; phase = 'handoff'; }
+    const eventType: GoalMaxState['timeline'][number]['type'] = input.action === 'checkpoint' ? 'checkpoint.created' : input.action === 'verify' ? 'verification.passed' : input.action === 'pause' ? 'goal.paused' : input.action === 'resume' ? 'goal.resumed' : 'goal.cancelled';
+    const verificationEvidence = status === 'completed' ? {
+      id: `e2e-goal-verification-${goal.revision + 1}`, kind: 'verification' as const, title: 'Independent completion gate passed', summary: 'E2E verification passed.',
+      criterionIds: goal.criteria.map((criterion) => criterion.id), source: 'verifier' as const, timestamp: now, current: true,
+    } : null;
+    const next: GoalMaxState = {
+      ...goal, revision: goal.revision + 1, status, phase,
+      executionState: 'idle',
+      criteria: verificationEvidence ? goal.criteria.map((criterion) => ({ ...criterion, status: 'satisfied' as const, evidenceIds: [...criterion.evidenceIds, verificationEvidence.id], updatedAt: now })) : goal.criteria,
+      evidence: verificationEvidence ? [...goal.evidence, verificationEvidence] : goal.evidence,
+      completedAt: status === 'completed' ? now : goal.completedAt,
+      blockedReason: input.action === 'pause' || input.action === 'cancel' ? input.reason ?? null : null,
+      updatedAt: now,
+      timeline: [...goal.timeline, { id: `e2e-goal-event-${goal.revision + 1}`, type: eventType, summary: `Goal ${input.action}.`, timestamp: now, revision: goal.revision + 1 }].slice(-256),
+    };
+    this.goals.set(this.activeSession, next); this.emitGoal(next); return next;
+  }
+  async updateGoalMax(input: GoalMaxUpdateInput): Promise<GoalMaxState> {
+    const goal = this.goals.get(this.activeSession);
+    if (!goal || goal.revision !== input.expectedRevision) throw new Error('The goal changed while it was being edited.');
+    const now = Date.now();
+    const tokenLimit = input.tokenLimit === undefined ? goal.budget.tokenLimit : input.tokenLimit;
+    const timeLimitMs = input.timeLimitMs === undefined ? goal.budget.timeLimitMs : input.timeLimitMs;
+    const next: GoalMaxState = {
+      ...goal, revision: goal.revision + 1, objective: input.objective ?? goal.objective,
+      criteria: input.criteria?.map((criterion, index) => ({ id: criterion.id ?? `e2e-goal-criterion-${index}`, title: criterion.title, description: criterion.description, required: criterion.required, status: 'pending' as const, evidenceIds: [], ownerNodeIds: [], updatedAt: now })) ?? goal.criteria,
+      verificationLevel: input.verificationLevel ?? goal.verificationLevel, agentStrategy: input.agentStrategy ?? goal.agentStrategy,
+      budget: { tokenLimit, timeLimitMs, source: tokenLimit !== null || timeLimitMs !== null ? 'user-explicit' : null }, updatedAt: now,
+    };
+    this.goals.set(this.activeSession, next); this.emitGoal(next); return next;
+  }
+  async clearGoalMax(): Promise<GoalMaxClearResult> {
+    const goal = this.goals.get(this.activeSession);
+    if (!goal) return { cleared: false, archivedGoalId: null };
+    if (goal.status !== 'completed' && goal.status !== 'cancelled') await this.controlGoalMax({ action: 'cancel', reason: 'Cleared by the user.' });
+    this.goals.delete(this.activeSession);
+    this.goalSink({ type: 'goalmax.cleared', projectPath: goal.projectPath, sessionId: goal.sessionId, goalId: goal.id, timestamp: Date.now() });
+    return { cleared: true, archivedGoalId: goal.id };
+  }
+  async newSession(): Promise<RuntimeState> { this.activeSession = 'e2e-session-1'; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(this.activeSession) ?? 'full-access'; this.emitState(); return this.getState(); }
+  async prepareAutomationSession(name: string, permissionLevel: 'read-only' | 'edit'): Promise<RuntimeState> {
+    const sessionId = 'e2e-automation-session';
+    if (!this.sessions.some((session) => session.id === sessionId)) {
+      this.sessions.push({ id: sessionId, title: name, firstMessage: '', path: 'test://automation-session', createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString(), messageCount: 0, active: true });
+    }
+    this.activeSession = sessionId;
+    this.queuedMessages = [];
+    this.permissionLevel = permissionLevel;
+    this.sessionPermissions.set(sessionId, permissionLevel);
+    this.emitState();
+    return this.getState();
+  }
+  async listSessions(query = ''): Promise<SessionSummary[]> { return this.getState().sessions!.filter((session) => session.title.toLowerCase().includes(query.toLowerCase())); }
+  async switchSession(sessionId: string): Promise<RuntimeState> { this.activeSession = sessionId; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(sessionId) ?? 'full-access'; this.emitState(true); return this.getState(); }
+  async renameSession(): Promise<RuntimeState> { return this.getState(); }
+  async deleteSession(sessionId: string): Promise<RuntimeState> {
+    const index = this.sessions.findIndex((session) => session.id === sessionId);
+    if (index >= 0 && sessionId !== this.activeSession) this.sessions.splice(index, 1);
+    this.sessionPermissions.delete(sessionId);
+    this.goals.delete(sessionId);
+    this.emitState();
+    return this.getState();
+  }
+  async forkSession(): Promise<{ state: RuntimeState; selectedText?: string }> { return { state: this.getState(), selectedText: 'Forked prompt' }; }
+  async cloneSession(): Promise<RuntimeState> { return this.getState(); }
+  async importSession(): Promise<RuntimeState> { return this.getState(); }
+  async compact(): Promise<RuntimeState> { return this.getState(); }
+  async dispose(): Promise<void> {}
+
+  private runLiveProfile(runId: string, historyCount: number, deltaCount: number): void {
+    const profileId = ++this.profileSequence;
+    const prefix = `profile-${profileId}`;
+    const batchSize = 60;
+    let historyIndex = 0;
+    let deltaIndex = 0;
+    let output = '';
+    this.streaming = true;
+    this.sink([{ type: 'run.accepted', runId, timestamp: Date.now() }]);
+
+    const pump = () => {
+      if (historyIndex < historyCount) {
+        const events: PiEvent[] = [];
+        while (events.length < 100 && historyIndex < historyCount) {
+          events.push({
+            type: 'message.completed',
+            messageId: `${prefix}-history-${historyIndex}`,
+            role: 'assistant',
+            text: `Profile history row ${historyIndex}: completed output retained for virtualization and subscription pressure.`,
+            timestamp: historyIndex + 1,
+          });
+          historyIndex += 1;
+        }
+        this.sink(events);
+        setTimeout(pump, 0);
+        return;
+      }
+
+      if (deltaIndex === 0) {
+        this.sink([
+          { type: 'run.started', runId, timestamp: 10_000 },
+          { type: 'message.completed', messageId: `${prefix}-user`, role: 'user', text: 'Run the live renderer profile.', timestamp: 10_001 },
+          { type: 'message.started', messageId: `${prefix}-assistant`, role: 'assistant', timestamp: 10_002 },
+          { type: 'tool.started', toolCallId: `${prefix}-tool`, name: 'bash', input: '{"command":"profile live logs"}', timestamp: 10_003 },
+        ]);
+      }
+
+      const events: PiEvent[] = [];
+      while (events.length < batchSize && deltaIndex < deltaCount) {
+        events.push({
+          type: 'assistant.text',
+          messageId: `${prefix}-assistant`,
+          delta: `live-${String(deltaIndex).padStart(5, '0')} `,
+          timestamp: 20_000 + deltaIndex,
+        });
+        if (deltaIndex % 10 === 0 && events.length < batchSize) {
+          output = `${output}${'log-data '.repeat(16)}${deltaIndex}\n`.slice(-64_000);
+          events.push({
+            type: 'tool.updated',
+            toolCallId: `${prefix}-tool`,
+            output,
+            timestamp: 20_000 + deltaIndex,
+          });
+        }
+        deltaIndex += 1;
+      }
+      if (events.length > 0) this.sink(events);
+      if (deltaIndex < deltaCount) {
+        setTimeout(pump, 0);
+        return;
+      }
+
+      const marker = `FATE_PROFILE_COMPLETE_${profileId}`;
+      this.sink([
+        { type: 'tool.completed', toolCallId: `${prefix}-tool`, name: 'bash', output, error: false, timestamp: 40_000 },
+        { type: 'message.completed', messageId: `${prefix}-assistant`, role: 'assistant', text: marker, timestamp: 40_001 },
+        { type: 'run.completed', runId, aborted: false, timestamp: 40_002 },
+      ]);
+      this.streaming = false;
+      this.emitState();
+    };
+    setTimeout(pump, 0);
+  }
+
+  private emitGoal(goal: GoalMaxState): void {
+    this.goalSink({ type: 'goalmax.snapshot', projectPath: goal.projectPath, sessionId: goal.sessionId, goal, timestamp: Date.now() });
+  }
+
+  private emitState(messagesIncluded = false): void {
+    const state = this.getState();
+    this.sink([{ type: 'state.changed', state: messagesIncluded ? state : { ...state, messages: [], tools: [] }, messagesIncluded, timestamp: Date.now() }]);
+  }
+}

@@ -1,0 +1,427 @@
+name: Cross-platform installers
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      promote_run_id:
+        description: Successful workflow run ID whose verified artifacts should be promoted
+        required: false
+        type: string
+      promote_tag:
+        description: Existing version tag to publish when promoting a verified run
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-platform-installers-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  verify-package:
+    if: github.event_name != 'workflow_dispatch' || inputs.promote_run_id == ''
+    name: ${{ matrix.label }} / Node 22
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            os: windows-2025
+            platform: win32
+            arch: x64
+          - label: macOS Apple Silicon
+            os: macos-15
+            platform: darwin
+            arch: arm64
+          - label: macOS Intel
+            os: macos-15-intel
+            platform: darwin
+            arch: x64
+          - label: Linux x64
+            os: ubuntu-22.04
+            platform: linux
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11.17.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+      - name: Assert native runner architecture
+        shell: bash
+        run: node -e "if (process.platform !== '${{ matrix.platform }}' || process.arch !== '${{ matrix.arch }}') throw new Error('Expected ${{ matrix.platform }}/${{ matrix.arch }}, received ' + process.platform + '/' + process.arch)"
+      - name: Linux native prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3 xvfb
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm install --frozen-lockfile; then exit 0; fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            echo "Dependency install attempt $attempt failed; retrying registry downloads in 15 seconds."
+            sleep 15
+          done
+      - name: Verify
+        if: runner.os != 'Linux'
+        run: pnpm verify
+      - name: Verify on Linux display
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pnpm verify
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fate-ui-${{ matrix.platform }}-${{ matrix.arch }}-test-results
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Build and smoke unpacked package
+        if: runner.os != 'Linux'
+        shell: bash
+        run: bash scripts/ci-package.sh
+      - name: Upload package debug logs
+        if: failure() && runner.os != 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fate-ui-${{ matrix.platform }}-${{ matrix.arch }}-package-logs
+          path: release-package-attempt-*.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Build and smoke unpacked package on Linux display
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pnpm package
+      - name: Build installer artifacts
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm dist:artifacts; then exit 0; fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            echo "Installer build attempt $attempt failed; retrying transient tool downloads in 15 seconds."
+            sleep 15
+          done
+      - name: Stage public artifacts only
+        run: node scripts/release-artifacts.mjs stage --source release --output artifacts --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+      - name: Install and smoke Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = node -p "require('./package.json').version"
+          $executableName = node -p "require('./package.json').build.executableName"
+          $installer = (Resolve-Path "artifacts/Fate-UI-$version-Windows-${{ matrix.arch }}.exe").Path
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'fate-ui-installed'
+          $uninstaller = Join-Path $installDirectory "Uninstall $executableName.exe"
+          $environmentKey = 'HKCU:\Environment'
+          $pathProperty = Get-ItemProperty -Path $environmentKey -Name Path -ErrorAction SilentlyContinue
+          $hadUserPath = $null -ne $pathProperty
+          $originalUserPath = if ($hadUserPath) { [string]$pathProperty.Path } else { $null }
+          $sentinelPath = "$installDirectory-tools"
+          $seededUserPath = @($originalUserPath, $sentinelPath) | Where-Object { -not [string]::IsNullOrEmpty($_) }
+          Set-ItemProperty -Path $environmentKey -Name Path -Value ($seededUserPath -join ';')
+          function Assert-UserPathEntry([string]$entry, [bool]$present) {
+            $current = [string](Get-ItemProperty -Path $environmentKey -Name Path -ErrorAction Stop).Path
+            $found = ($current -split ';') -contains $entry
+            if ($found -ne $present) { throw "Expected PATH entry '$entry' presence to be $present, received '$current'." }
+          }
+          try {
+            $install = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$installDirectory" -Wait -PassThru
+            if ($install.ExitCode -ne 0) { throw "NSIS installer exited with code $($install.ExitCode)." }
+            Assert-UserPathEntry $sentinelPath $true
+            Assert-UserPathEntry $installDirectory $true
+            $executable = Join-Path $installDirectory "$executableName.exe"
+            $launcher = Join-Path $installDirectory 'fate.cmd'
+            if (-not (Test-Path -Path $executable -PathType Leaf)) { throw "Installed executable was not found at $executable." }
+            if (-not (Test-Path -Path $uninstaller -PathType Leaf)) { throw "Installed uninstaller was not found at $uninstaller." }
+            if (-not (Test-Path -Path $launcher -PathType Leaf)) { throw "Installed CLI launcher was not found at $launcher." }
+            $bundledYtDlp = Join-Path $installDirectory 'resources\yt-dlp.exe'
+            if (-not (Test-Path -Path $bundledYtDlp -PathType Leaf)) { throw "Installed bundled yt-dlp was not found at $bundledYtDlp." }
+            $installedVersionFile = Join-Path $installDirectory 'resources\PRODVER'
+            if (-not (Test-Path -Path $installedVersionFile -PathType Leaf)) { throw "Installed PRODVER was not found at $installedVersionFile." }
+            $installedVersion = [System.IO.File]::ReadAllText($installedVersionFile)
+            if ($installedVersion -cne $version) { throw "Installed PRODVER '$installedVersion' does not match '$version'." }
+            for ($attempt = 1; $attempt -le 3; $attempt += 1) {
+              node scripts/smoke-executable.mjs $executable
+              if ($LASTEXITCODE -eq 0) { break }
+              if ($attempt -eq 3) { throw "Installed application smoke failed after $attempt attempts with code $LASTEXITCODE." }
+              Write-Warning "Installed application smoke attempt $attempt failed; retrying after Windows finishes initializing the newly installed bundled executable."
+              Start-Sleep -Seconds 5
+            }
+          } finally {
+            try {
+              if (Test-Path -Path $uninstaller -PathType Leaf) {
+                $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+                if ($uninstall.ExitCode -ne 0) { Write-Warning "NSIS uninstaller exited with code $($uninstall.ExitCode)." }
+                $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(90)
+                do {
+                  $currentUserPath = [string](Get-ItemProperty -Path $environmentKey -Name Path -ErrorAction Stop).Path
+                  $installStillOnPath = ($currentUserPath -split ';') -contains $installDirectory
+                  $installStillPresent = Test-Path -Path $installDirectory
+                  if (-not $installStillOnPath -and -not $installStillPresent) { break }
+                  if ([DateTime]::UtcNow -ge $uninstallDeadline) {
+                    throw "NSIS uninstall did not finish within 90 seconds. Directory present: $installStillPresent; PATH entry present: $installStillOnPath."
+                  }
+                  Start-Sleep -Milliseconds 500
+                } while ($true)
+              }
+              Assert-UserPathEntry $sentinelPath $true
+              Assert-UserPathEntry $installDirectory $false
+            } finally {
+              if ($hadUserPath) { Set-ItemProperty -Path $environmentKey -Name Path -Value $originalUserPath }
+              else { Remove-ItemProperty -Path $environmentKey -Name Path -ErrorAction SilentlyContinue }
+            }
+          }
+      - name: Mount and smoke macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          dmg="artifacts/Fate-UI-$version-macOS-${{ matrix.arch }}.dmg"
+          mount_point="$RUNNER_TEMP/fate-ui-dmg"
+          mounted=0
+          cleanup() {
+            if [ "$mounted" -eq 1 ]; then hdiutil detach "$mount_point" -quiet || true; fi
+          }
+          trap cleanup EXIT
+
+          mkdir -p "$mount_point"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount_point"
+          mounted=1
+          dmg_app=$(find "$mount_point" -maxdepth 1 -type d -name '*.app' -print -quit)
+          test -n "$dmg_app"
+          test -x "$dmg_app/Contents/MacOS/fate-ui"
+          for attempt in 1 2 3; do
+            if node scripts/smoke-executable.mjs "$dmg_app/Contents/MacOS/fate-ui"; then break; fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            echo "DMG smoke attempt $attempt failed; retrying in 5 seconds."
+            sleep 5
+          done
+          hdiutil detach "$mount_point" -quiet
+          mounted=0
+      - name: Install and smoke macOS PKG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          pkg="artifacts/Fate-UI-$version-macOS-${{ matrix.arch }}.pkg"
+          installed_app='/Applications/fate-ui.app'
+          installed_launcher='/usr/local/bin/fate'
+          launcher_target=''
+          cleanup() {
+            if [ -n "$installed_app" ]; then sudo rm -rf "$installed_app"; fi
+            if [ -n "$launcher_target" ] && [ -L "$installed_launcher" ] && [ "$(readlink "$installed_launcher")" = "$launcher_target" ]; then
+              sudo rm -f "$installed_launcher"
+            fi
+          }
+          trap cleanup EXIT
+
+          sudo installer -pkg "$pkg" -target /
+          pkgutil --pkg-info dev.pi.desktop
+          test -x "$installed_app/Contents/MacOS/fate-ui"
+          test "$(cat "$installed_app/Contents/Resources/PRODVER")" = "$version"
+          launcher_target="$installed_app/Contents/Resources/cli/fate"
+          if [ ! -L "$installed_launcher" ]; then
+            ls -ld "$installed_launcher" || true
+            echo "The PKG did not create the fate launcher symlink." >&2
+            exit 1
+          fi
+          test "$(readlink "$installed_launcher")" = "$launcher_target"
+          test -x "$installed_launcher"
+          for attempt in 1 2 3; do
+            if node scripts/smoke-executable.mjs "$installed_launcher" "$GITHUB_WORKSPACE"; then break; fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            echo "PKG smoke attempt $attempt failed; retrying in 5 seconds."
+            sleep 5
+          done
+      - name: Run, install, and smoke Linux installers
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          appimage="artifacts/Fate-UI-$version-Linux-${{ matrix.arch }}.AppImage"
+          deb="artifacts/Fate-UI-$version-Linux-${{ matrix.arch }}.deb"
+          chmod +x "$appimage"
+          xvfb-run -a node scripts/smoke-executable.mjs "$appimage" --appimage-extract-and-run
+
+          package_name=$(dpkg-deb -f "$deb" Package)
+          trap 'sudo apt-get purge -y "$package_name" >/dev/null 2>&1 || true' EXIT
+          sudo apt-get install -y "./$deb"
+          test -x '/opt/Fate UI/fate-ui'
+          test "$(cat '/opt/Fate UI/resources/PRODVER')" = "$version"
+          test -x /usr/bin/fate
+          xvfb-run -a node scripts/smoke-executable.mjs /usr/bin/fate "$GITHUB_WORKSPACE"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fate-ui-${{ matrix.platform }}-${{ matrix.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    name: Publish GitHub release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: verify-package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release tag, notes, and source branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release-artifacts.mjs validate-tag --tag "$GITHUB_REF_NAME"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          test -s ".github/release-notes/$GITHUB_REF_NAME.md"
+      - name: Prepare artifact directory
+        run: rm -rf artifacts && mkdir artifacts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: fate-ui-*
+          path: artifacts
+          merge-multiple: true
+      - name: Verify exact release set and write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release-artifacts.mjs checksums --source artifacts
+          (cd artifacts && sha256sum -c SHA256SUMS)
+          test "$(find artifacts -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 8
+          test "$(find artifacts -mindepth 1 -maxdepth 1 | wc -l)" -eq 8
+      - name: Publish verified artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          notes=".github/release-notes/$tag.md"
+          release_type=(--prerelease=false)
+          expected_prerelease=false
+          if [[ "$tag" == *-* ]]; then
+            release_type=(--prerelease)
+            expected_prerelease=true
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Refusing to mutate pre-existing release $tag; remove or resolve it explicitly." >&2
+            exit 1
+          fi
+          gh release create "$tag" --draft --verify-tag --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release edit "$tag" --draft --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release upload "$tag" artifacts/*
+
+          find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$RUNNER_TEMP/local-assets"
+          gh release view "$tag" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$RUNNER_TEMP/remote-assets"
+          diff -u "$RUNNER_TEMP/local-assets" "$RUNNER_TEMP/remote-assets"
+
+          gh release edit "$tag" --draft=false --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release view "$tag" --json tagName,name,isDraft,isPrerelease \
+            | jq -e --arg tag "$tag" --argjson prerelease "$expected_prerelease" \
+              '.tagName == $tag and .name == $tag and .isDraft == false and .isPrerelease == $prerelease'
+
+  promote-release:
+    name: Promote verified release artifacts
+    if: github.event_name == 'workflow_dispatch' && inputs.promote_run_id != ''
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+    env:
+      PROMOTE_RUN_ID: ${{ inputs.promote_run_id }}
+      PROMOTE_TAG: ${{ inputs.promote_tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate promotion source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PROMOTE_RUN_ID" =~ ^[0-9]+$ ]]
+          run_head=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .head_sha)
+          run_conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .conclusion)
+          run_workflow=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .path)
+          tag_head=$(git rev-parse "$PROMOTE_TAG^{}")
+          test "$run_conclusion" = success
+          test "$run_workflow" = .github/workflows/cross-platform.yml
+          test "$run_head" = "$tag_head"
+          git merge-base --is-ancestor "$tag_head" origin/main
+          git checkout --detach "$PROMOTE_TAG"
+          node scripts/release-artifacts.mjs validate-tag --tag "$PROMOTE_TAG"
+          test -s ".github/release-notes/$PROMOTE_TAG.md"
+      - name: Prepare artifact directory
+        run: rm -rf artifacts && mkdir artifacts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: fate-ui-*
+          path: artifacts
+          merge-multiple: true
+          run-id: ${{ inputs.promote_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify exact release set and write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release-artifacts.mjs checksums --source artifacts
+          (cd artifacts && sha256sum -c SHA256SUMS)
+          test "$(find artifacts -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 8
+          test "$(find artifacts -mindepth 1 -maxdepth 1 | wc -l)" -eq 8
+      - name: Publish promoted artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$PROMOTE_TAG"
+          notes=".github/release-notes/$tag.md"
+          release_type=(--prerelease=false)
+          expected_prerelease=false
+          if [[ "$tag" == *-* ]]; then
+            release_type=(--prerelease)
+            expected_prerelease=true
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Refusing to mutate pre-existing release $tag; remove or resolve it explicitly." >&2
+            exit 1
+          fi
+          gh release create "$tag" --draft --verify-tag --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release edit "$tag" --draft --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release upload "$tag" artifacts/*
+
+          find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$RUNNER_TEMP/local-assets"
+          gh release view "$tag" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$RUNNER_TEMP/remote-assets"
+          diff -u "$RUNNER_TEMP/local-assets" "$RUNNER_TEMP/remote-assets"
+
+          gh release edit "$tag" --draft=false --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release view "$tag" --json tagName,name,isDraft,isPrerelease \
+            | jq -e --arg tag "$tag" --argjson prerelease "$expected_prerelease" \
+              '.tagName == $tag and .name == $tag and .isDraft == false and .isPrerelease == $prerelease'
