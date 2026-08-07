@@ -42,7 +42,7 @@ The shipped Fate UI interface is the product reference for atmosphere and first-
 ## Evidence on Hand
 
 - Product and architecture specification: `TASK.md`.
-- Current product screenshot: `screenshots/fate-ui-workspace.png`.
+- Current product screenshots: `screenshots/fate-ui-dark.png` (dark) and `screenshots/fate-ui-light.png` (light).
 - Official Pi SDK and RPC documentation: `https://pi.dev/docs/latest/sdk` and `https://pi.dev/docs/latest/rpc`.
 - No testimonials, customer claims, benchmark data, pricing, or third-party brand assets were supplied; do not fabricate them.
 

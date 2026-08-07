@@ -11,11 +11,61 @@ Run Pi in a focused graphical workspace for durable conversations, transparent a
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-252a38.svg)](#installation)
 [![Electron](https://img.shields.io/badge/Electron-43-47848f.svg)](https://www.electronjs.org/)
 
-[Latest beta: v0.8.1-beta1](https://github.com/Master0fFate/pi-fategui/releases/tag/v0.8.1-beta1) · [Installation](#installation) · [Capabilities](#what-fate-ui-provides) · [Development](#local-development) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
+[Latest beta: v0.8.2-beta1](https://github.com/Master0fFate/pi-fategui/releases/tag/v0.8.2-beta1) · [Installation](#installation) · [Capabilities](#what-fate-ui-provides) · [Themes](#themes) · [Development](#local-development) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
-![Fate UI desktop workspace](screenshots/fate-ui-workspace.png)
+<table width="100%">
+  <tr>
+    <th width="50%" align="center">Dark · Midnight</th>
+    <th width="50%" align="center">Light · Daylight</th>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/fate-ui-dark.png" alt="Fate UI in dark mode" width="100%"></td>
+    <td align="center"><img src="screenshots/fate-ui-light.png" alt="Fate UI in light mode" width="100%"></td>
+  </tr>
+</table>
+
+## Themes
+
+Fate UI ships with seven built-in themes across dark and light tones — Midnight, Daylight, Graphite, Forest, Ember, and the Catppuccin Mocha/Latte pair — and maps any Pi-compatible theme into the same palette. Pick one under **Settings → Interface → Theme**.
+
+### Create your own theme
+
+A custom theme is just a small JSON file that Fate UI validates and loads next to the built-ins.
+
+1. Put a `themes.json` in your Fate UI data folder. Fate UI drops a filled-in `themes.example.json` there on first launch, so you can copy that to get going.
+
+   - **Windows:** `%USERPROFILE%\.pi\fateGUI\themes.json`
+   - **macOS / Linux:** `~/.pi/fateGUI/themes.json`
+
+2. Define one or more themes. Each one needs a lowercase `id`, a display `name`, a `tone`, and all 18 color tokens as six-digit hex:
+
+   ```json
+   {
+     "themes": [
+       {
+         "id": "storm",
+         "name": "Storm",
+         "tone": "dark",
+         "colors": {
+           "canvas": "#101218", "panel": "#151821", "raised": "#1c202b",
+           "raisedHover": "#252b38", "border": "#303746", "borderStrong": "#444d60",
+           "text": "#f0f2f7", "textSoft": "#c5cad5", "muted": "#8d96a8",
+           "subtle": "#657084", "accent": "#6f8cff", "accentHover": "#8ca2ff",
+           "accentSoft": "#222b49", "onAccent": "#ffffff", "success": "#55c78a",
+           "warning": "#d2a94b", "danger": "#e35d6a", "shadow": "#020308"
+         }
+       }
+     ]
+   }
+   ```
+
+3. Reopen Settings (or restart Fate UI). Your theme shows up in the dropdown, tagged dark or light.
+
+The `id` is lowercase letters, digits, and hyphens (`[a-z0-9][a-z0-9-]`, 2–48 characters), `tone` is `dark` or `light`, and every one of the 18 tokens is required — together they cover the whole surface Fate UI paints, from canvas and panels down to syntax and tool-output color. Up to 24 custom themes load from a single file.
+
+Themes Pi already knows about are picked up automatically too, including any a project keeps under its own `.pi` resources once you trust it, so the palette you run in the terminal Pi carries over.
 
 > [!IMPORTANT]
 > Fate UI is currently beta software (`0.x` releases). Expect rough edges, and back up important work before relying on it.

@@ -63,7 +63,7 @@ components:
 
 Pi Desktop is a purpose-built instrument for sustained coding work: quiet when idle, precise when active, and transparent when Pi uses tools. A continuous blue-charcoal shell joins navigation, conversation, inspector, and terminal rather than presenting a dashboard of floating cards.
 
-The shipped interface governs atmosphere and first-launch hierarchy; the maintained product screenshot is available at `screenshots/fate-ui-workspace.png`. Operational states become denser without losing calm, and expression never obscures state or familiar desktop affordances.
+The shipped interface governs atmosphere and first-launch hierarchy; the maintained product screenshots are available at `screenshots/fate-ui-dark.png` and `screenshots/fate-ui-light.png`. Operational states become denser without losing calm, and expression never obscures state or familiar desktop affordances.
 
 **Key Characteristics:**
 - Continuous joined panes with fine structural separators.
