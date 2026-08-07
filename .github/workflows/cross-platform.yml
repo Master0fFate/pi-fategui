@@ -166,6 +166,17 @@ jobs:
               if (Test-Path -Path $uninstaller -PathType Leaf) {
                 $uninstall = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
                 if ($uninstall.ExitCode -ne 0) { Write-Warning "NSIS uninstaller exited with code $($uninstall.ExitCode)." }
+                $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(90)
+                do {
+                  $currentUserPath = [string](Get-ItemProperty -Path $environmentKey -Name Path -ErrorAction Stop).Path
+                  $installStillOnPath = ($currentUserPath -split ';') -contains $installDirectory
+                  $installStillPresent = Test-Path -Path $installDirectory
+                  if (-not $installStillOnPath -and -not $installStillPresent) { break }
+                  if ([DateTime]::UtcNow -ge $uninstallDeadline) {
+                    throw "NSIS uninstall did not finish within 90 seconds. Directory present: $installStillPresent; PATH entry present: $installStillOnPath."
+                  }
+                  Start-Sleep -Milliseconds 500
+                } while ($true)
               }
               Assert-UserPathEntry $sentinelPath $true
               Assert-UserPathEntry $installDirectory $false
