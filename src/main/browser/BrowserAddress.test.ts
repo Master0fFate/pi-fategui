@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { isPathInside, parseBrowserAddress } from './BrowserAddress';
 
@@ -14,7 +15,7 @@ describe('parseBrowserAddress', () => {
     const absolute = path.resolve(root, 'dist/index.html');
     expect(parseBrowserAddress(absolute, root)).toEqual({ kind: 'local-file', path: path.normalize(absolute) });
     expect(parseBrowserAddress('./dist/index.html', root)).toEqual({ kind: 'local-file', path: absolute });
-    const fileUrl = new URL(`file:///${absolute.replace(/\\/gu, '/')}`);
+    const fileUrl = pathToFileURL(absolute);
     expect(parseBrowserAddress(fileUrl.href, root)).toEqual({ kind: 'local-file', path: path.normalize(absolute) });
   });
 

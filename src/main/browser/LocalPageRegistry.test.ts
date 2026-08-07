@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -34,14 +34,17 @@ describe('LocalPageRegistry capabilities', () => {
 
     const location = await registry.open('tab-1', entry, 'agent');
 
+    const canonicalEntry = await realpath(entry);
     expect(location.internalUrl).toMatch(/^fate-local:\/\/[a-f0-9]{48}\/index\.html$/u);
     expect(location.origin).toMatch(/^fate-local:\/\/[a-f0-9]{48}$/u);
-    expect(registry.displayUrl(location.internalUrl, 'tab-1')).toBe(pathToFileURL(entry).href);
+    expect(location.entryPath).toBe(canonicalEntry);
+    expect(registry.displayUrl(location.internalUrl, 'tab-1')).toBe(pathToFileURL(canonicalEntry).href);
     expect(registry.displayUrl(location.internalUrl, 'tab-2')).toBeNull();
 
     const siblingAttempt = new URL(location.internalUrl);
     siblingAttempt.pathname = '/private.txt';
-    expect(registry.displayUrl(siblingAttempt.href, 'tab-1')).toBe(pathToFileURL(path.join(root, 'preview/private.txt')).href);
+    const canonicalSibling = await realpath(path.join(root, 'preview/private.txt'));
+    expect(registry.displayUrl(siblingAttempt.href, 'tab-1')).toBe(pathToFileURL(canonicalSibling).href);
   });
 
   it('isolates local documents from outbound content and requires same-capability resource referrers', async () => {
@@ -89,6 +92,10 @@ describe('LocalPageRegistry capabilities', () => {
     const registry = new LocalPageRegistry(project);
 
     await expect(registry.open('tab-1', entry, 'agent')).rejects.toThrow(/trusted project/iu);
-    await expect(registry.open('tab-1', entry, 'user')).resolves.toMatchObject({ displayUrl: pathToFileURL(entry).href });
+    const canonicalEntry = await realpath(entry);
+    await expect(registry.open('tab-1', entry, 'user')).resolves.toMatchObject({
+      displayUrl: pathToFileURL(canonicalEntry).href,
+      entryPath: canonicalEntry,
+    });
   });
 });
