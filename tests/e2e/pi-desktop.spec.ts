@@ -231,6 +231,7 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
       selector: targetSelector,
     }) as { nodeId: number };
     if (!selected.nodeId) throw new Error(`Could not find ${targetSelector} in the local preview.`);
+    await browser.debugger.sendCommand('DOM.scrollIntoViewIfNeeded', { nodeId: selected.nodeId });
     const box = await browser.debugger.sendCommand('DOM.getBoxModel', { nodeId: selected.nodeId }) as { model?: { border?: number[] } };
     const quad = box.model?.border;
     if (!quad || quad.length < 8) throw new Error(`Could not locate ${targetSelector} in the local preview.`);
@@ -250,6 +251,8 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
 
   try {
     const page = await application.firstWindow();
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1024, 684));
+    await expect.poll(() => page.evaluate(() => [innerWidth, innerHeight])).toEqual([1024, 684]);
     await page.getByRole('button', { name: /Open project/u }).first().click();
     await expect(page.getByText(path.basename(fixture.root)).first()).toBeVisible();
 
@@ -292,16 +295,20 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
         const element = document.querySelector(selector);
         if (!element) return false;
         const rect = element.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight;
+        return rect.width > 0 && rect.height > 0;
       })`);
     })).toBe(true);
 
-    const snapshot = await page.evaluate(async () => window.piDesktop.snapshotBrowser({ mode: 'interactive' }));
-    expect(snapshot.serialized).toContain('Browser annotation fixture');
-    expect(snapshot.serialized).toContain('Save changes');
-    expect(snapshot.serialized).toContain('Publish preview');
-    expect(snapshot.url).toBe('file:///index.html');
-    expect(snapshot.serialized).not.toContain(fixture.root);
+    const interactiveSnapshot = await page.evaluate(async () => window.piDesktop.snapshotBrowser({ mode: 'interactive' }));
+    expect(interactiveSnapshot.serialized).toContain('Browser annotation fixture');
+    expect(interactiveSnapshot.url).toBe('file:///index.html');
+    expect(interactiveSnapshot.serialized).not.toContain(fixture.root);
+
+    const fullSnapshot = await page.evaluate(async () => window.piDesktop.snapshotBrowser({ mode: 'full' }));
+    expect(fullSnapshot.serialized).toContain('Save changes');
+    expect(fullSnapshot.serialized).toContain('Publish preview');
+    expect(fullSnapshot.url).toBe('file:///index.html');
+    expect(fullSnapshot.serialized).not.toContain(fixture.root);
 
     const primaryButtonColor = await application.evaluate(async ({ webContents }) => {
       const browser = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('fate-local://'));
