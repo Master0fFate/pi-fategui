@@ -253,7 +253,18 @@ export function App() {
       useUiStore.getState().setMusicPlayerEnabled(settings.musicPlayerEnabled);
       useUiStore.getState().setSendMessageWithModifier(settings.sendMessageWithModifier);
       useUiStore.getState().setSpeech(settings.speech ?? { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null });
-    }).catch(() => undefined);
+    }).catch((error: unknown) => {
+      // Settings or theme discovery can fail (strict-schema rejection, IPC error, …).
+      // Don't swallow it silently: log the cause and fall back to a built-in theme so
+      // the workspace stays coherent instead of sitting on the raw CSS default.
+      if (!active) return;
+      setThemeCatalog(fallbackThemes);
+      applyVisualSettings(
+        { appearance: 'dark', themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', performanceMode: false, reduceMotion: false, holyShitMode: false },
+        fallbackThemes,
+      );
+      console.error('[Fate UI] Failed to load initial settings and themes.', error);
+    });
     return () => { active = false; };
   }, [projectPath, projectTrusted]);
 
