@@ -119,4 +119,35 @@ describe('BrowserService visibility safety', () => {
     expect(closeContents).toHaveBeenCalledOnce();
     await service.dispose();
   });
+
+  it('reopens the main tab at the remembered restore URL when no explicit address is given', async () => {
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(),
+      restoreUrl: 'http://localhost:3000/app',
+    });
+    const createTab = vi.spyOn(service, 'createTab').mockResolvedValue(undefined);
+
+    await service.ensureTab('browser-main');
+    expect(createTab).toHaveBeenLastCalledWith('browser-main', 'project', 'http://localhost:3000/app');
+
+    // An explicit address always wins over the remembered page.
+    await service.ensureTab('browser-main', 'https://example.com');
+    expect(createTab).toHaveBeenLastCalledWith('browser-main', 'project', 'https://example.com');
+
+    createTab.mockRestore();
+    await service.dispose();
+  });
+
+  it('falls back to the home page when no restore URL is configured', async () => {
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(),
+    });
+    const createTab = vi.spyOn(service, 'createTab').mockResolvedValue(undefined);
+
+    await service.ensureTab('browser-main');
+    expect(createTab).toHaveBeenLastCalledWith('browser-main', 'project', 'about:blank');
+
+    createTab.mockRestore();
+    await service.dispose();
+  });
 });

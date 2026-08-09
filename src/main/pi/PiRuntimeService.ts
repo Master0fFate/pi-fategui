@@ -73,7 +73,18 @@ import { InMemorySessionPermissionStore, type SessionPermissionPersistence } fro
 import { GoalMaxCoordinator, type GoalMaxDiagnosticResult, type GoalMaxRuntimeChild, type GoalMaxRuntimeChildObservation, type GoalMaxRuntimeSnapshot, type GoalMaxVerificationResult } from './goalmaxxing/GoalMaxCoordinator';
 import { goalMaxCapsule } from './goalmaxxing/GoalMaxPrompt';
 import { InMemoryGoalMaxRepository, type GoalMaxPersistence } from './goalmaxxing/GoalMaxRepository';
-import { classifyGoalMaxTool } from './goalmaxxing/GoalMaxProgressEngine';
+import { classifyGoalMaxTool, GoalMaxProgressEngine } from './goalmaxxing/GoalMaxProgressEngine';
+import { TaskService } from './tasks/TaskService';
+import { InMemoryTaskRepository, type TaskPersistence } from './tasks/TaskRepository';
+import {
+  summarizeTaskList,
+  type TaskCreateInput,
+  type TaskDeleteInput,
+  type TaskEvent,
+  type TaskList,
+  type TaskReorderInput,
+  type TaskUpdateInput,
+} from '../../shared/contracts/tasks';
 import type { PiBrowserRuntimeIntegration } from './BrowserRuntimeBridge';
 
 export interface SessionDefaults {
@@ -92,6 +103,9 @@ export interface PiSdkAdapter {
   createModelRuntime: () => Promise<ModelRuntime>;
   createRuntime: (cwd: string, modelRuntime: ModelRuntime, projectTrusted?: boolean, customTools?: ToolDefinition[], getImageGenerationSettings?: ImageGenerationSettingsResolver) => Promise<AgentSessionRuntime>;
 }
+
+/** Optional shared model-runtime provider used by the multi-project owner. */
+export type ModelRuntimeProvider = () => Promise<ModelRuntime>;
 
 const MAX_HYDRATED_HISTORY_ENTRIES = 5_000;
 const MAX_HYDRATED_TIMELINE_ENTITIES = 5_000;
@@ -168,6 +182,10 @@ interface RuntimeSlot {
   runFailed: boolean;
   sessionTurnPhase: SessionTurnPhase;
   deferredChildMessages: DeferredChildMessage[];
+  /** Messages held by the strict GoalMax/task gate until verification passes. */
+  heldGoalMessages: QueuedMessageRecord[];
+  /** Messages accepted while Pi is compacting; released when compaction settles. */
+  heldCompactionMessages: QueuedMessageRecord[];
   lengthContinuationCount: number;
   firstPromptText: string;
   firstTitleStarted: boolean;
@@ -268,10 +286,12 @@ async function boundedContextPrompts(directory: string, label: string): Promise<
   return [];
 }
 
+export const createDefaultModelRuntime = (): Promise<ModelRuntime> => ModelRuntime.create();
+
 const realPiSdkAdapter: PiSdkAdapter = {
   // Verified against SDK 0.83.0: clone is runtime.fork(currentLeaf, { position: 'at' }).
   supportsClone: true,
-  createModelRuntime: () => ModelRuntime.create(),
+  createModelRuntime: createDefaultModelRuntime,
   async createRuntime(cwd, modelRuntime, projectTrusted, customTools = [], getImageGenerationSettings) {
     const factory: CreateAgentSessionRuntimeFactory = async ({ cwd: effectiveCwd, sessionManager, sessionStartEvent }) => {
       // Project trust is decided by Fate UI's main-process prompt before the SDK
@@ -706,11 +726,13 @@ export class PiRuntimeService {
   private fallbackStateError: AppError | null = null;
   private eventSink: (events: PiEvent[]) => void = () => undefined;
   private goalEventSink: (event: GoalMaxEvent) => void = () => undefined;
+  private taskEventSink: (event: TaskEvent) => void = () => undefined;
   private readonly goalSessionEntryCheckpoints = new Map<string, { goalId: string; status: GoalMaxState['status']; phase: GoalMaxState['phase']; revision: number; persistedAt: number }>();
   private readonly batcher: PiEventBatcher;
   private readonly subagents: SubagentCoordinator;
   private readonly agentTeams: AgentTeamCoordinator;
   private readonly goalMax: GoalMaxCoordinator;
+  private readonly tasks: TaskService;
   private readonly disconnectedNormalizer = new PiEventNormalizer(() => null);
   private initialization = 0;
   private sessions: SessionSummary[] = [];
@@ -742,6 +764,8 @@ export class PiRuntimeService {
     private readonly getImageGenerationSettings: ImageGenerationSettingsResolver = () => defaultImageGenerationSettings,
     goalPersistence: GoalMaxPersistence = new InMemoryGoalMaxRepository(),
     private readonly browserIntegration: PiBrowserRuntimeIntegration | null = null,
+    private readonly modelRuntimeProvider: ModelRuntimeProvider | null = null,
+    taskPersistence: TaskPersistence = new InMemoryTaskRepository(),
   ) {
     this.batcher = new PiEventBatcher((events) => this.eventSink(events));
     const childSessionFactory = (input: Parameters<typeof createSdkChildSession>[0]) => createSdkChildSession({
@@ -774,7 +798,6 @@ export class PiRuntimeService {
         const slot = this.findLiveSlot(rootSessionId);
         if (!slot || slot.disposed) return;
         slot.runtime.session.sessionManager.appendCustomEntry('fate-agent-team-event', event);
-        slot.modifiedAt = new Date().toISOString();
       },
       settled: (rootSessionId) => {
         const slot = this.findLiveSlot(rootSessionId);
@@ -812,7 +835,6 @@ export class PiRuntimeService {
         slot.runtime.session.sessionManager.appendCustomEntry('fate-subagent-run', {
           kind: 'fate-subagent-snapshot', version: 2, run,
         });
-        slot.modifiedAt = new Date().toISOString();
       },
       persistWorkflow: (parentSessionId, workflow) => {
         const slot = this.findLiveSlot(parentSessionId);
@@ -820,7 +842,6 @@ export class PiRuntimeService {
         slot.runtime.session.sessionManager.appendCustomEntry('fate-subagent-workflow', {
           kind: 'fate-subagent-workflow-snapshot', version: 1, workflow,
         });
-        slot.modifiedAt = new Date().toISOString();
       },
       notifyParent: async (parentSessionId, mode: SubagentNotification, text, runIds, workflowId, livenessReport?: SubagentParentLivenessReport) => {
         // Liveness has a dedicated structured Pi event and inspector surface. Never
@@ -852,6 +873,7 @@ export class PiRuntimeService {
         }
       },
     }, childSessionFactory);
+    this.tasks = new TaskService({ emit: (event) => this.handleTaskEvent(event) }, taskPersistence);
     this.goalMax = new GoalMaxCoordinator({
       runtime: (sessionId) => this.goalRuntimeSnapshot(sessionId),
       startGoal: (sessionId, objective, capsule) => this.startGoalTurn(sessionId, objective, capsule),
@@ -877,10 +899,9 @@ export class PiRuntimeService {
           status: state.status, phase: state.phase, updatedAt: state.updatedAt,
         });
         this.goalSessionEntryCheckpoints.set(sessionId, { goalId: state.id, status: state.status, phase: state.phase, revision: state.revision, persistedAt: now });
-        slot.modifiedAt = new Date().toISOString();
       },
       emit: (event) => this.handleGoalEvent(event),
-    }, goalPersistence);
+    }, goalPersistence, new GoalMaxProgressEngine(), this.tasks);
   }
 
   setEventSink(sink: (events: PiEvent[]) => void): void {
@@ -889,6 +910,14 @@ export class PiRuntimeService {
 
   setGoalEventSink(sink: (event: GoalMaxEvent) => void): void {
     this.goalEventSink = sink;
+  }
+
+  setTaskEventSink(sink: (event: TaskEvent) => void): void {
+    this.taskEventSink = sink;
+  }
+
+  private handleTaskEvent(event: TaskEvent): void {
+    this.taskEventSink(event);
   }
 
   getState(includeMessages = true): RuntimeState {
@@ -936,11 +965,18 @@ export class PiRuntimeService {
       this.selectedSlot.contextUsageEstimate = null;
     }
     const tokenTelemetry = session ? sessionTokenTelemetry(session) : undefined;
+    const heldItems = [
+      ...(this.selectedSlot?.heldGoalMessages ?? []),
+      ...(this.selectedSlot?.heldCompactionMessages ?? []),
+    ].slice(0, MAX_QUEUED_MESSAGES).map(({ transportText: _heldTransport, boundModel: _heldModel, boundThinkingLevel: _heldThinking, ...item }) => item);
     const queue = {
       steering: session?.getSteeringMessages?.().length ?? 0,
       followUp: session?.getFollowUpMessages?.().length ?? 0,
       items: (this.selectedSlot?.queuedMessages ?? []).slice(0, MAX_QUEUED_MESSAGES).map(({ transportText: _transportText, boundModel: _boundModel, boundThinkingLevel: _boundThinkingLevel, ...item }) => item),
+      ...(heldItems.length ? { held: heldItems } : {}),
     };
+    const taskList = session && this.project ? this.tasks.get(this.project.path, session.sessionId) : null;
+    const taskListSummary = summarizeTaskList(taskList);
     const skills = this.runtime?.services?.resourceLoader?.getSkills?.().skills.slice(0, 5_000).map((skill) => ({ name: skill.name.slice(0, 500), description: skill.description.slice(0, 2_000) }));
     return {
       status: this.status,
@@ -964,6 +1000,7 @@ export class PiRuntimeService {
       ...(contextUsage ? { contextUsage } : {}),
       ...(tokenTelemetry ? { tokenTelemetry } : {}),
       queue,
+      taskList: taskListSummary,
       extensionUi: this.selectedSlot?.extensionUiState ?? emptyExtensionUiState(),
       sessions: this.sessions,
       subagents: session ? this.subagents.getRuns(session.sessionId) : [],
@@ -996,8 +1033,28 @@ export class PiRuntimeService {
     return this.getState();
   }
 
+  /** Set a lightweight focused-project snapshot without starting Pi. */
+  setProjectPreview(project: ProjectState | null, sessions: SessionSummary[] = [], announce = false): RuntimeState {
+    if (this.liveSlots.size > 0) throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Cannot replace a live Pi project with a preview.', retryable: true });
+    this.project = project;
+    this.status = 'disconnected';
+    this.models = [];
+    this.sessions = sessions.slice(0, 1_000);
+    this.sessionAttention.clear();
+    this.fallbackStateError = project && !project.trusted ? {
+      code: 'PROJECT_NOT_TRUSTED',
+      message: 'This project is open without Pi access.',
+      actionable: 'Open it again and choose “Trust and open” to initialize Pi.',
+      retryable: true,
+    } : null;
+    const state = this.getState(false);
+    if (announce) this.emitState();
+    return state;
+  }
+
   async closeProject(): Promise<RuntimeState> {
-    this.browserIntegration?.setActiveRoot(null);
+    const ownedProjectPath = this.project?.path;
+    this.browserIntegration?.clearActiveRoot?.(ownedProjectPath ?? '');
     const generation = ++this.initialization;
     this.replacementGeneration += 1;
     this.replacementQueue = Promise.resolve();
@@ -1021,7 +1078,8 @@ export class PiRuntimeService {
   }
 
   async openProject(project: ProjectState, defaults?: SessionDefaults): Promise<RuntimeState> {
-    this.browserIntegration?.setActiveRoot(null);
+    const ownedProjectPath = this.project?.path;
+    this.browserIntegration?.clearActiveRoot?.(ownedProjectPath ?? '');
     const generation = ++this.initialization;
     this.replacementGeneration += 1;
     this.replacementQueue = Promise.resolve();
@@ -1058,7 +1116,9 @@ export class PiRuntimeService {
       // proxy while rendering calls. Pi Desktop does not run InteractiveMode,
       // so initialize a stable theme explicitly without starting its watcher.
       initTheme('dark', false);
-      const modelRuntime = await this.adapter.createModelRuntime();
+      const modelRuntime = this.modelRuntimeProvider
+        ? await this.modelRuntimeProvider()
+        : await this.adapter.createModelRuntime();
       if (generation !== this.initialization) return this.getState();
       this.modelRuntime = modelRuntime;
 
@@ -1160,6 +1220,65 @@ export class PiRuntimeService {
     }
     if (activeGoal && !skipCommandExpansion && activeGoal.status !== 'completed' && activeGoal.status !== 'cancelled') {
       activeGoal = await this.goalMax.recordSteering(session.sessionId, input.text, input.behavior) ?? activeGoal;
+    }
+    // Gate B (strict task/verification gate). While a goal is actively driving
+    // (active/normalising/verifying) and not yet complete+verified, an ordinary
+    // post-task user message must NOT execute — neither as a new run nor as a
+    // queued steer/follow-up delivered to the SDK. Hold it and release it in
+    // order once the gate passes. prompt() is never called by goal continuations
+    // (they use custom messages), and goal start passes skipCommandExpansion=true,
+    // so this gate only ever intercepts genuine user instructions like
+    // "after all tasks are finished, do C".
+    if (!skipCommandExpansion && activeGoal && this.isGoalActivelyGating(activeGoal)) {
+      if (slot.heldGoalMessages.length >= MAX_QUEUED_MESSAGES) {
+        throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The held-message queue is full. Cancel or finish the goal first.', retryable: true });
+      }
+      const heldRecord: QueuedMessageRecord = {
+        id: randomUUID(),
+        behavior: queuedBehavior ?? 'followUp',
+        text: input.text,
+        transportText: promptText,
+        ...(stagedModel ? { boundModel: stagedModel } : {}),
+        ...(stagedThinkingLevel ? { boundThinkingLevel: stagedThinkingLevel } : {}),
+        ...(input.images?.length ? { images: input.images.map((image) => ({ ...image })) } : {}),
+        ...(input.browserAnnotations?.length ? { browserAnnotations: input.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
+        createdAt: Date.now(),
+      };
+      slot.heldGoalMessages.push(heldRecord);
+      // Keep the staged model/thinking level staged: the held message is still the
+      // next user turn and must reapply its bound settings when released.
+      slot.modifiedAt = new Date().toISOString();
+      if (this.selectedSlot === slot) {
+        this.enqueue({ type: 'run.accepted', runId, timestamp: Date.now() });
+        this.emitState();
+      }
+      return { accepted: true, runId };
+    }
+    // Manual compaction temporarily blocks the SDK prompt path. Accept the
+    // message into Fate's bounded queue and replay it after compaction ends so
+    // the composer never loses a draft or reports a false send failure.
+    if (session.isCompacting) {
+      if (slot.heldCompactionMessages.length + slot.queuedMessages.length >= MAX_QUEUED_MESSAGES) {
+        throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The message queue is full. Cancel or wait for a queued message before adding another.', retryable: true });
+      }
+      const heldRecord: QueuedMessageRecord = {
+        id: randomUUID(),
+        behavior: input.behavior === 'steer' ? 'steer' : 'followUp',
+        text: input.text,
+        transportText: promptText,
+        ...(stagedModel ? { boundModel: stagedModel } : {}),
+        ...(stagedThinkingLevel ? { boundThinkingLevel: stagedThinkingLevel } : {}),
+        ...(input.images?.length ? { images: input.images.map((image) => ({ ...image })) } : {}),
+        ...(input.browserAnnotations?.length ? { browserAnnotations: input.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
+        createdAt: Date.now(),
+      };
+      slot.heldCompactionMessages.push(heldRecord);
+      slot.modifiedAt = new Date().toISOString();
+      if (this.selectedSlot === slot) {
+        this.enqueue({ type: 'run.accepted', runId, timestamp: Date.now() });
+        this.emitState();
+      }
+      return { accepted: true, runId };
     }
     const ownsSlot = () => initialization === this.initialization
       && !slot.disposed
@@ -1374,7 +1493,6 @@ export class PiRuntimeService {
       // directly instead of racing SessionManager.list() through the repository.
       if (typeof session.sessionManager?.appendSessionInfo === 'function') session.sessionManager.appendSessionInfo(title);
       else session.setSessionName(title);
-      slot.modifiedAt = new Date().toISOString();
       const liveSummary = this.liveSessionSummary(slot, session, prompt);
       const summaryIndex = this.sessions.findIndex((summary) => summary.id === session.sessionId);
       if (summaryIndex >= 0) this.sessions[summaryIndex] = liveSummary;
@@ -1520,6 +1638,38 @@ export class PiRuntimeService {
     return this.goalMax.clear();
   }
 
+  async getTaskList(): Promise<TaskList | null> {
+    const session = this.runtime?.session;
+    const project = this.project;
+    if (!session || !project) return null;
+    return this.tasks.get(project.path, session.sessionId) ?? this.tasks.bind(project.path, session.sessionId);
+  }
+
+  async createTask(input: TaskCreateInput): Promise<TaskList> {
+    const { projectPath, sessionId } = this.requireSessionIdentity();
+    return this.tasks.create(projectPath, sessionId, input);
+  }
+
+  async updateTask(input: TaskUpdateInput): Promise<TaskList> {
+    const { projectPath, sessionId } = this.requireSessionIdentity();
+    return this.tasks.update(projectPath, sessionId, input);
+  }
+
+  async reorderTasks(input: TaskReorderInput): Promise<TaskList> {
+    const { projectPath, sessionId } = this.requireSessionIdentity();
+    return this.tasks.reorder(projectPath, sessionId, input);
+  }
+
+  async deleteTask(input: TaskDeleteInput): Promise<TaskList> {
+    const { projectPath, sessionId } = this.requireSessionIdentity();
+    return this.tasks.delete(projectPath, sessionId, input);
+  }
+
+  async clearTasks(): Promise<TaskList> {
+    const { projectPath, sessionId } = this.requireSessionIdentity();
+    return this.tasks.clear(projectPath, sessionId);
+  }
+
   newSession(defaults?: SessionDefaults): Promise<RuntimeState> {
     return this.createSession(defaults);
   }
@@ -1599,6 +1749,19 @@ export class PiRuntimeService {
     return this.mergeSessionSummaries(persisted, query).slice(0, 1_000);
   }
 
+  /** Disk-only session listing for any project path, independent of the active runtime. */
+  async listSessionsForPath(projectPath: string, query = ''): Promise<SessionSummary[]> {
+    let canonical: string;
+    try {
+      canonical = path.normalize(realpathSync(projectPath));
+      const stat = await fs.stat(canonical);
+      if (!stat.isDirectory()) throw new Error('Not a directory.');
+    } catch {
+      throw new PiDesktopError({ code: 'INVALID_PROJECT', message: 'Choose an existing project folder to preview its sessions.', retryable: false });
+    }
+    return (await this.sessionRepository.list(canonical, null, query)).slice(0, 1_000);
+  }
+
   switchSession(sessionId: string): Promise<RuntimeState> {
     const projectPath = this.project?.path;
     if (!projectPath) return Promise.reject(new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before switching sessions.', retryable: true }));
@@ -1647,6 +1810,32 @@ export class PiRuntimeService {
     return this.getState(false);
   }
 
+  async deleteSessionsForPath(projectPath: string): Promise<{ deleted: number; skipped: number }> {
+    const liveSessionIds = new Set([...this.liveSlots].map((slot) => slot.runtime.session.sessionId));
+    const sessions = await this.sessionRepository.list(projectPath, null);
+    const deletable = sessions.filter((candidate) => !liveSessionIds.has(candidate.id));
+    const initialization = this.initialization;
+    for (const candidate of deletable) {
+      await this.agentTeams.deleteRootStorage(candidate.id);
+      if (initialization !== this.initialization) throw this.replacementSuperseded();
+      await this.sessionRepository.delete(projectPath, candidate.id);
+      this.manualSessionNames.add(this.sessionClaimKey(projectPath, candidate.id));
+      await this.goalMax.deleteSession(projectPath, candidate.id).catch(() => undefined);
+      await this.tasks.deleteSession(projectPath, candidate.id).catch(() => undefined);
+      await this.sessionPermissions.delete(projectPath, candidate.id).catch(() => undefined);
+      this.sessionAttention.delete(candidate.id);
+      this.goalSessionEntryCheckpoints.delete(candidate.id);
+      this.coldPendingModels.delete(candidate.id);
+      this.subagents.releaseParent(candidate.id);
+      this.agentTeams.releaseRoot(candidate.id);
+    }
+    if (this.project?.path === projectPath && this.selectedSlot) {
+      await this.refreshSessions(true);
+      this.emitState();
+    }
+    return { deleted: deletable.length, skipped: sessions.length - deletable.length };
+  }
+
   async deleteSession(sessionId: string): Promise<RuntimeState> {
     const session = this.requireRuntimeSession();
     const projectPath = this.project?.path;
@@ -1664,6 +1853,11 @@ export class PiRuntimeService {
     await this.goalMax.deleteSession(projectPath, sessionId).catch((error: unknown) => {
       if (initialization === this.initialization && this.project?.path === projectPath) {
         this.emitSystemMessage(`Deleted goal metadata could not be removed: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+      }
+    });
+    await this.tasks.deleteSession(projectPath, sessionId).catch((error: unknown) => {
+      if (initialization === this.initialization && this.project?.path === projectPath) {
+        this.emitSystemMessage(`Deleted task metadata could not be removed: ${error instanceof Error ? error.message : String(error)}`, 'warning');
       }
     });
     try {
@@ -1764,7 +1958,8 @@ export class PiRuntimeService {
   }
 
   async dispose(): Promise<void> {
-    this.browserIntegration?.setActiveRoot(null);
+    const ownedProjectPath = this.project?.path;
+    this.browserIntegration?.clearActiveRoot?.(ownedProjectPath ?? '');
     ++this.initialization;
     this.replacementGeneration += 1;
     this.replacementQueue = Promise.resolve();
@@ -1778,6 +1973,7 @@ export class PiRuntimeService {
     const pending = await Promise.allSettled([...this.pendingDisposals]);
     failures.push(...pending.flatMap((result) => result.status === 'rejected' ? [result.reason] : []));
     try { await this.goalMax.dispose(); } catch (error) { failures.push(error); }
+    try { await this.tasks.dispose(); } catch (error) { failures.push(error); }
     this.subagents.reset();
     this.agentTeams.reset();
     this.goalSessionEntryCheckpoints.clear();
@@ -1818,6 +2014,8 @@ export class PiRuntimeService {
       runFailed: false,
       sessionTurnPhase: 'idle',
       deferredChildMessages: [],
+      heldGoalMessages: [],
+      heldCompactionMessages: [],
       lengthContinuationCount: 0,
       firstPromptText: '',
       firstTitleStarted: false,
@@ -1878,12 +2076,15 @@ export class PiRuntimeService {
     slot.runFailed = false;
     slot.sessionTurnPhase = 'idle';
     slot.deferredChildMessages = [];
+    slot.heldGoalMessages = [];
+    slot.heldCompactionMessages = [];
     slot.firstPromptText = '';
     slot.firstTitleStarted = false;
     slot.createdAt = new Date().toISOString();
     slot.modifiedAt = slot.createdAt;
     slot.normalizer.resetSession();
     this.goalMax.unbind(invalidatedSession.sessionId);
+    this.tasks.unbind(invalidatedSession.sessionId);
     this.subagents.releaseParent(invalidatedSession.sessionId);
     this.agentTeams.releaseRoot(invalidatedSession.sessionId);
     if (this.selectedSlot === slot) this.batcher.clear();
@@ -2169,9 +2370,12 @@ export class PiRuntimeService {
     this.goalMax.observeSessionEvent(session.sessionId, event);
     if (event.type === 'agent_start') slot.sessionTurnPhase = 'active';
     else if (event.type === 'agent_end') slot.sessionTurnPhase = 'ending';
-    else if (event.type === 'agent_settled') slot.sessionTurnPhase = 'idle';
+    else if (event.type === 'agent_settled') {
+      slot.sessionTurnPhase = 'idle';
+      if (slot.heldGoalMessages.length > 0) this.reconcileHeldGoalMessages(slot);
+    }
     const selected = this.selectedSlot === slot;
-    if (event.type === 'message_end' || event.type === 'session_info_changed' || event.type === 'compaction_end') {
+    if (event.type === 'message_end' && (event.message.role === 'user' || event.message.role === 'assistant')) {
       slot.modifiedAt = new Date().toISOString();
     }
     if (event.type === 'compaction_end' && !event.aborted && !event.errorMessage) {
@@ -2179,6 +2383,9 @@ export class PiRuntimeService {
       slot.contextUsageEstimate = typeof estimatedTokensAfter === 'number' && Number.isFinite(estimatedTokensAfter) && estimatedTokensAfter >= 0
         ? Math.round(estimatedTokensAfter)
         : null;
+    }
+    if (event.type === 'compaction_end' && slot.heldCompactionMessages.length > 0) {
+      queueMicrotask(() => { void this.releaseHeldCompactionMessages(slot).catch(() => undefined); });
     }
     if (event.type === 'queue_update' && !slot.queueMutationActive) {
       this.reconcileQueuedMessagesForSlot(slot, event.steering.length, event.followUp.length, true);
@@ -2362,6 +2569,13 @@ export class PiRuntimeService {
     return session;
   }
 
+  private requireSessionIdentity(): { projectPath: string; sessionId: string } {
+    const session = this.requireSession();
+    const projectPath = this.project?.path;
+    if (!projectPath) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before editing tasks.', retryable: true });
+    return { projectPath, sessionId: session.sessionId };
+  }
+
   private sessionHasNonStreamingWork(session: AgentSession): boolean {
     return session.isCompacting === true || session.isBashRunning === true;
   }
@@ -2473,9 +2687,31 @@ export class PiRuntimeService {
     if (this.replacementActive) {
       throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for the session change to finish before editing queued messages.', retryable: true });
     }
-    const target = slot.queuedMessages.find((item) => item.id === input.id);
+    const target = slot.queuedMessages.find((item) => item.id === input.id)
+      ?? slot.heldCompactionMessages.find((item) => item.id === input.id);
     if (!target) {
       throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'That queued message is no longer waiting.', retryable: true });
+    }
+    const heldDuringCompaction = slot.heldCompactionMessages.some((item) => item.id === input.id);
+    if (heldDuringCompaction) {
+      const restored = input.action === 'edit'
+        ? {
+            text: target.text,
+            ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}),
+            ...(target.browserAnnotations?.length ? { browserAnnotations: target.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
+          }
+        : undefined;
+      if (input.action === 'cancel' || input.action === 'edit') {
+        slot.heldCompactionMessages = slot.heldCompactionMessages.filter((item) => item.id !== input.id);
+        if (input.action === 'cancel' && target.boundModel && slot.pendingModel?.token === target.boundModel.token) slot.pendingModel = null;
+        if (input.action === 'cancel' && target.boundThinkingLevel && slot.pendingThinkingLevel?.token === target.boundThinkingLevel.token) slot.pendingThinkingLevel = null;
+      } else {
+        const nextBehavior = input.action === 'steer' ? 'steer' : 'followUp';
+        slot.heldCompactionMessages = slot.heldCompactionMessages.map((item) => item.id === input.id ? { ...item, behavior: nextBehavior } : item);
+      }
+      slot.stateError = null;
+      this.emitState();
+      return { state: this.getState(false), ...(restored ? { restored } : {}) };
     }
     const steeringCount = session.getSteeringMessages?.().length ?? 0;
     const followUpCount = session.getFollowUpMessages?.().length ?? 0;
@@ -2734,9 +2970,10 @@ export class PiRuntimeService {
         });
         return {
           nodeId: node.id,
+          teamId: team.id,
           label: node.displayName,
           objective: task?.summary ?? node.role,
-          status: node.status === 'creating' ? 'pending' : node.status === 'active' ? 'running' : node.status === 'ready' ? 'completed' : node.status === 'failed' ? 'failed' : node.status === 'closed' ? 'cancelled' : 'blocked',
+          status: task?.status === 'completed' ? 'completed' : task?.status === 'failed' ? 'failed' : task?.status === 'cancelled' ? 'cancelled' : node.status === 'creating' ? 'pending' : node.status === 'active' ? 'running' : node.status === 'ready' ? 'completed' : node.status === 'failed' ? 'failed' : node.status === 'closed' || node.status === 'released' ? 'cancelled' : 'blocked',
           permissionLevel: node.permissionLevel,
           requestedModel: { provider: node.model.provider, id: node.model.id, name: node.model.name },
           effectiveModel: { provider: node.model.provider, id: node.model.id, name: node.model.name },
@@ -2885,6 +3122,97 @@ export class PiRuntimeService {
     });
   }
 
+  private isGoalActivelyGating(goal: GoalMaxState): boolean {
+    // The strict gate engages only while the goal is actively driving work. Paused,
+    // blocked, failed, or terminal goals reconcile held messages so the user is
+    // never permanently stuck behind a suspended goal.
+    return goal.status === 'active' || goal.status === 'normalising' || goal.status === 'verifying';
+  }
+
+  private async releaseHeldCompactionMessages(slot: RuntimeSlot): Promise<void> {
+    if (slot.disposed || slot.heldCompactionMessages.length === 0) return;
+    const session = slot.runtime.session;
+    if (session.isCompacting) {
+      setTimeout(() => { void this.releaseHeldCompactionMessages(slot).catch(() => undefined); }, 50);
+      return;
+    }
+    const held = slot.heldCompactionMessages.splice(0);
+    if (this.selectedSlot === slot) this.emitState();
+    for (let index = 0; index < held.length; index += 1) {
+      const item = held[index]!;
+      try {
+        const acceptance = await this.prompt({
+          text: item.transportText,
+          behavior: index === 0 ? 'prompt' : 'followUp',
+          ...(item.images?.length ? { images: item.images.map((image) => ({ ...image })) } : {}),
+        }, true);
+        if (!acceptance.accepted) throw new Error('Pi rejected a message held during compaction.');
+      } catch (error) {
+        slot.heldCompactionMessages.unshift(...held.slice(index));
+        slot.stateError = normalizeError(error);
+        if (this.selectedSlot === slot) this.emitError(slot.stateError);
+        return;
+      }
+    }
+  }
+
+  private reconcileHeldGoalMessages(slot: RuntimeSlot): void {
+    if (slot.disposed || slot.heldGoalMessages.length === 0) return;
+    const goal = this.project ? this.goalMax.get(this.project.path, slot.runtime.session.sessionId) : null;
+    if (goal && this.isGoalActivelyGating(goal)) return; // still gated
+    if (goal?.status === 'completed') void this.releaseHeldGoalMessages(slot).catch(() => undefined);
+    else void this.moveHeldToQueued(slot).catch(() => undefined);
+  }
+
+  private async moveHeldToQueued(slot: RuntimeSlot): Promise<void> {
+    if (slot.disposed || slot.heldGoalMessages.length === 0) return;
+    const session = slot.runtime.session;
+    if (this.sessionHasActiveWork(session)) return; // retry on the next settle
+    const held = slot.heldGoalMessages.splice(0);
+    for (const item of held) {
+      slot.queuedMessages.push(item);
+      const images = item.images?.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType }));
+      try { await session.followUp(item.transportText, images); } catch { /* keep the mirrored record even if the SDK rejects */ }
+    }
+    if (this.selectedSlot === slot) this.emitState();
+  }
+
+  private async releaseHeldGoalMessages(slot: RuntimeSlot): Promise<void> {
+    if (slot.disposed || slot.heldGoalMessages.length === 0) return;
+    const session = slot.runtime.session;
+    if (this.sessionHasActiveWork(session)) return; // retry on the next settle
+    const held = slot.heldGoalMessages.splice(0);
+    if (this.selectedSlot === slot) this.emitState();
+    try {
+      // Re-run the first held message as a fresh turn. The goal is terminal here
+      // so the strict gate no longer holds it; this.prompt applies the staged
+      // model/reasoning and preflight exactly like a user turn. Subsequent held
+      // messages queue as follow-ups in their original order.
+      const first = held[0]!;
+      const acceptance = await this.prompt({
+        text: first.transportText,
+        behavior: 'prompt',
+        ...(first.images?.length ? { images: first.images.map((image) => ({ ...image })) } : {}),
+        ...(first.browserAnnotations?.length ? { browserAnnotations: first.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
+      }, true);
+      if (!acceptance.accepted) {
+        slot.heldGoalMessages.unshift(...held);
+        return;
+      }
+      for (const item of held.slice(1)) {
+        const images = item.images?.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType }));
+        await session.followUp(item.transportText, images);
+      }
+    } catch (error) {
+      const normalized = normalizeError(error);
+      slot.runFailed = true;
+      slot.stateError = normalized;
+      // Return unreleased messages to the hold so a later settle can retry.
+      slot.heldGoalMessages.unshift(...held);
+      if (this.selectedSlot === slot) this.emitError(normalized);
+    }
+  }
+
   private handleGoalEvent(event: GoalMaxEvent): void {
     this.goalEventSink(event);
     const slot = this.findLiveSlot(event.sessionId);
@@ -2896,6 +3224,12 @@ export class PiRuntimeService {
         slot.stateError = normalizeError(error);
         if (this.selectedSlot === slot) this.emitError(slot.stateError);
       }
+    }
+    // Gate B release: reconcile held post-task messages against the goal state.
+    // Run them in order only when the gate truly passes (completed); on cancel/clear
+    // return them to the editable queue so the user is never stuck or surprised.
+    if (slot.heldGoalMessages.length > 0 && (event.type === 'goalmax.cleared' || event.type === 'goalmax.snapshot')) {
+      this.reconcileHeldGoalMessages(slot);
     }
     if (this.selectedSlot === slot) return;
     if (event.type === 'goalmax.snapshot') {

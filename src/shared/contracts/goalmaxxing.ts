@@ -125,6 +125,7 @@ export const goalMaxChildAssignmentSchema = z.object({
   id: boundedIdSchema,
   goalId: boundedIdSchema,
   nodeId: boundedIdSchema,
+  teamId: boundedIdSchema.optional(),
   label: z.string().trim().min(1).max(160),
   lane: z.enum(['research', 'implementation', 'tests', 'review', 'verification', 'documentation', 'general']),
   objective: z.string().trim().min(1).max(4_000),
@@ -202,10 +203,10 @@ export const goalMaxStateSchema = z.object({
   if (goal.criteria.some((criterion) => criterion.evidenceIds.some((id) => !evidenceById.get(id)?.criterionIds.includes(criterion.id)))) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Criterion evidence links must be acknowledged by the evidence record.' });
   if (goal.evidence.some((evidence) => evidence.criterionIds.some((id) => !criterionIds.has(id)))) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Evidence must reference retained criteria.' });
   if (goal.status === 'completed') {
-    const currentEvidenceIds = new Set(goal.evidence.filter((evidence) => evidence.current).map((evidence) => evidence.id));
+    const currentEvidenceIds = new Set(goal.evidence.filter((evidence) => evidence.current && evidence.source !== 'verifier').map((evidence) => evidence.id));
     if (goal.criteria.some((criterion) => criterion.required && criterion.status !== 'waived' && (
       criterion.status !== 'satisfied' || !criterion.evidenceIds.some((id) => currentEvidenceIds.has(id))
-    ))) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Completed goals require current evidence for every required criterion.' });
+    ))) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Completed goals require current non-verifier evidence for every required criterion.' });
   }
 });
 

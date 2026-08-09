@@ -6,7 +6,7 @@ const model = { provider: 'test', id: 'model', name: 'Model', reasoning: true, c
 
 describe('AgentTeamStore', () => {
   it('keeps node, task, and envelope lifecycles separate and schema-bounded', () => {
-    const runtime = createTeamRuntime('root-session', model, 'high', 'edit', 10);
+    const runtime = createTeamRuntime('root-session', '/project', model, 'high', 'edit', { now: 10 });
     const root = runtime.nodes.get(runtime.state.rootNodeId)!;
     const envelope = addEnvelope(runtime, { kind: 'NEW_TASK', authorNodeId: root.id, recipientNodeId: root.id, content: 'task', triggerTurn: true }, 11);
     const task = addTask(runtime, { assigneeNodeId: root.id, requesterNodeId: root.id, inputEnvelopeId: envelope.id, summary: 'task', status: 'queued' }, 12);
@@ -18,7 +18,7 @@ describe('AgentTeamStore', () => {
   });
 
   it('restores active work honestly as interrupted', () => {
-    const runtime = createTeamRuntime('root-session', model, 'max', 'full-access');
+    const runtime = createTeamRuntime('root-session', '/project', model, 'max', 'full-access');
     const root = runtime.nodes.get(runtime.state.rootNodeId)!;
     root.status = 'active';
     const event = ledgerSnapshot(runtime, 'checkpoint');
@@ -29,8 +29,17 @@ describe('AgentTeamStore', () => {
     expect(restored.state.writerNodeId).toBeNull();
   });
 
+  it('migrates legacy single-team snapshots with explicit project ownership and selection', () => {
+    const legacy = projectTeam(createTeamRuntime('root-session', '/project', model, 'medium', 'read-only')) as unknown as Record<string, unknown>;
+    delete legacy.projectPath;
+    delete legacy.name;
+    delete legacy.selected;
+    const restored = hydrateTeamRuntime(legacy, '/migrated-project');
+    expect(restored?.state).toMatchObject({ projectPath: '/migrated-project', name: 'Agent Team', selected: true });
+  });
+
   it('rejects oversized UTF-8 messages before insertion', () => {
-    const runtime = createTeamRuntime('root-session', model, 'medium', 'read-only');
+    const runtime = createTeamRuntime('root-session', '/project', model, 'medium', 'read-only');
     const root = runtime.nodes.get(runtime.state.rootNodeId)!;
     expect(() => addEnvelope(runtime, { kind: 'MESSAGE', authorNodeId: root.id, recipientNodeId: root.id, content: '😀'.repeat(9_000), triggerTurn: false })).toThrow(/UTF-8 bytes/);
     expect(runtime.envelopes.size).toBe(0);

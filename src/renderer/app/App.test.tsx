@@ -371,7 +371,7 @@ describe('first-launch shell', () => {
     await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }));
     expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Collapse inspector' }));
+    await user.click(screen.getByRole('button', { name: 'Close sidebar' }));
     expect(screen.queryByRole('complementary', { name: 'Project inspector' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open inspector' })).toBeInTheDocument();
   });

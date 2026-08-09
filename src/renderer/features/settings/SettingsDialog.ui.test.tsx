@@ -19,6 +19,7 @@ const settings: AppSettings = {
   holyShitMode: false,
   musicPlayerEnabled: false,
   sendMessageWithModifier: false,
+  compactSessions: false,
   themeId: 'catppuccin-mocha',
   interfaceFont: 'noto-sans',
   codeFont: 'jetbrains-mono',

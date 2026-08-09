@@ -1,6 +1,5 @@
 import * as Tabs from '@radix-ui/react-tabs';
 import {
-  ChevronsRight,
   Files,
   GitCompareArrows,
   Info,
@@ -13,7 +12,6 @@ import { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { useShallow } from 'zustand/react/shallow';
 import { AppTooltip } from '../../components/AppTooltip';
-import { IconButton } from '../../components/IconButton';
 import { ToolCard } from '../chat/ToolCard';
 import { ChangesPanel } from '../diffs/ChangesPanel';
 import { FilesPanel } from '../files/FilesPanel';
@@ -25,7 +23,8 @@ import { inspectorDestinationForTab, useUiStore } from '../../stores/uiStore';
 import { GoalMaxInspector } from '../goalmaxxing/GoalMaxInspector';
 
 interface InspectorProps {
-  onCollapse: () => void;
+  /** Kept optional for compatibility with embedded inspector tests. */
+  onCollapse?: () => void;
 }
 
 const destinations = [
@@ -102,7 +101,7 @@ function ToolsPanel() {
   );
 }
 
-export function Inspector({ onCollapse }: InspectorProps) {
+export function Inspector(_props: InspectorProps = {}) {
   const activeChildren = useRuntimeStore((state) => state.subagentOrder.reduce((count, id) => {
     const status = state.subagentsById[id]?.status;
     return count + (status === 'queued' || status === 'running' ? 1 : 0);
@@ -117,11 +116,6 @@ export function Inspector({ onCollapse }: InspectorProps) {
 
   return (
     <aside className="inspector" aria-label="Project inspector">
-      <div className="inspector-heading">
-        <IconButton label="Collapse inspector" onClick={onCollapse}>
-          <ChevronsRight size={17} />
-        </IconButton>
-      </div>
       <nav className="inspector-primary-nav" aria-label="Inspector destinations">
         {destinations.map(({ value, label }) => {
           const isActive = value === activeDestinationValue;

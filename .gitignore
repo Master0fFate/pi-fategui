@@ -11,6 +11,8 @@ build/vendor/yt-dlp/
 *.pem
 *.key
 *.mobileprovision
+__pycache__/
+*.py[cod]
 .DS_Store
 .env
 .env.*

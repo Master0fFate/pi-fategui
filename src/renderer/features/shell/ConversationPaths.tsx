@@ -1,4 +1,4 @@
-import { ArrowRight, Check, GitFork, LoaderCircle } from 'lucide-react';
+import { ArrowRight, Check, GitBranchPlus, GitFork, LoaderCircle } from 'lucide-react';
 import type { SessionBranch } from '../../../shared/contracts/ipc';
 
 const genericLabels = new Set(['branch', 'current', 'custom', 'message']);
@@ -39,47 +39,62 @@ export function conversationPathViews(branches: readonly SessionBranch[], limit 
   });
 }
 
+function isWorktreePath(branch: SessionBranch): boolean {
+  const kind = branch.kind.toLocaleLowerCase();
+  return kind.includes('worktree') || kind.includes('isolated');
+}
+
 interface ConversationPathsProps {
   branches: readonly SessionBranch[];
   busy: boolean;
   pendingId: string | null;
   onSelect: (branch: SessionBranch) => void;
-  height: number;
+  compact?: boolean;
 }
 
-export function ConversationPaths({ branches, busy, pendingId, onSelect, height }: ConversationPathsProps) {
+export function ConversationPaths({ branches, busy, pendingId, onSelect, compact = false }: ConversationPathsProps) {
   const paths = conversationPathViews(branches);
   return (
-    <section className="conversation-paths" aria-label="Conversation paths" style={{ flexBasis: height }}>
-      <header>
-        <strong>Conversation paths</strong>
-        <small>{branches.length} saved</small>
-      </header>
-      <div className="conversation-path-list" role="list">
-        {paths.map(({ branch, title, description }) => branch.active ? (
-          <div key={branch.id} className="conversation-path-row conversation-path-row--active" role="listitem" aria-current="true" title={`${title}: ${description}`}>
-            <span className="conversation-path-icon"><Check size={12} aria-hidden="true" /></span>
-            <span className="conversation-path-copy"><strong>{title}</strong><small>{description}</small></span>
-            <span className="conversation-path-state">Active</span>
+    <div className={`session-path-list${compact ? ' session-path-list--compact' : ''}`} role="list" aria-label="Conversation paths">
+      {paths.map(({ branch, title, description }) => {
+        const worktree = isWorktreePath(branch);
+        const Icon = branch.active ? Check : worktree ? GitBranchPlus : GitFork;
+        const kindLabel = branch.active ? 'Active' : worktree ? 'Worktree' : 'Fork';
+        const content = (
+          <>
+            <span className="session-path-icon"><Icon size={branch.active ? 11 : 12} aria-hidden="true" /></span>
+            <span className="session-path-copy">
+              <strong>{title}</strong>
+              <small>{description}</small>
+            </span>
+            <span className="session-path-kind">{kindLabel}</span>
+            {!branch.active && (
+              <span className="session-path-action">
+                {pendingId === branch.id ? <LoaderCircle className="tool-spinner" size={13} aria-hidden="true" /> : <ArrowRight size={13} aria-hidden="true" />}
+              </span>
+            )}
+          </>
+        );
+        return branch.active ? (
+          <div key={branch.id} className="session-row session-row--path active" role="listitem" aria-current="true" title={`${title}: ${description}`}>
+            {content}
           </div>
         ) : (
           <div key={branch.id} role="listitem">
             <button
-              className="conversation-path-row"
+              className="session-row session-row--path"
               type="button"
               disabled={busy}
               aria-label={`Switch to ${title}: ${description}`}
               title={`Switch to ${title}. Your current path stays saved.`}
               onClick={() => onSelect(branch)}
             >
-              <span className="conversation-path-icon"><GitFork size={12} aria-hidden="true" /></span>
-              <span className="conversation-path-copy"><strong>{title}</strong><small>{description}</small></span>
-              <span className="conversation-path-action">{pendingId === branch.id ? <LoaderCircle className="tool-spinner" size={12} aria-hidden="true" /> : <ArrowRight size={12} aria-hidden="true" />}</span>
+              {content}
             </button>
           </div>
-        ))}
-      </div>
-      {branches.length > paths.length ? <small className="conversation-path-overflow">Showing the current and {paths.length - 1} most recent alternatives</small> : null}
-    </section>
+        );
+      })}
+      {branches.length > paths.length && <small className="session-path-overflow">Showing {paths.length} of {branches.length} conversation paths</small>}
+    </div>
   );
 }

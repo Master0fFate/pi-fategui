@@ -79,6 +79,7 @@ export function MusicPlayerDock() {
   const localStreamsRef = useRef(new Map<string, { url: string; title: string }>());
   const requestId = useRef(0);
   const playWhenReady = useRef(false);
+  const endedAtQueueEndRef = useRef(false);
   const lastAudibleVolume = useRef(1);
 
   const clearLocalAudio = useCallback(() => {
@@ -171,6 +172,8 @@ export function MusicPlayerDock() {
 
   const prepareTrack = useCallback(async (track: MusicTrack, index: number, autoPlay: boolean) => {
     const currentRequest = ++requestId.current;
+    // Selecting or preparing a track means the queue-end completion state no longer applies.
+    endedAtQueueEndRef.current = false;
     playWhenReady.current = autoPlay;
     setTrackIndex(index);
     setStream(null);
@@ -242,10 +245,11 @@ export function MusicPlayerDock() {
       if (currentRequest !== requestId.current) return;
       const hadQueue = Boolean(queueRef.current?.tracks.length);
       const appended = appendMusicQueue(queueRef.current, incomingQueue);
+      const shouldResumeAfterQueueEnd = hadQueue && endedAtQueueEndRef.current && appended.added.length > 0;
       queueRef.current = appended.queue;
       setQueue(appended.queue);
       setSource('');
-      if (!hadQueue) {
+      if (!hadQueue || shouldResumeAfterQueueEnd) {
         await prepareTrack(appended.added[0]!, appended.firstAddedIndex, true);
         if (appended.skipped > 0) setNotice(`Queue ready · ${appended.skipped} tracks skipped`);
       } else {
@@ -296,12 +300,13 @@ export function MusicPlayerDock() {
     const skipped = incoming.length - tracks.length;
     const hadQueue = Boolean(queueRef.current?.tracks.length);
     const incomingQueue: MusicQueue = { title: tracks.length === 1 ? 'Local audio' : 'Local playlist', tracks };
+    const shouldResumeAfterQueueEnd = hadQueue && endedAtQueueEndRef.current;
     const appended = appendMusicQueue(queueRef.current, incomingQueue);
     queueRef.current = appended.queue;
     setQueue(appended.queue);
     setSource('');
     setError(null);
-    if (!hadQueue) {
+    if (!hadQueue || (shouldResumeAfterQueueEnd && appended.added.length > 0)) {
       await prepareTrack(appended.added[0]!, appended.firstAddedIndex, true);
       if (skipped > 0) setNotice(`${skipped} ${skipped === 1 ? 'file' : 'files'} skipped`);
     } else {
@@ -314,6 +319,7 @@ export function MusicPlayerDock() {
     if (!busy && !queueRef.current) return;
     requestId.current += 1;
     playWhenReady.current = false;
+    endedAtQueueEndRef.current = false;
     setBusy(true);
     setError(null);
 
@@ -649,6 +655,7 @@ export function MusicPlayerDock() {
             void prepareTrack(activeQueue.tracks[0]!, 0, true);
             return;
           }
+          endedAtQueueEndRef.current = true;
           setPlaying(false);
         }}
         onError={() => {

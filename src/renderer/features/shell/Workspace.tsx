@@ -1,4 +1,4 @@
-import { FolderOpen, FolderSearch, GitPullRequest, Globe2, PanelRightOpen, SearchCode, TerminalSquare } from 'lucide-react';
+import { FolderOpen, FolderSearch, GitPullRequest, Globe2, PanelRightClose, PanelRightOpen, SearchCode, TerminalSquare } from 'lucide-react';
 import { lazy, Suspense, useState } from 'react';
 import { ResizeHandle } from '../../components/ResizeHandle';
 import { IconButton } from '../../components/IconButton';
@@ -135,8 +135,19 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
             onClick={toggleBrowser}
           ><Globe2 size={17} /></IconButton>
           <IconButton label="Show project in file browser" onClick={() => void revealProject()} disabled={!runtime.project}><FolderSearch size={17} /></IconButton>
-          <IconButton label={terminalOpen ? 'Close terminal' : 'Open terminal'} onClick={toggleTerminal} disabled={!runtime.project?.trusted}><TerminalSquare size={17} /></IconButton>
-          {inspectorCollapsed && <IconButton label="Open inspector" onClick={onToggleInspector}><PanelRightOpen size={17} /></IconButton>}
+          <IconButton
+            label={terminalOpen ? 'Close terminal' : 'Open terminal'}
+            className="workspace-terminal-toggle"
+            aria-pressed={terminalOpen}
+            onClick={toggleTerminal}
+            disabled={!runtime.project?.trusted}
+          ><TerminalSquare size={17} /></IconButton>
+          <IconButton
+            label={inspectorCollapsed ? 'Open inspector' : 'Close sidebar'}
+            className="workspace-inspector-toggle"
+            aria-pressed={!inspectorCollapsed}
+            onClick={onToggleInspector}
+          >{inspectorCollapsed ? <PanelRightOpen size={17} /> : <PanelRightClose size={17} />}</IconButton>
         </div>
       </header>
       {!showBrowser && <ExtensionStatusRail />}

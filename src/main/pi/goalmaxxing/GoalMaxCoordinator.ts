@@ -27,6 +27,7 @@ import { GoalMaxProgressEngine, classifyGoalMaxTool, type ToolObservation, type 
 import { goalMaxCapsule, goalMaxDiagnosticPrompt, goalMaxVerificationPrompt } from './GoalMaxPrompt';
 import { InMemoryGoalMaxRepository, type GoalMaxPersistence } from './GoalMaxRepository';
 import { GoalMaxScheduler } from './GoalMaxScheduler';
+import type { TaskService } from '../tasks/TaskService';
 import { decideGoalMaxRecovery, goalMaxRecoveryPhase, goalMaxResearchProgress, goalMaxScopeOverlap } from './GoalMaxStallDetector';
 import {
   appendGoalMaxTimeline,
@@ -51,6 +52,7 @@ export interface GoalMaxRuntimeChildObservation {
 
 export interface GoalMaxRuntimeChild {
   nodeId: string;
+  teamId?: string;
   label: string;
   objective: string;
   status: GoalMaxChildAssignment['status'];
@@ -129,6 +131,7 @@ export class GoalMaxCoordinator {
     private readonly host: GoalMaxCoordinatorHost,
     private readonly repository: GoalMaxPersistence = new InMemoryGoalMaxRepository(),
     private readonly progressEngine = new GoalMaxProgressEngine(),
+    private readonly taskService: TaskService | null = null,
   ) {}
 
   createTools(): ToolDefinition[] {
@@ -201,6 +204,8 @@ export class GoalMaxCoordinator {
     }
     this.states.set(key, goal);
     this.host.emit(snapshotEvent(goal));
+    // Re-bind the canonical task list to the restored goal after rebind/restart.
+    if (!isGoalMaxTerminal(goal.status)) this.taskService?.syncGoal(goal.projectPath, goal.sessionId, goal).catch(() => undefined);
     if (goal.status === 'active') this.schedule(goal, 'runtime-bind');
     return structuredClone(goal);
   }
@@ -296,6 +301,8 @@ export class GoalMaxCoordinator {
     this.sessionKeys.set(runtime.sessionId, key);
     this.host.persistSessionEvent(runtime.sessionId, goal);
     this.host.emit(snapshotEvent(goal));
+    // Bind the canonical task list to this goal's required criteria on creation.
+    this.taskService?.syncGoal(runtime.projectPath, runtime.sessionId, goal).catch(() => undefined);
     try {
       const accepted = await this.host.startGoal(runtime.sessionId, goal.objective, goalMaxCapsule(goal));
       if (!accepted) throw new Error('Pi rejected the goal before starting.');
@@ -475,6 +482,9 @@ export class GoalMaxCoordinator {
     this.scheduler.cancel(goal.id);
     await this.repository.archiveAndClear(goal);
     this.discardTransientState(goal);
+    // The goal is gone; remove its mirrored tasks from the canonical list so the
+    // session returns to an ordinary (goal-free) task list.
+    await this.taskService?.detachGoal(goal.projectPath, goal.sessionId, goal.id).catch(() => undefined);
     this.states.delete(goalKey(goal.projectPath, goal.sessionId));
     this.sessionKeys.delete(goal.sessionId);
     this.host.emit({ type: 'goalmax.cleared', projectPath: goal.projectPath, sessionId: goal.sessionId, goalId: goal.id, timestamp: Date.now() });
@@ -1264,6 +1274,10 @@ export class GoalMaxCoordinator {
     const failClosed = this.failClosedStates.get(parsed.sessionId);
     const previous = failClosed?.id === storedPrevious?.id ? failClosed : storedPrevious;
     await this.repository.save(parsed, expectedRevision);
+    // Keep the canonical task list bound to this goal. syncGoal is idempotent,
+    // derivation of task verification from current verification evidence, and
+    // serialized on its own per-session queue so it never races goal mutations.
+    this.taskService?.syncGoal(parsed.projectPath, parsed.sessionId, parsed).catch(() => undefined);
     let visible = parsed;
     if (failClosed?.id === parsed.id && activeGoalStatuses.has(parsed.status)) {
       visible = goalMaxStateSchema.parse({
@@ -1485,6 +1499,7 @@ function assignmentFromChild(goal: GoalMaxState, child: GoalMaxRuntimeChild): Go
     id: previous?.id ?? `assignment-${randomUUID()}`,
     goalId: goal.id,
     nodeId: child.nodeId,
+    ...(child.teamId ? { teamId: child.teamId } : {}),
     label: redactGoalMaxDiagnostic(child.label),
     lane: inferLane(child.objective),
     objective: redactGoalMaxDiagnostic(child.objective),
@@ -1571,11 +1586,12 @@ function deterministicVerification(goal: GoalMaxState): { pass: boolean; finding
   if (currentFailure) findings.push(`Resolve the current failed evidence: ${currentFailure.title}.`);
   const required = goal.criteria.filter((criterion) => criterion.required && criterion.status !== 'waived');
   if (required.length === 0) findings.push('Define at least one required completion criterion.');
-  if (goal.verificationLevel === 'strict') {
-    const supportingIds = new Set(currentEvidence.filter(evidenceSupportsCriterion).map((evidence) => evidence.id));
-    for (const criterion of required) {
-      if (!criterion.evidenceIds.some((id) => supportingIds.has(id))) findings.push(`Attach current non-verifier evidence to required criterion: ${criterion.title}.`);
-    }
+  // Gate A: every required criterion must carry current non-verifier evidence,
+  // regardless of verification level. A verifier pass alone can never satisfy
+  // a required criterion, so the gate fails closed until each one is supported.
+  const supportingIds = new Set(currentEvidence.filter(evidenceSupportsCriterion).map((evidence) => evidence.id));
+  for (const criterion of required) {
+    if (!criterion.evidenceIds.some((id) => supportingIds.has(id))) findings.push(`Attach current non-verifier evidence to required criterion: ${criterion.title}.`);
   }
   return { pass: findings.length === 0, findings, needsVerificationCommand };
 }

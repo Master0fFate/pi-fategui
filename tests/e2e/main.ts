@@ -37,15 +37,23 @@ const runtime = new FakePiRuntimeService();
 const files = new FilesystemService();
 const git = new GitService(files);
 const project = { path: projectPath, name: path.basename(projectPath), trusted: true };
+const secondProjectPath = process.env.PI_DESKTOP_E2E_SECOND_PROJECT;
+const secondProject = secondProjectPath ? { path: secondProjectPath, name: path.basename(secondProjectPath), trusted: true } : null;
+let projectSelectionCount = 0;
 const activation = (candidate: ProjectState): ProjectActivation => ({ project: candidate, commit: async () => candidate, rollback: async () => undefined });
 const projects = {
-  prepareSelect: async () => activation(project),
+  prepareSelect: async () => {
+    const selected = secondProject && projectSelectionCount > 0 ? secondProject : project;
+    projectSelectionCount += 1;
+    return activation(selected);
+  },
   prepareOpenPath: async (selectedPath: string) => activation({ path: selectedPath, name: path.basename(selectedPath), trusted: true }),
+  prepareSessionListPath: async (selectedPath: string) => selectedPath,
   prepareDerivedWorktree: async (worktreePath: string, sourceProjectPath: string) => activation({ path: worktreePath, name: path.basename(sourceProjectPath), trusted: true }),
   selectFile: async () => 'src/example.ts',
 } as unknown as ProjectService;
 const profileVisualMode = process.env.FATE_GUI_PROFILE_VISUAL_MODE;
-let settingsValue: AppSettings = { appearance: 'dark', defaultModel: 'test/deterministic', thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } };
+let settingsValue: AppSettings = { appearance: 'dark', defaultModel: 'test/deterministic', thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } };
 const e2ePiTheme = { ...builtInThemes[4]!, id: 'pi-e2e-theme-0123456789ab', name: 'Pi · E2E Theme' };
 const settings = {
   load: async () => settingsValue,

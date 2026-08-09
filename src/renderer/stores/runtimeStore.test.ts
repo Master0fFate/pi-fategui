@@ -31,8 +31,8 @@ const reset = () => useRuntimeStore.setState({
 describe('runtimeStore event reducer', () => {
   beforeEach(reset);
 
-  it('normalizes Agent Team V2 projections and replaces them atomically on events', () => {
-    const runtime = createTeamRuntime('session', { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 }, 'high', 'read-only');
+  it('normalizes Agent Team V2 projections and merges sibling teams atomically on events', () => {
+    const runtime = createTeamRuntime('session', '/project', { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 }, 'high', 'read-only');
     const team = projectTeam(runtime);
     useRuntimeStore.getState().applyEvents([{ type: 'agent-team.updated', team, timestamp: 1 }]);
     const state = useRuntimeStore.getState();
@@ -40,6 +40,11 @@ describe('runtimeStore event reducer', () => {
     expect(state.agentTeamsById[team.id]).toEqual(team);
     expect(state.agentNodesById[team.rootNodeId]?.path).toBe('/root');
     expect(state.runtime.agentTeams).toEqual([team]);
+
+    const second = projectTeam(createTeamRuntime('session', '/project', { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 }, 'high', 'read-only', { name: 'Second', selected: false, now: team.createdAt + 1 }));
+    useRuntimeStore.getState().applyEvents([{ type: 'agent-team.updated', team: second, timestamp: 2 }]);
+    expect(useRuntimeStore.getState().agentTeamOrder).toEqual([team.id, second.id]);
+    expect(useRuntimeStore.getState().runtime.agentTeams).toEqual([team, second]);
 
     reset();
     expect(useRuntimeStore.getState().agentTeamOrder).toEqual([]);

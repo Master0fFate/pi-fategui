@@ -184,6 +184,76 @@ describe('MusicPlayerDock', () => {
     expect(useUiStore.getState().musicPlaying).toBe(false);
   });
 
+  it('starts a newly queued track when the previous queue ended naturally', async () => {
+    const loadMusic = vi.fn()
+      .mockResolvedValueOnce({ title: 'First source', tracks: [{ id: firstId, title: 'First track', duration: 61 }] })
+      .mockResolvedValueOnce({ title: 'Second source', tracks: [{ id: secondId, title: 'Second track', duration: 122 }] });
+    const resolveMusicTrack = vi.fn(async (trackId: string) => ({
+      trackId,
+      title: trackId === firstId ? 'First track' : 'Second track',
+      duration: trackId === firstId ? 61 : 122,
+      url: `https://cdn.example/${trackId}.m4a`,
+    }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getMusicStatus: vi.fn(async () => ({ available: true, version: '2026.03.17', message: undefined })),
+        loadMusic,
+        resolveMusicTrack,
+      } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    const { container } = render(<MusicPlayerDock />);
+    await user.click(screen.getByRole('button', { name: 'Open music player' }));
+    const source = screen.getByLabelText('Media or playlist link');
+    await user.type(source, 'https://media.example/one');
+    await user.click(screen.getByRole('button', { name: 'Load music link' }));
+    const audio = container.querySelector('audio')!;
+    await waitFor(() => expect(audio).toHaveAttribute('src', `https://cdn.example/${firstId}.m4a`));
+
+    fireEvent.ended(audio);
+    expect(useUiStore.getState().musicPlaying).toBe(false);
+    await user.type(source, 'https://media.example/two');
+    await user.click(screen.getByRole('button', { name: 'Load music link' }));
+
+    await waitFor(() => expect(audio).toHaveAttribute('src', `https://cdn.example/${secondId}.m4a`));
+    expect(resolveMusicTrack).toHaveBeenLastCalledWith(secondId);
+    fireEvent.canPlay(audio);
+    await waitFor(() => expect(HTMLMediaElement.prototype.play).toHaveBeenCalled());
+  });
+
+  it('does not auto-start a queued track when the current track was paused', async () => {
+    const loadMusic = vi.fn()
+      .mockResolvedValueOnce({ title: 'First source', tracks: [{ id: firstId, title: 'First track', duration: 61 }] })
+      .mockResolvedValueOnce({ title: 'Second source', tracks: [{ id: secondId, title: 'Second track', duration: 122 }] });
+    const resolveMusicTrack = vi.fn(async (trackId: string) => ({
+      trackId, title: trackId === firstId ? 'First track' : 'Second track', duration: 61, url: `https://cdn.example/${trackId}.m4a`,
+    }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getMusicStatus: vi.fn(async () => ({ available: true, version: '2026.03.17', message: undefined })),
+        loadMusic, resolveMusicTrack,
+      } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    const { container } = render(<MusicPlayerDock />);
+    await user.click(screen.getByRole('button', { name: 'Open music player' }));
+    const source = screen.getByLabelText('Media or playlist link');
+    await user.type(source, 'https://media.example/one');
+    await user.click(screen.getByRole('button', { name: 'Load music link' }));
+    const audio = container.querySelector('audio')!;
+    await waitFor(() => expect(audio).toHaveAttribute('src', `https://cdn.example/${firstId}.m4a`));
+    fireEvent.play(audio);
+    fireEvent.pause(audio);
+
+    await user.type(source, 'https://media.example/two');
+    await user.click(screen.getByRole('button', { name: 'Load music link' }));
+    await waitFor(() => expect(screen.getByText('Added 1 track to queue')).toBeInTheDocument());
+    expect(resolveMusicTrack).toHaveBeenCalledTimes(1);
+    expect(useUiStore.getState().musicPlaying).toBe(false);
+  });
+
   it('lets Clear playlist cancel an in-flight extractor before a queue exists', async () => {
     let finishLoad: ((queue: { title: string; tracks: Array<{ id: string; title: string; duration: number }> }) => void) | undefined;
     const loadMusic = vi.fn(() => new Promise<{ title: string; tracks: Array<{ id: string; title: string; duration: number }> }>((resolve) => { finishLoad = resolve; }));

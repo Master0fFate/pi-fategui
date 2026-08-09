@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 const PROJECT_OPTION = '--project';
+const NEW_INSTANCE_OPTION = '--new-instance';
 const MAX_PROJECT_PATH_CHARACTERS = 32_768;
 
 function validProjectPath(value: unknown): value is string {
@@ -26,6 +27,14 @@ export function parseLaunchProjectPath(argv: readonly string[], workingDirectory
     }
   }
   return projectPath === null ? null : path.resolve(workingDirectory, projectPath);
+}
+
+/**
+ * True when the launcher asked for a true second Fate UI process instead of
+ * routing the folder into the already-running app. Mirrors FATE_NEW_INSTANCE=1.
+ */
+export function hasNewInstanceFlag(argv: readonly string[]): boolean {
+  return argv.includes(NEW_INSTANCE_OPTION);
 }
 
 export function projectPathFromAdditionalData(value: unknown): string | null {

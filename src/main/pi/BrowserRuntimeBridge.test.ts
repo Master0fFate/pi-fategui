@@ -56,6 +56,28 @@ describe('BrowserRuntimeBridge', () => {
     expect(service.lease.acquire).toHaveBeenCalledWith('root-b');
   });
 
+  it('ignores roots and disposal clears from background projects', () => {
+    const service = serviceFixture();
+    const bridge = new BrowserRuntimeBridge(() => service);
+    bridge.setFocusedProjectPath('/a');
+    bridge.setActiveRoot({ projectPath: '/a', sessionId: 'root-a' });
+    bridge.setActiveRoot({ projectPath: '/b', sessionId: 'root-b' });
+    expect(bridge.currentRoot()).toEqual({ projectPath: '/a', sessionId: 'root-a' });
+    bridge.clearActiveRoot('/b');
+    expect(bridge.currentRoot()).toEqual({ projectPath: '/a', sessionId: 'root-a' });
+    bridge.clearActiveRoot('/a');
+    expect(bridge.currentRoot()).toBeNull();
+  });
+
+  it('does not let background disposal clear the focused browser root', () => {
+    const service = serviceFixture();
+    const bridge = new BrowserRuntimeBridge(() => service);
+    bridge.setFocusedProjectPath('/foreground');
+    bridge.setActiveRoot({ projectPath: '/foreground', sessionId: 'root' });
+    bridge.clearActiveRoot('/background');
+    expect(bridge.currentRoot()).toEqual({ projectPath: '/foreground', sessionId: 'root' });
+  });
+
   it('fails closed while no trusted project browser service exists', async () => {
     const bridge = new BrowserRuntimeBridge(() => null);
     bridge.setActiveRoot({ projectPath: '/project', sessionId: 'root' });

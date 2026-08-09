@@ -182,6 +182,19 @@ export class PiSessionRepository {
     this.invalidate(cwd);
   }
 
+  async deleteAll(cwd: string, excludedSessionIds: ReadonlySet<string> = new Set()): Promise<number> {
+    if (!this.source.remove) throw new Error('Deleting sessions is unavailable.');
+    const sessions = await this.source.list(cwd);
+    let deleted = 0;
+    for (const session of sessions) {
+      if (excludedSessionIds.has(session.id)) continue;
+      await this.source.remove(session.path);
+      deleted += 1;
+    }
+    this.invalidate(cwd);
+    return deleted;
+  }
+
   branches(session: AgentSession): SessionBranch[] {
     const manager = session.sessionManager;
     if (!manager || typeof manager.getTree !== 'function') return [];

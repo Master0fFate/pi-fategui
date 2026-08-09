@@ -7,7 +7,7 @@ vi.mock('electron', () => ({
   dialog: { showOpenDialog: vi.fn(), showMessageBox: vi.fn() },
   shell: { openPath: vi.fn() },
 }));
-import { dialog } from 'electron';
+import { dialog, shell } from 'electron';
 import { ProjectService } from './ProjectService';
 
 const temporaryDirectories: string[] = [];
@@ -67,6 +67,19 @@ describe('ProjectService.select', () => {
     expect(dialog.showMessageBox).toHaveBeenCalledOnce();
   });
 
+  it('limits session previews to the active or previously trusted project', async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'pi-desktop-state-'));
+    const activePath = await mkdtemp(path.join(tmpdir(), 'pi-desktop-project-'));
+    const untrustedPath = await mkdtemp(path.join(tmpdir(), 'pi-desktop-project-'));
+    temporaryDirectories.push(dataRoot, activePath, untrustedPath);
+    const service = new ProjectService(dataRoot);
+    const canonicalActive = await realpath(activePath);
+    setCurrentProject(service, canonicalActive);
+
+    await expect(service.prepareSessionListPath(activePath)).resolves.toBe(canonicalActive);
+    await expect(service.prepareSessionListPath(untrustedPath)).rejects.toMatchObject({ normalized: { code: 'PROJECT_NOT_TRUSTED' } });
+  });
+
   it('inherits trust only for a derived worktree of the active trusted project', async () => {
     const dataRoot = await mkdtemp(path.join(tmpdir(), 'pi-desktop-state-'));
     const projectPath = await mkdtemp(path.join(tmpdir(), 'pi-desktop-project-'));
@@ -115,6 +128,18 @@ describe('ProjectService.select', () => {
     expect(showOpenDialog).toHaveBeenLastCalledWith(expect.objectContaining({ defaultPath: await realpath(projectPath) }));
   });
 
+  it('restores only a previously trusted recent project without opening a trust prompt', async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'pi-desktop-state-'));
+    const projectPath = await mkdtemp(path.join(tmpdir(), 'pi-desktop-project-'));
+    temporaryDirectories.push(dataRoot, projectPath);
+    const canonical = await realpath(projectPath);
+    await writeFile(path.join(dataRoot, 'trusted-projects.json'), JSON.stringify({ version: 1, paths: [canonical] }));
+    await writeFile(path.join(dataRoot, 'recent-project.json'), JSON.stringify({ path: canonical }));
+
+    await expect(new ProjectService(dataRoot).lastTrustedProjectPath()).resolves.toBe(canonical);
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+  });
+
   it('prepares trust without mutating authority and rolls back only transaction-added trust', async () => {
     const dataRoot = await mkdtemp(path.join(tmpdir(), 'pi-desktop-state-'));
     const sourcePath = await mkdtemp(path.join(tmpdir(), 'pi-desktop-project-'));
@@ -159,6 +184,18 @@ describe('ProjectService.select', () => {
 });
 
 describe('ProjectService.revealCurrent', () => {
+  it('reveals a previously trusted project path without changing the active project', async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'pi-desktop-state-'));
+    const projectPath = await mkdtemp(path.join(tmpdir(), 'pi-desktop-project-'));
+    temporaryDirectories.push(dataRoot, projectPath);
+    const service = new ProjectService(dataRoot);
+    const canonical = await realpath(projectPath);
+    setCurrentProject(service, canonical);
+    vi.mocked(shell.openPath).mockResolvedValueOnce('');
+    await expect(service.revealPath(projectPath)).resolves.toEqual({ opened: true });
+    expect(shell.openPath).toHaveBeenCalledWith(canonical);
+  });
+
   it('rejects a missing current project with an actionable normalized error', async () => {
     await expect(new ProjectService().revealCurrent(vi.fn())).rejects.toMatchObject({
       normalized: {

@@ -62,7 +62,7 @@ describe('Flight Deck selectors', () => {
   });
 
   it('does not claim omission merely because a complete team timeline has 256 entries', () => {
-    const team = projectTeam(createTeamRuntime('session-1', { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 }, 'medium', 'read-only'));
+    const team = projectTeam(createTeamRuntime('session-1', '/project', { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 }, 'medium', 'read-only'));
     team.timeline = Array.from({ length: FLIGHT_RECORDER_LIMIT }, (_value, index) => ({
       id: `event-${index}`, sequence: index + 1, type: 'team.created' as const, summary: 'Lifecycle event', timestamp: index,
     }));

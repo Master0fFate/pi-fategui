@@ -1174,10 +1174,12 @@ describe('conversation components', () => {
     render(<Composer onOpenProject={vi.fn()} />);
 
     expect(screen.getByText('Use the smaller API')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Steer' }));
+    expect(screen.queryByRole('button', { name: /More options for queued message/u })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: `Cancel queued message: ${queued.text}` })).toHaveLength(1);
+    await user.click(screen.getByRole('switch', { name: `Follow-up queued message: ${queued.text}` }));
 
     expect(mutateQueuedMessage).toHaveBeenCalledWith({ id: queued.id, action: 'steer' });
-    expect(await screen.findByText('Steering')).toBeInTheDocument();
+    expect(await screen.findByRole('switch', { name: `Steer queued message: ${queued.text}` })).toBeEnabled();
   });
 
   it('moves a queued message back into the composer for editing', async () => {
@@ -1189,8 +1191,7 @@ describe('conversation components', () => {
     const user = userEvent.setup();
     render(<Composer onOpenProject={vi.fn()} />);
 
-    await user.click(screen.getByRole('button', { name: /More options for queued message/u }));
-    await user.click(screen.getByRole('button', { name: 'Edit message' }));
+    await user.click(screen.getByRole('button', { name: `Edit queued message: ${queued.text}` }));
 
     expect(mutateQueuedMessage).toHaveBeenCalledWith({ id: queued.id, action: 'edit' });
     expect(screen.getByLabelText('Message Pi')).toHaveValue('Fix teh heading');

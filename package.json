@@ -1,6 +1,6 @@
 {
   "name": "pi-fategui",
-  "version": "0.8.2-beta1",
+  "version": "0.8.9-beta1",
   "description": "A local-first desktop interface for the Pi coding agent",
   "type": "module",
   "main": "dist/main/index.js",

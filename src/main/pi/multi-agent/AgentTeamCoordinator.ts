@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AgentSession, AgentSessionEvent, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
-import { AGENT_TEAM_MAX_WAIT_MS, type AgentTeam, type AgentTeamControlInput, type AgentTeamEnvelope, type AgentTeamNode, type AgentTeamTask } from '../../../shared/contracts/multiAgent';
+import { AGENT_TEAM_MAX_GLOBAL_NODES, AGENT_TEAM_MAX_WAIT_MS, type AgentTeam, type AgentTeamControlInput, type AgentTeamEnvelope, type AgentTeamEnvelopeDelivery, type AgentTeamNode, type AgentTeamTask } from '../../../shared/contracts/multiAgent';
 import type { ToolActor } from '../../../shared/contracts/provenance';
 import { addUsage, createSdkChildSession, emptyUsage, finalAssistant, usageFromMessages, type SubagentChildSessionFactory } from '../SubagentSessionFactory';
 import { assertContextTransfer } from '../SubagentContext';
@@ -67,9 +67,13 @@ function operationKey(callerNodeId: string, operationId: string): string { retur
 function taskSummary(content: string): string { return content.trim().replace(/\s+/gu, ' ').slice(0, 2_000); }
 
 export class AgentTeamCoordinator {
-  private readonly teamsByRoot = new Map<string, AgentTeamRuntime>();
-  private readonly nodeToRoot = new Map<string, string>();
+  private readonly teamsById = new Map<string, AgentTeamRuntime>();
+  private readonly teamIdsByRoot = new Map<string, Set<string>>();
+  private readonly selectedTeamByRoot = new Map<string, string>();
+  private readonly nodeToTeam = new Map<string, string>();
   private readonly schedulers = new Map<string, AgentTeamScheduler>();
+  private readonly projectWriter = new Map<string, { teamId: string; nodeId: string }>();
+  private readonly lifecycleReceipts = new Map<string, string>();
   private readonly mutationQueues = new Map<string, Promise<void>>();
   private readonly listeners = new Map<string, Set<TeamListener>>();
   private readonly dataRoot: string;
@@ -91,24 +95,25 @@ export class AgentTeamCoordinator {
     return createAgentCollaborationTools(this, null, modelRuntime);
   }
 
-  rootNodeId(rootSessionId: string): string {
-    return this.ensureTeam(rootSessionId).state.rootNodeId;
+  rootNodeId(rootSessionId: string, teamId?: string): string {
+    return this.ensureTeam(rootSessionId, teamId).state.rootNodeId;
   }
 
   getTeams(rootSessionId: string): AgentTeam[] {
-    const runtime = this.teamsByRoot.get(rootSessionId);
-    return runtime ? [projectTeam(runtime)] : [];
+    return this.runtimesForRoot(rootSessionId).map(projectTeam);
+  }
+
+  selectedTeamId(rootSessionId: string): string | null {
+    return this.selectedTeamByRoot.get(rootSessionId) ?? null;
   }
 
   hasOwnedWork(rootSessionId: string): boolean {
-    const runtime = this.teamsByRoot.get(rootSessionId);
-    if (!runtime) return false;
-    return [...runtime.nodes.values()].some((node) => node.depth > 0 && (activeNodeStatuses.has(node.status) || node.status === 'ready' || node.status === 'interrupted'));
+    return this.runtimesForRoot(rootSessionId).some((runtime) => runtime.state.status !== 'closed' && runtime.state.status !== 'released'
+      && [...runtime.nodes.values()].some((node) => node.depth > 0 && (activeNodeStatuses.has(node.status) || node.status === 'ready' || node.status === 'interrupted')));
   }
 
   hasActiveWork(rootSessionId: string): boolean {
-    const runtime = this.teamsByRoot.get(rootSessionId);
-    return Boolean(runtime && [...runtime.nodes.values()].some((node) => node.depth > 0 && activeNodeStatuses.has(node.status)));
+    return this.runtimesForRoot(rootSessionId).some((runtime) => [...runtime.nodes.values()].some((node) => node.depth > 0 && activeNodeStatuses.has(node.status)));
   }
 
   spawn(callerNodeId: string, raw: unknown, operationId: string, modelRuntime: ModelRuntime, signal?: AbortSignal, options: { allowDelegation?: boolean; bypassGoalPolicy?: boolean } = {}) {
@@ -128,14 +133,20 @@ export class AgentTeamCoordinator {
     const caller = this.requireNode(runtime, callerNodeId);
     const rootPolicy = this.host.resolveRoot(runtime.state.rootSessionId)?.agentStrategy;
     if (rootPolicy === 'off' && options.bypassGoalPolicy !== true) throw new Error('Goal agent strategy is off; complete this turn with the root agent.');
-    if (caller.status === 'closed' || caller.status === 'failed') throw new Error(`Caller ${caller.path} is not reusable.`);
-    if (caller.depth >= runtime.state.limits.maxDepth) throw new Error(`Agent team maximum descendant depth is ${runtime.state.limits.maxDepth}.`);
-    if (runtime.nodes.size - 1 >= runtime.state.limits.maxNodes) throw new Error(`Agent team node limit (${runtime.state.limits.maxNodes} non-root nodes) reached.`);
+    if (runtime.state.status !== 'active' && runtime.state.status !== 'restored-interrupted') throw new Error(`Agent team ${runtime.state.name} (${runtime.state.id}) is ${runtime.state.status} and cannot accept new work.`);
+    if (caller.status === 'closed' || caller.status === 'released' || caller.status === 'failed') throw new Error(`Caller ${caller.path} is not reusable.`);
+    if (caller.depth >= runtime.state.limits.maxDepth) throw new Error(`Agent team ${runtime.state.id} maximum descendant depth is ${runtime.state.limits.maxDepth}.`);
+    const liveTeamNodes = [...runtime.nodes.values()].filter((node) => node.depth > 0 && node.status !== 'released').length;
+    if (liveTeamNodes >= runtime.state.limits.maxNodes) throw new Error(`Agent team ${runtime.state.name} (${runtime.state.id}) node limit (${runtime.state.limits.maxNodes} non-root nodes) reached.`);
+    const liveGlobalNodes = [...this.teamsById.values()].filter((team) => team.state.projectPath === runtime.state.projectPath && team.state.status !== 'closed' && team.state.status !== 'released').flatMap((team) => [...team.nodes.values()]).filter((node) => node.depth > 0 && node.status !== 'released').length;
+    if (liveGlobalNodes >= AGENT_TEAM_MAX_GLOBAL_NODES) throw new Error(`Project ${runtime.state.projectPath} global Agent Team node limit (${AGENT_TEAM_MAX_GLOBAL_NODES}) reached while spawning in team ${runtime.state.id}.`);
     if (runtime.envelopes.size >= runtime.state.limits.maxMessages) throw new Error(`Agent team message limit (${runtime.state.limits.maxMessages}) reached.`);
     if (Buffer.byteLength(request.task, 'utf8') > runtime.state.limits.maxMessageBytes) throw new Error(`Agent team messages are limited to ${runtime.state.limits.maxMessageBytes} UTF-8 bytes.`);
     const prepared = await this.prepareRequest(runtime, caller, request, modelRuntime, options.bypassGoalPolicy === true);
     if (signal?.aborted) throw Object.assign(new Error('Spawn cancelled.'), { name: 'AbortError' });
-    const usedPaths = new Set(runtime.pathToNode.keys());
+    const currentCaller = this.requireNode(runtime, callerNodeId);
+    if ((runtime.state.status !== 'active' && runtime.state.status !== 'restored-interrupted') || currentCaller.status === 'closing' || currentCaller.status === 'closed' || currentCaller.status === 'released' || currentCaller.status === 'failed') throw new Error(`Agent team ${runtime.state.id} or caller ${caller.path} stopped accepting work during spawn preparation.`);
+    const usedPaths = new Set([...runtime.nodes.values()].map((node) => node.path));
     const usedHandles = new Set([...runtime.nodes.values()].map((node) => node.handle));
     const reserved = reserveAgentPath(caller.path, request.name ?? prepared.role, usedPaths, usedHandles);
     const now = Date.now();
@@ -164,7 +175,7 @@ export class AgentTeamCoordinator {
     };
     runtime.nodes.set(node.id, node);
     runtime.pathToNode.set(node.path, node.id);
-    this.nodeToRoot.set(node.id, runtime.state.rootSessionId);
+    this.nodeToTeam.set(node.id, runtime.state.id);
     caller.childIds.push(node.id);
     caller.updatedAt = now;
     appendTimeline(runtime, 'node.created', `${node.path} created by ${caller.path}.`, { nodeId: node.id }, now);
@@ -176,7 +187,7 @@ export class AgentTeamCoordinator {
     runtime.operationReceipts.set(receiptKey, receipt);
     let lease;
     try {
-      lease = this.scheduler(runtime).acquire(node.id, node.permissionLevel);
+      lease = this.acquireLease(runtime, node.id, node.permissionLevel);
       this.syncScheduler(runtime);
       const nodeRuntime = await this.createNodeSession(runtime, node, prepared, modelRuntime, options.allowDelegation !== false);
       nodeRuntime.lease = lease;
@@ -199,7 +210,7 @@ export class AgentTeamCoordinator {
       lease?.release();
       runtime.nodes.delete(node.id);
       runtime.pathToNode.delete(node.path);
-      this.nodeToRoot.delete(node.id);
+      this.nodeToTeam.delete(node.id);
       caller.childIds = caller.childIds.filter((id) => id !== node.id);
       runtime.tasks.delete(task.id);
       runtime.envelopes.delete(input.id);
@@ -210,12 +221,12 @@ export class AgentTeamCoordinator {
     }
   }
 
-  sendMessage(callerNodeId: string, target: string, content: string, operationId: string) {
+  sendMessage(callerNodeId: string, target: string, content: string, operationId: string, delivery: AgentTeamEnvelopeDelivery = 'queue') {
     const runtime = this.runtimeForCaller(callerNodeId);
-    return this.serializeMutation(runtime, () => this.sendMessageInternal(callerNodeId, target, content, operationId));
+    return this.serializeMutation(runtime, () => this.sendMessageInternal(callerNodeId, target, content, operationId, delivery));
   }
 
-  private async sendMessageInternal(callerNodeId: string, target: string, content: string, operationId: string) {
+  private async sendMessageInternal(callerNodeId: string, target: string, content: string, operationId: string, delivery: AgentTeamEnvelopeDelivery) {
     const runtime = this.runtimeForCaller(callerNodeId);
     const key = operationKey(callerNodeId, operationId);
     const previous = runtime.operationReceipts.get(key) as AgentTeam['operationReceipts'][number] | undefined;
@@ -225,12 +236,32 @@ export class AgentTeamCoordinator {
     }
     const recipient = this.resolveTarget(runtime, target);
     if (recipient.id === callerNodeId) throw new Error('Agents cannot message themselves.');
-    const envelope = addEnvelope(runtime, { kind: 'MESSAGE', authorNodeId: callerNodeId, recipientNodeId: recipient.id, content, triggerTurn: false });
+    const envelope = addEnvelope(runtime, { kind: 'MESSAGE', authorNodeId: callerNodeId, recipientNodeId: recipient.id, content, triggerTurn: false, delivery });
     runtime.operationReceipts.set(key, { key, operation: 'message', entityId: envelope.id, createdAt: Date.now() });
     this.persist(runtime, 'envelope.created');
-    await this.deliverEnvelope(runtime, envelope, false);
-    this.changed(runtime, `${this.requireNode(runtime, callerNodeId).path} messaged ${recipient.path}.`);
+    await this.deliverMessage(runtime, envelope, delivery);
+    this.changed(runtime, `${this.requireNode(runtime, callerNodeId).path} messaged ${recipient.path} via ${delivery}.`);
     return { envelopeId: envelope.id, state: envelope.state };
+  }
+
+  private async deliverMessage(runtime: AgentTeamRuntime, envelope: AgentTeamEnvelope, delivery: AgentTeamEnvelopeDelivery): Promise<void> {
+    const target = this.requireNode(runtime, envelope.recipientNodeId);
+    // queue (and legacy missing delivery): hold until the recipient's current task settles, then deliver exactly once.
+    if (delivery === 'queue' && this.hasLiveCurrentTask(runtime, target)) {
+      envelope.state = 'queued';
+      target.unreadMessages += 1;
+      appendTimeline(runtime, 'envelope.updated', `MESSAGE held for ${target.path} until its current task settles.`, { envelopeId: envelope.id, nodeId: target.id });
+      return;
+    }
+    // A settled recipient, or an explicit steer, delivers exactly once. steer may inject into a streaming turn; idle delivery never wakes the agent.
+    await this.deliverEnvelope(runtime, envelope, false, delivery === 'steer');
+  }
+
+  private hasLiveCurrentTask(runtime: AgentTeamRuntime, node: AgentTeamNode): boolean {
+    if (!node.currentTaskId) return false;
+    const task = runtime.tasks.get(node.currentTaskId);
+    if (!task) return false;
+    return !settledTaskStatuses.has(task.status);
   }
 
   followUp(callerNodeId: string, target: string, content: string, operationId: string, modelRuntime: ModelRuntime, signal?: AbortSignal) {
@@ -250,7 +281,8 @@ export class AgentTeamCoordinator {
     const caller = this.requireNode(runtime, callerNodeId);
     const node = this.resolveTarget(runtime, target);
     if (node.parentNodeId !== caller.id) throw new Error('followup_task may target only an owned direct child.');
-    if (node.status === 'closed' || node.status === 'failed') throw new Error(`${node.path} is closed and cannot receive follow-up work.`);
+    if (runtime.state.status !== 'active' && runtime.state.status !== 'restored-interrupted') throw new Error(`Agent team ${runtime.state.id} is ${runtime.state.status} and cannot accept follow-up work.`);
+    if (node.status === 'closed' || node.status === 'released' || node.status === 'failed') throw new Error(`${node.path} is ${node.status} and cannot receive follow-up work.`);
     const envelope = addEnvelope(runtime, { kind: 'NEW_TASK', authorNodeId: caller.id, recipientNodeId: node.id, content, triggerTurn: true });
     const task = addTask(runtime, { assigneeNodeId: node.id, requesterNodeId: caller.id, inputEnvelopeId: envelope.id, summary: taskSummary(content), status: 'queued' });
     envelope.taskId = task.id;
@@ -259,7 +291,7 @@ export class AgentTeamCoordinator {
       this.changed(runtime, `Follow-up ${task.id} queued for active agent ${node.path}.`);
       return { taskId: task.id, path: node.path, status: task.status };
     }
-    const lease = this.scheduler(runtime).acquire(node.id, node.permissionLevel);
+    const lease = this.acquireLease(runtime, node.id, node.permissionLevel);
     this.syncScheduler(runtime);
     try {
       const nodeRuntime = await this.ensureNodeSession(runtime, node, modelRuntime);
@@ -388,6 +420,8 @@ export class AgentTeamCoordinator {
     const node = this.resolveTarget(runtime, target);
     if (node.id === caller.id || node.depth === 0) throw new Error('Agents cannot interrupt themselves or the logical root.');
     if (!node.path.startsWith(`${caller.path}/`)) throw new Error('Agents may interrupt only owned descendants.');
+    if (node.status === 'interrupted') return { nodeId: node.id, path: node.path, status: node.status };
+    if (node.status === 'closed' || node.status === 'released' || node.status === 'failed') throw new Error(`${node.path} is ${node.status} and cannot be interrupted.`);
     const nodeRuntime = runtime.nodeRuntime.get(node.id);
     if (nodeRuntime?.session?.isStreaming) await nodeRuntime.session.abort();
     const task = node.currentTaskId ? runtime.tasks.get(node.currentTaskId) : undefined;
@@ -403,8 +437,49 @@ export class AgentTeamCoordinator {
     node.updatedAt = Date.now();
     appendTimeline(runtime, 'node.interrupted', `${node.path} interrupted.`, { nodeId: node.id, taskId: task?.id });
     this.syncScheduler(runtime);
-    this.changed(runtime, `${node.path} interrupted.`);
+    this.changed(runtime, `${node.path} interrupted.`, 'node.interrupted');
     return { nodeId: node.id, path: node.path, status: node.status };
+  }
+
+  async close(callerNodeId: string, target: string, force = false) {
+    const runtime = this.runtimeForCaller(callerNodeId);
+    return this.serializeMutation(runtime, async () => {
+      const caller = this.requireNode(runtime, callerNodeId);
+      const node = this.resolveTarget(runtime, target);
+      if (node.id === caller.id || node.depth === 0 || !node.path.startsWith(`${caller.path}/`)) throw new Error('Agents may close only owned descendants.');
+      await this.closeNode(runtime, node, 'Closed by the owning agent.', force);
+      return { nodeId: node.id, path: node.path, status: node.status };
+    });
+  }
+
+  async release(callerNodeId: string, target: string, force = false) {
+    const runtime = this.runtimeForCaller(callerNodeId);
+    return this.serializeMutation(runtime, async () => {
+      const caller = this.requireNode(runtime, callerNodeId);
+      const node = this.resolveTarget(runtime, target);
+      if (node.id === caller.id || node.depth === 0 || !node.path.startsWith(`${caller.path}/`)) throw new Error('Agents may release only owned descendants.');
+      await this.releaseNode(runtime, node, force, 'Released by the owning agent.');
+      return { nodeId: node.id, path: node.path, status: node.status };
+    });
+  }
+
+  inspectNode(callerNodeId: string, target: string) {
+    const runtime = this.runtimeForCaller(callerNodeId);
+    const node = this.resolveTarget(runtime, target);
+    const resources = runtime.nodeRuntime.get(node.id);
+    return {
+      teamId: runtime.state.id,
+      node: structuredClone(node),
+      resources: {
+        sessionLoaded: Boolean(resources?.session),
+        streaming: Boolean(resources?.session?.isStreaming),
+        leaseHeld: Boolean(resources?.lease),
+        retentionTimerArmed: Boolean(resources?.retentionTimer),
+        listenerAttached: Boolean(resources?.unsubscribe),
+        waitEdges: [...runtime.waitEdges.entries()].filter(([source, targets]) => source === node.id || targets.has(node.id)).length,
+        indexed: this.nodeToTeam.get(node.id) === runtime.state.id,
+      },
+    };
   }
 
   list(callerNodeId: string, pathPrefix?: string): { teamId: string; nodes: AgentTeamNode[] } {
@@ -416,144 +491,228 @@ export class AgentTeamCoordinator {
   }
 
   capDelegationPermission(rootSessionId: string, cap: PermissionLevel): void {
-    const runtime = this.teamsByRoot.get(rootSessionId);
-    if (!runtime) return;
-    let changed = false;
-    for (const node of [...runtime.nodes.values()].sort((left, right) => left.depth - right.depth)) {
-      if (node.depth === 0 || permissionRank[node.permissionLevel] <= permissionRank[cap]) continue;
-      node.permissionLevel = cap;
-      const permitted = new Set(childToolsForPermission(cap));
-      node.enabledTools = node.enabledTools.filter((tool) => permitted.has(tool));
-      node.writer = cap !== 'read-only';
-      node.updatedAt = Date.now();
-      const session = runtime.nodeRuntime.get(node.id)?.session;
-      if (session) session.setActiveToolsByName(session.getActiveToolNames().filter((tool) => !((childToolNames as readonly string[]).includes(tool)) || node.enabledTools.includes(tool as ChildToolName)));
-      changed = true;
+    for (const runtime of this.runtimesForRoot(rootSessionId)) {
+      let didChange = false;
+      for (const node of [...runtime.nodes.values()].sort((left, right) => left.depth - right.depth)) {
+        if (node.depth === 0 || permissionRank[node.permissionLevel] <= permissionRank[cap]) continue;
+        node.permissionLevel = cap;
+        const permitted = new Set(childToolsForPermission(cap));
+        node.enabledTools = node.enabledTools.filter((tool) => permitted.has(tool));
+        node.writer = cap !== 'read-only';
+        node.updatedAt = Date.now();
+        const session = runtime.nodeRuntime.get(node.id)?.session;
+        if (session) session.setActiveToolsByName(session.getActiveToolNames().filter((tool) => !((childToolNames as readonly string[]).includes(tool)) || node.enabledTools.includes(tool as ChildToolName)));
+        didChange = true;
+      }
+      if (didChange) this.changed(runtime, `Goal policy capped existing descendants at ${cap}.`);
     }
-    if (changed) this.changed(runtime, `Goal policy capped existing descendants at ${cap}.`);
   }
 
   lowerRootPermission(rootSessionId: string, level: PermissionLevel): void {
-    const runtime = this.teamsByRoot.get(rootSessionId);
-    if (!runtime) return;
+    for (const runtime of this.runtimesForRoot(rootSessionId)) {
+      const root = this.requireNode(runtime, runtime.state.rootNodeId);
+      const lowering = permissionRank[level] < permissionRank[root.permissionLevel];
+      root.permissionLevel = level;
+      root.updatedAt = Date.now();
+      if (lowering) {
+        for (const node of [...runtime.nodes.values()].sort((left, right) => left.depth - right.depth)) {
+          if (node.depth === 0 || node.status === 'released') continue;
+          const parent = this.requireNode(runtime, node.parentNodeId!);
+          const nextPermission = effectivePermission(node.permissionLevel, parent.permissionLevel);
+          node.permissionLevel = nextPermission;
+          const permitted = new Set(childToolsForPermission(nextPermission));
+          node.enabledTools = node.enabledTools.filter((tool) => permitted.has(tool));
+          node.writer = nextPermission !== 'read-only';
+          node.updatedAt = Date.now();
+        }
+      }
+      this.changed(runtime, lowering ? `Root authority lowered to ${level}.` : `Root authority changed to ${level}.`);
+    }
+  }
+
+  createTeam(rootSessionId: string, name?: string): AgentTeam {
+    const root = this.host.resolveRoot(rootSessionId);
+    if (!root?.session.model) throw new Error('The root Pi session is unavailable or has no authenticated model.');
+    const selected = !this.selectedTeamByRoot.has(rootSessionId);
+    if (selected) for (const previous of this.runtimesForRoot(rootSessionId)) previous.state.selected = false;
+    const runtime = createTeamRuntime(rootSessionId, root.projectPath, modelInfo(root.session.model), root.session.thinkingLevel, root.permissionLevel, { ...(name ? { name } : {}), selected });
+    this.installRuntime(runtime);
+    if (selected) this.selectedTeamByRoot.set(rootSessionId, runtime.state.id);
+    this.changed(runtime, `Agent team ${runtime.state.name} created.`, 'team.created');
+    return projectTeam(runtime);
+  }
+
+  selectTeam(rootSessionId: string, teamId: string): AgentTeam {
+    const runtime = this.requireTeam(rootSessionId, teamId);
+    if (runtime.state.status === 'closed' || runtime.state.status === 'released') throw new Error(`Agent team ${runtime.state.name} (${teamId}) is ${runtime.state.status} and cannot be selected.`);
+    for (const candidate of this.runtimesForRoot(rootSessionId)) {
+      const selected = candidate.state.id === teamId;
+      if (candidate.state.selected === selected) continue;
+      candidate.state.selected = selected;
+      if (selected) appendTimeline(candidate, 'team.selected', `Agent team ${candidate.state.name} selected.`);
+      this.changed(candidate, selected ? `Agent team ${candidate.state.name} selected.` : `Agent team ${candidate.state.name} deselected.`, 'team.selected');
+    }
+    this.selectedTeamByRoot.set(rootSessionId, teamId);
+    return projectTeam(runtime);
+  }
+
+  pauseTeam(rootSessionId: string, teamId: string): AgentTeam {
+    const runtime = this.requireTeam(rootSessionId, teamId);
+    if (runtime.state.status === 'paused') return projectTeam(runtime);
+    if (runtime.state.status !== 'active' && runtime.state.status !== 'restored-interrupted') throw new Error(`Agent team ${runtime.state.name} (${teamId}) cannot be paused from ${runtime.state.status}.`);
+    runtime.state.status = 'paused';
+    appendTimeline(runtime, 'team.paused', `Agent team ${runtime.state.name} paused.`);
+    this.changed(runtime, `Agent team ${runtime.state.name} paused.`, 'team.paused');
+    return projectTeam(runtime);
+  }
+
+  resumeTeam(rootSessionId: string, teamId: string): AgentTeam {
+    const runtime = this.requireTeam(rootSessionId, teamId);
+    if (runtime.state.status === 'active') return projectTeam(runtime);
+    if (runtime.state.status !== 'paused' && runtime.state.status !== 'restored-interrupted') throw new Error(`Agent team ${runtime.state.name} (${teamId}) cannot resume from ${runtime.state.status}.`);
+    runtime.state.status = 'active';
+    appendTimeline(runtime, 'team.resumed', `Agent team ${runtime.state.name} resumed.`);
+    this.changed(runtime, `Agent team ${runtime.state.name} resumed.`, 'team.resumed');
+    return projectTeam(runtime);
+  }
+
+  async closeTeam(rootSessionId: string, teamId: string, force = false): Promise<AgentTeam> {
+    const runtime = this.requireTeam(rootSessionId, teamId);
+    return this.serializeMutation(runtime, () => this.closeTeamRuntime(runtime, force));
+  }
+
+  private async closeTeamRuntime(runtime: AgentTeamRuntime, force: boolean): Promise<AgentTeam> {
+    const rootSessionId = runtime.state.rootSessionId;
+    const teamId = runtime.state.id;
+    if (runtime.state.status === 'closed' || runtime.state.status === 'released') return projectTeam(runtime);
+    const active = [...runtime.nodes.values()].filter((node) => node.depth > 0 && activeNodeStatuses.has(node.status));
+    if (active.length && !force) throw new Error(`Cannot close team ${runtime.state.name} (${teamId}); ${active.length} node turn(s) are active. Use force to abort them.`);
+    runtime.state.status = 'closing';
+    for (const node of [...runtime.nodes.values()].filter((item) => item.depth > 0).sort((left, right) => right.depth - left.depth)) await this.closeNode(runtime, node, 'Closed with the Agent Team.', force);
+    runtime.state.status = 'closed';
+    runtime.state.closedAt = Date.now();
+    appendTimeline(runtime, 'team.closed', `Agent team ${runtime.state.name} closed.`);
+    this.changed(runtime, `Agent team ${runtime.state.name} closed.`, 'team.closed');
+    this.selectFallback(rootSessionId, teamId);
+    return projectTeam(runtime);
+  }
+
+  async resetTeam(rootSessionId: string, teamId: string, force = false): Promise<AgentTeam> {
+    const runtime = this.requireTeam(rootSessionId, teamId);
+    return this.serializeMutation(runtime, () => this.resetTeamRuntime(runtime, force));
+  }
+
+  private async resetTeamRuntime(runtime: AgentTeamRuntime, force: boolean): Promise<AgentTeam> {
+    const teamId = runtime.state.id;
+    const active = [...runtime.nodes.values()].filter((node) => node.depth > 0 && activeNodeStatuses.has(node.status));
+    if (active.length && !force) throw new Error(`Cannot reset team ${runtime.state.name} (${teamId}); ${active.length} node turn(s) are active. Use force to clean them up.`);
+    for (const node of [...runtime.nodes.values()].filter((item) => item.depth > 0).sort((left, right) => right.depth - left.depth)) await this.releaseNode(runtime, node, force, 'Released by team reset.');
     const root = this.requireNode(runtime, runtime.state.rootNodeId);
-    const lowering = permissionRank[level] < permissionRank[root.permissionLevel];
-    root.permissionLevel = level;
-    root.updatedAt = Date.now();
-    if (!lowering) {
-      this.changed(runtime, `Root authority changed to ${root.permissionLevel}; existing descendants remain unchanged.`);
-      return;
-    }
-    for (const node of [...runtime.nodes.values()].sort((left, right) => left.depth - right.depth)) {
-      if (node.depth === 0) continue;
-      const parent = this.requireNode(runtime, node.parentNodeId!);
-      const nextPermission = effectivePermission(node.permissionLevel, parent.permissionLevel);
-      if (nextPermission === node.permissionLevel) continue;
-      node.permissionLevel = nextPermission;
-      const permitted = new Set(childToolsForPermission(nextPermission));
-      node.enabledTools = node.enabledTools.filter((tool) => permitted.has(tool));
-      node.writer = nextPermission !== 'read-only';
-      node.updatedAt = Date.now();
-      const session = runtime.nodeRuntime.get(node.id)?.session;
-      if (session) session.setActiveToolsByName(session.getActiveToolNames().filter((tool) => !((childToolNames as readonly string[]).includes(tool)) || node.enabledTools.includes(tool as ChildToolName)));
-    }
-    this.changed(runtime, `Root authority lowered to ${root.permissionLevel}.`);
+    root.childIds = [];
+    runtime.tasks.clear();
+    runtime.envelopes.clear();
+    runtime.operationReceipts.clear();
+    runtime.waitEdges.clear();
+    runtime.state.status = 'active';
+    delete runtime.state.closedAt;
+    delete runtime.state.releasedAt;
+    appendTimeline(runtime, 'team.reset', `Agent team ${runtime.state.name} reset.`);
+    this.changed(runtime, `Agent team ${runtime.state.name} reset.`, 'team.reset');
+    return projectTeam(runtime);
+  }
+
+  async deleteTeam(rootSessionId: string, teamId: string): Promise<void> {
+    const runtime = this.requireTeam(rootSessionId, teamId);
+    if (this.teamHasActiveWork(runtime) || (runtime.state.status !== 'closed' && runtime.state.status !== 'released')) throw new Error(`Team ${runtime.state.name} (${teamId}) must be safely closed or released before history deletion.`);
+    this.uninstallRuntime(runtime);
+    await Promise.all(this.storageRoots.map((dataRoot) => fs.rm(path.join(dataRoot, safeDirectoryKey(rootSessionId), safeDirectoryKey(teamId)), { recursive: true, force: true, maxRetries: 2, retryDelay: 50 })));
   }
 
   async control(rootSessionId: string, input: AgentTeamControlInput, modelRuntime: ModelRuntime): Promise<void> {
-    const runtime = this.ensureTeam(rootSessionId);
-    const root = runtime.state.rootNodeId;
-    if (input.action === 'message') { await this.sendMessage(root, input.target, input.message, `human-${randomUUID()}`); return; }
-    if (input.action === 'followUp' || input.action === 'resume') { await this.followUp(root, input.target, input.message, `human-${randomUUID()}`, modelRuntime); return; }
-    if (input.action === 'interrupt') { await this.interrupt(root, input.target, input.reason); return; }
-    await this.closeNode(runtime, this.resolveTarget(runtime, input.target), 'Closed by the user.');
+    const operationId = 'operationId' in input && input.operationId ? input.operationId : `human-${randomUUID()}`;
+    const receiptKey = `${rootSessionId}\0${operationId}`;
+    if (this.lifecycleReceipts.has(receiptKey)) return;
+    if (input.action === 'createTeam') this.createTeam(rootSessionId, input.name);
+    else if (input.action === 'selectTeam') this.selectTeam(rootSessionId, input.teamId);
+    else if (input.action === 'pauseTeam') this.pauseTeam(rootSessionId, input.teamId);
+    else if (input.action === 'resumeTeam') this.resumeTeam(rootSessionId, input.teamId);
+    else if (input.action === 'closeTeam') await this.closeTeam(rootSessionId, input.teamId, input.force);
+    else if (input.action === 'resetTeam') await this.resetTeam(rootSessionId, input.teamId, input.force);
+    else if (input.action === 'deleteTeam') await this.deleteTeam(rootSessionId, input.teamId);
+    else {
+      const runtime = this.ensureTeam(rootSessionId, input.teamId);
+      const root = runtime.state.rootNodeId;
+      if (input.action === 'message') await this.sendMessage(root, input.target, input.message, operationId, input.delivery);
+      else if (input.action === 'followUp' || input.action === 'resume') await this.followUp(root, input.target, input.message, operationId, modelRuntime);
+      else if (input.action === 'interrupt') await this.interrupt(root, input.target, input.reason);
+      else {
+        const node = this.resolveTarget(runtime, input.target);
+        if (input.action === 'release') await this.release(root, node.id, input.force);
+        else await this.close(root, node.id, input.force);
+      }
+    }
+    this.lifecycleReceipts.set(receiptKey, input.action);
+    while (this.lifecycleReceipts.size > 2_048) this.lifecycleReceipts.delete(this.lifecycleReceipts.keys().next().value!);
   }
 
   restoreRoot(session: AgentSession): void {
-    if (this.teamsByRoot.has(session.sessionId)) return;
-    let latest: AgentTeamLedgerEvent | null = null;
-    const branch = session.sessionManager?.getBranch?.() ?? [];
-    for (const entry of branch) {
+    if (this.teamIdsByRoot.has(session.sessionId)) return;
+    const latest = new Map<string, AgentTeamLedgerEvent>();
+    const projectPath = this.host.resolveRoot(session.sessionId)?.projectPath ?? 'unknown';
+    for (const entry of session.sessionManager?.getBranch?.() ?? []) {
       if (entry.type !== 'custom' || entry.customType !== TEAM_EVENT_CUSTOM_TYPE) continue;
       const event = entry.data as AgentTeamLedgerEvent;
-      if (event?.kind !== 'fate-agent-team-event' || event.version !== 1 || typeof event.sequence !== 'number') continue;
-      if (!latest || event.sequence >= latest.sequence) latest = event;
+      if (event?.kind !== 'fate-agent-team-event' || event.version !== 1 || typeof event.sequence !== 'number' || typeof event.teamId !== 'string') continue;
+      const previous = latest.get(event.teamId);
+      if (!previous || event.sequence >= previous.sequence) latest.set(event.teamId, event);
     }
-    const runtime = latest ? hydrateTeamRuntime(latest.payload.team) : null;
-    if (!runtime || runtime.state.rootSessionId !== session.sessionId) return;
-    this.installRuntime(runtime);
-    appendTimeline(runtime, 'team.restored', 'Agent Team V2 restored; in-flight turns are interrupted.', {}, Date.now());
-    this.changed(runtime, 'Agent Team V2 restored.');
-    const rootPending = [...runtime.envelopes.values()].filter((envelope) => envelope.recipientNodeId === runtime.state.rootNodeId && envelope.state === 'queued');
-    if (rootPending.length) {
-      void Promise.all(rootPending.map((envelope) => this.deliverEnvelope(runtime, envelope, envelope.kind === 'FINAL_ANSWER')))
-        .then(() => this.changed(runtime, 'Pending root envelopes reconciled after restore.'))
-        .catch((error: unknown) => {
-          for (const envelope of rootPending) {
-            if (envelope.state !== 'queued') continue;
-            envelope.state = 'failed';
-            envelope.error = error instanceof Error ? error.message : String(error);
-          }
-          this.changed(runtime, 'Pending root envelope reconciliation failed.');
-        });
+    for (const event of latest.values()) {
+      const runtime = hydrateTeamRuntime(event.payload.team, projectPath);
+      if (!runtime || runtime.state.rootSessionId !== session.sessionId) continue;
+      this.installRuntime(runtime);
+      appendTimeline(runtime, 'team.restored', 'Agent team restored; in-flight turns are interrupted.', {}, Date.now());
+      this.changed(runtime, `Agent team ${runtime.state.name} restored.`, 'team.restored');
+      const rootPending = [...runtime.envelopes.values()].filter((envelope) => envelope.recipientNodeId === runtime.state.rootNodeId && envelope.state === 'queued');
+      if (rootPending.length) {
+        void Promise.all(rootPending.map((envelope) => this.deliverEnvelope(runtime, envelope, envelope.kind === 'FINAL_ANSWER', false)))
+          .then(() => this.changed(runtime, `Pending envelopes for ${runtime.state.name} restored without duplication.`))
+          .catch((error: unknown) => {
+            for (const envelope of rootPending) if (envelope.state === 'queued') { envelope.state = 'failed'; envelope.error = error instanceof Error ? error.message : String(error); }
+            this.changed(runtime, `Pending envelope recovery failed for ${runtime.state.name}.`);
+          });
+      }
     }
+    const selectable = this.runtimesForRoot(session.sessionId).filter((runtime) => runtime.state.status !== 'closed' && runtime.state.status !== 'released' && runtime.state.status !== 'closing');
+    const selected = selectable.find((runtime) => runtime.state.selected) ?? selectable.at(-1);
+    if (selected) this.selectTeam(session.sessionId, selected.state.id);
   }
 
   async cancelAll(): Promise<void> {
-    await Promise.allSettled([...this.teamsByRoot.keys()].map((rootSessionId) => this.cancelRoot(rootSessionId)));
+    await Promise.allSettled([...this.teamIdsByRoot.keys()].map((rootSessionId) => this.cancelRoot(rootSessionId)));
   }
 
   async cancelRoot(rootSessionId: string): Promise<void> {
-    const runtime = this.teamsByRoot.get(rootSessionId);
-    if (!runtime) return;
-    const nodes = [...runtime.nodes.values()].filter((node) => node.depth > 0).sort((left, right) => right.depth - left.depth);
-    for (const node of nodes) await this.closeNode(runtime, node, 'Closed with the root Pi session.');
-    runtime.state.status = 'closed';
-    appendTimeline(runtime, 'team.closed', 'Agent Team V2 closed.');
-    this.changed(runtime, 'Agent Team V2 closed.');
+    for (const runtime of this.runtimesForRoot(rootSessionId)) await this.closeTeam(rootSessionId, runtime.state.id, true);
   }
 
   releaseRoot(rootSessionId: string): void {
-    const runtime = this.teamsByRoot.get(rootSessionId);
-    if (!runtime || this.hasOwnedWork(rootSessionId)) return;
-    for (const nodeRuntime of runtime.nodeRuntime.values()) {
-      try { nodeRuntime.unsubscribe?.(); } catch { /* Best effort. */ }
-      nodeRuntime.toolProvenanceByCall.clear();
-    }
-    this.teamsByRoot.delete(rootSessionId);
-    this.schedulers.delete(runtime.state.id);
-    this.mutationQueues.delete(runtime.state.id);
-    this.listeners.delete(runtime.state.id);
-    for (const node of runtime.nodes.values()) this.nodeToRoot.delete(node.id);
+    if (this.hasOwnedWork(rootSessionId)) return;
+    for (const runtime of this.runtimesForRoot(rootSessionId)) this.uninstallRuntime(runtime);
   }
 
   async deleteRootStorage(rootSessionId: string): Promise<void> {
     if (this.hasActiveWork(rootSessionId)) throw new Error('Cannot delete Agent Team child history while a descendant turn is active.');
-    if (this.teamsByRoot.has(rootSessionId)) {
-      await this.cancelRoot(rootSessionId);
-      this.releaseRoot(rootSessionId);
-    }
-    await Promise.all(this.storageRoots.map((dataRoot) => fs.rm(path.join(dataRoot, safeDirectoryKey(rootSessionId)), {
-      recursive: true,
-      force: true,
-      maxRetries: 2,
-      retryDelay: 50,
-    })));
+    await this.cancelRoot(rootSessionId);
+    this.releaseRoot(rootSessionId);
+    await Promise.all(this.storageRoots.map((dataRoot) => fs.rm(path.join(dataRoot, safeDirectoryKey(rootSessionId)), { recursive: true, force: true, maxRetries: 2, retryDelay: 50 })));
   }
 
   reset(): void {
-    if ([...this.teamsByRoot.keys()].some((root) => this.hasActiveWork(root))) throw new Error('Cannot reset Agent Teams while a descendant turn is active.');
-    for (const runtime of this.teamsByRoot.values()) {
-      for (const nodeRuntime of runtime.nodeRuntime.values()) {
-        try { nodeRuntime.unsubscribe?.(); } catch { /* Best effort. */ }
-        nodeRuntime.toolProvenanceByCall.clear();
-      }
-    }
-    this.teamsByRoot.clear();
-    this.nodeToRoot.clear();
-    this.schedulers.clear();
-    this.mutationQueues.clear();
-    this.listeners.clear();
+    if ([...this.teamIdsByRoot.keys()].some((root) => this.hasActiveWork(root))) throw new Error('Cannot reset Agent Teams while a descendant turn is active.');
+    for (const runtime of [...this.teamsById.values()]) this.uninstallRuntime(runtime);
+    this.selectedTeamByRoot.clear();
+    this.projectWriter.clear();
+    this.lifecycleReceipts.clear();
   }
 
   private serializeMutation<T>(runtime: AgentTeamRuntime, operation: () => Promise<T>): Promise<T> {
@@ -568,30 +727,79 @@ export class AgentTeamCoordinator {
     });
   }
 
-  private ensureTeam(rootSessionId: string): AgentTeamRuntime {
-    const existing = this.teamsByRoot.get(rootSessionId);
-    if (existing) return existing;
-    const root = this.host.resolveRoot(rootSessionId);
-    if (!root?.session.model) throw new Error('The root Pi session is unavailable or has no authenticated model.');
-    const runtime = createTeamRuntime(rootSessionId, modelInfo(root.session.model), root.session.thinkingLevel, root.permissionLevel);
-    this.installRuntime(runtime);
-    this.changed(runtime, 'Agent Team V2 created.');
-    return runtime;
+  private ensureTeam(rootSessionId: string, teamId?: string): AgentTeamRuntime {
+    const selectedId = teamId ?? this.selectedTeamByRoot.get(rootSessionId);
+    if (selectedId) return this.requireTeam(rootSessionId, selectedId);
+    const created = this.createTeam(rootSessionId);
+    return this.requireTeam(rootSessionId, created.id);
   }
 
   private installRuntime(runtime: AgentTeamRuntime): void {
-    this.teamsByRoot.set(runtime.state.rootSessionId, runtime);
-    for (const node of runtime.nodes.values()) this.nodeToRoot.set(node.id, runtime.state.rootSessionId);
+    this.teamsById.set(runtime.state.id, runtime);
+    const ids = this.teamIdsByRoot.get(runtime.state.rootSessionId) ?? new Set<string>();
+    ids.add(runtime.state.id);
+    this.teamIdsByRoot.set(runtime.state.rootSessionId, ids);
+    for (const node of runtime.nodes.values()) if (node.status !== 'released') this.nodeToTeam.set(node.id, runtime.state.id);
     const scheduler = new AgentTeamScheduler(runtime.state.limits);
     scheduler.restoreInterrupted();
     this.schedulers.set(runtime.state.id, scheduler);
   }
 
+  private uninstallRuntime(runtime: AgentTeamRuntime): void {
+    for (const nodeRuntime of runtime.nodeRuntime.values()) {
+      if (nodeRuntime.retentionTimer) clearTimeout(nodeRuntime.retentionTimer);
+      nodeRuntime.lease?.release();
+      try { nodeRuntime.unsubscribe?.(); } catch { /* Best effort. */ }
+      nodeRuntime.toolProvenanceByCall.clear();
+      try { nodeRuntime.session?.dispose(); } catch { /* Best effort. */ }
+    }
+    runtime.nodeRuntime.clear();
+    this.teamsById.delete(runtime.state.id);
+    this.schedulers.delete(runtime.state.id);
+    this.mutationQueues.delete(runtime.state.id);
+    this.listeners.delete(runtime.state.id);
+    for (const node of runtime.nodes.values()) this.nodeToTeam.delete(node.id);
+    const ids = this.teamIdsByRoot.get(runtime.state.rootSessionId);
+    ids?.delete(runtime.state.id);
+    if (ids?.size === 0) this.teamIdsByRoot.delete(runtime.state.rootSessionId);
+    if (this.selectedTeamByRoot.get(runtime.state.rootSessionId) === runtime.state.id) this.selectedTeamByRoot.delete(runtime.state.rootSessionId);
+    const writer = this.projectWriter.get(runtime.state.projectPath);
+    if (writer?.teamId === runtime.state.id) this.projectWriter.delete(runtime.state.projectPath);
+  }
+
   private runtimeForCaller(callerNodeId: string): AgentTeamRuntime {
-    const rootSessionId = this.nodeToRoot.get(callerNodeId);
-    const runtime = rootSessionId ? this.teamsByRoot.get(rootSessionId) : undefined;
-    if (!runtime) throw new Error('Caller is not bound to an active Agent Team V2 root.');
+    const teamId = this.nodeToTeam.get(callerNodeId);
+    const runtime = teamId ? this.teamsById.get(teamId) : undefined;
+    if (!runtime) throw new Error('Caller is not bound to an active Agent Team V2 team.');
     return runtime;
+  }
+
+  private runtimesForRoot(rootSessionId: string): AgentTeamRuntime[] {
+    return [...(this.teamIdsByRoot.get(rootSessionId) ?? [])].flatMap((id) => this.teamsById.get(id) ?? []).sort((left, right) => left.state.createdAt - right.state.createdAt);
+  }
+
+  private requireTeam(rootSessionId: string, teamId: string): AgentTeamRuntime {
+    const runtime = this.teamsById.get(teamId);
+    if (!runtime || runtime.state.rootSessionId !== rootSessionId) throw new Error(`Unknown or foreign Agent Team ${teamId} for root session ${rootSessionId}.`);
+    return runtime;
+  }
+
+  private teamHasActiveWork(runtime: AgentTeamRuntime): boolean {
+    return [...runtime.nodes.values()].some((node) => node.depth > 0 && activeNodeStatuses.has(node.status));
+  }
+
+  private selectFallback(rootSessionId: string, excludedTeamId: string): void {
+    if (this.selectedTeamByRoot.get(rootSessionId) !== excludedTeamId) return;
+    const fallback = this.runtimesForRoot(rootSessionId).find((runtime) => runtime.state.id !== excludedTeamId && runtime.state.status !== 'closed' && runtime.state.status !== 'released');
+    if (fallback) this.selectTeam(rootSessionId, fallback.state.id);
+    else {
+      const excluded = this.teamsById.get(excludedTeamId);
+      if (excluded && excluded.state.selected) {
+        excluded.state.selected = false;
+        this.changed(excluded, `Closed team ${excluded.state.name} deselected.`);
+      }
+      this.selectedTeamByRoot.delete(rootSessionId);
+    }
   }
 
   private requireNode(runtime: AgentTeamRuntime, nodeId: string): AgentTeamNode {
@@ -606,6 +814,8 @@ export class AgentTeamCoordinator {
     if (byId) return byId;
     const pathId = runtime.pathToNode.get(clean);
     if (pathId) return this.requireNode(runtime, pathId);
+    const historicPath = [...runtime.nodes.values()].filter((node) => node.path === clean);
+    if (historicPath.length === 1) return historicPath[0]!;
     const handle = clean.replace(/^@/u, '').toLocaleLowerCase();
     const matches = [...runtime.nodes.values()].filter((node) => node.handle.toLocaleLowerCase() === handle);
     if (matches.length === 1) return matches[0]!;
@@ -614,8 +824,23 @@ export class AgentTeamCoordinator {
 
   private scheduler(runtime: AgentTeamRuntime): AgentTeamScheduler {
     const scheduler = this.schedulers.get(runtime.state.id);
-    if (!scheduler) throw new Error('Agent team scheduler is unavailable.');
+    if (!scheduler) throw new Error(`Agent team scheduler for ${runtime.state.name} (${runtime.state.id}) is unavailable.`);
     return scheduler;
+  }
+
+  private acquireLease(runtime: AgentTeamRuntime, nodeId: string, permissionLevel: PermissionLevel) {
+    const writer = permissionLevel !== 'read-only';
+    const held = this.projectWriter.get(runtime.state.projectPath);
+    if (writer && held && (held.teamId !== runtime.state.id || held.nodeId !== nodeId)) throw new Error(`Project writer lease is held by node ${held.nodeId} in team ${held.teamId}; team ${runtime.state.id} cannot start writer ${nodeId}.`);
+    const lease = this.scheduler(runtime).acquire(nodeId, permissionLevel);
+    if (writer) this.projectWriter.set(runtime.state.projectPath, { teamId: runtime.state.id, nodeId });
+    const release = lease.release.bind(lease);
+    lease.release = () => {
+      release();
+      const current = this.projectWriter.get(runtime.state.projectPath);
+      if (current?.teamId === runtime.state.id && current.nodeId === nodeId) this.projectWriter.delete(runtime.state.projectPath);
+    };
+    return lease;
   }
 
   private syncScheduler(runtime: AgentTeamRuntime): void {
@@ -874,6 +1099,7 @@ export class AgentTeamCoordinator {
     if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
     try {
       await session.prompt(prompt);
+      if (node.status === 'closing' || node.status === 'closed' || node.status === 'released') return;
       const activeChildren = node.childIds.map((id) => runtime.nodes.get(id)).filter((child): child is AgentTeamNode => Boolean(child && activeNodeStatuses.has(child.status)));
       if (activeChildren.length) {
         task.status = 'waiting-for-children';
@@ -902,6 +1128,7 @@ export class AgentTeamCoordinator {
       node.usage = usageFromMessages(session.messages);
       runtime.state.usage = [...runtime.nodes.values()].reduce((sum, item) => addUsage(sum, item.usage), emptyUsage());
     } catch (error) {
+      if (node.status === 'closing' || node.status === 'closed' || node.status === 'released') return;
       task.status = signal?.aborted ? 'interrupted' : 'failed';
       task.error = error instanceof Error ? error.message : String(error);
       task.endedAt = Date.now();
@@ -915,14 +1142,15 @@ export class AgentTeamCoordinator {
       node.updatedAt = Date.now();
       this.syncScheduler(runtime);
       this.changed(runtime, `${node.path} changed to ${node.status}.`);
-      await this.startNextQueuedTask(runtime, node).catch(() => undefined);
-      if (!activeNodeStatuses.has(node.status) && node.status !== 'closed' && node.status !== 'failed') this.armRetention(runtime, node, nodeRuntime);
+      if (node.status !== 'closed' && node.status !== 'released') await this.flushQueuedMessages(runtime, node).catch(() => undefined);
+      if (node.status !== 'closed' && node.status !== 'released') await this.startNextQueuedTask(runtime, node).catch(() => undefined);
+      if (!activeNodeStatuses.has(node.status) && node.status !== 'closed' && node.status !== 'released' && node.status !== 'failed') this.armRetention(runtime, node, nodeRuntime);
       if (node.parentNodeId) await this.resumeWaitingParent(runtime, node.parentNodeId).catch(() => undefined);
       this.host.settled?.(runtime.state.rootSessionId);
     }
   }
 
-  private async deliverEnvelope(runtime: AgentTeamRuntime, envelope: AgentTeamEnvelope, finalAnswer: boolean): Promise<void> {
+  private async deliverEnvelope(runtime: AgentTeamRuntime, envelope: AgentTeamEnvelope, finalAnswer: boolean, allowSteer = true): Promise<void> {
     const target = this.requireNode(runtime, envelope.recipientNodeId);
     const session = this.sessionForNode(runtime, target.id);
     if (!session?.model) {
@@ -942,7 +1170,7 @@ export class AgentTeamCoordinator {
     if (target.id === runtime.state.rootNodeId && this.host.sendRootMessage) {
       await this.host.sendRootMessage(runtime.state.rootSessionId, message, 'steer', false);
     } else {
-      await session.sendCustomMessage(message, session.isStreaming ? { triggerTurn: false, deliverAs: 'steer' } : { triggerTurn: false });
+      await session.sendCustomMessage(message, allowSteer && session.isStreaming ? { triggerTurn: false, deliverAs: 'steer' } : { triggerTurn: false });
     }
     envelope.state = 'delivered';
     envelope.deliveredAt = Date.now();
@@ -962,8 +1190,16 @@ export class AgentTeamCoordinator {
     return model;
   }
 
+  private async flushQueuedMessages(runtime: AgentTeamRuntime, node: AgentTeamNode): Promise<void> {
+    if (node.status === 'closed' || node.status === 'released') return;
+    const queued = [...runtime.envelopes.values()]
+      .filter((envelope) => envelope.recipientNodeId === node.id && envelope.kind === 'MESSAGE' && envelope.state === 'queued')
+      .sort((left, right) => left.createdAt - right.createdAt);
+    for (const envelope of queued) await this.deliverEnvelope(runtime, envelope, false, false);
+  }
+
   private async startNextQueuedTask(runtime: AgentTeamRuntime, node: AgentTeamNode): Promise<void> {
-    if (node.status === 'active' || node.status === 'creating' || node.status === 'closed' || node.status === 'failed') return;
+    if (node.status === 'active' || node.status === 'creating' || node.status === 'closing' || node.status === 'closed' || node.status === 'released' || node.status === 'failed') return;
     const task = [...runtime.tasks.values()]
       .filter((candidate) => candidate.assigneeNodeId === node.id && candidate.status === 'queued')
       .sort((left, right) => left.createdAt - right.createdAt)[0];
@@ -979,7 +1215,7 @@ export class AgentTeamCoordinator {
       this.changed(runtime, `Queued follow-up ${task.id} for ${node.path} failed.`);
       return;
     }
-    const lease = this.scheduler(runtime).acquire(node.id, node.permissionLevel);
+    const lease = this.acquireLease(runtime, node.id, node.permissionLevel);
     if (nodeRuntime.retentionTimer) clearTimeout(nodeRuntime.retentionTimer);
     delete nodeRuntime.retentionTimer;
     nodeRuntime.lease = lease;
@@ -1014,7 +1250,7 @@ export class AgentTeamCoordinator {
       this.changed(runtime, `${parent.path} could not resume after child join.`);
       return;
     }
-    const lease = this.scheduler(runtime).acquire(parent.id, parent.permissionLevel);
+    const lease = this.acquireLease(runtime, parent.id, parent.permissionLevel);
     if (nodeRuntime.retentionTimer) clearTimeout(nodeRuntime.retentionTimer);
     delete nodeRuntime.retentionTimer;
     nodeRuntime.lease = lease;
@@ -1049,32 +1285,78 @@ export class AgentTeamCoordinator {
     nodeRuntime.retentionTimer.unref?.();
   }
 
-  private async closeNode(runtime: AgentTeamRuntime, node: AgentTeamNode, reason: string): Promise<void> {
+  private async closeNode(runtime: AgentTeamRuntime, node: AgentTeamNode, reason: string, force = false): Promise<void> {
+    if (node.status === 'closed' || node.status === 'released') return;
+    if (node.depth === 0) throw new Error('The logical team root cannot be closed as a node. Close the team instead.');
+    const activeSubtree = [...runtime.nodes.values()].filter((candidate) => (candidate.id === node.id || candidate.path.startsWith(`${node.path}/`)) && activeNodeStatuses.has(candidate.status));
+    if (activeSubtree.length && !force) throw new Error(`Cannot close ${node.path} in team ${runtime.state.id} while ${activeSubtree.length} subtree turn(s) are active. Use force to abort them.`);
+    node.status = 'closing';
+    node.updatedAt = Date.now();
     for (const childId of [...node.childIds]) {
       const child = runtime.nodes.get(childId);
-      if (child && child.status !== 'closed') await this.closeNode(runtime, child, reason);
+      if (child && child.status !== 'closed' && child.status !== 'released') await this.closeNode(runtime, child, reason, force);
     }
     const nodeRuntime = runtime.nodeRuntime.get(node.id);
     if (nodeRuntime?.retentionTimer) clearTimeout(nodeRuntime.retentionTimer);
     if (nodeRuntime) delete nodeRuntime.retentionTimer;
-    if (nodeRuntime?.session?.isStreaming) await nodeRuntime.session.abort().catch(() => undefined);
+    if (nodeRuntime?.session && (nodeRuntime.session.isStreaming || nodeRuntime.turn)) await nodeRuntime.session.abort().catch(() => undefined);
+    if (nodeRuntime?.turn) await nodeRuntime.turn.catch(() => undefined);
     nodeRuntime?.lease?.release();
+    if (nodeRuntime) delete nodeRuntime.lease;
     try { nodeRuntime?.unsubscribe?.(); } catch { /* Best effort. */ }
     nodeRuntime?.toolProvenanceByCall.clear();
     try { nodeRuntime?.session?.dispose(); } catch { /* Durable state remains authoritative. */ }
     runtime.nodeRuntime.delete(node.id);
     node.status = 'closed';
     node.lastError = reason;
-    node.updatedAt = Date.now();
-    const task = node.currentTaskId ? runtime.tasks.get(node.currentTaskId) : undefined;
-    if (task && (task.status === 'running' || task.status === 'queued' || task.status === 'waiting-for-children')) {
+    node.closedAt = Date.now();
+    node.updatedAt = node.closedAt;
+    for (const task of runtime.tasks.values()) {
+      if (task.assigneeNodeId !== node.id || settledTaskStatuses.has(task.status)) continue;
       task.status = 'cancelled';
       task.error = reason;
-      task.endedAt = Date.now();
+      task.endedAt = node.closedAt;
+      appendTimeline(runtime, 'task.cancelled', `Task ${task.id} cancelled while ${node.path} closed.`, { nodeId: node.id, taskId: task.id });
     }
-    appendTimeline(runtime, 'node.closed', `${node.path} closed.`, { nodeId: node.id, taskId: task?.id });
+    for (const envelope of runtime.envelopes.values()) {
+      if (envelope.state !== 'queued' || (envelope.recipientNodeId !== node.id && envelope.authorNodeId !== node.id)) continue;
+      envelope.state = 'expired';
+      envelope.error = reason;
+      appendTimeline(runtime, 'envelope.expired', `Envelope ${envelope.id} expired while ${node.path} closed.`, { nodeId: node.id, envelopeId: envelope.id });
+    }
+    runtime.waitEdges.delete(node.id);
+    for (const targets of runtime.waitEdges.values()) targets.delete(node.id);
+    appendTimeline(runtime, 'node.closed', `${node.path} closed.`, { nodeId: node.id, taskId: node.currentTaskId });
     this.syncScheduler(runtime);
-    this.changed(runtime, `${node.path} closed.`);
+    this.changed(runtime, `${node.path} closed.`, 'node.closed');
+  }
+
+  private async releaseNode(runtime: AgentTeamRuntime, node: AgentTeamNode, force = false, reason = 'Released.'): Promise<void> {
+    if (node.status === 'released') return;
+    if (node.depth === 0) throw new Error('The logical team root cannot be released as a node. Close or delete the team instead.');
+    if (activeNodeStatuses.has(node.status) && !force) throw new Error(`Cannot release ${node.path} in team ${runtime.state.id} while work is active. Use force to abort and cancel it.`);
+    if (node.status !== 'closed') await this.closeNode(runtime, node, reason, force);
+    for (const childId of [...node.childIds]) {
+      const child = runtime.nodes.get(childId);
+      if (child && child.status !== 'released') await this.releaseNode(runtime, child, true, reason);
+    }
+    const nodeRuntime = runtime.nodeRuntime.get(node.id);
+    if (nodeRuntime?.retentionTimer) clearTimeout(nodeRuntime.retentionTimer);
+    nodeRuntime?.lease?.release();
+    try { nodeRuntime?.unsubscribe?.(); } catch { /* Best effort. */ }
+    nodeRuntime?.toolProvenanceByCall.clear();
+    try { nodeRuntime?.session?.dispose(); } catch { /* Best effort. */ }
+    runtime.nodeRuntime.delete(node.id);
+    runtime.pathToNode.delete(node.path);
+    runtime.waitEdges.delete(node.id);
+    for (const targets of runtime.waitEdges.values()) targets.delete(node.id);
+    this.nodeToTeam.delete(node.id);
+    node.status = 'released';
+    node.releasedAt = Date.now();
+    node.updatedAt = node.releasedAt;
+    appendTimeline(runtime, 'node.released', `${node.path} released; runtime capacity is available.`, { nodeId: node.id, taskId: node.currentTaskId });
+    this.syncScheduler(runtime);
+    this.changed(runtime, `${node.path} released.`, 'node.released');
   }
 
   private assertNoWaitCycle(runtime: AgentTeamRuntime, caller: string, targets: string[]): void {
@@ -1097,10 +1379,10 @@ export class AgentTeamCoordinator {
     for (const listener of this.listenersFor(runtime)) listener(change);
   }
 
-  private changed(runtime: AgentTeamRuntime, summary: string): void {
+  private changed(runtime: AgentTeamRuntime, summary: string, persistenceType = summary): void {
     runtime.state.updatedAt = Date.now();
     this.syncScheduler(runtime);
-    this.persist(runtime, summary);
+    this.persist(runtime, persistenceType);
     this.host.emit(runtime.state.rootSessionId, projectTeam(runtime));
     const pathMatch = summary.match(/\/root(?:\/[a-z0-9-]+)*/u)?.[0];
     if (pathMatch) this.notifyListeners(runtime, { path: pathMatch, reason: summary });

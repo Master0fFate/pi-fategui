@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -132,6 +132,16 @@ function fixture(availableModels: typeof model[] = [model]) {
 afterEach(() => vi.useRealTimers());
 
 describe('PiRuntimeService', () => {
+  it('uses an injected shared model runtime provider instead of creating a per-service runtime', async () => {
+    const fake = fixture();
+    const provider = vi.fn(async () => fake.modelRuntime as unknown as ModelRuntime);
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, provider);
+    await expect(service.openProject({ path: '/project', name: 'project', trusted: true })).resolves.toMatchObject({ status: 'ready' });
+    expect(provider).toHaveBeenCalledOnce();
+    expect(fake.adapter.createModelRuntime).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
   it('keeps GoalMax reconciliation off child token deltas while retaining lifecycle and tool evidence', () => {
     const childEvent = (type: 'assistant.text' | 'assistant.reasoning' | 'tool.updated' | 'tool.completed') => ({
       type: 'subagent.event', runId: 'child-1', timestamp: 1,
@@ -163,7 +173,7 @@ describe('PiRuntimeService', () => {
   });
 
   it('activates one orchestration protocol surface while registering both for restored sessions', async () => {
-    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'goalmax_status', 'goalmax_report', 'goalmax_complete'];
+    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'goalmax_status', 'goalmax_report', 'goalmax_complete'];
     const legacy = fixture();
     const legacyService = new PiRuntimeService(legacy.adapter);
     await legacyService.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'medium', defaultModel: null, agentTeamMode: 'legacy' });
@@ -320,6 +330,20 @@ describe('PiRuntimeService', () => {
     expect(service.getState(false).sessions?.[0]?.title).toBe('Repair Git workflow');
     fake.settle();
     await service.dispose();
+  });
+
+  it('lists sessions for an existing project path without opening that project', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'pi-desktop-preview-'));
+    try {
+      const fake = fixture();
+      const repository = { list: vi.fn(async () => []), branches: vi.fn(() => []) } as unknown as PiSessionRepository;
+      const service = new PiRuntimeService(fake.adapter, repository);
+      await expect(service.listSessionsForPath(directory)).resolves.toEqual([]);
+      expect(repository.list).toHaveBeenCalledWith(realpathSync(directory), null, '');
+      await service.dispose();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('does not list or retain empty session placeholders across session changes', async () => {
@@ -1490,6 +1514,9 @@ describe('PiRuntimeService', () => {
     await service.switchSession(saved.id);
     expect(service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt).toBe(saved.modifiedAt);
 
+    fake.emitSession({ type: 'compaction_end', reason: 'manual', result: {}, aborted: false, willRetry: false });
+    expect(service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt).toBe(saved.modifiedAt);
+
     await service.prompt({ text: 'Continue this work', behavior: 'prompt' });
     expect(service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt).not.toBe(saved.modifiedAt);
     fake.settle();
@@ -2291,6 +2318,60 @@ describe('PiRuntimeService', () => {
     expect(state.error?.actionable).toContain('/login');
     expect(fake.adapter.createRuntime).toHaveBeenCalledOnce();
     expect(fake.session.bindExtensions).toHaveBeenCalledOnce();
+    await service.dispose();
+  });
+
+  it('Gate B: holds a post-task prompt while a goal is active instead of running it', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.createGoalMax({ objective: 'Implement and verify the result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    fake.settle(); // goal start run settles; goal stays active, session idle
+
+    const acceptance = await service.prompt({ text: 'after all tasks are finished, run C', behavior: 'prompt' });
+    expect(acceptance.accepted).toBe(true);
+    expect(fake.session.prompt).not.toHaveBeenCalledWith('after all tasks are finished, run C', expect.anything());
+    expect(service.getState(false).queue?.held?.map((item) => item.text)).toEqual(['after all tasks are finished, run C']);
+    await service.dispose();
+  });
+
+  it('Gate B: holds a queued follow-up instead of delivering it to the SDK while a goal is active', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    // createGoalMax leaves the goal-start root turn streaming.
+    await service.createGoalMax({ objective: 'Implement and verify the result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+
+    const acceptance = await service.prompt({ text: 'do C once the tasks are done', behavior: 'followUp' });
+    expect(acceptance.accepted).toBe(true);
+    expect(fake.session.followUp).not.toHaveBeenCalledWith('do C once the tasks are done', expect.anything());
+    expect(fake.session.steer).not.toHaveBeenCalledWith('do C once the tasks are done', expect.anything());
+    expect(service.getState(false).queue?.held?.map((item) => item.text)).toEqual(['do C once the tasks are done']);
+    await service.dispose();
+  });
+
+  it('Gate B: ordinary prompts run normally when no goal is active', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'just answer a question', behavior: 'prompt' });
+    expect(fake.session.prompt).toHaveBeenCalledWith('just answer a question', expect.anything());
+    expect(service.getState(false).queue?.held ?? []).toEqual([]);
+    fake.settle();
+    await service.dispose();
+  });
+
+  it('Gate B: returns held messages to the editable queue when the goal is cancelled', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.createGoalMax({ objective: 'Implement and verify the result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    fake.settle();
+    await service.prompt({ text: 'do C afterwards', behavior: 'prompt' });
+    expect(service.getState(false).queue?.held?.length).toBe(1);
+    await service.controlGoalMax({ action: 'cancel' });
+    await vi.waitFor(() => expect(service.getState(false).queue?.held ?? []).toEqual([]));
+    expect(service.getState(false).queue?.items?.map((item) => item.text)).toContain('do C afterwards');
     await service.dispose();
   });
 });

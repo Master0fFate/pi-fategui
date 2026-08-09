@@ -43,7 +43,7 @@ import { enumerateMicrophones, microphoneAccessError, requestMicrophoneDevices, 
 
 const fallback: AppSettings = {
   appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true,
-  terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, themeId: 'midnight',
+  terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, themeId: 'midnight',
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
   speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
@@ -84,6 +84,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   const setOpen = useUiStore((state) => state.setSettingsOpen);
   const setMusicPlayerEnabled = useUiStore((state) => state.setMusicPlayerEnabled);
   const setSendMessageWithModifier = useUiStore((state) => state.setSendMessageWithModifier);
+  const setCompactSessions = useUiStore((state) => state.setCompactSessions);
   const setSpeech = useUiStore((state) => state.setSpeech);
   const models = useRuntimeStore((state) => state.runtime.models);
   const providerGroups = useMemo(() => groupModelsByProvider(models), [models]);
@@ -261,6 +262,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
       applyVisualSettings(saved, themeCatalog);
       setMusicPlayerEnabled(saved.musicPlayerEnabled);
       setSendMessageWithModifier(saved.sendMessageWithModifier);
+      setCompactSessions(saved.compactSessions);
       setSpeech(saved.speech);
       setStatus(null);
       setToast({ kind: 'success', title: 'Settings saved', message: 'Your preferences are active.' });
@@ -443,6 +445,9 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                   <div className="settings-title"><span><Monitor size={17} /></span><div><h3>Interface</h3><p>Theme, type, and visual behavior across Fate UI.</p></div></div>
                   <div className="settings-group">
                     <div className="settings-theme-row"><div><strong>Theme</strong><small>Built-in, Fate custom, and Pi themes. Project themes load only after you trust the project.</small></div><SelectControl label="Interface theme" value={settings.themeId} className="settings-theme-select" options={themeCatalog.map((theme) => ({ value: theme.id, label: theme.name, detail: theme.tone === 'light' ? 'Light' : 'Dark' }))} onValueChange={(themeId) => setSettings({ ...settings, themeId })} /></div>
+                  </div>
+                  <div className="settings-group">
+                    <label className="settings-toggle"><div><strong>Compact sessions</strong><small>Group sessions by project folder and show them as one-line rows with actions in a ⋯ menu. Turn off for detailed session cards.</small></div><input type="checkbox" checked={settings.compactSessions} onChange={(event) => setSettings({ ...settings, compactSessions: event.target.checked })} /><span aria-hidden="true" /></label>
                   </div>
                   <div className="settings-title settings-title--spaced"><span><Type size={17} /></span><div><h3>Typography</h3><p>Bundled typefaces with a Noto fallback chain for extended Unicode.</p></div></div>
                   <div className="settings-group settings-font-group">

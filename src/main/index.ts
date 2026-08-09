@@ -5,14 +5,16 @@ import { fileURLToPath } from 'node:url';
 import { FilesystemService } from './files/FilesystemService';
 import { GitService } from './git/GitService';
 import { registerIpc } from './ipc/registerIpc';
-import { parseLaunchProjectPath } from './launchProject';
+import { parseLaunchProjectPath, hasNewInstanceFlag } from './launchProject';
 import { acquireInstanceProfile } from './instanceProfile';
 import { AppLogService } from './logging/AppLogService';
 import { AutomationRepository } from './automations/AutomationRepository';
 import { MusicService, PublicHttpsProxy } from './music/MusicService';
 import { BrowserHost } from './browser/BrowserHost';
+import { BrowserHistoryRepository } from './browser/BrowserHistoryRepository';
 import { LOCAL_PAGE_SCHEME } from './browser/LocalPageRegistry';
 import { PiRuntimeService } from './pi/PiRuntimeService';
+import { MultiProjectPiRuntime } from './pi/MultiProjectPiRuntime';
 import { BrowserRuntimeBridge } from './pi/BrowserRuntimeBridge';
 import { SessionPermissionStore } from './pi/SessionPermissionStore';
 import { GoalMaxRepository } from './pi/goalmaxxing/GoalMaxRepository';
@@ -53,10 +55,21 @@ try {
 } catch (error) {
   initialLaunchError = error;
 }
-// Every process gets the first available persistent Electron profile slot.
-// This keeps Chromium storage isolated while allowing independent Fate UI
-// runtimes and projects to run side by side.
-const instanceProfile = acquireInstanceProfile(app);
+// Fate UI is single-instance by default: a later `fate <folder>` launch hands
+// its project path to the already-running app and exits. Set FATE_NEW_INSTANCE=1
+// (or pass --new-instance) for a fully isolated second process with its own
+// Chromium profile and credentials.
+const newInstanceRequested = process.env.FATE_NEW_INSTANCE === '1' || hasNewInstanceFlag(process.argv);
+const instanceProfile = acquireInstanceProfile(app, newInstanceRequested ? 'multi' : 'single');
+// True for the running app (the primary single-instance lock holder, or any
+// multi-instance process). A secondary single-instance launch is false and must
+// never create a window — its project path was forwarded to the primary.
+const instancePrimaryApp = instanceProfile.isPrimary;
+if (instanceProfile.mode === 'single' && !instanceProfile.isPrimary) {
+  // Another Fate UI already holds the primary lock; this process's --project
+  // was forwarded to it through Electron's second-instance event. Exit now.
+  app.quit();
+}
 
 configurePackagedSpeechLibrary();
 const logs = new AppLogService();
@@ -64,15 +77,21 @@ const settings = new SettingsService(logs);
 const automations = new AutomationRepository(logs);
 let browserHost: BrowserHost | null = null;
 const browserBridge = new BrowserRuntimeBridge(() => browserHost?.current() ?? null);
-const runtime = new PiRuntimeService(
-  undefined,
-  undefined,
-  new SessionPermissionStore(logs),
-  undefined,
-  () => settings.get().imageGeneration,
-  new GoalMaxRepository(logs),
-  browserBridge,
-);
+const piRuntime = new MultiProjectPiRuntime({
+  sessionPermissions: new SessionPermissionStore(logs),
+  getImageGenerationSettings: () => settings.get().imageGeneration,
+  createGoalPersistence: () => new GoalMaxRepository(logs),
+  browserIntegration: browserBridge,
+  defaults: async () => {
+    const loaded = await settings.load();
+    return {
+      thinkingLevel: loaded.thinkingLevel,
+      defaultModel: loaded.defaultModel,
+      ...(loaded.agentTeamMode ? { agentTeamMode: loaded.agentTeamMode } : {}),
+    };
+  },
+});
+const runtime = piRuntime.asRouter();
 const projects = new ProjectService();
 const files = new FilesystemService();
 const git = new GitService(files);
@@ -117,6 +136,24 @@ function dispatchProjectPath(projectPath: string): void {
     return;
   }
   void projectPathOpener(projectPath, mainWindow).catch(reportLaunchError);
+}
+
+// Register this before app readiness work begins. A second launch can arrive
+// while the proxy, settings, or first window is still starting; dispatch keeps
+// the latest project pending until the renderer can accept it.
+if (instanceProfile.mode === 'single' && instancePrimaryApp) {
+  app.on('second-instance', (_event, commandLine, workingDirectory) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+    try {
+      const forwardedProjectPath = parseLaunchProjectPath(commandLine, workingDirectory);
+      if (forwardedProjectPath) dispatchProjectPath(forwardedProjectPath);
+    } catch (error) {
+      reportLaunchError(error);
+    }
+  });
 }
 
 function installMenu(): void {
@@ -249,10 +286,21 @@ function createWindow(): BrowserWindow {
       initialLaunchError = null;
       reportLaunchError(error);
     }
-    if (pendingProjectPath) {
-      const projectPath = pendingProjectPath;
-      pendingProjectPath = null;
-      dispatchProjectPath(projectPath);
+    const explicitProjectPath = pendingProjectPath;
+    pendingProjectPath = null;
+    if (explicitProjectPath) {
+      dispatchProjectPath(explicitProjectPath);
+    } else {
+      // A normal desktop launch has no argv project. Restore the last project
+      // without showing a second trust prompt; previews can still render while
+      // the Pi runtime initializes.
+      void projects.lastTrustedProjectPath().then((recentProjectPath) => {
+        const projectPath = pendingProjectPath ?? recentProjectPath;
+        pendingProjectPath = null;
+        if (projectPath) dispatchProjectPath(projectPath);
+      }).catch((error: unknown) => {
+        logs.write('warn', 'launcher', `The last project could not be restored: ${error instanceof Error ? error.message : String(error)}`);
+      });
     }
   });
 
@@ -297,11 +345,14 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(async () => {
+  if (!instancePrimaryApp) return;
   const proxyUrl = await rendererNetworkProxy.start();
+  const browserHistory = new BrowserHistoryRepository();
   browserHost = new BrowserHost({
     currentProject: () => runtime.getState(false).project,
     currentPermissionLevel: () => runtime.getState(false).permissionLevel ?? 'full-access',
     bridge: browserBridge,
+    history: browserHistory,
     emit: (owner, event) => {
       if (!owner.isDestroyed()) owner.webContents.send(ipcChannels.browserEvents, browserEventBatchSchema.parse([event]));
     },

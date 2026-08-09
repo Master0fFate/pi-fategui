@@ -18,6 +18,8 @@ vi.mock('../SubagentSessionFactory', async () => {
     createSdkChildSession: vi.fn(async (input: ChildSessionInput) => {
       createdInputs.push(input);
       const messages: unknown[] = [];
+      let releaseAbort: () => void = () => undefined;
+      const aborted = new Promise<void>((resolve) => { releaseAbort = resolve; });
       let listener: ((event: unknown) => void) | null = null;
       const unsubscribe = vi.fn(() => { listener = null; });
       childUnsubscribes.push(unsubscribe);
@@ -36,13 +38,13 @@ vi.mock('../SubagentSessionFactory', async () => {
           messages.push({ role: 'user', content: text });
           listener?.({ type: 'tool_execution_start', toolCallId: 'read-1', toolName: 'read', args: { path: 'src/example.ts' } });
           listener?.({ type: 'tool_execution_end', toolCallId: 'read-1', toolName: 'read', result: 'ok', isError: false });
-          if (promptBarrier) await promptBarrier;
+          if (promptBarrier) await Promise.race([promptBarrier, aborted]);
           const assistant = { role: 'assistant', content: [{ type: 'text', text: `result:${input.teamIdentity?.path}` }], stopReason: 'stop' };
           messages.push(assistant);
           listener?.({ type: 'message_end', message: assistant });
         }),
         sendCustomMessage: vi.fn(async () => undefined),
-        abort: vi.fn(async () => undefined),
+        abort: vi.fn(async () => { releaseAbort(); }),
         dispose: vi.fn(),
       } as unknown as AgentSession;
       if (session.sessionFile) {
@@ -121,7 +123,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     ]));
     expect(sendRootMessage).toHaveBeenCalledWith('root-session', expect.objectContaining({ customType: 'fate-agent-team-envelope' }), 'steer', false);
     expect(root.sendCustomMessage).not.toHaveBeenCalled();
-    expect(createdInputs[0]?.collaborationTools?.map((tool) => tool.name)).toEqual(['spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents']);
+    expect(createdInputs[0]?.collaborationTools?.map((tool) => tool.name)).toEqual(['spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents']);
 
     const followUp = await coordinator.followUp(rootId, child.nodeId, 'continue with retained context', 'follow-1', modelRuntime);
     await settle();
@@ -322,5 +324,169 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(second.nodeId).toBe(first.nodeId);
     expect(coordinator.getTeams('root-session')[0]?.nodes).toHaveLength(2);
     await expect(coordinator.sendMessage(rootId, rootId, 'self', 'message-op')).rejects.toThrow(/message themselves/);
+  });
+  it('creates, selects, and isolates two teams under one root session', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const firstRoot = coordinator.rootNodeId('root-session');
+    const first = await coordinator.spawn(firstRoot, { task: 'first', name: 'worker' }, 'first-spawn', runtime());
+    await settle();
+    const secondTeam = coordinator.createTeam('root-session', 'Second team');
+    coordinator.selectTeam('root-session', secondTeam.id);
+    const secondRoot = coordinator.rootNodeId('root-session');
+    const second = await coordinator.spawn(secondRoot, { task: 'second', name: 'worker' }, 'second-spawn', runtime());
+    await settle();
+
+    expect(coordinator.getTeams('root-session')).toHaveLength(2);
+    expect(coordinator.selectedTeamId('root-session')).toBe(secondTeam.id);
+    expect(first.nodeId).not.toBe(second.nodeId);
+    await expect(coordinator.sendMessage(secondRoot, first.nodeId, 'cross-team', 'cross-team-message')).rejects.toThrow(/same-team|foreign|Unknown/u);
+  });
+
+  it('restores the latest durable snapshot for every team without collapsing siblings', async () => {
+    const root = rootSession();
+    const persisted: Array<{ teamId: string; sequence: number }> = [];
+    const host = {
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' as const }),
+      emit: () => undefined,
+      persist: (_root: string, event: { teamId: string; sequence: number }) => { persisted.push(event); },
+    };
+    const first = new AgentTeamCoordinator(host, dataRoot);
+    const firstRoot = first.rootNodeId('root-session');
+    await first.spawn(firstRoot, { task: 'one', name: 'one' }, 'restore-one', runtime());
+    await settle();
+    const second = first.createTeam('root-session', 'Second');
+    first.selectTeam('root-session', second.id);
+    await first.spawn(first.rootNodeId('root-session'), { task: 'two', name: 'two' }, 'restore-two', runtime());
+    await settle();
+
+    const reopened = rootSession();
+    vi.spyOn(reopened.sessionManager, 'getBranch').mockReturnValue(persisted.map((event) => ({ type: 'custom', id: `${event.teamId}-${event.sequence}`, parentId: null, timestamp: new Date().toISOString(), customType: 'fate-agent-team-event', data: event })) as never);
+    const restored = new AgentTeamCoordinator({ resolveRoot: () => ({ projectPath: dataRoot, session: reopened, permissionLevel: 'read-only' }), emit: () => undefined, persist: () => undefined }, dataRoot);
+    restored.restoreRoot(reopened);
+    expect(restored.getTeams('root-session')).toHaveLength(2);
+    expect(restored.selectedTeamId('root-session')).toBe(second.id);
+  });
+
+  it('releases ready and active nodes idempotently and makes team capacity reusable', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const ready = await coordinator.spawn(rootId, { task: 'ready', name: 'ready-node' }, 'ready-spawn', runtime());
+    await settle();
+    await coordinator.control('root-session', { action: 'release', target: ready.nodeId }, runtime());
+    await coordinator.control('root-session', { action: 'release', target: ready.nodeId }, runtime());
+    expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === ready.nodeId)?.status).toBe('released');
+
+    let releasePrompt: () => void = () => undefined;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const active = await coordinator.spawn(rootId, { task: 'active', name: 'active-node' }, 'active-spawn', runtime());
+    await expect(coordinator.control('root-session', { action: 'release', target: active.nodeId }, runtime())).rejects.toThrow(/Use force/u);
+    await coordinator.control('root-session', { action: 'release', target: active.nodeId, force: true }, runtime());
+    expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === active.nodeId)?.status).toBe('released');
+    const replacement = await coordinator.spawn(rootId, { task: 'replacement', name: 'replacement' }, 'replacement-spawn', runtime());
+    expect(replacement.status).toBe('active');
+    releasePrompt();
+    promptBarrier = null;
+    await settle();
+  });
+
+  it('refuses unsafe team close, force-closes work, and permits a new team', async () => {
+    let releasePrompt: () => void = () => undefined;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    await coordinator.spawn(rootId, { task: 'active', name: 'worker' }, 'close-spawn', runtime());
+    const teamId = coordinator.getTeams('root-session')[0]!.id;
+    await expect(coordinator.closeTeam('root-session', teamId)).rejects.toThrow(/Use force/u);
+    await coordinator.closeTeam('root-session', teamId, true);
+    expect(coordinator.getTeams('root-session')[0]?.status).toBe('closed');
+    expect(coordinator.createTeam('root-session', 'Replacement').status).toBe('active');
+    releasePrompt();
+    promptBarrier = null;
+  });
+});
+
+describe('Agent Team V2 send_message delivery modes', () => {
+  function makeCoordinator() {
+    const root = rootSession();
+    const sendRootMessage = vi.fn(async () => undefined);
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' }),
+      sendRootMessage,
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    return { coordinator, root, sendRootMessage };
+  }
+
+  it('queue holds a message until the recipient task settles, then delivers it once', async () => {
+    let releasePrompt: () => void = () => undefined;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const { coordinator } = makeCoordinator();
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'work', name: 'worker' }, 'queue-spawn', runtime());
+    await settle();
+    const held = await coordinator.sendMessage(rootId, child.path, 'held note', 'queue-msg', 'queue');
+    expect(held.state).toBe('queued');
+    expect(childSessions[0]?.sendCustomMessage).not.toHaveBeenCalled();
+    releasePrompt();
+    promptBarrier = null;
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.envelopes.find((env) => env.id === held.envelopeId)?.state).toBe('delivered'));
+    expect(childSessions[0]?.sendCustomMessage).toHaveBeenCalledTimes(1);
+    expect(childSessions[0]?.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'fate-agent-team-envelope' }), { triggerTurn: false });
+  });
+
+  it('steer injects into a streaming recipient and never starts a new executable task', async () => {
+    let releasePrompt: () => void = () => undefined;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const { coordinator } = makeCoordinator();
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'work', name: 'steered' }, 'steer-spawn', runtime());
+    await settle();
+    (childSessions[0] as unknown as { isStreaming: boolean }).isStreaming = true;
+    const receipt = await coordinator.sendMessage(rootId, child.path, 'nudge', 'steer-msg', 'steer');
+    expect(receipt.state).toBe('delivered');
+    expect(childSessions[0]?.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'fate-agent-team-envelope' }), { triggerTurn: false, deliverAs: 'steer' });
+    expect(coordinator.getTeams('root-session')[0]?.tasks).toHaveLength(1);
+    releasePrompt();
+    promptBarrier = null;
+    await settle();
+  });
+
+  it('delivers a queued message to an idle recipient without waking it', async () => {
+    const { coordinator } = makeCoordinator();
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'work', name: 'idle' }, 'idle-spawn', runtime());
+    await settle();
+    const receipt = await coordinator.sendMessage(rootId, child.path, 'note', 'idle-msg', 'queue');
+    expect(receipt.state).toBe('delivered');
+    expect(childSessions[0]?.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'fate-agent-team-envelope' }), { triggerTurn: false });
+    expect(childSessions[0]?.prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('defaults a missing delivery mode to queue (hold until settlement)', async () => {
+    let releasePrompt: () => void = () => undefined;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const { coordinator } = makeCoordinator();
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'work', name: 'legacy' }, 'legacy-spawn', runtime());
+    await settle();
+    const held = await coordinator.sendMessage(rootId, child.path, 'legacy note', 'legacy-msg');
+    expect(held.state).toBe('queued');
+    expect(childSessions[0]?.sendCustomMessage).not.toHaveBeenCalled();
+    releasePrompt();
+    promptBarrier = null;
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.envelopes.find((env) => env.id === held.envelopeId)?.state).toBe('delivered'));
   });
 });

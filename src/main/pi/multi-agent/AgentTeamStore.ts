@@ -26,11 +26,13 @@ export const DEFAULT_AGENT_TEAM_LIMITS = Object.freeze({
 
 export function createTeamRuntime(
   rootSessionId: string,
+  projectPath: string,
   model: ModelInfo,
   thinkingLevel: ThinkingLevel,
   permissionLevel: PermissionLevel,
-  now = Date.now(),
+  options: { name?: string; selected?: boolean; now?: number } = {},
 ): AgentTeamRuntime {
+  const now = options.now ?? Date.now();
   const teamId = `team-${randomUUID()}`;
   const rootNodeId = `node-${randomUUID()}`;
   const root: AgentTeamNode = {
@@ -59,8 +61,11 @@ export function createTeamRuntime(
   const state: AgentTeam = {
     id: teamId,
     rootSessionId,
+    projectPath,
+    name: options.name?.trim().slice(0, 100) || 'Agent Team',
     protocolVersion: 2,
     status: 'active',
+    selected: options.selected ?? true,
     rootNodeId,
     limits: { ...DEFAULT_AGENT_TEAM_LIMITS },
     activeTurns: 0,
@@ -87,8 +92,15 @@ export function createTeamRuntime(
   };
 }
 
-export function hydrateTeamRuntime(value: unknown): AgentTeamRuntime | null {
-  const parsed = agentTeamSchema.safeParse(value);
+export function hydrateTeamRuntime(value: unknown, fallbackProjectPath = 'unknown'): AgentTeamRuntime | null {
+  const legacy = value && typeof value === 'object' ? value as Record<string, unknown> : null;
+  const migrated = legacy ? {
+    ...legacy,
+    projectPath: typeof legacy.projectPath === 'string' && legacy.projectPath ? legacy.projectPath : fallbackProjectPath,
+    name: typeof legacy.name === 'string' && legacy.name ? legacy.name : 'Agent Team',
+    selected: typeof legacy.selected === 'boolean' ? legacy.selected : true,
+  } : value;
+  const parsed = agentTeamSchema.safeParse(migrated);
   if (!parsed.success) return null;
   const state = structuredClone(parsed.data);
   for (const node of state.nodes) {
@@ -105,7 +117,7 @@ export function hydrateTeamRuntime(value: unknown): AgentTeamRuntime | null {
       task.endedAt = Date.now();
     }
   }
-  state.status = state.status === 'closed' ? 'closed' : 'restored-interrupted';
+  state.status = state.status === 'closed' || state.status === 'released' ? state.status : 'restored-interrupted';
   state.activeTurns = 0;
   state.writerNodeId = null;
   state.updatedAt = Date.now();
@@ -115,7 +127,7 @@ export function hydrateTeamRuntime(value: unknown): AgentTeamRuntime | null {
     tasks: new Map(state.tasks.map((task) => [task.id, task])),
     envelopes: new Map(state.envelopes.map((envelope) => [envelope.id, envelope])),
     nodeRuntime: new Map(),
-    pathToNode: new Map(state.nodes.map((node) => [node.path, node.id])),
+    pathToNode: new Map(state.nodes.filter((node) => node.status !== 'released').map((node) => [node.path, node.id])),
     operationReceipts: new Map(state.operationReceipts.map((receipt) => [receipt.key, receipt])),
     waitEdges: new Map(),
     sequence: Math.max(0, ...state.timeline.map((event) => event.sequence)),
@@ -135,7 +147,7 @@ export function ledgerSnapshot(runtime: AgentTeamRuntime, type: string, timestam
 }
 
 export function projectTeam(runtime: AgentTeamRuntime): AgentTeam {
-  runtime.state.nodes = [...runtime.nodes.values()].sort((left, right) => left.path.localeCompare(right.path));
+  runtime.state.nodes = [...runtime.nodes.values()].sort((left, right) => left.createdAt - right.createdAt || left.path.localeCompare(right.path));
   runtime.state.tasks = [...runtime.tasks.values()].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id)).slice(-512);
   runtime.state.envelopes = [...runtime.envelopes.values()].sort((left, right) => left.sequence - right.sequence).slice(-runtime.state.limits.maxMessages);
   runtime.state.operationReceipts = [...runtime.operationReceipts.values()] as AgentTeam['operationReceipts'];

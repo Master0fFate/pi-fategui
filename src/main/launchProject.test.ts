@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parseLaunchProjectPath, projectPathFromAdditionalData } from './launchProject';
+import { hasNewInstanceFlag, parseLaunchProjectPath, projectPathFromAdditionalData } from './launchProject';
 
 describe('Fate UI launch project arguments', () => {
   it('resolves an explicit project relative to the invoking terminal', () => {
@@ -29,5 +29,11 @@ describe('Fate UI launch project arguments', () => {
     expect(projectPathFromAdditionalData({ projectPath: 'relative/project' })).toBeNull();
     expect(projectPathFromAdditionalData({ projectPath: `/${'x'.repeat(32_768)}` })).toBeNull();
     expect(projectPathFromAdditionalData(null)).toBeNull();
+  });
+
+  it('detects the explicit --new-instance flag for a fully isolated second process', () => {
+    expect(hasNewInstanceFlag(['fate-ui', '--project', '/workspace', '--new-instance'])).toBe(true);
+    expect(hasNewInstanceFlag(['fate-ui', '--project', '/workspace'])).toBe(false);
+    expect(hasNewInstanceFlag([])).toBe(false);
   });
 });

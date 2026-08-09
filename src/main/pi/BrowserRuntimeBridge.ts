@@ -22,10 +22,15 @@ export interface PiBrowserRuntimeIntegration {
   appendAnnotationContext(text: string, annotationIds: readonly string[]): Promise<string>;
   currentRoot(): ActiveBrowserRoot | null;
   setActiveRoot(root: ActiveBrowserRoot | null): void;
+  /** Clear only a caller's own root; background services cannot clear focus. */
+  clearActiveRoot?(projectPath: string): void;
+  /** Synchronize the bridge with the app-level focused project. */
+  setFocusedProjectPath?(projectPath: string | null): void;
 }
 
 export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrowserToolHost, BrowserAnnotationContextSource {
   private activeRoot: ActiveBrowserRoot | null = null;
+  private focusedProjectPath: string | null = null;
 
   constructor(private readonly resolveService: () => BrowserService | null) {}
 
@@ -41,8 +46,25 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
     return this.activeRoot ? { ...this.activeRoot } : null;
   }
 
+  clearActiveRoot(projectPath: string): void {
+    if (this.activeRoot?.projectPath === projectPath) this.setActiveRoot(null);
+  }
+
+  setFocusedProjectPath(projectPath: string | null): void {
+    if (this.focusedProjectPath === projectPath) return;
+    // Release the old root before changing the guard so a focus transition can
+    // transfer the browser lease without a background service stealing it.
+    if (this.activeRoot && this.activeRoot.projectPath !== projectPath) this.setActiveRoot(null);
+    this.focusedProjectPath = projectPath;
+  }
+
   setActiveRoot(root: ActiveBrowserRoot | null): void {
     const previous = this.activeRoot;
+    // A background Pi service is allowed to initialize/dispose, but it may not
+    // mutate the shared browser root. Null is similarly scoped to the current
+    // focused project so background disposal cannot clear the foreground root.
+    if (root && this.focusedProjectPath && root.projectPath !== this.focusedProjectPath) return;
+    if (!root && previous && this.focusedProjectPath && previous.projectPath !== this.focusedProjectPath) return;
     if (previous?.projectPath === root?.projectPath && previous?.sessionId === root?.sessionId) return;
     const service = this.resolveService();
     if (service && previous) {

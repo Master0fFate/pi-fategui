@@ -13,6 +13,7 @@ import type { BrowserRuntimeBridge } from '../pi/BrowserRuntimeBridge';
 import { BrowserError } from './BrowserErrors';
 import type { BrowserConfirmationBinding } from './BrowserActionExecutor';
 import { BrowserService } from './BrowserService';
+import { BrowserHistoryRepository } from './BrowserHistoryRepository';
 import { redactSnapshotUrl } from './SemanticSnapshotEngine';
 
 const CONFIRMATION_TTL_MS = 30_000;
@@ -33,6 +34,8 @@ export interface BrowserHostOptions {
   bridge: Pick<BrowserRuntimeBridge, 'currentRoot' | 'syncService'>;
   emit(owner: BrowserWindow, event: BrowserEvent): void;
   command(owner: BrowserWindow, command: Extract<AppCommand, 'focus-address' | 'toggle-browser' | 'open-palette' | 'pause-browser'>): void;
+  /** Per-project last-URL store. When omitted, reopen starts on the home page. */
+  history?: BrowserHistoryRepository;
 }
 
 export class BrowserHost {
@@ -86,12 +89,15 @@ export class BrowserHost {
     if (owner.isDestroyed() || !latest?.trusted || !samePath(project.path, latest.path)) {
       throw new BrowserError('ACTION_BLOCKED', 'The trusted project changed while the built-in browser was starting.');
     }
+    const lastUrl = await this.options.history?.load(project.path).catch(() => null) ?? null;
     const service = new BrowserService(owner, {
       canonicalProjectPath: project.path,
       confirmAction: (action, reason, binding) => this.requestConfirmation(owner, action, reason, binding),
       annotationOwner: () => this.options.bridge.currentRoot(),
       onAppShortcut: (command) => this.options.command(owner, command),
       onPaused: () => this.clearConfirmation(false),
+      onNavigated: (url) => { void this.options.history?.save(project.path, url).catch(() => undefined); },
+      restoreUrl: lastUrl,
     });
     this.service = service;
     this.owner = owner;

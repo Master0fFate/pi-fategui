@@ -1,8 +1,10 @@
 import type { GoalMaxClearResult, GoalMaxControlInput, GoalMaxCreateInput, GoalMaxEvent, GoalMaxState, GoalMaxUpdateInput } from '../../src/shared/contracts/goalmaxxing';
 import type { PermissionLevel, PiEvent, ProjectState, PromptAcceptance, PromptInput, QueuedMessage, QueueMutationInput, QueueMutationResult, RuntimeState, SessionSummary, SubagentControlInput, SubagentRun, ThinkingLevel } from '../../src/shared/contracts/ipc';
 import type { AgentTeam, AgentTeamControlInput } from '../../src/shared/contracts/multiAgent';
+import type { TaskCreateInput, TaskDeleteInput, TaskEvent, TaskList, TaskReorderInput, TaskUpdateInput } from '../../src/shared/contracts/tasks';
 
 const model = { provider: 'test', id: 'deterministic', name: 'Deterministic Test Model', reasoning: true, contextWindow: 100_000, supportsImages: true };
+const e2eSessionCount = Math.max(2, Math.min(500, Number.parseInt(process.env.PI_DESKTOP_E2E_SESSION_COUNT ?? '2', 10) || 2));
 const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
 const tokenHistory = Array.from({ length: 24 }, (_value, index) => {
   const input = 720 + index * 91;
@@ -46,7 +48,7 @@ function agentTeamFixture(): AgentTeam {
   const reviewerId = 'e2e-team-reviewer';
   const verifierId = 'e2e-team-verifier';
   return {
-    id: teamId, rootSessionId: 'e2e-session-1', protocolVersion: 2, status: 'active', rootNodeId: rootId,
+    id: teamId, rootSessionId: 'e2e-session-1', projectPath: '/e2e/project', name: 'E2E team', protocolVersion: 2, status: 'active', selected: true, rootNodeId: rootId,
     limits: { maxDepth: 2, maxNodes: 16, maxActiveTurns: 3, maxMessages: 256, maxMessageBytes: 32 * 1024 }, activeTurns: 1, writerNodeId: reviewerId, usage: { ...emptyUsage },
     nodes: [
       { id: rootId, teamId, parentNodeId: null, path: '/root', handle: 'root', displayName: 'Main agent', depth: 0, role: 'root', agentName: 'direct', permissionLevel: 'full-access', enabledTools: ['read'], model, thinkingLevel: 'medium', status: 'active', childIds: [reviewerId], unreadMessages: 0, writer: false, usage: { ...emptyUsage }, createdAt: now, updatedAt: now },
@@ -86,14 +88,31 @@ export class FakePiRuntimeService {
   private readonly sessionPermissions = new Map<string, PermissionLevel>();
   private sink: (events: PiEvent[]) => void = () => undefined;
   private goalSink: (event: GoalMaxEvent) => void = () => undefined;
+  private taskSink: (event: TaskEvent) => void = () => undefined;
+  private taskList: TaskList | null = null;
+  private taskSequence = 0;
   private readonly goals = new Map<string, GoalMaxState>();
   private readonly sessions: SessionSummary[] = [
     { id: 'e2e-session-1', title: 'First session', firstMessage: '', path: 'test://session-1', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 0, active: true },
     { id: 'e2e-session-2', title: 'Second session', firstMessage: 'Second', path: 'test://session-2', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-03T00:00:00.000Z', messageCount: 1, active: false },
+    ...Array.from({ length: e2eSessionCount - 2 }, (_value, index): SessionSummary => {
+      const number = index + 3;
+      return {
+        id: `e2e-session-${number}`,
+        title: `Session ${number}`,
+        firstMessage: `Session ${number}`,
+        path: `test://session-${number}`,
+        createdAt: '2025-01-01T00:00:00.000Z',
+        modifiedAt: new Date(Date.UTC(2025, 0, 3, 0, number)).toISOString(),
+        messageCount: number,
+        active: false,
+      };
+    }),
   ];
 
   setEventSink(sink: (events: PiEvent[]) => void): void { this.sink = sink; }
   setGoalEventSink(sink: (event: GoalMaxEvent) => void): void { this.goalSink = sink; }
+  setTaskEventSink(sink: (event: TaskEvent) => void): void { this.taskSink = sink; }
   getHydrationState(): RuntimeState { return this.getState(); }
   getState(): RuntimeState {
     const historical = this.activeSession === 'e2e-session-2';
@@ -139,6 +158,12 @@ export class FakePiRuntimeService {
     };
   }
   async openProject(project: ProjectState): Promise<RuntimeState> { this.project = project; this.emitState(); return this.getState(); }
+  async listSessionsForPath(_projectPath: string, query = ''): Promise<SessionSummary[]> {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    return this.sessions
+      .filter((session) => !normalizedQuery || session.title.toLocaleLowerCase().includes(normalizedQuery))
+      .map((session) => ({ ...session, active: session.id === this.activeSession }));
+  }
   async prompt(input: PromptInput): Promise<PromptAcceptance> {
     const runId = 'e2e-run';
     if (this.streaming && input.behavior !== 'prompt') {
@@ -236,10 +261,28 @@ export class FakePiRuntimeService {
     return this.getState();
   }
   async controlAgentTeam(input: AgentTeamControlInput): Promise<RuntimeState> {
-    const team = this.agentTeams[0];
+    const now = Date.now();
+    if (input.action === 'createTeam') {
+      const created = agentTeamFixture();
+      this.agentTeams = [...this.agentTeams.map((team) => ({ ...team, selected: false })), { ...created, id: `e2e-agent-team-${this.agentTeams.length + 1}`, name: input.name ?? `Team ${this.agentTeams.length + 1}`, selected: this.agentTeams.length === 0 }];
+      this.emitState();
+      return this.getState();
+    }
+    if (input.action === 'selectTeam' || input.action === 'pauseTeam' || input.action === 'resumeTeam' || input.action === 'closeTeam' || input.action === 'resetTeam' || input.action === 'deleteTeam') {
+      if (input.action === 'deleteTeam') this.agentTeams = this.agentTeams.filter((team) => team.id !== input.teamId);
+      else this.agentTeams = this.agentTeams.map((team) => team.id !== input.teamId ? (input.action === 'selectTeam' ? { ...team, selected: false } : team) : {
+        ...team,
+        selected: input.action === 'selectTeam' ? true : team.selected,
+        status: input.action === 'pauseTeam' ? 'paused' as const : input.action === 'resumeTeam' || input.action === 'resetTeam' ? 'active' as const : input.action === 'closeTeam' ? 'closed' as const : team.status,
+        updatedAt: now,
+      });
+      this.emitState();
+      return this.getState();
+    }
+    const teamIndex = this.agentTeams.findIndex((candidate) => candidate.id === input.teamId) >= 0 ? this.agentTeams.findIndex((candidate) => candidate.id === input.teamId) : 0;
+    const team = this.agentTeams[teamIndex];
     const index = team?.nodes.findIndex((node) => node.id === input.target) ?? -1;
     if (!team || index < 0) throw new Error(`Unknown Agent Team node ${input.target}.`);
-    const now = Date.now();
     const node = team.nodes[index]!;
     const followUp = input.action === 'followUp' || input.action === 'resume';
     if (followUp && node.parentNodeId !== team.rootNodeId) throw new Error('Follow-up work may target only a direct child.');
@@ -249,33 +292,13 @@ export class FakePiRuntimeService {
         ? { ...node, status: 'active' as const, writer: node.permissionLevel !== 'read-only', updatedAt: now }
         : input.action === 'interrupt'
           ? { ...node, status: 'interrupted' as const, writer: false, currentTaskId: undefined, updatedAt: now }
-          : { ...node, status: 'closed' as const, writer: false, currentTaskId: undefined, updatedAt: now };
-    const nodes = team.nodes.map((candidate, candidateIndex) => input.action === 'close' && (candidate.id === node.id || candidate.path.startsWith(`${node.path}/`))
-      ? { ...candidate, status: 'closed' as const, writer: false, currentTaskId: undefined, updatedAt: now }
+          : { ...node, status: input.action === 'release' ? 'released' as const : 'closed' as const, writer: false, currentTaskId: undefined, updatedAt: now };
+    const nodes = team.nodes.map((candidate, candidateIndex) => (input.action === 'close' || input.action === 'release') && (candidate.id === node.id || candidate.path.startsWith(`${node.path}/`))
+      ? { ...candidate, status: input.action === 'release' ? 'released' as const : 'closed' as const, writer: false, currentTaskId: undefined, updatedAt: now }
       : candidateIndex === index ? next : candidate);
-    const envelopes = input.action === 'message'
-      ? [...team.envelopes, {
-          id: `e2e-team-message-${team.envelopes.length + 1}`,
-          teamId: team.id,
-          sequence: Math.max(0, ...team.envelopes.map((envelope) => envelope.sequence)) + 1,
-          kind: 'MESSAGE' as const,
-          authorNodeId: team.rootNodeId,
-          recipientNodeId: node.id,
-          content: input.message,
-          triggerTurn: false,
-          state: 'delivered' as const,
-          createdAt: now,
-          deliveredAt: now,
-        }]
-      : team.envelopes;
-    this.agentTeams = [{
-      ...team,
-      nodes,
-      envelopes,
-      activeTurns: nodes.filter((candidate) => candidate.id !== team.rootNodeId && candidate.status === 'active').length,
-      writerNodeId: nodes.find((candidate) => candidate.writer && candidate.status === 'active')?.id ?? null,
-      updatedAt: now,
-    }];
+    const envelopes = input.action === 'message' ? [...team.envelopes, { id: `e2e-team-message-${team.envelopes.length + 1}`, teamId: team.id, sequence: Math.max(0, ...team.envelopes.map((envelope) => envelope.sequence)) + 1, kind: 'MESSAGE' as const, authorNodeId: team.rootNodeId, recipientNodeId: node.id, content: input.message, triggerTurn: false, delivery: input.delivery ?? 'queue', state: 'delivered' as const, createdAt: now, deliveredAt: now }] : team.envelopes;
+    const updated = { ...team, nodes, envelopes, activeTurns: nodes.filter((candidate) => candidate.id !== team.rootNodeId && candidate.status === 'active').length, writerNodeId: nodes.find((candidate) => candidate.writer && candidate.status === 'active')?.id ?? null, updatedAt: now };
+    this.agentTeams = this.agentTeams.map((candidate, index) => index === teamIndex ? updated : candidate);
     this.emitState();
     return this.getState();
   }
@@ -305,6 +328,51 @@ export class FakePiRuntimeService {
       state: this.getState(),
       ...(input.action === 'edit' ? { restored: { text: target.text, ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}) } } : {}),
     };
+  }
+  async getTaskList(): Promise<TaskList | null> { return this.taskList ? structuredClone(this.taskList) : null; }
+  async createTask(input: TaskCreateInput): Promise<TaskList> {
+    if (!this.project) throw new Error('Open a project before creating tasks.');
+    const now = Date.now();
+    const current = this.taskList ?? { schemaVersion: 1 as const, projectPath: this.project.path, sessionId: this.activeSession, revision: 0, goalId: null, tasks: [], currentTaskId: null, updatedAt: now };
+    this.taskSequence += 1;
+    const task = { id: `e2e-task-${this.taskSequence}`, title: input.title, detail: input.detail ?? '', status: input.status ?? 'todo' as const, required: input.required ?? false, source: 'user' as const, goalId: null, goalCriterionId: null, order: current.tasks.length, verified: input.status === 'done' && !input.required, verifiedAt: input.status === 'done' && !input.required ? now : null, createdAt: now, updatedAt: now };
+    return this.commitTaskList({ ...current, revision: current.revision + 1, tasks: [...current.tasks, task], currentTaskId: current.currentTaskId ?? (task.status === 'done' ? null : task.id), updatedAt: now });
+  }
+  async updateTask(input: TaskUpdateInput): Promise<TaskList> {
+    if (!this.taskList) throw new Error('This session has no task list.');
+    const now = Date.now();
+    const tasks = this.taskList.tasks.map((task) => task.id === input.id ? {
+      ...task,
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.detail !== undefined ? { detail: input.detail } : {}),
+      ...(input.status !== undefined ? { status: input.status } : {}),
+      ...(input.required !== undefined ? { required: input.required } : {}),
+      updatedAt: now,
+    } : task);
+    return this.commitTaskList({ ...this.taskList, revision: this.taskList.revision + 1, tasks, currentTaskId: tasks.find((task) => task.status !== 'done')?.id ?? null, updatedAt: now });
+  }
+  async reorderTasks(input: TaskReorderInput): Promise<TaskList> {
+    if (!this.taskList) throw new Error('This session has no task list.');
+    const byId = new Map(this.taskList.tasks.map((task) => [task.id, task]));
+    const explicit = input.orderedIds.map((id) => byId.get(id)).filter((task): task is NonNullable<typeof task> => Boolean(task));
+    const seen = new Set(explicit.map((task) => task.id));
+    const tasks = [...explicit, ...this.taskList.tasks.filter((task) => !seen.has(task.id))].map((task, order) => ({ ...task, order }));
+    return this.commitTaskList({ ...this.taskList, revision: this.taskList.revision + 1, tasks, updatedAt: Date.now() });
+  }
+  async deleteTask(input: TaskDeleteInput): Promise<TaskList> {
+    if (!this.taskList) throw new Error('This session has no task list.');
+    const tasks = this.taskList.tasks.filter((task) => task.id !== input.id).map((task, order) => ({ ...task, order }));
+    return this.commitTaskList({ ...this.taskList, revision: this.taskList.revision + 1, tasks, currentTaskId: tasks.find((task) => task.status !== 'done')?.id ?? null, updatedAt: Date.now() });
+  }
+  async clearTasks(): Promise<TaskList> {
+    if (!this.project) throw new Error('Open a project before clearing tasks.');
+    const now = Date.now();
+    return this.commitTaskList({ schemaVersion: 1, projectPath: this.project.path, sessionId: this.activeSession, revision: (this.taskList?.revision ?? 0) + 1, goalId: null, tasks: [], currentTaskId: null, updatedAt: now });
+  }
+  private commitTaskList(list: TaskList): TaskList {
+    this.taskList = structuredClone(list);
+    this.taskSink({ type: 'tasklist.snapshot', projectPath: list.projectPath, sessionId: list.sessionId, list: structuredClone(list), timestamp: Date.now() });
+    return structuredClone(list);
   }
   async getGoalMax(): Promise<GoalMaxState | null> { return this.goals.get(this.activeSession) ?? null; }
   async createGoalMax(input: GoalMaxCreateInput): Promise<GoalMaxState> {

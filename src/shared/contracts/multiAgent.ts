@@ -8,6 +8,8 @@ export const AGENT_TEAM_MAX_MESSAGES = 256;
 export const AGENT_TEAM_MAX_MESSAGE_BYTES = 32 * 1024;
 export const AGENT_TEAM_DEFAULT_WAIT_MS = 30_000;
 export const AGENT_TEAM_MAX_WAIT_MS = 5 * 60_000;
+export const AGENT_TEAM_MAX_HISTORY_NODES = 512;
+export const AGENT_TEAM_MAX_GLOBAL_NODES = 64;
 
 const id = z.string().min(1).max(160);
 const boundedText = z.string().max(AGENT_TEAM_MAX_MESSAGE_BYTES);
@@ -40,10 +42,11 @@ export const agentTeamLimitsSchema = z.object({
   maxMessageBytes: z.number().int().min(1).max(AGENT_TEAM_MAX_MESSAGE_BYTES),
 }).strict();
 
-export const agentTeamNodeStatusSchema = z.enum(['creating', 'ready', 'active', 'interrupted', 'closing', 'closed', 'failed']);
+export const agentTeamNodeStatusSchema = z.enum(['creating', 'ready', 'active', 'interrupted', 'closing', 'closed', 'released', 'failed']);
 export const agentTeamTaskStatusSchema = z.enum(['queued', 'running', 'waiting-for-children', 'completed', 'interrupted', 'cancelled', 'failed']);
 export const agentTeamEnvelopeKindSchema = z.enum(['NEW_TASK', 'MESSAGE', 'FINAL_ANSWER', 'CONTROL']);
 export const agentTeamEnvelopeStateSchema = z.enum(['queued', 'delivered', 'consumed', 'failed', 'expired']);
+export const agentTeamEnvelopeDeliverySchema = z.enum(['queue', 'steer']);
 
 export const agentTeamNodeSchema = z.object({
   id,
@@ -68,6 +71,8 @@ export const agentTeamNodeSchema = z.object({
   createdAt: z.number().finite(),
   updatedAt: z.number().finite(),
   lastError: z.string().max(4_000).optional(),
+  closedAt: z.number().finite().optional(),
+  releasedAt: z.number().finite().optional(),
 }).strict();
 
 export const agentTeamTaskSchema = z.object({
@@ -95,6 +100,7 @@ export const agentTeamEnvelopeSchema = z.object({
   taskId: id.optional(),
   content: boundedText,
   triggerTurn: z.boolean(),
+  delivery: agentTeamEnvelopeDeliverySchema.optional(),
   state: agentTeamEnvelopeStateSchema,
   createdAt: z.number().finite(),
   deliveredAt: z.number().finite().optional(),
@@ -103,7 +109,7 @@ export const agentTeamEnvelopeSchema = z.object({
 
 export const agentTeamOperationReceiptSchema = z.object({
   key: z.string().min(1).max(700),
-  operation: z.enum(['spawn', 'message', 'followup']),
+  operation: z.enum(['spawn', 'message', 'followup', 'interrupt', 'close-node', 'release-node', 'create-team', 'select-team', 'pause-team', 'resume-team', 'close-team', 'reset-team', 'delete-team']),
   entityId: id,
   createdAt: z.number().finite(),
 }).strict();
@@ -111,7 +117,7 @@ export const agentTeamOperationReceiptSchema = z.object({
 export const agentTeamTimelineEventSchema = z.object({
   id,
   sequence: z.number().int().nonnegative(),
-  type: z.enum(['team.created', 'node.created', 'node.updated', 'task.created', 'task.updated', 'envelope.created', 'envelope.updated', 'node.interrupted', 'node.closed', 'team.restored', 'team.closed', 'tool.started', 'tool.completed', 'message.completed', 'error']),
+  type: z.enum(['team.created', 'team.selected', 'team.paused', 'team.resumed', 'team.reset', 'team.restored', 'team.closed', 'team.released', 'node.created', 'node.updated', 'node.interrupted', 'node.closed', 'node.released', 'task.created', 'task.updated', 'task.cancelled', 'envelope.created', 'envelope.updated', 'envelope.flushed', 'envelope.expired', 'tool.started', 'tool.completed', 'message.completed', 'error']),
   nodeId: id.optional(),
   taskId: id.optional(),
   envelopeId: id.optional(),
@@ -126,34 +132,48 @@ export const agentTeamTimelineEventSchema = z.object({
 export const agentTeamSchema = z.object({
   id,
   rootSessionId: z.string().min(1).max(500),
+  projectPath: z.string().min(1).max(32_768),
+  name: z.string().min(1).max(100),
   protocolVersion: z.literal(2),
-  status: z.enum(['active', 'settling', 'closed', 'restored-interrupted']),
+  status: z.enum(['active', 'paused', 'settling', 'closing', 'closed', 'released', 'restored-interrupted']),
+  selected: z.boolean(),
   rootNodeId: id,
   limits: agentTeamLimitsSchema,
   activeTurns: z.number().int().nonnegative().max(AGENT_TEAM_MAX_ACTIVE_TURNS),
   writerNodeId: id.nullable(),
   usage,
-  nodes: z.array(agentTeamNodeSchema).max(AGENT_TEAM_MAX_NODES + 1),
+  nodes: z.array(agentTeamNodeSchema).max(AGENT_TEAM_MAX_HISTORY_NODES),
   tasks: z.array(agentTeamTaskSchema).max(512),
   envelopes: z.array(agentTeamEnvelopeSchema).max(AGENT_TEAM_MAX_MESSAGES),
   operationReceipts: z.array(agentTeamOperationReceiptSchema).max(512),
   timeline: z.array(agentTeamTimelineEventSchema).max(256),
   createdAt: z.number().finite(),
   updatedAt: z.number().finite(),
+  closedAt: z.number().finite().optional(),
+  releasedAt: z.number().finite().optional(),
 }).strict();
 
 export const agentTeamControlInputSchema = z.discriminatedUnion('action', [
-  z.object({ action: z.literal('message'), target: id, message: boundedText }).strict(),
-  z.object({ action: z.literal('followUp'), target: id, message: boundedText }).strict(),
-  z.object({ action: z.literal('interrupt'), target: id, reason: z.string().trim().min(1).max(500).optional() }).strict(),
-  z.object({ action: z.literal('close'), target: id }).strict(),
-  z.object({ action: z.literal('resume'), target: id, message: boundedText }).strict(),
+  z.object({ action: z.literal('createTeam'), name: z.string().trim().min(1).max(100).optional(), operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('selectTeam'), teamId: id, operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('pauseTeam'), teamId: id, operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('resumeTeam'), teamId: id, operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('closeTeam'), teamId: id, force: z.boolean().optional(), operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('resetTeam'), teamId: id, force: z.boolean().optional(), operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('deleteTeam'), teamId: id, operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('message'), teamId: id.optional(), target: id, message: boundedText, delivery: agentTeamEnvelopeDeliverySchema.optional(), operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('followUp'), teamId: id.optional(), target: id, message: boundedText, operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('interrupt'), teamId: id.optional(), target: id, reason: z.string().trim().min(1).max(500).optional(), operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('close'), teamId: id.optional(), target: id, force: z.boolean().optional(), operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('release'), teamId: id.optional(), target: id, force: z.boolean().optional(), operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('resume'), teamId: id.optional(), target: id, message: boundedText, operationId: id.optional() }).strict(),
 ]);
 
 export type AgentTeam = z.infer<typeof agentTeamSchema>;
 export type AgentTeamNode = z.infer<typeof agentTeamNodeSchema>;
 export type AgentTeamTask = z.infer<typeof agentTeamTaskSchema>;
 export type AgentTeamEnvelope = z.infer<typeof agentTeamEnvelopeSchema>;
+export type AgentTeamEnvelopeDelivery = z.infer<typeof agentTeamEnvelopeDeliverySchema>;
 export type AgentTeamTimelineEvent = z.infer<typeof agentTeamTimelineEventSchema>;
 export type AgentTeamLimits = z.infer<typeof agentTeamLimitsSchema>;
 export type AgentTeamControlInput = z.infer<typeof agentTeamControlInputSchema>;

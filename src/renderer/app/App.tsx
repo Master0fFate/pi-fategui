@@ -6,6 +6,7 @@ import { useRuntimeStore } from '../stores/runtimeStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useUiStore } from '../stores/uiStore';
 import { useGoalMaxStore } from '../stores/goalMaxStore';
+import { useTaskStore } from '../stores/taskStore';
 import { useBrowserStore } from '../stores/browserStore';
 import { fallbackThemes } from '../theme';
 import { attachBrowserAnnotationToSession } from '../features/chat/Composer';
@@ -181,6 +182,9 @@ export function App() {
   const applyGoalEvents = useGoalMaxStore((state) => state.applyEvents);
   const selectGoalSession = useGoalMaxStore((state) => state.selectSession);
   const hydrateGoal = useGoalMaxStore((state) => state.hydrate);
+  const selectTaskSession = useTaskStore((state) => state.selectSession);
+  const hydrateTask = useTaskStore((state) => state.hydrate);
+  const applyTaskEvents = useTaskStore((state) => state.applyEvents);
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
   const projectTrusted = useRuntimeStore((state) => state.runtime.project?.trusted ?? false);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
@@ -243,27 +247,37 @@ export function App() {
   useEffect(() => {
     if (!('piDesktop' in window) || typeof window.piDesktop.getSettings !== 'function') return undefined;
     let active = true;
+    const settingsPromise = window.piDesktop.getSettings();
     const themesPromise = typeof window.piDesktop.getThemes === 'function'
       ? window.piDesktop.getThemes().catch(() => fallbackThemes)
       : Promise.resolve(fallbackThemes);
-    void Promise.all([window.piDesktop.getSettings(), themesPromise]).then(([settings, themes]) => {
+    // Do not make basic UI preferences wait for Pi theme discovery. Theme
+    // scanning can touch several user/project locations and must not block the
+    // session list or the Compact sessions setting.
+    void themesPromise.then((themes) => {
       if (!active) return;
       setThemeCatalog(themes);
-      applyVisualSettings(settings, themes);
+      void settingsPromise.then((settings) => {
+        if (active) applyVisualSettings(settings, themes);
+      }).catch(() => undefined);
+    });
+    void settingsPromise.then((settings) => {
+      if (!active) return;
+      applyVisualSettings(settings, fallbackThemes);
       useUiStore.getState().setMusicPlayerEnabled(settings.musicPlayerEnabled);
       useUiStore.getState().setSendMessageWithModifier(settings.sendMessageWithModifier);
+      useUiStore.getState().setCompactSessions(settings.compactSessions);
       useUiStore.getState().setSpeech(settings.speech ?? { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null });
     }).catch((error: unknown) => {
-      // Settings or theme discovery can fail (strict-schema rejection, IPC error, …).
-      // Don't swallow it silently: log the cause and fall back to a built-in theme so
-      // the workspace stays coherent instead of sitting on the raw CSS default.
+      // Settings can fail (strict-schema rejection, IPC error, …). Do not
+      // swallow it silently: keep a usable built-in visual fallback.
       if (!active) return;
       setThemeCatalog(fallbackThemes);
       applyVisualSettings(
         { appearance: 'dark', themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', performanceMode: false, reduceMotion: false, holyShitMode: false },
         fallbackThemes,
       );
-      console.error('[Fate UI] Failed to load initial settings and themes.', error);
+      console.error('[Fate UI] Failed to load initial settings.', error);
     });
     return () => { active = false; };
   }, [projectPath, projectTrusted]);
@@ -287,6 +301,26 @@ export function App() {
     if (!('piDesktop' in window) || typeof window.piDesktop.onGoalMaxEvents !== 'function') return undefined;
     return window.piDesktop.onGoalMaxEvents((events) => applyGoalEvents(events));
   }, [applyGoalEvents]);
+
+  useEffect(() => {
+    const generation = selectTaskSession(projectPath, sessionId);
+    if (!projectPath || !sessionId || !('piDesktop' in window) || typeof window.piDesktop.getTaskList !== 'function') {
+      hydrateTask(generation, null);
+      return;
+    }
+    let active = true;
+    void window.piDesktop.getTaskList().then((list) => {
+      if (active) hydrateTask(generation, list);
+    }).catch(() => {
+      if (active) hydrateTask(generation, null);
+    });
+    return () => { active = false; };
+  }, [hydrateTask, projectPath, selectTaskSession, sessionId]);
+
+  useEffect(() => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.onTaskEvents !== 'function') return undefined;
+    return window.piDesktop.onTaskEvents((events) => applyTaskEvents(events));
+  }, [applyTaskEvents]);
 
   useEffect(() => {
     if (!('piDesktop' in window) || typeof window.piDesktop.onSpeechDownload !== 'function') return undefined;

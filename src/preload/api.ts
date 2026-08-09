@@ -56,6 +56,9 @@ import {
   navigateSessionBranchResultSchema,
   sessionListSchema,
   sessionSearchInputSchema,
+  projectPathInputSchema,
+  projectSessionListInputSchema,
+  projectDeleteSessionsResultSchema,
   speechCancelResultSchema,
   speechDownloadProgressSchema,
   speechModelInputSchema,
@@ -155,6 +158,20 @@ import {
   type GoalMaxEvent,
   type GoalMaxUpdateInput,
 } from '../shared/contracts/goalmaxxing';
+import {
+  taskCreateInputSchema,
+  taskDeleteInputSchema,
+  taskEventBatchSchema,
+  taskListSchema,
+  taskReorderInputSchema,
+  taskUpdateInputSchema,
+  type TaskCreateInput,
+  type TaskDeleteInput,
+  type TaskEvent,
+  type TaskList,
+  type TaskReorderInput,
+  type TaskUpdateInput,
+} from '../shared/contracts/tasks';
 
 export const piDesktopApi: PiDesktopApi = Object.freeze({
   async getAppInfo() {
@@ -178,12 +195,28 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     const result: unknown = await ipcRenderer.invoke(ipcChannels.projectSelect, emptyInputSchema.parse({}));
     return runtimeStateSchema.parse(result);
   },
+  async openProject(projectPath: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.projectOpenPath, projectPathInputSchema.parse({ projectPath }));
+    return runtimeStateSchema.parse(result);
+  },
+  async focusProject(projectPath: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.projectFocusPath, projectPathInputSchema.parse({ projectPath }));
+    return runtimeStateSchema.parse(result);
+  },
+  async closeProjectRuntime(projectPath: string) {
+    await ipcRenderer.invoke(ipcChannels.projectCloseRuntime, projectPathInputSchema.parse({ projectPath }));
+  },
   async selectProjectFile() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.projectSelectFile, emptyInputSchema.parse({}));
     return projectFileReferenceSchema.parse(result);
   },
   async revealProject() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.projectReveal, emptyInputSchema.parse({}));
+    return revealProjectResultSchema.parse(result);
+  },
+  async revealProjectPath(projectPath: string) {
+    const input = projectPathInputSchema.parse({ projectPath });
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.projectRevealPath, input);
     return revealProjectResultSchema.parse(result);
   },
   async readLocalImage(path: string) {
@@ -392,6 +425,35 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGoalMaxClear, emptyInputSchema.parse({}));
     return goalMaxClearResultSchema.parse(result);
   },
+  async getTaskList() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeTaskGet, emptyInputSchema.parse({}));
+    return result === null ? null : taskListSchema.parse(result);
+  },
+  async createTask(input: TaskCreateInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeTaskCreate, taskCreateInputSchema.parse(input));
+    return taskListSchema.parse(result);
+  },
+  async updateTask(input: TaskUpdateInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeTaskUpdate, taskUpdateInputSchema.parse(input));
+    return taskListSchema.parse(result);
+  },
+  async reorderTasks(input: TaskReorderInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeTaskReorder, taskReorderInputSchema.parse(input));
+    return taskListSchema.parse(result);
+  },
+  async deleteTask(input: TaskDeleteInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeTaskDelete, taskDeleteInputSchema.parse(input));
+    return taskListSchema.parse(result);
+  },
+  async clearTasks() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeTaskClear, emptyInputSchema.parse({}));
+    return taskListSchema.parse(result);
+  },
+  onTaskEvents(listener: (events: TaskEvent[]) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(taskEventBatchSchema.parse(payload));
+    ipcRenderer.on(ipcChannels.runtimeTaskEvents, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.runtimeTaskEvents, handler);
+  },
   onGoalMaxEvents(listener: (events: GoalMaxEvent[]) => void) {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(goalMaxEventBatchSchema.parse(payload));
     ipcRenderer.on(ipcChannels.runtimeGoalMaxEvents, handler);
@@ -404,6 +466,16 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async listSessions(query = '') {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeListSessions, sessionSearchInputSchema.parse({ query }));
     return sessionListSchema.parse(result);
+  },
+  async listProjectSessions(projectPath: string, query = '') {
+    const input = projectSessionListInputSchema.parse({ projectPath, query });
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.projectListSessions, input);
+    return sessionListSchema.parse(result);
+  },
+  async deleteProjectSessions(projectPath: string) {
+    const input = projectPathInputSchema.parse({ projectPath });
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.projectDeleteSessions, input);
+    return projectDeleteSessionsResultSchema.parse(result);
   },
   async switchSession(sessionId: string) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeSwitchSession, sessionIdInputSchema.parse({ sessionId }));

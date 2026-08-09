@@ -118,4 +118,57 @@ describe('preload desktop bridge', () => {
     electron.invoke.mockResolvedValueOnce({ opened: false });
     await expect(piDesktopApi.openUpdateDownload()).rejects.toThrow();
   });
+
+  it('opens a known project by path without a file dialog', async () => {
+    const state = {
+      status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 's2', sessionFile: '/sessions/s2.jsonl',
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', permissionLevel: 'read-only', messages: [], error: null,
+    };
+    electron.invoke.mockResolvedValueOnce(state);
+
+    await expect(piDesktopApi.openProject('/project')).resolves.toMatchObject({ project: { path: '/project' } });
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.projectOpenPath, { projectPath: '/project' });
+
+    electron.invoke.mockResolvedValueOnce({ ...state, status: 'not-a-status' });
+    await expect(piDesktopApi.openProject('/project')).rejects.toThrow();
+  });
+
+  it('focuses a known project path without forcing a runtime spawn in the preload contract', async () => {
+    const state = {
+      status: 'disconnected', project: { path: '/other', name: 'other', trusted: true }, sessionId: null, sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], error: null,
+    };
+    electron.invoke.mockResolvedValueOnce(state);
+    await expect(piDesktopApi.focusProject('/other')).resolves.toMatchObject({ project: { path: '/other' }, status: 'disconnected' });
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.projectFocusPath, { projectPath: '/other' });
+  });
+
+  it('closes a background project runtime before the renderer forgets it', async () => {
+    electron.invoke.mockResolvedValueOnce(undefined);
+    await expect(piDesktopApi.closeProjectRuntime('/other')).resolves.toBeUndefined();
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.projectCloseRuntime, { projectPath: '/other' });
+  });
+
+  it('reveals a validated project path through the isolated bridge', async () => {
+    electron.invoke.mockResolvedValueOnce({ opened: true });
+    await expect(piDesktopApi.revealProjectPath('/other')).resolves.toEqual({ opened: true });
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.projectRevealPath, { projectPath: '/other' });
+
+    electron.invoke.mockResolvedValueOnce({ opened: false });
+    await expect(piDesktopApi.revealProjectPath('/other')).rejects.toThrow();
+  });
+
+  it('lists another folder’s sessions from disk through the validated bridge', async () => {
+    const sessions = [{
+      id: 's1', title: 'First', firstMessage: 'hello', path: '/sessions/s1.jsonl',
+      createdAt: '2024-01-01T00:00:00.000Z', modifiedAt: '2024-01-02T00:00:00.000Z', messageCount: 3, active: false,
+    }];
+    electron.invoke.mockResolvedValueOnce(sessions);
+
+    await expect(piDesktopApi.listProjectSessions('/other', 'first')).resolves.toEqual(sessions);
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.projectListSessions, { projectPath: '/other', query: 'first' });
+
+    electron.invoke.mockResolvedValueOnce([{ ...sessions[0], messageCount: 'lots' }]);
+    await expect(piDesktopApi.listProjectSessions('/other')).rejects.toThrow();
+  });
 });

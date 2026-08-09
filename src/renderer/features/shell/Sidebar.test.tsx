@@ -5,6 +5,7 @@ import type { PiDesktopApi, RuntimeState, SessionSummary } from '../../../shared
 import { useAutomationStore } from '../../stores/automationStore';
 import { useBrowserStore } from '../../stores/browserStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
+import { useProjectStore } from '../../stores/projectStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { Sidebar } from './Sidebar';
@@ -45,7 +46,8 @@ describe('Sidebar sessions', () => {
   beforeEach(() => {
     localStorage.clear();
     useRuntimeStore.getState().setRuntime(ready());
-    useUiStore.setState({ sidebarTab: 'sessions', composerDraftRequest: null, automationOpenRequest: null, toast: null });
+    useProjectStore.setState({ projects: [], expandedByPath: {} });
+    useUiStore.setState({ sidebarTab: 'sessions', composerDraftRequest: null, automationOpenRequest: null, toast: null, compactSessions: false });
     useWorkspaceStore.setState({ projectPath: '/project', git: null });
     useAutomationStore.getState().reset();
     useBrowserStore.getState().reset();
@@ -67,7 +69,7 @@ describe('Sidebar sessions', () => {
     const user = userEvent.setup();
     render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
 
-    const create = screen.getByRole('button', { name: 'New session' });
+    const create = screen.getByRole('button', { name: 'New session in project' });
     const openSecond = screen.getByRole('button', { name: /^Second/u });
     expect(create).toBeEnabled();
     expect(openSecond).toBeEnabled();
@@ -84,7 +86,7 @@ describe('Sidebar sessions', () => {
     await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
   });
 
-  it('moves project and session creation into the Sessions search toolbar', async () => {
+  it('opens projects from the toolbar and creates sessions from each folder header', async () => {
     const state = ready();
     const selectProject = vi.fn(async () => state);
     const newSession = vi.fn(async () => state);
@@ -98,7 +100,7 @@ describe('Sidebar sessions', () => {
     expect(container.querySelector('.sidebar > .primary-button')).not.toBeInTheDocument();
     expect(container.querySelector('.sidebar > .new-session')).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'New session' }));
+    await user.click(screen.getByRole('button', { name: 'New session in project' }));
     await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
     await user.click(screen.getByRole('button', { name: 'Open project' }));
     await waitFor(() => expect(selectProject).toHaveBeenCalledOnce());
@@ -204,8 +206,14 @@ describe('Sidebar sessions', () => {
     const user = userEvent.setup();
     render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
 
-    const paths = screen.getByRole('region', { name: 'Conversation paths' });
-    expect(paths).toHaveTextContent('2 saved');
+    const paths = screen.getByRole('list', { name: 'Conversation paths' });
+    expect(paths.closest('.session-row-with-paths')).not.toBeNull();
+    expect(paths.closest('.folder-group')).toHaveClass('folder-group--active');
+    expect(paths.closest('.folder-group')).toContainElement(screen.getByRole('button', { name: 'Create an isolated Git worktree session from First' }));
+    expect(paths.previousElementSibling).toHaveClass('session-row');
+    expect(paths.querySelectorAll('.session-row--path')).toHaveLength(2);
+    expect(paths).toHaveTextContent('Active');
+    expect(paths).toHaveTextContent('Fork');
     expect(paths).toHaveTextContent('Current path');
     expect(paths).toHaveTextContent('Alternate path 1');
     expect(paths).not.toHaveTextContent(/^Branches$/u);
@@ -219,10 +227,26 @@ describe('Sidebar sessions', () => {
     expect(useUiStore.getState().toast).toMatchObject({ kind: 'success', title: 'Conversation path switched' });
   });
 
-  it('lets the collapsed Settings tooltip wrapper fill the footer rail', () => {
+  it('uses compact session density for conversation path rows too', () => {
+    useUiStore.setState({ compactSessions: true });
+    const branches = [
+      { id: 'current-leaf', parentId: 'root', depth: 1, label: 'current', preview: 'Current path', kind: 'message', active: true },
+      { id: 'alternate-leaf', parentId: 'root', depth: 2, label: 'message', preview: 'Forked path', kind: 'custom', active: false },
+    ];
+    useRuntimeStore.getState().hydrateRuntime(ready({ branches }));
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    const paths = screen.getByRole('list', { name: 'Conversation paths' });
+    expect(paths).toHaveClass('session-path-list--compact');
+    expect(paths.querySelector('.session-row--path')).toHaveClass('session-row--path');
+    expect(paths.querySelectorAll('.session-path-copy small')).toHaveLength(2);
+  });
+
+  it('keeps the Settings control as a tooltip-wrapped icon beside sidebar collapse', () => {
     const { container } = render(<Sidebar collapsed onToggle={vi.fn()} />);
     const settings = screen.getByRole('button', { name: 'Settings' });
-    expect(settings.closest('.tooltip-trigger')).toBe(container.querySelector('.sidebar-footer > .tooltip-trigger'));
+    expect(settings).toHaveClass('sidebar-settings-button');
+    expect(settings.closest('.sidebar-settings-tooltip')).toBe(container.querySelector('.sidebar-settings-tooltip'));
   });
 
   it('keeps rename and delete confirmation controls hoverable', async () => {
@@ -460,5 +484,287 @@ describe('Sidebar sessions', () => {
       text: 'Review authentication changes.', mode: 'replace', selectAll: true,
     });
     expect(useUiStore.getState().sidebarTab).toBe('sessions');
+  });
+
+  it('groups sessions under project folders and previews other folders from disk', async () => {
+    useProjectStore.setState({
+      projects: [{ path: '/project', name: 'project' }, { path: '/other', name: 'other' }],
+      expandedByPath: { '/project': true, '/other': true },
+    });
+    const otherSession = session('o1', 'Other session', false);
+    const listProjectSessions = vi.fn(async () => [otherSession]);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { listProjectSessions } as unknown as PiDesktopApi,
+    });
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'Collapse project' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Collapse other' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Second/u })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /^Other session/u })).toBeInTheDocument();
+    expect(listProjectSessions).toHaveBeenCalledWith('/other');
+  });
+
+  it('does not reserve the full sidebar height for a collapsed active folder', () => {
+    const other = { path: '/other', name: 'other' };
+    useProjectStore.setState({
+      projects: [{ path: '/project', name: 'project' }, other],
+      expandedByPath: { '/project': false, '/other': false },
+    });
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    const activeGroup = screen.getByRole('button', { name: 'Expand project' }).closest('.folder-group');
+    expect(activeGroup).toHaveClass('folder-group--active');
+    expect(activeGroup).not.toHaveClass('folder-group--expanded');
+    expect(screen.getByRole('button', { name: 'Expand other' }).closest('.folder-group')).not.toHaveClass('folder-group--active');
+  });
+
+  it('keeps active and attention sessions visible while their parent folder is collapsed', () => {
+    useRuntimeStore.getState().setRuntime(ready({
+      sessionId: 'active',
+      sessions: [
+        session('active', 'Active work', true),
+        session('running', 'Background run', false, 'running'),
+        session('unread', 'Unread result', false, 'completed'),
+        session('failed', 'Failed run', false, 'error'),
+        session('idle', 'Idle history', false),
+      ],
+    }));
+    useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }], expandedByPath: { '/project': false } });
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    const surfaced = screen.getByRole('group', { name: 'Active sessions in project' });
+    expect(surfaced).toHaveTextContent('Active work');
+    expect(surfaced).toHaveTextContent('Background run');
+    expect(surfaced).toHaveTextContent('Unread result');
+    expect(surfaced).toHaveTextContent('Failed run');
+    expect(surfaced).not.toHaveTextContent('Idle history');
+  });
+
+  it('bounds large background caches without dropping attention or the exact count', async () => {
+    useProjectStore.setState({
+      projects: [{ path: '/project', name: 'project' }, { path: '/other', name: 'other' }],
+      expandedByPath: { '/project': true, '/other': false },
+    });
+    const items = Array.from({ length: 300 }, (_value, index) => session(
+      `other-${index}`,
+      index === 299 ? 'Critical unread' : `Archived ${index}`,
+      false,
+      index === 299 ? 'completed' : undefined,
+    ));
+    const listProjectSessions = vi.fn(async () => items);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { listProjectSessions } as unknown as PiDesktopApi });
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    expect(await screen.findByRole('group', { name: 'Active sessions in other' })).toHaveTextContent('Critical unread');
+    expect(screen.getByRole('button', { name: 'other 300' })).toBeInTheDocument();
+  });
+
+  it('invalidates a pending preview request when the sidebar refreshes', async () => {
+    useProjectStore.setState({
+      projects: [{ path: '/project', name: 'project' }, { path: '/other', name: 'other' }],
+      expandedByPath: { '/project': true, '/other': true },
+    });
+    let resolveOld!: (items: SessionSummary[]) => void;
+    let resolveFresh!: (items: SessionSummary[]) => void;
+    const listProjectSessions = vi.fn()
+      .mockImplementationOnce(() => new Promise<SessionSummary[]>((resolve) => { resolveOld = resolve; }))
+      .mockImplementationOnce(() => new Promise<SessionSummary[]>((resolve) => { resolveFresh = resolve; }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { listProjectSessions } as unknown as PiDesktopApi });
+    const { rerender } = render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+    await waitFor(() => expect(listProjectSessions).toHaveBeenCalledTimes(1));
+
+    rerender(<Sidebar collapsed onToggle={vi.fn()} />);
+    rerender(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+    await waitFor(() => expect(listProjectSessions).toHaveBeenCalledTimes(2));
+    resolveFresh([session('fresh', 'Fresh preview', false)]);
+    expect(await screen.findByRole('button', { name: /^Fresh preview/u })).toBeInTheDocument();
+    resolveOld([session('old', 'Stale preview', false)]);
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Stale preview/u })).not.toBeInTheDocument());
+  });
+
+  it('loads and surfaces active or unread sessions from a collapsed background folder', async () => {
+    useProjectStore.setState({
+      projects: [{ path: '/project', name: 'project' }, { path: '/other', name: 'other' }],
+      expandedByPath: { '/project': true, '/other': false },
+    });
+    const listProjectSessions = vi.fn(async () => [
+      session('other-active', 'Other active', true),
+      session('other-unread', 'Other unread', false, 'completed'),
+      session('other-idle', 'Other idle', false),
+    ]);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { listProjectSessions } as unknown as PiDesktopApi });
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    const surfaced = await screen.findByRole('group', { name: 'Active sessions in other' });
+    expect(listProjectSessions).toHaveBeenCalledWith('/other');
+    expect(surfaced).toHaveTextContent('Other active');
+    expect(surfaced).toHaveTextContent('Other unread');
+    expect(surfaced).not.toHaveTextContent('Other idle');
+  });
+
+  it('opens the active folder and reveals its sessions when its name is clicked', async () => {
+    useProjectStore.setState({
+      projects: [{ path: '/project', name: 'project' }],
+      expandedByPath: { '/project': false },
+    });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    const folder = screen.getByRole('button', { name: 'project 2' });
+    expect(folder).toBeEnabled();
+    await user.click(folder);
+
+    expect(screen.getByRole('button', { name: 'Collapse project' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^First/u })).toBeInTheDocument();
+  });
+
+  it('renders compact one-line rows with a per-session actions menu', async () => {
+    useUiStore.setState({ compactSessions: true });
+    const switchSession = vi.fn(async () => ready());
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { switchSession } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    expect(screen.getAllByRole('button', { name: /Actions for /u }).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/messages · updated/u)).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Actions for Second' }));
+    expect(await screen.findByRole('menuitem', { name: 'Clone Second' })).toBeInTheDocument();
+  });
+
+  it('focuses a foreign folder without opening a runtime when the lazy bridge is available', async () => {
+    const other = { path: '/other', name: 'other' };
+    useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }, other], expandedByPath: { '/project': true, '/other': false } });
+    const focused = ready({ status: 'disconnected', project: { ...other, trusted: true }, sessionId: null, sessions: [] });
+    const focusProject = vi.fn(async () => focused);
+    const openProject = vi.fn(async () => ready({ project: { ...other, trusted: true } }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { focusProject, openProject } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /^other$/u }));
+    await waitFor(() => expect(focusProject).toHaveBeenCalledWith('/other'));
+    expect(openProject).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().runtime.project?.path).toBe('/other');
+  });
+
+  it('closes a background runtime before forgetting its folder', async () => {
+    const other = { path: '/other', name: 'other' };
+    useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }, other], expandedByPath: { '/project': true, '/other': false } });
+    const closeProjectRuntime = vi.fn(async () => undefined);
+    const listProjectSessions = vi.fn(async () => []);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { closeProjectRuntime, listProjectSessions } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Actions for other' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Forget folder' }));
+    await waitFor(() => expect(closeProjectRuntime).toHaveBeenCalledWith('/other'));
+    await waitFor(() => expect(useProjectStore.getState().projects.map((project) => project.path)).toEqual(['/project']));
+  });
+
+  it('keeps a folder visible when its runtime cannot be closed', async () => {
+    const other = { path: '/other', name: 'other' };
+    useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }, other], expandedByPath: { '/project': true, '/other': false } });
+    const closeProjectRuntime = vi.fn(async () => { throw new Error('still busy'); });
+    const listProjectSessions = vi.fn(async () => []);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { closeProjectRuntime, listProjectSessions } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Actions for other' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Forget folder' }));
+    await waitFor(() => expect(useUiStore.getState().toast).toMatchObject({ kind: 'error', title: 'Could not forget folder' }));
+    expect(useProjectStore.getState().projects.map((project) => project.path)).toEqual(['/project', '/other']);
+  });
+
+  it('promotes a focused disk preview to a live runtime before opening its session', async () => {
+    const other = { path: '/other', name: 'other', trusted: true };
+    const target = session('other-session', 'Other session', true);
+    useRuntimeStore.getState().setRuntime(ready({ status: 'disconnected', project: other, sessionId: null, sessionFile: null, sessions: [target] }));
+    useProjectStore.setState({ projects: [other], expandedByPath: { '/other': true } });
+    const opened = ready({ project: other, sessionId: 'default', sessions: [session('default', 'Default', true), { ...target, active: false }] });
+    const switched = ready({ project: other, sessionId: target.id, sessions: [{ ...target, active: true }] });
+    const openProject = vi.fn(async () => opened);
+    const switchSession = vi.fn(async () => switched);
+    const listProjectSessions = vi.fn(async () => [target]);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { openProject, switchSession, listProjectSessions } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /^Other session/u }));
+    await waitFor(() => expect(openProject).toHaveBeenCalledWith('/other'));
+    await waitFor(() => expect(switchSession).toHaveBeenCalledWith(target.id));
+    expect(useRuntimeStore.getState().runtime.sessionId).toBe(target.id);
+  });
+
+  it('searches a focused disk preview through the project-scoped listing API', async () => {
+    const other = { path: '/other', name: 'other', trusted: true };
+    const target = session('match', 'Matching preview', false);
+    useRuntimeStore.getState().setRuntime(ready({ status: 'disconnected', project: other, sessionId: null, sessionFile: null, sessions: [session('cached', 'Cached preview', true)] }));
+    useProjectStore.setState({ projects: [other], expandedByPath: { '/other': true } });
+    const listProjectSessions = vi.fn(async () => [target]);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { listProjectSessions } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.type(screen.getByRole('searchbox', { name: 'Search sessions' }), 'match');
+    await waitFor(() => expect(listProjectSessions).toHaveBeenCalledWith('/other', 'match'));
+    expect(screen.getByRole('button', { name: /^Matching preview/u })).toBeInTheDocument();
+  });
+
+  it('opens a foreign preview session without reordering folders or painting an intermediate session', async () => {
+    const other = { path: '/other', name: 'other' };
+    useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }, other], expandedByPath: { '/project': true, '/other': true } });
+    const target = session('other-session', 'Other session', false, 'running');
+    const opened = ready({ project: { ...other, trusted: true }, sessionId: 'other-default', sessions: [session('other-default', 'Default', true), target] });
+    const switched = ready({ project: { ...other, trusted: true }, sessionId: target.id, sessions: [session('other-default', 'Default', false), session(target.id, target.title, true, 'running')] });
+    let finishSwitch!: (state: RuntimeState) => void;
+    const openProject = vi.fn(async () => opened);
+    const switchSession = vi.fn(() => new Promise<RuntimeState>((resolve) => { finishSwitch = resolve; }));
+    const listProjectSessions = vi.fn(async () => [target]);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { openProject, switchSession, listProjectSessions } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    const { container } = render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    expect(await screen.findByRole('img', { name: 'Session running' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^Other session/u }));
+    await waitFor(() => expect(openProject).toHaveBeenCalledWith('/other'));
+    await waitFor(() => expect(switchSession).toHaveBeenCalledWith(target.id));
+    expect(useRuntimeStore.getState().runtime.project?.path).toBe('/project');
+    expect(useRuntimeStore.getState().runtime.sessionId).toBe('s1');
+
+    finishSwitch(switched);
+    await waitFor(() => expect(useRuntimeStore.getState().runtime.sessionId).toBe(target.id));
+    expect(useProjectStore.getState().projects.map((project) => project.path)).toEqual(['/project', '/other']);
+    const folderButtons = [...container.querySelectorAll<HTMLElement>('.folder-open')];
+    expect(folderButtons.map((button) => button.querySelector('.folder-name')?.textContent)).toEqual(['project', 'other']);
+    expect(folderButtons[0]).not.toHaveAttribute('aria-current');
+    expect(folderButtons[1]).toHaveAttribute('aria-current', 'true');
+    expect(container.querySelector('.folder-group--active .folder-name')).toHaveTextContent('other');
+  });
+
+  it('applies the returned state when creating a session in a foreign folder', async () => {
+    const other = { path: '/other', name: 'other' };
+    useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }, other], expandedByPath: { '/project': true, '/other': true } });
+    const opened = ready({ project: { ...other, trusted: true }, sessionId: 'other-default', sessions: [session('other-default', 'Default', true)] });
+    const created = ready({ project: { ...other, trusted: true }, sessionId: 'other-new', sessions: [session('other-new', 'New session', true)] });
+    const openProject = vi.fn(async () => opened);
+    const newSession = vi.fn(async () => created);
+    const listProjectSessions = vi.fn(async () => []);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { openProject, newSession, listProjectSessions } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'New session in other' }));
+    await waitFor(() => expect(openProject).toHaveBeenCalledWith('/other'));
+    await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+    expect(useRuntimeStore.getState().runtime.project?.path).toBe('/other');
+    expect(useRuntimeStore.getState().runtime.sessionId).toBe('other-new');
   });
 });

@@ -62,6 +62,9 @@ import {
   navigateSessionBranchResultSchema,
   sessionListSchema,
   sessionSearchInputSchema,
+  projectPathInputSchema,
+  projectSessionListInputSchema,
+  projectDeleteSessionsResultSchema,
   speechCancelResultSchema,
   speechDownloadProgressSchema,
   speechModelInputSchema,
@@ -84,7 +87,9 @@ import {
   windowControlInputSchema,
   windowStateSchema,
   type AppInfo,
+  type ProjectState,
   type RuntimeImage,
+  type RuntimeState,
 } from '../../shared/contracts/ipc';
 import { agentTeamControlInputSchema } from '../../shared/contracts/multiAgent';
 import {
@@ -105,6 +110,15 @@ import {
   goalMaxUpdateInputSchema,
   type GoalMaxEvent,
 } from '../../shared/contracts/goalmaxxing';
+import {
+  taskCreateInputSchema,
+  taskDeleteInputSchema,
+  taskEventBatchSchema,
+  taskListSchema,
+  taskReorderInputSchema,
+  taskUpdateInputSchema,
+  type TaskEvent,
+} from '../../shared/contracts/tasks';
 import { normalizeError, PiDesktopError } from '../pi/errors';
 import { encodedImageSize, MAX_PROMPT_IMAGE_BYTES, MAX_PROMPT_IMAGE_DIMENSION, MAX_PROMPT_IMAGE_TOTAL_PIXELS } from '../pi/PiPromptImages';
 import type { FilesystemService } from '../files/FilesystemService';
@@ -183,7 +197,9 @@ export interface IpcServices {
 }
 
 interface ProjectActivationServices {
-  runtime: Pick<PiRuntimeService, 'getState' | 'openProject' | 'closeProject'>;
+  runtime: Pick<PiRuntimeService, 'getState' | 'openProject' | 'closeProject'> & {
+    focusProject?: (project: ProjectState) => Promise<RuntimeState>;
+  };
   files: Pick<FilesystemService, 'getRootOrNull' | 'setRoot' | 'clearRoot'>;
   settings: { load: () => Promise<Pick<Awaited<ReturnType<SettingsService['load']>>, 'thinkingLevel' | 'defaultModel'> & Partial<Pick<Awaited<ReturnType<SettingsService['load']>>, 'agentTeamMode'>>> };
   terminal: Pick<TerminalService, 'disposeProjectTerminals'>;
@@ -257,10 +273,23 @@ export function createProjectPathOpener(
   queueProjectActivation = createProjectActivationQueue(),
 ) {
   return (projectPath: string, owner?: BrowserWindow) => queueProjectActivation.run(async () => {
-    assertProjectActivationIdle(activationServices.runtime, 'changing projects');
+    // Switching the focused folder is safe while another folder streams; the
+    // activation queue still serializes filesystem/runtime rewiring.
     const activation = await projects.prepareOpenPath(projectPath, owner);
     if (!activation) return runtimeStateSchema.parse(activationServices.runtime.getState());
     return runtimeStateSchema.parse(await activatePreparedProject(activation, activationServices, 'changing projects'));
+  });
+}
+
+export function createProjectPathFocuser(
+  projects: Pick<ProjectService, 'prepareOpenPath'>,
+  activationServices: ProjectActivationServices,
+  queueProjectActivation = createProjectActivationQueue(),
+) {
+  return (projectPath: string, owner?: BrowserWindow) => queueProjectActivation.run(async () => {
+    const activation = await projects.prepareOpenPath(projectPath, owner);
+    if (!activation) return runtimeStateSchema.parse(activationServices.runtime.getState());
+    return runtimeStateSchema.parse(await activatePreparedProject(activation, activationServices, 'changing projects', 'focus'));
   });
 }
 
@@ -268,12 +297,18 @@ export async function activatePreparedProject(
   activation: ProjectActivation,
   { runtime, files, settings, terminal, logs, browser }: ProjectActivationServices,
   action: string,
+  runtimeAction: 'open' | 'focus' = 'open',
 ) {
-  assertProjectActivationIdle(runtime, action);
+  // Project switches keep background Pi runs alive. Worktree/session creation
+  // remains guarded because it mutates the active project's execution context.
+  if (action !== 'changing projects') assertProjectActivationIdle(runtime, action);
   const previousProject = runtime.getState(false).project;
   const previousRoot = files.getRootOrNull();
   const defaults = await settings.load();
-  assertProjectActivationIdle(runtime, action);
+  if (action !== 'changing projects') assertProjectActivationIdle(runtime, action);
+  const activateRuntime = (project: ProjectState) => runtimeAction === 'focus' && runtime.focusProject
+    ? runtime.focusProject(project)
+    : runtime.openProject(project, { thinkingLevel: defaults.thinkingLevel, defaultModel: defaults.defaultModel, ...(defaults.agentTeamMode ? { agentTeamMode: defaults.agentTeamMode } : {}) });
   let rootAttempted = false;
   let runtimeAttempted = false;
   let activatedState: Awaited<ReturnType<PiRuntimeService['openProject']>>;
@@ -281,15 +316,20 @@ export async function activatePreparedProject(
     rootAttempted = true;
     await files.setRoot(activation.project.path);
     runtimeAttempted = true;
-    activatedState = await runtime.openProject(activation.project, { thinkingLevel: defaults.thinkingLevel, defaultModel: defaults.defaultModel, ...(defaults.agentTeamMode ? { agentTeamMode: defaults.agentTeamMode } : {}) });
+    activatedState = await activateRuntime(activation.project);
     if (activatedState.status === 'error') throw new PiDesktopError(activatedState.error ?? { code: 'PI_RUNTIME_ERROR', message: 'Pi failed to activate the project.', retryable: true });
     await activation.commit();
   } catch (error) {
     const rollbackFailures: { label: string; error: unknown }[] = [];
     if (runtimeAttempted) {
+      const closeProjectPath = (runtime as unknown as { closeProjectPath?: (projectPath: string) => Promise<void> }).closeProjectPath;
+      if (runtimeAction !== 'focus' && closeProjectPath && previousProject && activation.project.path !== previousProject.path) {
+        try { await closeProjectPath(activation.project.path); }
+        catch (closeError) { rollbackFailures.push({ label: 'new runtime cleanup', error: closeError }); }
+      }
       try {
         const restored = previousProject
-          ? await runtime.openProject(previousProject, { thinkingLevel: defaults.thinkingLevel, defaultModel: defaults.defaultModel, ...(defaults.agentTeamMode ? { agentTeamMode: defaults.agentTeamMode } : {}) })
+          ? await activateRuntime(previousProject)
           : await runtime.closeProject();
         if (restored.status === 'error') throw new PiDesktopError(restored.error ?? { code: 'PI_RUNTIME_ERROR', message: 'Pi failed to restore the previous project.', retryable: true });
       } catch (rollbackError) {
@@ -367,6 +407,27 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
       goalEventTimer.unref?.();
     }
   });
+  let pendingTaskEvents: TaskEvent[] = [];
+  let taskEventTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushTaskEvents = () => {
+    if (taskEventTimer) clearTimeout(taskEventTimer);
+    taskEventTimer = null;
+    if (pendingTaskEvents.length === 0) return;
+    const batch = taskEventBatchSchema.parse(pendingTaskEvents.splice(0, 50));
+    for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeTaskEvents, batch);
+    if (pendingTaskEvents.length > 0) {
+      taskEventTimer = setTimeout(flushTaskEvents, 0);
+      taskEventTimer.unref?.();
+    }
+  };
+  runtime.setTaskEventSink((event) => {
+    pendingTaskEvents.push(event);
+    if (pendingTaskEvents.length >= 50) flushTaskEvents();
+    else if (!taskEventTimer) {
+      taskEventTimer = setTimeout(flushTaskEvents, 16);
+      taskEventTimer.unref?.();
+    }
+  });
   terminal.setEventSink((ownerId, event) => {
     const owner = webContents.fromId(ownerId);
     if (owner && !owner.isDestroyed()) owner.send(ipcChannels.terminalEvents, terminalEventSchema.parse(event));
@@ -380,6 +441,7 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   const activationServices = { runtime, files, settings, terminal, logs, browser };
   const queueProjectActivation = createProjectActivationQueue();
   const openProjectPath = createProjectPathOpener(projects, activationServices, queueProjectActivation);
+  const focusProjectPath = createProjectPathFocuser(projects, activationServices, queueProjectActivation);
   const runRuntimeMutation = <T>(action: string, operation: () => T | Promise<T>) => queueProjectActivation.runRuntimeMutation(action, operation);
 
   handle(ipcChannels.systemGetInfo, (_event, input): AppInfo => {
@@ -640,7 +702,6 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.projectSelect, async (event, input) => {
     emptyInputSchema.parse(input);
     return queueProjectActivation.run(async () => {
-      assertProjectActivationIdle(runtime, 'changing projects');
       const activation = await projects.prepareSelect(BrowserWindow.fromWebContents(event.sender) ?? undefined);
       if (!activation) return runtimeStateSchema.parse(runtime.getState());
       return runtimeStateSchema.parse(await activatePreparedProject(activation, activationServices, 'changing projects'));
@@ -654,6 +715,38 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.projectReveal, async (_event, input) => {
     emptyInputSchema.parse(input);
     return revealProjectResultSchema.parse(await projects.revealCurrent());
+  });
+  handle(ipcChannels.projectRevealPath, async (_event, input) => {
+    const parsed = projectPathInputSchema.parse(input);
+    return revealProjectResultSchema.parse(await projects.revealPath(parsed.projectPath));
+  });
+  handle(ipcChannels.projectOpenPath, async (event, input) => {
+    const parsed = projectPathInputSchema.parse(input);
+    return runtimeStateSchema.parse(await openProjectPath(parsed.projectPath, BrowserWindow.fromWebContents(event.sender) ?? undefined));
+  });
+  handle(ipcChannels.projectFocusPath, async (event, input) => {
+    const parsed = projectPathInputSchema.parse(input);
+    return runtimeStateSchema.parse(await focusProjectPath(parsed.projectPath, BrowserWindow.fromWebContents(event.sender) ?? undefined));
+  });
+  handle(ipcChannels.projectCloseRuntime, async (_event, input) => {
+    const parsed = projectPathInputSchema.parse(input);
+    const canonicalPath = await projects.prepareSessionListPath(parsed.projectPath);
+    if (runtime.getState(false).project?.path === canonicalPath) {
+      throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The active project cannot be forgotten.', retryable: false });
+    }
+    const closeProjectPath = (runtime as unknown as { closeProjectPath?: (projectPath: string) => Promise<void> }).closeProjectPath;
+    if (!closeProjectPath) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Project runtime cleanup is unavailable.', retryable: true });
+    await runRuntimeMutation('forgetting this project', () => closeProjectPath(canonicalPath));
+  });
+  handle(ipcChannels.projectListSessions, async (_event, input) => {
+    const parsed = projectSessionListInputSchema.parse(input);
+    const canonicalPath = await projects.prepareSessionListPath(parsed.projectPath);
+    return sessionListSchema.parse(await runtime.listSessionsForPath(canonicalPath, parsed.query));
+  });
+  handle(ipcChannels.projectDeleteSessions, async (_event, input) => {
+    const parsed = projectPathInputSchema.parse(input);
+    const canonicalPath = await projects.prepareSessionListPath(parsed.projectPath);
+    return projectDeleteSessionsResultSchema.parse(await runtime.deleteSessionsForPath(canonicalPath));
   });
   handle(ipcChannels.imageReadLocal, async (_event, input) => {
     const parsed = localImageInputSchema.parse(input);
@@ -748,6 +841,27 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.runtimeGoalMaxClear, async (_event, input) => runRuntimeMutation('clearing a goal', async () => {
     emptyInputSchema.parse(input);
     return goalMaxClearResultSchema.parse(await runtime.clearGoalMax());
+  }));
+  handle(ipcChannels.runtimeTaskGet, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    const list = await runtime.getTaskList();
+    return list === null ? null : taskListSchema.parse(list);
+  });
+  handle(ipcChannels.runtimeTaskCreate, async (_event, input) => runRuntimeMutation('creating a task', async () => (
+    taskListSchema.parse(await runtime.createTask(taskCreateInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.runtimeTaskUpdate, async (_event, input) => runRuntimeMutation('updating a task', async () => (
+    taskListSchema.parse(await runtime.updateTask(taskUpdateInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.runtimeTaskReorder, async (_event, input) => runRuntimeMutation('reordering tasks', async () => (
+    taskListSchema.parse(await runtime.reorderTasks(taskReorderInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.runtimeTaskDelete, async (_event, input) => runRuntimeMutation('deleting a task', async () => (
+    taskListSchema.parse(await runtime.deleteTask(taskDeleteInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.runtimeTaskClear, async (_event, input) => runRuntimeMutation('clearing tasks', async () => {
+    emptyInputSchema.parse(input);
+    return taskListSchema.parse(await runtime.clearTasks());
   }));
   handle(ipcChannels.runtimeNewSession, async (_event, input) => {
     emptyInputSchema.parse(input);
@@ -997,5 +1111,5 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     return logListSchema.parse(logs.list());
   });
 
-  return { openProjectPath };
+  return { openProjectPath, focusProjectPath };
 }

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { acquireInstanceProfile, instanceUserDataPath } from './instanceProfile';
 
 describe('instance profiles', () => {
-  it('preserves the existing profile for the first process', () => {
+  it('runs as the single-instance primary when it wins the primary lock', () => {
     const base = path.resolve('profiles/fate-ui');
     const setPath = vi.fn();
     const ensureDirectory = vi.fn();
@@ -11,34 +11,54 @@ describe('instance profiles', () => {
       getPath: () => base,
       setPath,
       requestSingleInstanceLock: () => true,
-    }, ensureDirectory);
+    }, 'single', ensureDirectory);
 
-    expect(profile).toEqual({ slot: 1, userDataPath: base });
+    expect(profile).toEqual({ slot: 1, userDataPath: base, isPrimary: true, mode: 'single' });
     expect(setPath).toHaveBeenCalledWith('userData', base);
     expect(ensureDirectory).toHaveBeenCalledWith(base);
   });
 
-  it('allocates an uncapped sequence of isolated slots for concurrent processes', () => {
+  it('reports a non-primary single-instance launch so the process can forward and exit', () => {
+    const base = path.resolve('profiles/fate-ui');
+    const attemptedPaths: string[] = [];
+    const profile = acquireInstanceProfile({
+      getPath: () => base,
+      setPath: (_name, value) => { attemptedPaths.push(value); },
+      requestSingleInstanceLock: () => false,
+    }, 'single', () => undefined);
+
+    expect(profile).toEqual({ slot: 1, userDataPath: base, isPrimary: false, mode: 'single' });
+    // A secondary single-instance launch must never reach an isolated slot.
+    expect(attemptedPaths).toEqual([base]);
+  });
+
+  it('allocates an uncapped sequence of isolated slots for explicit multi-instance launches', () => {
     const base = path.resolve('profiles/fate-ui');
     const occupiedSlots = 7;
     const attemptedPaths: string[] = [];
-    let currentPath = base;
     let attempts = 0;
     const profile = acquireInstanceProfile({
       getPath: () => base,
-      setPath: (_name, value) => {
-        currentPath = value;
-        attemptedPaths.push(value);
-      },
+      setPath: (_name, value) => { attemptedPaths.push(value); },
       requestSingleInstanceLock: () => {
         attempts += 1;
         return attempts > occupiedSlots;
       },
-    }, () => undefined);
+    }, 'multi', () => undefined);
 
-    expect(profile).toEqual({ slot: 8, userDataPath: instanceUserDataPath(base, 8) });
-    expect(currentPath).toBe(profile.userDataPath);
+    expect(profile).toEqual({ slot: 8, userDataPath: instanceUserDataPath(base, 8), isPrimary: true, mode: 'multi' });
     expect(attemptedPaths).toEqual(Array.from({ length: 8 }, (_, index) => instanceUserDataPath(base, index + 1)));
+  });
+
+  it('defaults to single-instance mode', () => {
+    const base = path.resolve('profiles/fate-ui');
+    const profile = acquireInstanceProfile({
+      getPath: () => base,
+      setPath: () => undefined,
+      requestSingleInstanceLock: () => true,
+    });
+    expect(profile.mode).toBe('single');
+    expect(profile.isPrimary).toBe(true);
   });
 
   it('rejects invalid slot numbers', () => {

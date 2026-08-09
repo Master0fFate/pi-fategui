@@ -801,8 +801,13 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         );
         setSubagent(event.run);
       } else if (event.type === 'agent-team.updated') {
-        ({ agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById } = indexedAgentTeams([event.team]));
-        runtime = { ...runtime, agentTeams: [event.team] };
+        const teams = [...(runtime.agentTeams ?? [])];
+        const teamIndex = teams.findIndex((team) => team.id === event.team.id);
+        if (teamIndex >= 0) teams[teamIndex] = event.team;
+        else teams.push(event.team);
+        teams.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+        ({ agentTeamsById, agentTeamOrder, agentNodesById, agentTasksById, agentEnvelopesById } = indexedAgentTeams(teams));
+        runtime = { ...runtime, agentTeams: teams };
       } else if (event.type === 'subagent.workflow.updated') {
         const workflows = [...(runtime.subagentWorkflows ?? [])];
         const index = workflows.findIndex((workflow) => workflow.id === event.workflow.id);

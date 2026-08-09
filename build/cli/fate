@@ -10,5 +10,20 @@ while [ -L "$self" ]; do
   esac
 done
 contents=$(CDPATH= cd -- "$(dirname -- "$self")/../.." && pwd)
-project=${1:-$PWD}
-exec "$contents/MacOS/fate-ui" --project "$project"
+
+# Parse arguments: --new-instance requests a fully isolated second process;
+# the first positional argument is the project folder (default: current dir).
+project=""
+new_instance=""
+for arg in "$@"; do
+  case "$arg" in
+    --new-instance) new_instance=1 ;;
+    --project|--*) ;;
+    *) [ -z "$project" ] && project="$arg" ;;
+  esac
+done
+[ -z "$project" ] && project="$PWD"
+
+set -- --project "$project"
+[ "$new_instance" ] && set -- "$@" --new-instance
+exec "$contents/MacOS/fate-ui" "$@"

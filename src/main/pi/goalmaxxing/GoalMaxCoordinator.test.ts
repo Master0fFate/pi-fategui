@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { GoalMaxEvent } from '../../../shared/contracts/goalmaxxing';
+import type { TaskEvent } from '../../../shared/contracts/tasks';
 import { GoalMaxCoordinator, type GoalMaxCoordinatorHost, type GoalMaxRuntimeSnapshot } from './GoalMaxCoordinator';
 import { InMemoryGoalMaxRepository } from './GoalMaxRepository';
+import { TaskService } from '../tasks/TaskService';
+import { InMemoryTaskRepository } from '../tasks/TaskRepository';
 
 function fixture() {
   const events: GoalMaxEvent[] = [];
@@ -24,6 +27,19 @@ function fixture() {
   const progress = { capture: vi.fn(async () => ({ fingerprint: 'baseline', changedFileCount: 0, paths: [] as string[], repository: true })) };
   const coordinator = new GoalMaxCoordinator(host, repository, progress as never);
   return { coordinator, host, runtime, repository, events, progress };
+}
+
+async function addCompletionEvidence(coordinator: GoalMaxCoordinator, outcome: 'progress' | 'completion-candidate' = 'progress'): Promise<void> {
+  coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'completion-test', toolName: 'bash', args: { command: 'pnpm test' } } as never);
+  coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'completion-test', toolName: 'bash', result: 'passed', isError: false } as never);
+  const state = (await coordinator.statusForModel('session-1')).details;
+  const evidence = state.evidence.findLast((item) => item.kind === 'test' && item.current && item.exitCode === 0);
+  if (!evidence) throw new Error('Expected current test evidence.');
+  await coordinator.report('session-1', {
+    outcome,
+    summary: outcome === 'completion-candidate' ? 'Ready for verification' : 'Current test evidence recorded.',
+    criterionUpdates: state.criteria.filter((criterion) => criterion.required).map((criterion) => ({ criterionId: criterion.id, status: 'satisfied', evidenceIds: [evidence.id] })),
+  });
 }
 
 describe('GoalMax coordinator', () => {
@@ -106,7 +122,7 @@ describe('GoalMax coordinator', () => {
   it('requires the verification gate before completion', async () => {
     const { coordinator, host, runtime } = fixture();
     await coordinator.create({ objective: 'Produce the requested result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
-    await coordinator.report('session-1', { outcome: 'completion-candidate', summary: 'Ready for verification' });
+    await addCompletionEvidence(coordinator, 'completion-candidate');
     runtime.idle = true; runtime.streaming = false;
     coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
     await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.status).toBe('completed'));
@@ -149,6 +165,7 @@ describe('GoalMax coordinator', () => {
     coordinator.syncChildren('session-1', [child]);
     await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.executionState).toBe('running-children'));
 
+    await addCompletionEvidence(coordinator);
     await coordinator.control({ action: 'verify' });
     expect(host.verifyGoal).not.toHaveBeenCalled();
     runtime.activeChildren = 0; runtime.children = [];
@@ -203,7 +220,7 @@ describe('GoalMax coordinator', () => {
     coordinator.observeSessionEvent('session-1', { type: 'agent_start' } as never);
     coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'probe-1', toolName: 'bash', args: { command: 'rg missing-symbol src' } } as never);
     coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'probe-1', toolName: 'bash', result: 'no matches', isError: true } as never);
-    await coordinator.report('session-1', { outcome: 'completion-candidate', summary: 'The debug pass is complete.' });
+    await addCompletionEvidence(coordinator, 'completion-candidate');
     runtime.idle = true; runtime.streaming = false;
     coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
 
@@ -346,7 +363,7 @@ describe('GoalMax coordinator', () => {
     const { coordinator, host, runtime } = fixture();
     vi.mocked(host.verifyGoal).mockRejectedValueOnce(new Error(`verifier unavailable ${'x'.repeat(5_000)}`));
     await coordinator.create({ objective: 'Require independent evidence', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
-    await coordinator.report('session-1', { outcome: 'completion-candidate', summary: 'Ready for verification' });
+    await addCompletionEvidence(coordinator, 'completion-candidate');
     runtime.idle = true; runtime.streaming = false;
     coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
 
@@ -369,7 +386,7 @@ describe('GoalMax coordinator', () => {
       infrastructureFailure: 'timeout',
     });
     await coordinator.create({ objective: 'Bound independent verification', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
-    await coordinator.report('session-1', { outcome: 'completion-candidate', summary: 'Ready for bounded verification' });
+    await addCompletionEvidence(coordinator, 'completion-candidate');
     runtime.idle = true; runtime.streaming = false;
     coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
 
@@ -582,5 +599,40 @@ describe('GoalMax coordinator', () => {
     await expect(coordinator.clear()).resolves.toMatchObject({ cleared: true });
     expect(repository.archives).toHaveLength(1);
     await expect(repository.load('/project', 'session-1')).resolves.toBeNull();
+  });
+
+  it('Gate A: verification at normal level fails closed without current non-verifier evidence per criterion', async () => {
+    const { coordinator } = fixture();
+    await coordinator.create({ objective: 'Implement and verify the result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    const before = (await coordinator.statusForModel('session-1')).details;
+    await coordinator.control({ action: 'verify' });
+    const after = await coordinator.statusForModel('session-1');
+    // The goal must NOT complete: required criteria lack current non-verifier evidence.
+    expect(after.details.status).not.toBe('completed');
+    // A deterministic finding must have been added as a failed criterion.
+    expect(after.details.criteria.some((criterion) => criterion.status === 'failed' && /non-verifier evidence/iu.test(criterion.title))).toBe(true);
+    void before;
+  });
+
+  it('Gate A: syncs required criteria into the canonical task list and keeps it unverified', async () => {
+    const { coordinator } = fixture();
+    const taskEvents: TaskEvent[] = [];
+    const taskRepository = new InMemoryTaskRepository();
+    const tasks = new TaskService({ emit: (event) => { taskEvents.push(event); } }, taskRepository);
+    const bound = new GoalMaxCoordinator(
+      { runtime: vi.fn(() => ({ projectPath: '/project', sessionId: 'session-1', projectTrusted: true, permissionLevel: 'edit' as const, idle: true, streaming: false, queuedUserMessages: 0, tokensUsed: 0, activeChildren: 0, children: [] })),
+        startGoal: vi.fn(async () => true), continueGoal: vi.fn(async () => undefined), steerGoal: vi.fn(async () => undefined), abortGoal: vi.fn(async () => undefined),
+        verifyGoal: vi.fn(async () => ({ verdict: 'pass' as const, report: 'VERDICT: pass' })), diagnoseGoal: vi.fn(async () => ({ report: 'ok' })), persistSessionEvent: vi.fn(), emit: vi.fn() },
+      new InMemoryGoalMaxRepository(),
+      { capture: vi.fn(async () => ({ fingerprint: 'base', changedFileCount: 0, paths: [], repository: true })) } as never,
+      tasks,
+    );
+    await bound.create({ objective: 'Implement and verify the result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await vi.waitFor(() => expect(tasks.get('/project', 'session-1')).not.toBeNull());
+    const list = tasks.get('/project', 'session-1');
+    expect(list!.goalId).toBeTruthy();
+    expect(list!.tasks.some((task) => task.source === 'goalmax' && task.required)).toBe(true);
+    expect(list!.tasks.every((task) => !task.verified)).toBe(true);
+    await bound.dispose();
   });
 });

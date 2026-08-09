@@ -9,7 +9,12 @@ import {
   LoaderCircle,
   MessagesSquare,
   OctagonX,
+  Pause,
+  Play,
+  Plus,
+  RotateCcw,
   Target,
+  Trash2,
   Wrench,
   X,
 } from 'lucide-react';
@@ -28,6 +33,7 @@ import type {
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AssistantMarkdown, MessageImages } from '../chat/RichMessageContent';
 import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
+import { InlineConfirm } from '../../components/InlineConfirm';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
@@ -85,6 +91,10 @@ function statusLabel(status: SubagentStatus): string {
     case 'skipped': return 'Skipped';
     case 'interrupted': return 'Interrupted';
   }
+}
+
+function thinkingLabel(level: string): string {
+  return level === 'xhigh' ? 'Extra high' : level.charAt(0).toUpperCase() + level.slice(1);
 }
 
 function StatusIcon({ status, size = 13 }: { status: SubagentStatus; size?: number }) {
@@ -376,15 +386,15 @@ function SubagentChatPreview({ runId, teamSelection, goalLink, height }: { runId
   );
 }
 
-type AgentSessionRowView = SubagentControlTarget & Pick<SubagentRun, 'agentSource' | 'agentName' | 'model'>;
+type AgentSessionRowView = SubagentControlTarget & Pick<SubagentRun, 'agentSource' | 'agentName' | 'model' | 'thinkingLevel'>;
 
 function AgentSessionRowById({ runId, goalLink }: { runId: string; goalLink?: GoalMaxAgentLink | undefined }) {
   const selected = useUiStore((state) => state.selectedAgent?.kind === 'subagent' && state.selectedAgent.runId === runId);
   const run = useRuntimeStore(useShallow((state): AgentSessionRowView | null => {
     const current = state.subagentsById[runId];
     if (!current) return null;
-    const { id, role, task, handle, displayName, status, mailbox, agentSource, agentName, model } = current;
-    return { id, role, task, handle, displayName, status, mailbox, agentSource, agentName, model };
+    const { id, role, task, handle, displayName, status, mailbox, agentSource, agentName, model, thinkingLevel } = current;
+    return { id, role, task, handle, displayName, status, mailbox, agentSource, agentName, model, thinkingLevel };
   }));
   return run ? <AgentSessionRow run={run} goalLink={goalLink} selected={selected} /> : null;
 }
@@ -407,7 +417,7 @@ function AgentSessionRow({ run, goalLink, selected }: { run: AgentSessionRowView
           <small>{run.task}</small>
           <span className="subagent-session-meta">
             <em>{statusLabel(run.status)}{run.mailbox.state === 'available' ? ' · mailbox' : ''}</em>
-            <small title={`${run.agentSource}/${run.agentName}`}>{run.agentName} profile · {run.model.name}</small>
+            <small title={`${run.agentSource}/${run.agentName}`}>{run.agentName} profile · {run.model.name} · {thinkingLabel(run.thinkingLevel)}</small>
           </span>
         </span>
         <ChevronRight className="subagent-open-chevron" size={13} aria-hidden="true" />
@@ -559,12 +569,68 @@ function AgentTeamNodeRow({ team, node, goalLinks }: { team: AgentTeam; node: Ag
           <span className="subagent-session-copy">
             <span><strong>{node.displayName}</strong><code>@{node.handle}</code>{goalLinks.get(node.id) ? <GoalMaxAgentMarker link={goalLinks.get(node.id)!} /> : null}</span>
             <small>{task?.summary ?? node.path}</small>
-            <span className="subagent-session-meta"><em>{node.status}{node.writer ? ' · writer' : ''}{node.unreadMessages ? ` · ${node.unreadMessages} unread` : ''}</em><small>{node.agentName} profile · {node.model.name}</small></span>
+            <span className="subagent-session-meta"><em>{node.status}{node.writer ? ' · writer' : ''}{node.unreadMessages ? ` · ${node.unreadMessages} unread` : ''}</em><small>{node.agentName} profile · {node.model.name} · {thinkingLabel(node.thinkingLevel)}</small></span>
           </span>
         </button>
-        <AgentTeamControls node={node} />
+        <AgentTeamControls teamId={team.id} node={node} />
       </article>
       {children.length ? <div className="agent-tree-children" role="group">{children.map((child) => <AgentTeamNodeRow key={child.id} team={team} node={child} goalLinks={goalLinks} />)}</div> : null}
+    </div>
+  );
+}
+
+type TeamConfirmation = {
+  action: 'closeTeam' | 'resetTeam' | 'deleteTeam';
+  title: string;
+  message: string;
+  confirmLabel: string;
+  force?: boolean;
+};
+
+function AgentTeamLifecycleControls({ team }: { team: AgentTeam }) {
+  const [pending, setPending] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<TeamConfirmation | null>(null);
+  const run = async (input: Parameters<typeof window.piDesktop.controlAgentTeam>[0]) => {
+    if (pending) return;
+    const origin = useRuntimeStore.getState().runtime;
+    setPending(input.action);
+    try {
+      const state = await window.piDesktop.controlAgentTeam(input);
+      const current = useRuntimeStore.getState().runtime;
+      if (current.sessionId === origin.sessionId && current.project?.path === origin.project?.path) useRuntimeStore.getState().setRuntime(state);
+    } catch (error) {
+      useUiStore.getState().showToast({ kind: 'error', title: `${team.name} control failed`, message: error instanceof Error ? error.message : `Team ${team.id} could not be changed.` });
+    } finally { setPending(null); }
+  };
+  const active = team.activeTurns > 0;
+  return (
+    <div className="agent-team-lifecycle-actions" aria-label={`${team.name} lifecycle controls`}>
+      {!team.selected && team.status !== 'released' ? <button type="button" disabled={Boolean(pending)} title="Select this team for root agent tools" aria-label={`Select team ${team.name}`} onClick={() => void run({ action: 'selectTeam', teamId: team.id, operationId: crypto.randomUUID() })}><Check size={12} /></button> : null}
+      {team.status === 'active' || team.status === 'restored-interrupted' ? <button type="button" disabled={Boolean(pending)} title="Pause new work" aria-label={`Pause team ${team.name}`} onClick={() => void run({ action: 'pauseTeam', teamId: team.id, operationId: crypto.randomUUID() })}><Pause size={12} /></button> : null}
+      {team.status === 'paused' ? <button type="button" disabled={Boolean(pending)} title="Resume new work" aria-label={`Resume team ${team.name}`} onClick={() => void run({ action: 'resumeTeam', teamId: team.id, operationId: crypto.randomUUID() })}><Play size={12} /></button> : null}
+      {team.status !== 'closed' && team.status !== 'released' ? <button type="button" disabled={Boolean(pending)} title="Close team and preserve history" aria-label={`Close team ${team.name}`} onClick={() => {
+        const force = active;
+        if (force) {
+          setConfirmation({ action: 'closeTeam', force, title: `Close ${team.name}?`, message: `${team.activeTurns} active turn(s) will be cancelled. Team history stays available.`, confirmLabel: 'Close team' });
+          return;
+        }
+        void run({ action: 'closeTeam', teamId: team.id, force, operationId: crypto.randomUUID() });
+      }}><X size={12} /></button> : null}
+      {team.status !== 'released' ? <button type="button" disabled={Boolean(pending)} title="Reset team history and runtime" aria-label={`Reset team ${team.name}`} onClick={() => setConfirmation({ action: 'resetTeam', force: active, title: `Reset ${team.name}?`, message: 'Team tasks and messages will be cleared.', confirmLabel: 'Reset team' })}><RotateCcw size={12} /></button> : null}
+      {(team.status === 'closed' || team.status === 'released') ? <button type="button" className="subagent-control-danger" disabled={Boolean(pending)} title="Delete team history after safe cleanup" aria-label={`Delete team history for ${team.name}`} onClick={() => setConfirmation({ action: 'deleteTeam', title: `Delete ${team.name} history?`, message: 'This cannot be undone.', confirmLabel: 'Delete history' })}><Trash2 size={12} /></button> : null}
+      {pending ? <LoaderCircle className="tool-spinner" size={12} aria-label={`${pending} pending`} /> : null}
+      {confirmation ? <InlineConfirm
+        title={confirmation.title}
+        message={confirmation.message}
+        confirmLabel={confirmation.confirmLabel}
+        busy={Boolean(pending)}
+        onCancel={() => setConfirmation(null)}
+        onConfirm={() => {
+          const current = confirmation;
+          setConfirmation(null);
+          void run({ action: current.action, teamId: team.id, ...(current.force === undefined ? {} : { force: current.force }), operationId: crypto.randomUUID() });
+        }}
+      /> : null}
     </div>
   );
 }
@@ -594,16 +660,31 @@ function AgentTeamBranch({ team, goalLinks }: { team: AgentTeam; goalLinks: Read
   }).sort((left, right) => left.path.localeCompare(right.path)) ?? [];
   const childrenId = `agent-team-children-${team.id}`;
   return (
-    <section ref={branchRef} className="agent-tree-branch" data-status={team.status} data-expanded={expanded} aria-label={`Agent Team V2 ${team.id}`} tabIndex={-1} data-flight-focus={focused || undefined}>
-      <button className="agent-tree-branch-heading agent-tree-branch-toggle" type="button" aria-expanded={expanded} aria-controls={childrenId} onClick={() => setExpanded((current) => !current)}>
-        <span className="agent-tree-branch-mark"><GitBranch size={12} /></span>
-        <span className="agent-tree-branch-copy"><strong>Agent Team V2</strong><small>{team.nodes.length - 1}/{team.limits.maxNodes} nodes · {team.activeTurns}/{team.limits.maxActiveTurns} active{team.writerNodeId ? ' · writer leased' : ''}</small></span>
+    <section ref={branchRef} className="agent-tree-branch" data-status={team.status} data-expanded={expanded} aria-label={`${team.name} Agent Team ${team.id}`} tabIndex={-1} data-flight-focus={focused || undefined}>
+      <div className="agent-tree-branch-heading">
+        <button className="agent-tree-branch-toggle" type="button" aria-expanded={expanded} aria-controls={childrenId} onClick={() => setExpanded((current) => !current)}>
+          <span className="agent-tree-branch-mark"><GitBranch size={12} /></span>
+          <span className="agent-tree-branch-copy"><strong>{team.name}{team.selected ? ' · Current' : ''}</strong><small>{team.nodes.filter((node) => node.depth > 0 && node.status !== 'released').length}/{team.limits.maxNodes} nodes · {team.activeTurns}/{team.limits.maxActiveTurns} active{team.writerNodeId ? ' · writer leased' : ''}</small></span>
+          <ChevronRight className="agent-tree-branch-chevron" size={13} aria-hidden="true" />
+        </button>
         <span className="agent-tree-branch-state">{team.status}</span>
-        <ChevronRight className="agent-tree-branch-chevron" size={13} aria-hidden="true" />
-      </button>
+        <AgentTeamLifecycleControls team={team} />
+      </div>
       {expanded ? <div id={childrenId} className="agent-tree-children" role="tree">{children.map((node) => <AgentTeamNodeRow key={node.id} team={team} node={node} goalLinks={goalLinks} />)}</div> : null}
     </section>
   );
+}
+
+function CreateAgentTeamButton() {
+  const [pending, setPending] = useState(false);
+  return <button type="button" className="agent-team-create" disabled={pending} title="Create a new independent Agent Team" aria-label="Create Agent Team" onClick={() => {
+    setPending(true);
+    const origin = useRuntimeStore.getState().runtime;
+    void window.piDesktop.controlAgentTeam({ action: 'createTeam', operationId: crypto.randomUUID() }).then((state) => {
+      const current = useRuntimeStore.getState().runtime;
+      if (current.sessionId === origin.sessionId && current.project?.path === origin.project?.path) useRuntimeStore.getState().setRuntime(state);
+    }).catch((error: unknown) => useUiStore.getState().showToast({ kind: 'error', title: 'Create team failed', message: error instanceof Error ? error.message : 'The Agent Team could not be created.' })).finally(() => setPending(false));
+  }}>{pending ? <LoaderCircle className="tool-spinner" size={13} /> : <Plus size={13} />}<span>New team</span></button>;
 }
 
 export function SubagentSessionsPanel() {
@@ -697,6 +778,7 @@ export function SubagentSessionsPanel() {
         <span className="agent-tree-root-copy"><strong>Main agent</strong><small>{activeSession?.title ?? runtime.objective ?? 'Current Pi session'}</small></span>
         {hasChildren ? <span className="agent-tree-overview">{totalAgents + teamAgents} {totalAgents + teamAgents === 1 ? 'agent' : 'agents'}{activeAgents + teamActive ? ` · ${activeAgents + teamActive} active` : ''}</span> : null}
         {goalProjection.hasGoal ? <span className="goalmax-root-marker" title="Main agent is linked to the current goal" aria-label="Main agent linked to GoalMax"><Target size={11} /></span> : null}
+        <CreateAgentTeamButton />
       </div>
       {!hasChildren ? (
         <div className="inspector-empty subagent-empty"><MessagesSquare size={24} /><strong>No child sessions</strong><p>Managed child sessions and workflow graphs appear here when the parent launches them.</p></div>

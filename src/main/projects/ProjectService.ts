@@ -92,6 +92,45 @@ export class ProjectService {
     return this.activation({ path: canonical, name: path.basename(canonical) || canonical, trusted });
   }
 
+  /** Return the last project only when Fate UI already trusts it. */
+  async lastTrustedProjectPath(): Promise<string | null> {
+    const recent = await this.lastProjectPath();
+    if (!recent) return null;
+    await this.loadTrustedProjects();
+    return this.trustedProjects.has(recent) ? recent : null;
+  }
+
+  /**
+   * Resolve a path for read-only session previews. Previewing is allowed for
+   * the active project and folders Fate has already trusted, but never for an
+   * arbitrary local path supplied by the renderer.
+   */
+  async prepareSessionListPath(projectPath: string): Promise<string> {
+    const canonical = await canonicalizeProjectPath(projectPath);
+    await this.loadTrustedProjects();
+    if (this.currentProject?.path === canonical || this.trustedProjects.has(canonical)) return canonical;
+    throw new PiDesktopError({
+      code: 'PROJECT_NOT_TRUSTED',
+      message: 'Trust this project before previewing its sessions.',
+      actionable: 'Open the folder and choose “Trust and open” first.',
+      retryable: true,
+    });
+  }
+
+  async revealPath(projectPath: string): Promise<{ opened: true }> {
+    const canonical = await this.prepareSessionListPath(projectPath);
+    const failure = await shell.openPath(canonical);
+    if (failure) {
+      throw new PiDesktopError({
+        code: 'INVALID_PROJECT',
+        message: `The file browser could not open the project: ${failure}`,
+        actionable: 'Check that the project is still accessible, then retry.',
+        retryable: true,
+      });
+    }
+    return { opened: true };
+  }
+
   private async lastProjectPath(): Promise<string | undefined> {
     if (this.currentProject) return this.currentProject.path;
     try {

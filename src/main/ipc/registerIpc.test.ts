@@ -13,7 +13,7 @@ vi.mock('electron', () => ({
 
 import type { ProjectState } from '../../shared/contracts/ipc';
 import type { ProjectActivation } from '../projects/ProjectService';
-import { activatePreparedProject, assertProjectActivationIdle, createProjectActivationQueue, createProjectPathOpener, discardCreatedWorktreeAfterFailure } from './registerIpc';
+import { activatePreparedProject, assertProjectActivationIdle, createProjectActivationQueue, createProjectPathFocuser, createProjectPathOpener, discardCreatedWorktreeAfterFailure } from './registerIpc';
 
 const previousProject: ProjectState = { path: '/previous', name: 'previous', trusted: true };
 const nextProject: ProjectState = { path: '/next', name: 'next', trusted: true };
@@ -52,6 +52,10 @@ function services() {
       current = state(project);
       return current;
     }),
+    focusProject: vi.fn(async (project: ProjectState) => {
+      current = state(project, 'disconnected');
+      return current;
+    }),
     closeProject: vi.fn(async () => {
       current = state(null, 'disconnected');
       return current;
@@ -80,6 +84,18 @@ describe('transactional project activation', () => {
     expect(projects.prepareOpenPath).toHaveBeenCalledWith('/next', owner);
     expect(deps.files.setRoot).toHaveBeenCalledWith(nextProject.path);
     expect(deps.runtime.openProject).toHaveBeenCalledWith(nextProject, { thinkingLevel: 'medium', defaultModel: null });
+    expect(candidate.commit).toHaveBeenCalledOnce();
+  });
+
+  it('focuses a known launcher path without spawning a runtime', async () => {
+    const candidate = activation();
+    const deps = services();
+    const projects = { prepareOpenPath: vi.fn(async () => candidate) };
+    const focusProjectPath = createProjectPathFocuser(projects, deps);
+
+    await expect(focusProjectPath('/next')).resolves.toMatchObject({ project: nextProject, status: 'disconnected' });
+    expect(deps.runtime.focusProject).toHaveBeenCalledWith(nextProject);
+    expect(deps.runtime.openProject).not.toHaveBeenCalled();
     expect(candidate.commit).toHaveBeenCalledOnce();
   });
 
@@ -200,7 +216,7 @@ describe('transactional project activation', () => {
     expect(order).toEqual(['activation-start', 'activation-end', 'git']);
   });
 
-  it('loads settings and rechecks busy state before mutating activation services', async () => {
+  it('allows a project switch while another project has an active operation', async () => {
     const candidate = activation();
     const deps = services();
     deps.settings.load.mockImplementationOnce(async () => {
@@ -208,10 +224,10 @@ describe('transactional project activation', () => {
       return { thinkingLevel: 'medium', defaultModel: null };
     });
 
-    await expect(activatePreparedProject(candidate, deps, 'changing projects')).rejects.toThrow('Stop all active Pi operations');
-    expect(deps.files.setRoot).not.toHaveBeenCalled();
-    expect(deps.runtime.openProject).not.toHaveBeenCalled();
-    expect(candidate.commit).not.toHaveBeenCalled();
+    await expect(activatePreparedProject(candidate, deps, 'changing projects')).resolves.toMatchObject({ project: nextProject });
+    expect(deps.files.setRoot).toHaveBeenCalledWith(nextProject.path);
+    expect(deps.runtime.openProject).toHaveBeenCalledOnce();
+    expect(candidate.commit).toHaveBeenCalledOnce();
   });
 
   it('leaves all activation state untouched when settings loading fails', async () => {
@@ -281,6 +297,20 @@ describe('transactional project activation', () => {
     expect(candidate.rollback).toHaveBeenCalledOnce();
     expect(candidate.commit).not.toHaveBeenCalled();
     expect(deps.terminal.disposeProjectTerminals).not.toHaveBeenCalled();
+  });
+
+  it('does not dispose an existing destination runtime when focus persistence rolls back', async () => {
+    const candidate = activation();
+    candidate.commit.mockRejectedValueOnce(new Error('recent project write failed'));
+    const deps = services();
+    const closeProjectPath = vi.fn(async () => undefined);
+    Object.assign(deps.runtime, { closeProjectPath });
+
+    await expect(activatePreparedProject(candidate, deps, 'changing projects', 'focus')).rejects.toThrow('recent project write failed');
+    expect(closeProjectPath).not.toHaveBeenCalled();
+    expect(deps.runtime.focusProject).toHaveBeenNthCalledWith(1, nextProject);
+    expect(deps.runtime.focusProject).toHaveBeenNthCalledWith(2, previousProject);
+    expect(deps.files.setRoot).toHaveBeenLastCalledWith(previousProject.path);
   });
 
   it('compensates a persistence failure without disposing old terminals', async () => {

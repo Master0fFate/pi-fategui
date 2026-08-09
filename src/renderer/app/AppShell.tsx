@@ -58,7 +58,7 @@ export function AppShell() {
           onReset={() => state.setRightWidth(332)}
         />
       )}
-      {!state.inspectorCollapsed && <Inspector onCollapse={state.toggleInspector} />}
+      {!state.inspectorCollapsed && <Inspector />}
     </div>
   );
 }

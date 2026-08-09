@@ -51,7 +51,7 @@ const run: SubagentRun = {
 };
 
 const team: AgentTeam = {
-  id: 'team-1', rootSessionId: 'parent-1', protocolVersion: 2, status: 'active', rootNodeId: 'team-root',
+  id: 'team-1', rootSessionId: 'parent-1', projectPath: '/project', name: 'Review team', protocolVersion: 2, status: 'active', selected: true, rootNodeId: 'team-root',
   limits: { maxDepth: 2, maxNodes: 16, maxActiveTurns: 3, maxMessages: 256, maxMessageBytes: 32_768 },
   activeTurns: 0, writerNodeId: null, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
   nodes: [
@@ -330,7 +330,7 @@ describe('subagent session inspector', () => {
     useRuntimeStore.getState().hydrateRuntime({ ...state, subagents: [], agentTeams: [team] });
     render(<SubagentSessionsPanel />);
 
-    const toggle = screen.getByRole('button', { name: /Agent Team V2/u });
+    const toggle = screen.getByRole('button', { name: /^Review team · Current/u });
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByLabelText('Reviewer Agent Team node ready')).toBeInTheDocument();
 

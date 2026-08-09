@@ -37,7 +37,9 @@ describe('PiSessionRepository', () => {
     await expect(repository.renameIfUnnamed('/project', 'one', 'Must not replace manual title')).resolves.toBe(false);
     await repository.delete('/project', 'two');
     expect(source.remove).toHaveBeenCalledWith('/sessions/two.jsonl');
-    expect(source.list).toHaveBeenCalledTimes(5);
+    await expect(repository.deleteAll('/project', new Set(['one']))).resolves.toBe(1);
+    expect(source.remove).toHaveBeenCalledWith('/sessions/two.jsonl');
+    expect(source.list).toHaveBeenCalledTimes(6);
   });
 
   it('does not retain or even read full conversation search text for ordinary sidebar listings', async () => {

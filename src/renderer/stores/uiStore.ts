@@ -73,6 +73,7 @@ interface UiState {
   musicPlayerEnabled: boolean;
   musicPlaying: boolean;
   sendMessageWithModifier: boolean;
+  compactSessions: boolean;
   speech: SpeechSettings;
   speechDownload: SpeechDownloadProgress | null;
   toast: AppToastMessage | null;
@@ -99,6 +100,7 @@ interface UiState {
   setMusicPlayerEnabled: (enabled: boolean) => void;
   setMusicPlaying: (playing: boolean) => void;
   setSendMessageWithModifier: (enabled: boolean) => void;
+  setCompactSessions: (enabled: boolean) => void;
   setSpeech: (speech: SpeechSettings) => void;
   setSpeechDownload: (speechDownload: SpeechDownloadProgress | null) => void;
   showToast: (toast: Omit<AppToastMessage, 'id'>) => void;
@@ -148,6 +150,7 @@ export const useUiStore = create<UiState>()(
       musicPlayerEnabled: false,
       musicPlaying: false,
       sendMessageWithModifier: false,
+      compactSessions: false,
       speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
       speechDownload: null,
       toast: null,
@@ -174,6 +177,7 @@ export const useUiStore = create<UiState>()(
       setMusicPlayerEnabled: (musicPlayerEnabled) => set({ musicPlayerEnabled }),
       setMusicPlaying: (musicPlaying) => set({ musicPlaying }),
       setSendMessageWithModifier: (sendMessageWithModifier) => set({ sendMessageWithModifier }),
+      setCompactSessions: (compactSessions) => set({ compactSessions }),
       setSpeech: (speech) => set({ speech }),
       setSpeechDownload: (speechDownload) => set({ speechDownload }),
       showToast: (toast) => set({ toast: { ...toast, id: ++nextToastId } }),

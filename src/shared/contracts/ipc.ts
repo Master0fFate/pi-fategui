@@ -6,6 +6,8 @@ import {
 } from '../subagentIdentity';
 import { themeCatalogSchema, type ThemeDefinition } from '../themes';
 import { agentTeamSchema, agentTeamControlInputSchema, type AgentTeamControlInput } from './multiAgent';
+
+const AGENT_TEAM_MAX_RETAINED_TEAMS = 32;
 import { toolProvenanceSchema } from './provenance';
 import {
   browserAnnotationReferenceSchema,
@@ -39,6 +41,15 @@ import type {
   GoalMaxState,
   GoalMaxUpdateInput,
 } from './goalmaxxing';
+import {
+  taskListSummarySchema,
+  type TaskCreateInput,
+  type TaskDeleteInput,
+  type TaskEvent,
+  type TaskList,
+  type TaskReorderInput,
+  type TaskUpdateInput,
+} from './tasks';
 
 export const ipcChannels = {
   systemGetInfo: 'system:get-info',
@@ -48,6 +59,12 @@ export const ipcChannels = {
   projectSelect: 'project:select',
   projectSelectFile: 'project:select-file',
   projectReveal: 'project:reveal',
+  projectRevealPath: 'project:reveal-path',
+  projectOpenPath: 'project:open-path',
+  projectFocusPath: 'project:focus-path',
+  projectCloseRuntime: 'project:close-runtime',
+  projectListSessions: 'project:list-sessions',
+  projectDeleteSessions: 'project:delete-sessions',
   imageReadLocal: 'image:read-local',
   imageSaveAs: 'image:save-as',
   clipboardWriteText: 'clipboard:write-text',
@@ -99,6 +116,13 @@ export const ipcChannels = {
   runtimeGoalMaxUpdate: 'runtime:goalmax:update',
   runtimeGoalMaxClear: 'runtime:goalmax:clear',
   runtimeGoalMaxEvents: 'runtime:goalmax:events',
+  runtimeTaskGet: 'runtime:task:get',
+  runtimeTaskCreate: 'runtime:task:create',
+  runtimeTaskUpdate: 'runtime:task:update',
+  runtimeTaskReorder: 'runtime:task:reorder',
+  runtimeTaskDelete: 'runtime:task:delete',
+  runtimeTaskClear: 'runtime:task:clear',
+  runtimeTaskEvents: 'runtime:task:events',
   runtimeNewSession: 'runtime:new-session',
   runtimeListSessions: 'runtime:list-sessions',
   runtimeSwitchSession: 'runtime:switch-session',
@@ -708,6 +732,8 @@ export const runtimeQueueSchema = z.object({
   steering: z.number().int().nonnegative(),
   followUp: z.number().int().nonnegative(),
   items: z.array(queuedMessageSchema).max(100).optional(),
+  /** Messages held by the strict GoalMax/task gate until verification passes. */
+  held: z.array(queuedMessageSchema).max(100).optional(),
 });
 
 export const extensionUiStateSchema = z.object({
@@ -745,11 +771,12 @@ export const runtimeStateSchema = z.object({
   contextUsage: contextUsageSchema.optional(),
   tokenTelemetry: runtimeTokenTelemetrySchema.optional(),
   queue: runtimeQueueSchema.optional(),
+  taskList: taskListSummarySchema.optional(),
   extensionUi: extensionUiStateSchema.optional(),
   sessions: z.array(sessionSummarySchema).max(1_000).optional(),
   subagents: z.array(subagentRunSchema).optional(),
   subagentWorkflows: z.array(subagentWorkflowSchema).optional(),
-  agentTeams: z.array(agentTeamSchema).max(1).optional(),
+  agentTeams: z.array(agentTeamSchema).max(AGENT_TEAM_MAX_RETAINED_TEAMS).optional(),
   branches: z.array(sessionBranchSchema).max(5_000).optional(),
   forkPoints: z.array(forkPointSchema).max(2_000).optional(),
   sessionCapabilities: sessionCapabilitiesSchema.optional(),
@@ -863,6 +890,9 @@ export const queueMutationResultSchema = z.object({
   }).optional(),
 }).strict();
 export const sessionSearchInputSchema = z.object({ query: z.string().max(500).default('') }).strict();
+export const projectPathInputSchema = z.object({ projectPath: z.string().min(1).max(32_768) }).strict();
+export const projectSessionListInputSchema = z.object({ projectPath: z.string().min(1).max(32_768), query: z.string().max(500).default('') }).strict();
+export const projectDeleteSessionsResultSchema = z.object({ deleted: z.number().int().nonnegative().max(5_000), skipped: z.number().int().nonnegative().max(5_000) }).strict();
 export const sessionIdInputSchema = z.object({ sessionId: z.string().min(1).max(500) }).strict();
 export const sessionRenameInputSchema = z.object({
   sessionId: z.string().min(1).max(500),
@@ -955,6 +985,7 @@ export const appSettingsSchema = z.object({
   holyShitMode: z.boolean().default(false),
   musicPlayerEnabled: z.boolean().default(false),
   sendMessageWithModifier: z.boolean().default(false),
+  compactSessions: z.boolean().default(false),
   themeId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,47}$/).default('catppuccin-mocha'),
   interfaceFont: interfaceFontSchema.default('noto-sans'),
   codeFont: codeFontSchema.default('jetbrains-mono'),
@@ -1094,8 +1125,12 @@ export interface PiDesktopApi {
   getWindowState: () => Promise<WindowState>;
   onWindowState: (listener: (state: WindowState) => void) => () => void;
   selectProject: () => Promise<RuntimeState>;
+  openProject: (projectPath: string) => Promise<RuntimeState>;
+  focusProject: (projectPath: string) => Promise<RuntimeState>;
+  closeProjectRuntime: (projectPath: string) => Promise<void>;
   selectProjectFile: () => Promise<string | null>;
   revealProject: () => Promise<z.infer<typeof revealProjectResultSchema>>;
+  revealProjectPath: (projectPath: string) => Promise<z.infer<typeof revealProjectResultSchema>>;
   readLocalImage: (path: string) => Promise<RuntimeImage>;
   saveImageAs: (input: ImageSaveInput) => Promise<ImageSaveResult>;
   writeClipboardText: (text: string) => Promise<void>;
@@ -1147,8 +1182,17 @@ export interface PiDesktopApi {
   updateGoalMax: (input: GoalMaxUpdateInput) => Promise<GoalMaxState>;
   clearGoalMax: () => Promise<GoalMaxClearResult>;
   onGoalMaxEvents: (listener: (events: GoalMaxEvent[]) => void) => () => void;
+  getTaskList: () => Promise<TaskList | null>;
+  createTask: (input: TaskCreateInput) => Promise<TaskList>;
+  updateTask: (input: TaskUpdateInput) => Promise<TaskList>;
+  reorderTasks: (input: TaskReorderInput) => Promise<TaskList>;
+  deleteTask: (input: TaskDeleteInput) => Promise<TaskList>;
+  clearTasks: () => Promise<TaskList>;
+  onTaskEvents: (listener: (events: TaskEvent[]) => void) => () => void;
   newSession: () => Promise<RuntimeState>;
   listSessions: (query?: string) => Promise<SessionSummary[]>;
+  listProjectSessions: (projectPath: string, query?: string) => Promise<SessionSummary[]>;
+  deleteProjectSessions: (projectPath: string) => Promise<z.infer<typeof projectDeleteSessionsResultSchema>>;
   switchSession: (sessionId: string) => Promise<RuntimeState>;
   renameSession: (sessionId: string, name: string) => Promise<RuntimeState>;
   deleteSession: (sessionId: string) => Promise<RuntimeState>;

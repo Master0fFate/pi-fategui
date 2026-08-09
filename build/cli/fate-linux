@@ -1,4 +1,21 @@
 #!/bin/sh
 set -eu
-project=${1:-$PWD}
-exec '/opt/Fate UI/fate-ui' --project "$project"
+
+# Parse arguments: --new-instance requests a fully isolated second process;
+# the first positional argument is the project folder (default: current dir).
+project=""
+new_instance=""
+for arg in "$@"; do
+  case "$arg" in
+    --new-instance) new_instance=1 ;;
+    --project|--*) ;;
+    *) [ -z "$project" ] && project="$arg" ;;
+  esac
+done
+[ -z "$project" ] && project="$PWD"
+
+if [ "$new_instance" ]; then
+  exec '/opt/Fate UI/fate-ui' --project "$project" --new-instance
+else
+  exec '/opt/Fate UI/fate-ui' --project "$project"
+fi

@@ -35,6 +35,7 @@ import { BrowserError } from './BrowserErrors';
 import { BrowserLease } from './BrowserLease';
 import { BrowserActionGate, BrowserPolicy, inspectBrowserUrl, isCloudMetadataHostname, isPrivateNetworkHostname } from './BrowserPolicy';
 import { BrowserRefRegistry } from './BrowserRefRegistry';
+import { isRestorableBrowserUrl } from './BrowserHistoryRepository';
 import { BrowserNetworkProxy, resolveTarget } from './BrowserNetworkProxy';
 import { BrowserPointerOverlay } from './BrowserPointerOverlay';
 import { LocalPageRegistry } from './LocalPageRegistry';
@@ -79,6 +80,10 @@ export interface BrowserServiceOptions {
   annotationOwner?: () => BrowserAnnotationOwner | null;
   onAppShortcut?: (shortcut: BrowserAppShortcut) => void;
   onPaused?: () => void;
+  /** Notified with every restorable committed navigation so the host can persist the last URL. */
+  onNavigated?: (url: string) => void;
+  /** Page to land on when the main tab is (re)opened without an explicit URL. */
+  restoreUrl?: string | null;
 }
 
 export type BrowserEventSink = (event: BrowserEvent) => void;
@@ -145,7 +150,7 @@ export class BrowserService {
     };
   }
 
-  async ensureTab(tabId = 'browser-main', initialUrl = 'about:blank'): Promise<void> {
+  async ensureTab(tabId = 'browser-main', initialUrl?: string): Promise<void> {
     if (this.tabs.has(tabId)) {
       this.activateTab(tabId);
       return;
@@ -156,7 +161,10 @@ export class BrowserService {
       if (this.tabs.has(tabId)) this.activateTab(tabId);
       return;
     }
-    const creation = this.createTab(tabId, 'project', initialUrl);
+    // Reopening the main tab without an explicit address returns to the last
+    // restorable page for this project (e.g. an accidental close of localhost).
+    const resolvedUrl = initialUrl ?? this.options.restoreUrl ?? 'about:blank';
+    const creation = this.createTab(tabId, 'project', resolvedUrl);
     this.tabCreations.set(tabId, creation);
     try {
       await creation;
@@ -879,6 +887,7 @@ export class BrowserService {
       this.localPages.retainForNavigation(tab.id, url);
       const committedOrigin = networkOrigin(url);
       for (const origin of [...tab.humanNetworkOrigins]) if (origin !== committedOrigin) tab.humanNetworkOrigins.delete(origin);
+      if (isRestorableBrowserUrl(url)) this.options.onNavigated?.(url);
     });
     contents.on('did-start-loading', () => this.emitState());
     contents.on('did-stop-loading', () => {

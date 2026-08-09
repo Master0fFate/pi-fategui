@@ -5,6 +5,7 @@ import {
   GOALMAX_OBJECTIVE_LIMIT,
   goalMaxStateSchema,
   type GoalMaxCriterion,
+  type GoalMaxEvidence,
   type GoalMaxState,
   type GoalMaxStatus,
   type GoalMaxTimelineEvent,
@@ -32,12 +33,20 @@ export function canTransitionGoalMax(from: GoalMaxStatus, to: GoalMaxStatus): bo
   return from === to || transitions[from].has(to);
 }
 
+/** Evidence that independently supports a criterion: current and not produced by the verifier itself. */
+export function isGoalMaxCriterionEvidence(evidence: GoalMaxEvidence): boolean {
+  return evidence.current && evidence.source !== 'verifier';
+}
+
 export function transitionGoalMax(goal: GoalMaxState, status: GoalMaxStatus, now = Date.now()): GoalMaxState {
   if (!canTransitionGoalMax(goal.status, status)) throw new Error(`GoalMax cannot transition from ${goal.status} to ${status}.`);
-  const currentEvidenceIds = status === 'completed' ? new Set(goal.evidence.filter((evidence) => evidence.current).map((evidence) => evidence.id)) : null;
+  // Gate A (strict, verification-level-independent): a required criterion may
+  // only be satisfied, and a goal may only complete, with current NON-VERIFIER
+  // evidence. A verifier pass alone can never satisfy a required criterion.
+  const currentEvidenceIds = status === 'completed' ? new Set(goal.evidence.filter(isGoalMaxCriterionEvidence).map((evidence) => evidence.id)) : null;
   if (currentEvidenceIds && goal.criteria.some((criterion) => criterion.required && criterion.status !== 'waived' && (
     criterion.status !== 'satisfied' || !criterion.evidenceIds.some((id) => currentEvidenceIds.has(id))
-  ))) throw new Error('GoalMax cannot complete while a required criterion lacks current evidence.');
+  ))) throw new Error('GoalMax cannot complete while a required criterion lacks current non-verifier evidence.');
   return goalMaxStateSchema.parse({
     ...goal,
     status,

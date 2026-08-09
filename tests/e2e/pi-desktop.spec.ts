@@ -183,6 +183,140 @@ test('left sidebar unifies real resources and persisted project automations', as
   }
 });
 
+test('expanding the bottom project keeps its sessions contained, indented, and below its header', async () => {
+  const fixture = await fixtureRepository();
+  const userData = await mkdtemp(path.join(tmpdir(), 'pi-desktop-folder-layout-'));
+  const application = await electron.launch({
+    args: [path.resolve('.test-dist/main/index.js')],
+    env: {
+      ...process.env,
+      PI_DESKTOP_E2E_PROJECT: fixture.root,
+      PI_DESKTOP_E2E_SECOND_PROJECT: fixture.worktree,
+      PI_DESKTOP_E2E_USER_DATA: userData,
+      PI_DESKTOP_E2E_SESSION_COUNT: '120',
+      FATE_GUI_DATA_DIR: path.join(userData, 'fateGUI'),
+      PI_OFFLINE: '1',
+    },
+  });
+
+  try {
+    const page = await application.firstWindow();
+    await page.getByRole('button', { name: /Open project/u }).first().click();
+    await page.locator('.session-toolbar').getByRole('button', { name: 'Open project' }).click();
+    await expect(page.locator('.folder-group')).toHaveCount(2);
+
+    await page.evaluate(({ root, worktree }) => {
+      const key = 'pi-desktop-projects-v1';
+      const persisted = JSON.parse(localStorage.getItem(key) ?? '{}') as { state?: { projects?: Array<{ path: string }> } };
+      const projects = persisted.state?.projects ?? [];
+      projects.sort((left, right) => [root, worktree].indexOf(left.path) - [root, worktree].indexOf(right.path));
+      localStorage.setItem(key, JSON.stringify({ ...persisted, state: { ...persisted.state, projects } }));
+    }, { root: fixture.root.replaceAll('\\', '/'), worktree: fixture.worktree.replaceAll('\\', '/') });
+    await page.reload();
+
+    const list = page.locator('.folder-list[aria-label="Projects"]');
+    const groups = list.locator(':scope > .folder-group');
+    await expect(groups).toHaveCount(2);
+    const top = groups.nth(0);
+    const bottom = groups.nth(1);
+    await expect(bottom.locator('.folder-open')).toHaveAttribute('aria-current', 'true');
+
+    for (const group of [top, bottom]) {
+      const collapse = group.getByRole('button', { name: /^Collapse /u });
+      if (await collapse.count()) await collapse.click();
+    }
+    const before = await list.evaluate((element) => {
+      const groups = [...element.querySelectorAll<HTMLElement>(':scope > .folder-group')];
+      return groups.map((group) => {
+        const header = group.querySelector<HTMLElement>(':scope > .folder-header')!;
+        const name = group.querySelector<HTMLElement>('.folder-name')!;
+        const rect = header.getBoundingClientRect();
+        const groupRect = group.getBoundingClientRect();
+        const rows = [...group.querySelectorAll<HTMLElement>('.folder-children .session-row')].map((row) => {
+          const rowRect = row.getBoundingClientRect();
+          return { top: rowRect.top, bottom: rowRect.bottom, left: rowRect.left };
+        });
+        return { name: name.textContent, top: rect.top, left: rect.left, width: rect.width, height: rect.height, bottom: rect.bottom, groupBottom: groupRect.bottom, rows };
+      });
+    });
+
+    await bottom.getByRole('button', { name: /^Expand /u }).click();
+    const rows = bottom.locator('.folder-children .session-row');
+    await expect.poll(() => rows.count()).toBeGreaterThan(1);
+    const after = await list.evaluate((element) => {
+      const groups = [...element.querySelectorAll<HTMLElement>(':scope > .folder-group')];
+      const headers = groups.map((group) => {
+        const header = group.querySelector<HTMLElement>(':scope > .folder-header')!;
+        const name = group.querySelector<HTMLElement>('.folder-name')!;
+        const rect = header.getBoundingClientRect();
+        return { name: name.textContent, top: rect.top, left: rect.left, width: rect.width, height: rect.height, bottom: rect.bottom };
+      });
+      const bottomGroup = groups[1]!;
+      const groupRect = bottomGroup.getBoundingClientRect();
+      const headerRect = bottomGroup.querySelector<HTMLElement>(':scope > .folder-header')!.getBoundingClientRect();
+      const childRect = bottomGroup.querySelector<HTMLElement>(':scope > .folder-children')!.getBoundingClientRect();
+      const rowRects = [...bottomGroup.querySelectorAll<HTMLElement>('.folder-children .session-row')].map((row) => {
+        const rect = row.getBoundingClientRect();
+        return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
+      });
+      const scrollOwners = [...element.closest<HTMLElement>('.sidebar-session-panel')!.querySelectorAll<HTMLElement>('*')]
+        .filter((node) => {
+          const overflowY = getComputedStyle(node).overflowY;
+          return (overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight;
+        })
+        .map((node) => node.className);
+      return { headers, groupRect: { top: groupRect.top, bottom: groupRect.bottom }, headerRect: { left: headerRect.left, bottom: headerRect.bottom }, childLeft: childRect.left, rowRects, scrollOwners };
+    });
+
+    for (const collapsedGroup of before) {
+      expect(collapsedGroup.rows.every((row) => row.top >= collapsedGroup.bottom && row.bottom <= collapsedGroup.groupBottom && row.left > collapsedGroup.left + 16)).toBe(true);
+    }
+    expect(after.headers.map((header) => header.name)).toEqual(before.map((header) => header.name));
+    for (let index = 0; index < before.length; index += 1) {
+      expect(after.headers[index]!.top).toBeCloseTo(before[index]!.top, 0);
+      expect(after.headers[index]!.left).toBeCloseTo(before[index]!.left, 0);
+      expect(after.headers[index]!.width).toBeCloseTo(before[index]!.width, 0);
+      expect(after.headers[index]!.height).toBeCloseTo(before[index]!.height, 0);
+    }
+    expect(after.headers[0]!.bottom).toBeLessThanOrEqual(after.headers[1]!.top);
+    expect(after.childLeft).toBeGreaterThan(after.headerRect.left + 8);
+    expect(after.rowRects[0]!.left).toBeGreaterThan(after.headerRect.left + 16);
+    expect(after.rowRects[0]!.top).toBeGreaterThanOrEqual(after.headerRect.bottom);
+    expect(after.rowRects[0]!.bottom).toBeLessThanOrEqual(after.rowRects[1]!.top);
+    expect(after.rowRects.every((row) => row.top >= after.groupRect.top && row.bottom <= after.groupRect.bottom)).toBe(true);
+    expect(after.scrollOwners).toHaveLength(1);
+    expect(String(after.scrollOwners[0])).toContain('folder-list');
+
+    await bottom.getByRole('button', { name: /^Collapse /u }).click();
+    const secondHeaderTopBefore = (await bottom.locator(':scope > .folder-header').boundingBox())!.y;
+    await top.getByRole('button', { name: /^Expand /u }).click();
+    await expect.poll(() => top.locator('.folder-children .session-row').count()).toBeGreaterThan(1);
+    const precedingExpansion = await list.evaluate((element) => {
+      const groups = [...element.querySelectorAll<HTMLElement>(':scope > .folder-group')];
+      const topGroup = groups[0]!.getBoundingClientRect();
+      const topHeader = groups[0]!.querySelector<HTMLElement>(':scope > .folder-header')!.getBoundingClientRect();
+      const secondHeader = groups[1]!.querySelector<HTMLElement>(':scope > .folder-header')!.getBoundingClientRect();
+      const rows = [...groups[0]!.querySelectorAll<HTMLElement>('.folder-children .session-row')].map((row) => row.getBoundingClientRect());
+      return {
+        topGroupBottom: topGroup.bottom,
+        topHeaderBottom: topHeader.bottom,
+        secondHeaderTop: secondHeader.top,
+        rowTops: rows.map((row) => row.top),
+        rowBottoms: rows.map((row) => row.bottom),
+      };
+    });
+    expect(precedingExpansion.secondHeaderTop).toBeGreaterThan(secondHeaderTopBefore);
+    expect(precedingExpansion.topGroupBottom).toBeLessThanOrEqual(precedingExpansion.secondHeaderTop);
+    expect(precedingExpansion.rowTops.every((top) => top >= precedingExpansion.topHeaderBottom)).toBe(true);
+    expect(precedingExpansion.rowBottoms.every((bottom) => bottom <= precedingExpansion.topGroupBottom)).toBe(true);
+  } finally {
+    await application.close();
+    await rm(fixture.root, { recursive: true, force: true });
+    await rm(fixture.worktree, { recursive: true, force: true });
+    await rm(userData, { recursive: true, force: true });
+  }
+});
+
 test('built-in Chromium opens local HTML and attaches DevTools-style element annotations to chat', async () => {
   const fixture = await fixtureRepository();
   await writeBrowserPreview(fixture.root);
@@ -603,9 +737,17 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(sessionList).toBeVisible();
     await expect(firstSessionRow).toContainText(/main.*messages.*updated (?:now|.* ago)/iu);
     await expect(firstSessionRow.locator('.session-drag-handle')).toHaveCount(0);
-    const [sessionListBox, sidebarFooterBox] = await Promise.all([sessionList.boundingBox(), page.locator('.sidebar-footer').boundingBox()]);
-    expect(sessionListBox!.height).toBeGreaterThan(300);
-    expect(sessionListBox!.y + sessionListBox!.height).toBeLessThanOrEqual(sidebarFooterBox!.y);
+    const activeFolder = sessionList.locator('..');
+    const [sessionListBox, folderHeaderBox, activeFolderBox, sidebarFooterBox] = await Promise.all([
+      sessionList.boundingBox(),
+      activeFolder.locator(':scope > .folder-header').boundingBox(),
+      activeFolder.boundingBox(),
+      page.locator('.sidebar-footer').boundingBox(),
+    ]);
+    expect(sessionListBox!.height).toBeGreaterThan(120);
+    expect(sessionListBox!.y).toBeGreaterThanOrEqual(folderHeaderBox!.y + folderHeaderBox!.height);
+    expect(sessionListBox!.y + sessionListBox!.height).toBeLessThanOrEqual(activeFolderBox!.y + activeFolderBox!.height);
+    expect(activeFolderBox!.y + activeFolderBox!.height).toBeLessThanOrEqual(sidebarFooterBox!.y);
     await firstSessionRow.hover();
     await expect(firstSessionRow.getByRole('button', { name: 'Create new session from latest prompt in First session' })).toBeVisible();
     await expect(firstSessionRow.getByRole('button', { name: 'Clone First session' })).toBeVisible();
@@ -664,15 +806,16 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
 
     await composerInput.fill('__FATE_V2_AGENT_FIXTURE__');
     await page.getByRole('button', { name: 'Send message' }).click();
-    const conversationPaths = page.getByRole('region', { name: 'Conversation paths' });
-    await expect(conversationPaths).toContainText('2 saved');
+    const conversationPaths = page.getByRole('list', { name: 'Conversation paths' });
     await expect(conversationPaths).toContainText('Current path');
     await expect(conversationPaths).toContainText('Alternate path 1');
+    await expect(conversationPaths).toContainText('Fork');
     await expect(conversationPaths).not.toContainText('custom');
+    await expect(conversationPaths.locator('.session-row--path')).toHaveCount(2);
     const pathLayout = await conversationPaths.evaluate((element) => ({
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
-      rowHeights: [...element.querySelectorAll<HTMLElement>('.conversation-path-row')].map((row) => row.getBoundingClientRect().height),
+      rowHeights: [...element.querySelectorAll<HTMLElement>('.session-row--path')].map((row) => row.getBoundingClientRect().height),
     }));
     expect(pathLayout.scrollWidth).toBeLessThanOrEqual(pathLayout.clientWidth);
     expect(pathLayout.rowHeights.every((height) => height >= 40)).toBe(true);
@@ -683,10 +826,10 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(conversationPaths.locator('[aria-current="true"]')).toContainText('Explore the alternate implementation');
     await expect(composerInput).toHaveValue('Continue from the alternate implementation prompt');
     await composerInput.fill('');
-    const v2Team = agents.getByLabel('Agent Team V2 e2e-agent-team');
+    const v2Team = agents.getByLabel('E2E team Agent Team e2e-agent-team');
     await expect(v2Team).toBeVisible();
     await expect(v2Team).toContainText('2/16 nodes · 1/3 active · writer leased');
-    const teamToggle = v2Team.getByRole('button', { name: /Agent Team V2/u });
+    const teamToggle = v2Team.getByRole('button', { name: /^E2E team · Current/u });
     await expect(teamToggle).toHaveAttribute('aria-expanded', 'true');
     await teamToggle.click();
     await expect(teamToggle).toHaveAttribute('aria-expanded', 'false');
@@ -750,21 +893,21 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
       element.dispatchEvent(new Event('scroll'));
     });
     const transcriptHeightBeforeAppend = await reviewerTranscript.evaluate((element) => element.scrollHeight);
-    await agents.getByRole('button', { name: 'Message /root/reviewer', exact: true }).click();
+    await agents.getByRole('button', { name: 'Queue message to /root/reviewer', exact: true }).click();
     await agents.getByPlaceholder('Queue information without waking the agent…').fill('Check the integration boundary.');
     await agents.getByRole('button', { name: 'Send' }).click();
     await expect(agents.getByLabel('Reviewer Agent Team node active')).toContainText('1 unread');
     await expect.poll(() => reviewerTranscript.evaluate((element) => element.scrollHeight)).toBeGreaterThan(transcriptHeightBeforeAppend);
     await expect.poll(() => reviewerTranscript.evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(1);
-    await agents.getByRole('button', { name: 'Interrupt /root/reviewer', exact: true }).click();
+    await agents.getByRole('button', { name: 'Interrupt /root/reviewer and preserve its session', exact: true }).click();
     await expect(agents.getByLabel('Reviewer Agent Team node interrupted')).toBeVisible();
-    await agents.getByRole('button', { name: 'Follow up /root/reviewer', exact: true }).click();
+    await agents.getByRole('button', { name: 'Create follow-up task for /root/reviewer', exact: true }).click();
     await agents.getByPlaceholder('Assign a new task using the retained context…').fill('Run the final verification.');
     await agents.getByRole('button', { name: 'Send' }).click();
-    await expect(agents.getByRole('button', { name: 'Interrupt /root/reviewer', exact: true })).toBeVisible();
-    await agents.getByRole('button', { name: 'Interrupt /root/reviewer', exact: true }).click();
+    await expect(agents.getByRole('button', { name: 'Interrupt /root/reviewer and preserve its session', exact: true })).toBeVisible();
+    await agents.getByRole('button', { name: 'Interrupt /root/reviewer and preserve its session', exact: true }).click();
     await expect(agents.getByLabel('Reviewer Agent Team node interrupted')).toBeVisible();
-    await agents.getByRole('button', { name: 'Close /root/reviewer', exact: true }).click();
+    await agents.getByRole('button', { name: 'Close /root/reviewer and preserve history', exact: true }).click();
     await expect(agents.getByLabel('Reviewer Agent Team node closed')).toBeVisible();
     await expect(agents.getByLabel('Verifier Agent Team node closed')).toBeVisible();
     await openInspectorView(page, 'Work', 'Changes');
@@ -1147,10 +1290,10 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.getByLabel('Message Pi').press('Enter');
     const queuedMessages = page.getByRole('region', { name: 'Queued messages' });
     await expect(queuedMessages).toContainText('Use the smaller API');
-    await queuedMessages.getByRole('button', { name: 'Steer' }).click();
-    await expect(queuedMessages.getByText('Steering')).toBeVisible();
+    await queuedMessages.getByRole('button', { name: 'Steer queued message: Use the smaller API' }).click();
+    await expect(queuedMessages.getByRole('button', { name: 'Steering queued message: Use the smaller API' })).toBeDisabled();
     await queuedMessages.getByRole('button', { name: /More options for queued message/u }).click();
-    await page.getByRole('button', { name: 'Edit message' }).click();
+    await page.getByRole('button', { name: 'Edit queued message: Use the smaller API' }).click();
     await expect(page.getByLabel('Message Pi')).toHaveValue('Use the smaller API');
     await expect(page.getByLabel('Message Pi')).toBeFocused();
     await expect(queuedMessages).toHaveCount(0);

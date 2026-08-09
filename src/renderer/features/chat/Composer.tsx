@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
-import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, Ellipsis, FileText, FolderOpen, GitFork, Globe2, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
+import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, FileText, FolderOpen, GitFork, Globe2, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
 import { type ChangeEvent, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { BrowserAnnotation, FileEntry, PromptInput, QueueMutationInput } from '../../../shared/contracts/ipc';
@@ -12,6 +12,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { useBrowserStore } from '../../stores/browserStore';
 import { GoalMaxRail } from '../goalmaxxing/GoalMaxRail';
+import { GoalMaxTaskStrip } from '../goalmaxxing/GoalMaxTaskStrip';
 import { parseGoalMaxCommand } from '../goalmaxxing/parseGoalMaxCommand';
 import { ContextWheel } from './ContextWheel';
 import { agentMentionContext, findAgentMentions, parseAgentStopCommand } from './agentMentions';
@@ -954,7 +955,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       : !event.shiftKey && !event.altKey;
     if (event.key === 'Enter' && shouldSend && parseAgentStopCommand(editorDraft)) {
       event.preventDefault();
-      void submit(runtime.streaming ? 'followUp' : 'prompt');
+      void submit(runtime.streaming || runtime.activeSessionRunning ? 'followUp' : 'prompt');
       return;
     }
     if (mentionMenuOpen) {
@@ -1014,7 +1015,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     }
     if (event.key === 'Enter' && shouldSend) {
       event.preventDefault();
-      void submit(runtime.streaming ? 'followUp' : 'prompt');
+      void submit(runtime.streaming || runtime.activeSessionRunning ? 'followUp' : 'prompt');
     }
   };
 
@@ -1657,28 +1658,29 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 <div className="queued-message-actions">
                   {item.images?.length ? <span className="queued-message-attachments">{item.images.length} image{item.images.length === 1 ? '' : 's'}</span> : null}
                   {item.browserAnnotations?.length ? <span className="queued-message-attachments">{item.browserAnnotations.length} page note{item.browserAnnotations.length === 1 ? '' : 's'}</span> : null}
-                  {item.behavior === 'followUp' ? (
-                    <button className="queued-message-steer" type="button" disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'steer')}>Steer</button>
-                  ) : (
-                    <span className="queued-message-status">Steering</span>
-                  )}
+                  <AppTooltip content={item.behavior === 'steer' ? 'Steer mode · switch to follow-up' : 'Follow-up mode · switch to steer'} wrapTrigger>
+                    <button
+                      className="queued-message-behavior"
+                      type="button"
+                      role="switch"
+                      aria-checked={item.behavior === 'steer'}
+                      data-active={item.behavior === 'steer' || undefined}
+                      aria-label={`${item.behavior === 'steer' ? 'Steer' : 'Follow-up'} queued message: ${item.text}`}
+                      disabled={Boolean(queueBusyId)}
+                      onClick={() => void mutateQueuedMessage(item.id, item.behavior === 'steer' ? 'followUp' : 'steer')}
+                    >
+                      <CornerUpLeft size={13} aria-hidden="true" />
+                      <span>{item.behavior === 'steer' ? 'Steer' : 'Follow-up'}</span>
+                    </button>
+                  </AppTooltip>
+                  <AppTooltip content="Edit message" wrapTrigger>
+                    <button className="queued-message-edit" type="button" aria-label={`Edit queued message: ${item.text}`} disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'edit')}><Pencil size={13} aria-hidden="true" /></button>
+                  </AppTooltip>
                   <AppTooltip content="Cancel queued message" wrapTrigger>
                     <button className="queued-message-cancel" type="button" aria-label={`Cancel queued message: ${item.text}`} disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'cancel')}>
                       {busy ? <LoaderCircle className="tool-spinner" size={13} /> : <Trash2 size={13} aria-hidden="true" />}
                     </button>
                   </AppTooltip>
-                  <Popover.Root>
-                    <Popover.Trigger asChild>
-                      <button className="queued-message-more" type="button" aria-label={`More options for queued message: ${item.text}`} disabled={Boolean(queueBusyId)}><Ellipsis size={14} aria-hidden="true" /></button>
-                    </Popover.Trigger>
-                    <Popover.Portal>
-                      <Popover.Content className="queued-message-menu" side="top" align="end" sideOffset={7} collisionPadding={12}>
-                        <button type="button" onClick={() => void mutateQueuedMessage(item.id, 'edit')}><Pencil size={13} aria-hidden="true" /><span className="icon-label">Edit message</span></button>
-                        {item.behavior === 'steer' && <button type="button" onClick={() => void mutateQueuedMessage(item.id, 'followUp')}><CornerUpLeft size={13} aria-hidden="true" /><span className="icon-label">Move to follow-up</span></button>}
-                        <button className="queued-message-menu-danger" type="button" onClick={() => void mutateQueuedMessage(item.id, 'cancel')}><Trash2 size={13} aria-hidden="true" /><span className="icon-label">Cancel message</span></button>
-                      </Popover.Content>
-                    </Popover.Portal>
-                  </Popover.Root>
                 </div>
               </div>
             );
@@ -1686,12 +1688,13 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         </section>
       )}
       <GoalMaxRail />
+      <GoalMaxTaskStrip />
       <form
         ref={composer}
         className="composer"
         data-compact-toolbar={compactToolbar ? 'true' : 'false'}
         style={{ '--composer-input-height': `${inputHeight}px` } as CSSProperties}
-        onSubmit={(event) => { event.preventDefault(); void submit(runtime.streaming ? 'followUp' : 'prompt'); }}
+        onSubmit={(event) => { event.preventDefault(); void submit(runtime.streaming || runtime.activeSessionRunning ? 'followUp' : 'prompt'); }}
       >
         <AppTooltip content={'Drag upward to enlarge the message input\nUse ↑ or ↓ while focused'}>
           <div
@@ -1946,12 +1949,12 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 </AppTooltip>
               )}
               {(runtime.streaming || goalCancelable) && <span id="streaming-send-instructions" className="visually-hidden">Hold continuously for two seconds to {goalCancelable ? 'cancel the persistent goal and stop its work' : 'stop Pi without queuing the draft'}.</span>}
-              <AppTooltip content={runtime.streaming ? `Click sends or queues the message · Hold for 2 seconds to ${goalCancelable ? 'cancel goal' : 'stop Pi'}` : goalCancelable ? 'Send · Hold for 2 seconds to cancel goal' : sendMessageWithModifier ? 'Send · Ctrl/⌘ Enter' : 'Send · Enter'}>
+              <AppTooltip content={runtime.streaming || runtime.activeSessionRunning ? `Click queues the message · Hold for 2 seconds to ${goalCancelable ? 'cancel goal' : 'stop Pi'}` : goalCancelable ? 'Send · Hold for 2 seconds to cancel goal' : sendMessageWithModifier ? 'Send · Ctrl/⌘ Enter' : 'Send · Enter'}>
                 <span className="send-tooltip-trigger">
                   <button
                     className="send-button"
                     type="submit"
-                    aria-label={runtime.streaming ? 'Queue follow-up message' : goalCancelable && !draft.trim() ? 'Goal control; hold to cancel goal' : 'Send message'}
+                    aria-label={runtime.streaming || runtime.activeSessionRunning ? 'Queue follow-up message' : goalCancelable && !draft.trim() ? 'Goal control; hold to cancel goal' : 'Send message'}
                     aria-describedby={runtime.streaming || goalCancelable ? 'streaming-send-instructions' : undefined}
                     aria-busy={submitting}
                     disabled={!connected || (!runtime.streaming && submitting) || (!runtime.streaming && !goalCancelable && !draft.trim() && browserAnnotationIds.length === 0)}
