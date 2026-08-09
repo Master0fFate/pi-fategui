@@ -6,16 +6,11 @@ import { AppTooltip } from '../../components/AppTooltip';
 import { SelectControl } from '../../components/SelectControl';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { useUiStore } from '../../stores/uiStore';
+import { goalMaxStatusLabel } from './goalMaxPresentation';
 
 const resumable = new Set<GoalMaxState['status']>(['paused', 'blocked', 'budget-limited', 'usage-limited', 'failed']);
 const terminal = new Set<GoalMaxState['status']>(['completed', 'cancelled']);
 type EditableCriterion = { id?: string; title: string; description: string; required: boolean };
-
-function statusLabel(goal: GoalMaxState): string {
-  if (goal.status === 'budget-limited') return 'Budget reached';
-  if (goal.status === 'usage-limited') return 'Usage limited';
-  return goal.status.charAt(0).toUpperCase() + goal.status.slice(1);
-}
 
 function RailStatusIcon({ goal }: { goal: GoalMaxState }) {
   if (goal.status === 'completed') return <Check size={13} aria-hidden="true" />;
@@ -54,7 +49,7 @@ export function GoalMaxRail() {
   };
   const required = goal.criteria.filter((criterion) => criterion.required && criterion.status !== 'waived');
   const satisfied = required.filter((criterion) => criterion.status === 'satisfied').length;
-  const canPause = goal.status === 'active';
+  const canPause = goal.status === 'active' || goal.status === 'verifying';
   const canResume = resumable.has(goal.status);
   const railObjective = goal.objective.length > 500 ? `${goal.objective.slice(0, 499).trimEnd()}…` : goal.objective;
   const objectiveTooltip = goal.objective.length > 800 ? `${goal.objective.slice(0, 799).trimEnd()}…` : goal.objective;
@@ -66,7 +61,7 @@ export function GoalMaxRail() {
         <AppTooltip content={objectiveTooltip}>
           <button className="goalmax-rail-objective" type="button" onClick={openGoalMax}>
             <strong>{railObjective}</strong>
-            <small>{statusLabel(goal)} · {goal.phase} · {satisfied}/{required.length}</small>
+            <small>{goalMaxStatusLabel(goal.status)} · {goal.phase} · {satisfied}/{required.length}</small>
           </button>
         </AppTooltip>
         <div className="goalmax-rail-actions">

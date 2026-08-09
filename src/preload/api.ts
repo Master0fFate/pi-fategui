@@ -39,6 +39,9 @@ import {
   musicStreamResultSchema,
   musicTrackInputSchema,
   openUpdateDownloadResultSchema,
+  updateDownloadProgressSchema,
+  updateInstallStartedSchema,
+  updateVersionInputSchema,
   piEventBatchSchema,
   openFileResultSchema,
   projectFileReferenceSchema,
@@ -592,6 +595,17 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async openUpdateDownload() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.updatesOpenDownload, emptyInputSchema.parse({}));
     openUpdateDownloadResultSchema.parse(result);
+  },
+  async downloadAndInstallUpdate(version: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.updatesDownloadInstall, updateVersionInputSchema.parse({ version }));
+    updateInstallStartedSchema.parse(result);
+  },
+  onUpdatesProgress(listener: (progress: { downloaded: number; total: number; percent: number; version: string }) => void): () => void {
+    const handler = (_event: unknown, progress: unknown) => {
+      listener(updateDownloadProgressSchema.parse(progress));
+    };
+    ipcRenderer.on(ipcChannels.updatesProgress, handler);
+    return () => ipcRenderer.off(ipcChannels.updatesProgress, handler);
   },
   async getThemes() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.themesGet, emptyInputSchema.parse({}));

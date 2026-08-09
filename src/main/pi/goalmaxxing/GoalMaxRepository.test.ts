@@ -32,6 +32,29 @@ describe('GoalMax repository', () => {
     expect(migrateGoalMaxSnapshot({ ...legacy, schemaVersion: 1 })).toMatchObject({ schemaVersion: 2, steering: [] });
   });
 
+  it('backfills taskPlanCaptured for v2 snapshots whose plan timeline event was evicted', () => {
+    const planned = state();
+    planned.criteria = [
+      { id: 'c1', title: 'Implement the feature', description: 'Write the code', required: true, status: 'satisfied', evidenceIds: [], ownerNodeIds: [], updatedAt: 10 },
+      { id: 'c2', title: 'Verify the delivered result', description: 'Evidence gate', required: true, status: 'pending', evidenceIds: [], ownerNodeIds: [], updatedAt: 10 },
+    ];
+    // The timeline is empty (plan event evicted), and taskPlanCaptured is absent.
+    const { taskPlanCaptured: _flag, ...withoutFlag } = planned;
+    const restored = migrateGoalMaxSnapshot(withoutFlag);
+    expect(restored.taskPlanCaptured).toBe(true);
+  });
+
+  it('does not backfill taskPlanCaptured for unplanned v2 snapshots', () => {
+    const unplanned = state();
+    unplanned.criteria = [
+      { id: 'c1', title: 'Plan the execution', description: 'Decompose the objective', required: true, status: 'pending', evidenceIds: [], ownerNodeIds: [], updatedAt: 10 },
+      { id: 'c2', title: 'Verify the delivered result', description: 'Evidence gate', required: true, status: 'pending', evidenceIds: [], ownerNodeIds: [], updatedAt: 10 },
+    ];
+    const { taskPlanCaptured: _flag, ...withoutFlag } = unplanned;
+    const restored = migrateGoalMaxSnapshot(withoutFlag);
+    expect(restored.taskPlanCaptured).toBeUndefined();
+  });
+
   it('atomically round-trips snapshots and enforces revision compare-and-swap', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'goalmax-repo-')); roots.push(root);
     const logs = { write: vi.fn() };

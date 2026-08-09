@@ -80,11 +80,23 @@ export function clearComposerSessionDrafts(): void {
   cachedDraftImageBytes = 0;
 }
 
-const sessionDraftKey = (projectPath: string | null, sessionId: string | null): string | null =>
-  sessionId === null ? null : JSON.stringify([projectPath, sessionId]);
+const NEW_SESSION_DRAFT_IDENTITY = ['new-session'] as const;
+const sessionDraftKey = (
+  projectPath: string | null,
+  sessionId: string | null,
+  sessions?: readonly { id: string }[],
+): string | null => {
+  if (projectPath === null) return null;
+  const identity = sessionId !== null && (sessions === undefined || sessions.some((session) => session.id === sessionId))
+    ? ['session', sessionId]
+    : NEW_SESSION_DRAFT_IDENTITY;
+  return JSON.stringify([projectPath, identity]);
+};
 
 export function attachBrowserAnnotationToSession(projectPath: string | null, sessionId: string | null, id: string): void {
-  const key = sessionDraftKey(projectPath, sessionId);
+  const runtime = useRuntimeStore.getState().runtime;
+  const currentSessions = runtime.project?.path === projectPath && runtime.sessionId === sessionId ? runtime.sessions : undefined;
+  const key = sessionDraftKey(projectPath, sessionId, currentSessions);
   if (!key) return;
   const current = sessionDraftsByIdentity.get(key) ?? emptySessionDraft();
   if (current.browserAnnotationIds.includes(id)) return;
@@ -245,6 +257,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     status: state.runtime.status,
     project: state.runtime.project,
     sessionId: state.runtime.sessionId,
+    sessions: state.runtime.sessions,
     streaming: state.runtime.streaming,
     activeSessionRunning: state.runtime.activeSessionRunning,
     model: state.runtime.model,
@@ -259,7 +272,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     sessionCapabilities: state.runtime.sessionCapabilities,
     sessionOperation: state.runtime.sessionOperation,
   })));
-  const activeSessionDraftKey = sessionDraftKey(runtime.project?.path ?? null, runtime.sessionId);
+  const activeSessionDraftKey = sessionDraftKey(runtime.project?.path ?? null, runtime.sessionId, runtime.sessions);
   const cachedActiveDraft = activeSessionDraftKey === null ? undefined : sessionDraftsByIdentity.get(activeSessionDraftKey);
   const editorDraft = activeDraftKey.current === activeSessionDraftKey ? draft : cachedActiveDraft?.text ?? '';
   const queue = useRuntimeStore((state) => state.queue);
@@ -274,7 +287,10 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const activeGoal = useGoalMaxStore((state) => state.goal);
   const setActiveGoal = useGoalMaxStore((state) => state.setGoal);
   const subagentOrder = useRuntimeStore((state) => state.subagentOrder);
-  const queuedItems = queue.items ?? [];
+  const heldQueueItems = queue.held ?? [];
+  const queuedItems = [...heldQueueItems, ...(queue.items ?? [])];
+  const heldQueueIds = new Set(heldQueueItems.map((item) => item.id));
+  const goalUpdates = activeGoal ? [...activeGoal.steering].reverse() : [];
   const sendMessageWithModifier = useUiStore((state) => state.sendMessageWithModifier);
   const composerDraftRequest = useUiStore((state) => state.composerDraftRequest);
   const clearComposerDraftRequest = useUiStore((state) => state.clearComposerDraftRequest);
@@ -722,7 +738,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
 
   const submit = async (behavior: PromptInput['behavior']) => {
     const runtimeNow = useRuntimeStore.getState().runtime;
-    const originDraftKey = sessionDraftKey(runtimeNow.project?.path ?? null, runtimeNow.sessionId);
+    const originDraftKey = sessionDraftKey(runtimeNow.project?.path ?? null, runtimeNow.sessionId, runtimeNow.sessions);
     const submittedDraft = draftRef.current;
     const submittedDraftRevision = draftRevision.current;
     const submittedImages = imagesRef.current;
@@ -762,16 +778,30 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     try {
       const goalCommand = parseGoalMaxCommand(text);
       if (goalCommand) {
-        if (submittedImages.length > 0 || submittedBrowserAnnotationIds.length > 0) throw new Error('Remove image and browser annotation attachments before starting GoalMax.');
-        if (goalCommand.kind === 'invalid') throw new Error(goalCommand.message);
-        if (typeof window.piDesktop.createGoalMax !== 'function') throw new Error('Restart Fate UI to create persistent goals.');
-        setActiveGoal(await window.piDesktop.createGoalMax({
-          objective: goalCommand.objective,
-          verificationLevel: 'normal',
-          agentStrategy: 'auto',
-          tokenLimit: null,
-          timeLimitMs: null,
-        }));
+        if (submittedImages.length > 0 || submittedBrowserAnnotationIds.length > 0) throw new Error('Remove image and browser annotation attachments before using GoalMax commands.');
+        const currentGoal = useGoalMaxStore.getState().goal;
+        if (goalCommand.kind === 'view') {
+          if (!currentGoal) throw new Error('This thread has no GoalMax objective. Start one with /goalmax followed by an objective.');
+          useUiStore.getState().openGoalMax();
+        } else if (goalCommand.kind === 'clear') {
+          if (!currentGoal) throw new Error('This thread has no GoalMax objective to clear.');
+          if (typeof window.piDesktop.clearGoalMax !== 'function') throw new Error('Restart Fate UI to clear persistent goals.');
+          await window.piDesktop.clearGoalMax();
+          setActiveGoal(null);
+        } else if (goalCommand.kind === 'pause' || goalCommand.kind === 'resume') {
+          if (!currentGoal) throw new Error(`This thread has no GoalMax objective to ${goalCommand.kind}.`);
+          if (typeof window.piDesktop.controlGoalMax !== 'function') throw new Error('Restart Fate UI to control persistent goals.');
+          setActiveGoal(await window.piDesktop.controlGoalMax({ action: goalCommand.kind }));
+        } else {
+          if (typeof window.piDesktop.createGoalMax !== 'function') throw new Error('Restart Fate UI to create persistent goals.');
+          setActiveGoal(await window.piDesktop.createGoalMax({
+            objective: goalCommand.objective,
+            verificationLevel: 'normal',
+            agentStrategy: 'auto',
+            tokenLimit: null,
+            timeLimitMs: null,
+          }));
+        }
         clearSubmittedDraft();
         return;
       }
@@ -1647,12 +1677,27 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
           </div>
         </div>
       )}
+      {goalUpdates.length > 0 && (
+        <section className="queued-messages goalmax-steering-messages" aria-label="GoalMax updates" aria-live="polite">
+          {goalUpdates.map((item) => {
+            const preview = item.text.split('\n', 1)[0]?.trim() || item.text;
+            return (
+              <div className="queued-message" key={item.id} data-behavior="steer" data-goal-update="true">
+                <CornerUpLeft size={13} aria-hidden="true" />
+                <AppTooltip content={item.text}><span className="queued-message-preview icon-label">{preview}</span></AppTooltip>
+                <span className="queued-message-status">Goal update</span>
+              </div>
+            );
+          })}
+        </section>
+      )}
       {queuedItems.length > 0 && (
         <section className="queued-messages" aria-label="Queued messages" aria-live="polite">
           {queuedItems.map((item) => {
             const busy = queueBusyId === item.id;
+            const held = heldQueueIds.has(item.id);
             return (
-              <div className="queued-message" key={item.id} data-behavior={item.behavior}>
+              <div className="queued-message" key={item.id} data-behavior={item.behavior} data-held={held || undefined}>
                 <CornerUpLeft size={13} aria-hidden="true" />
                 <AppTooltip content={item.text}><span className="queued-message-preview icon-label">{item.text}</span></AppTooltip>
                 <div className="queued-message-actions">
@@ -1670,7 +1715,6 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                       onClick={() => void mutateQueuedMessage(item.id, item.behavior === 'steer' ? 'followUp' : 'steer')}
                     >
                       <CornerUpLeft size={13} aria-hidden="true" />
-                      <span>{item.behavior === 'steer' ? 'Steer' : 'Follow-up'}</span>
                     </button>
                   </AppTooltip>
                   <AppTooltip content="Edit message" wrapTrigger>

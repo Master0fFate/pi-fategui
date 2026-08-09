@@ -144,6 +144,8 @@ export const ipcChannels = {
   settingsSet: 'settings:set',
   updatesCheck: 'updates:check',
   updatesOpenDownload: 'updates:open-download',
+  updatesDownloadInstall: 'updates:download-and-install',
+  updatesProgress: 'updates:progress',
   themesGet: 'themes:get',
   speechGetStatus: 'speech:get-status',
   speechEnsureModel: 'speech:ensure-model',
@@ -966,6 +968,14 @@ export const updateCheckResultSchema = z.object({
   productionVersion: z.string().min(1).max(100).optional(),
 }).strict();
 export const openUpdateDownloadResultSchema = z.object({ opened: z.literal(true) }).strict();
+export const updateDownloadProgressSchema = z.object({
+  downloaded: z.number().nonnegative(),
+  total: z.number().nonnegative(),
+  percent: z.number().min(0).max(1),
+  version: z.string().min(1).max(100),
+}).strict();
+export const updateInstallStartedSchema = z.object({ installing: z.literal(true) }).strict();
+export const updateVersionInputSchema = z.object({ version: z.string().min(1).max(100) }).strict();
 
 export const imageGenerationSettingsSchema = z.object({
   provider: z.enum(imageGenerationProviderIds),
@@ -1223,6 +1233,8 @@ export interface PiDesktopApi {
   setSettings: (settings: AppSettings) => Promise<AppSettings>;
   checkForUpdates: () => Promise<UpdateCheckResult>;
   openUpdateDownload: () => Promise<void>;
+  downloadAndInstallUpdate: (version: string) => Promise<void>;
+  onUpdatesProgress: (listener: (progress: { downloaded: number; total: number; percent: number; version: string }) => void) => () => void;
   getThemes: () => Promise<ThemeDefinition[]>;
   getSpeechStatus: () => Promise<SpeechStatus>;
   ensureSpeechModel: (modelId: SpeechModelId) => Promise<void>;

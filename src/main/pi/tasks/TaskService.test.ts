@@ -97,14 +97,16 @@ describe('TaskService', () => {
     expect(synced.tasks.find((task) => task.goalCriterionId === 'c1')?.verified).toBe(false);
     expect(isTaskListGateSatisfied(synced)).toBe(false);
 
-    // Independent verifier passes and links current verification evidence -> verified.
-    const verified: GoalMaxState = {
+    // Verification evidence cannot turn the task green before the completed
+    // state has passed validation and committed durably.
+    const verificationPending: GoalMaxState = {
       ...withEvidence,
+      status: 'verifying',
+      phase: 'verification',
       evidence: [...withEvidence.evidence, { id: 'v1', kind: 'verification', title: 'passed', summary: 'ok', criterionIds: ['c1', 'c2'], source: 'verifier', timestamp: now, current: true }],
     };
-    synced = await svc.syncGoal('/project', 'session-1', verified);
-    expect(synced.tasks.find((task) => task.goalCriterionId === 'c1')?.verified).toBe(true);
-    // c2 still lacks non-verifier evidence so it is not done -> gate closed.
+    synced = await svc.syncGoal('/project', 'session-1', verificationPending);
+    expect(synced.tasks.find((task) => task.goalCriterionId === 'c1')?.verified).toBe(false);
     expect(isTaskListGateSatisfied(synced)).toBe(false);
   });
 
@@ -113,6 +115,9 @@ describe('TaskService', () => {
     const now = Date.now();
     const verified: GoalMaxState = {
       ...goalFixture(),
+      status: 'completed',
+      phase: 'handoff',
+      completedAt: now,
       criteria: goalFixture().criteria.map((criterion) => ({ ...criterion, status: 'satisfied', evidenceIds: criterion.id === 'c1' ? ['e1'] : ['e2'] })),
       evidence: [
         { id: 'e1', kind: 'test', title: 't', summary: 's', criterionIds: ['c1'], source: 'root-tool', timestamp: now, current: true, command: 'pnpm test', exitCode: 0 },
@@ -124,7 +129,13 @@ describe('TaskService', () => {
     expect(isTaskListGateSatisfied(synced)).toBe(true);
 
     // Workspace change invalidates the verifier evidence (current: false).
-    const stale: GoalMaxState = { ...verified, evidence: verified.evidence.map((evidence) => evidence.kind === 'verification' ? { ...evidence, current: false } : evidence) };
+    const stale: GoalMaxState = {
+      ...verified,
+      status: 'active',
+      phase: 'implementation',
+      completedAt: null,
+      evidence: verified.evidence.map((evidence) => evidence.kind === 'verification' ? { ...evidence, current: false } : evidence),
+    };
     synced = await svc.syncGoal('/project', 'session-1', stale);
     expect(synced.tasks.every((task) => !task.verified)).toBe(true);
     expect(isTaskListGateSatisfied(synced)).toBe(false);

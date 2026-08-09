@@ -699,6 +699,41 @@ describe('conversation components', () => {
     await waitFor(() => expect(screen.getByLabelText('Message Pi')).toHaveValue(''));
   });
 
+  it('restores one project new-session draft until Pi accepts it', async () => {
+    const savedSession = {
+      id: 'saved', title: 'Saved session', firstMessage: 'Saved prompt', path: '/sessions/saved.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const prompt = vi.fn()
+      .mockResolvedValueOnce({ accepted: false, runId: 'rejected' })
+      .mockResolvedValueOnce({ accepted: true, runId: 'accepted' });
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt } as unknown as PiDesktopApi });
+    useRuntimeStore.getState().setRuntime(ready({ sessionId: 'draft-1', sessions: [savedSession] }));
+    render(<Composer onOpenProject={vi.fn()} />);
+    const input = screen.getByLabelText('Message Pi');
+
+    fireEvent.change(input, { target: { value: 'Keep this new-session draft' } });
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 'saved', sessions: [{ ...savedSession, active: true }] })));
+    await waitFor(() => expect(input).toHaveValue(''));
+
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 'draft-2', sessions: [savedSession] })));
+    await waitFor(() => expect(input).toHaveValue('Keep this new-session draft'));
+
+    const send = screen.getByRole('button', { name: 'Send message' });
+    fireEvent.click(send);
+    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(send).toBeEnabled());
+    expect(input).toHaveValue('Keep this new-session draft');
+
+    fireEvent.click(send);
+    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(input).toHaveValue(''));
+
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 'saved', sessions: [{ ...savedSession, active: true }] })));
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 'draft-3', sessions: [savedSession] })));
+    await waitFor(() => expect(input).toHaveValue(''));
+  });
+
   it('autocompletes stable agent handles and executes only exact stop syntax directly', async () => {
     const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
     const controlSubagent = vi.fn(async () => ready({ subagents: [{ ...childRun, status: 'cancelled', endedAt: 3 }] }));
@@ -1009,16 +1044,38 @@ describe('conversation components', () => {
     expect(useGoalMaxStore.getState().goal?.id).toBe('goal-1');
   });
 
-  it('keeps bare /goalmax local and asks for an objective', async () => {
-    const createGoalMax = vi.fn();
+  it('keeps bare /goalmax local and opens the current Goal Flight Deck', async () => {
     const prompt = vi.fn();
-    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { createGoalMax, prompt } as unknown as PiDesktopApi });
+    useGoalMaxStore.setState({ goal: activeGoalFixture() });
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt } as unknown as PiDesktopApi });
     render(<Composer onOpenProject={vi.fn()} />);
 
     await userEvent.setup().type(screen.getByLabelText('Message Pi'), '/goalmax{Enter}');
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Add an objective after /goalmax.');
-    expect(createGoalMax).not.toHaveBeenCalled();
+    expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'goal', inspectorCollapsed: false });
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it('routes GoalMax pause, resume, and clear through the thread control plane', async () => {
+    const active = activeGoalFixture();
+    const paused = { ...active, revision: 2, status: 'paused' as const, executionState: 'idle' as const };
+    const controlGoalMax = vi.fn(async ({ action }: { action: string }) => action === 'pause' ? paused : { ...active, revision: 3 });
+    const clearGoalMax = vi.fn(async () => ({ cleared: true, archivedGoalId: active.id }));
+    const prompt = vi.fn();
+    useGoalMaxStore.setState({ goal: active });
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { controlGoalMax, clearGoalMax, prompt } as unknown as PiDesktopApi });
+    render(<Composer onOpenProject={vi.fn()} />);
+    const user = userEvent.setup();
+    const input = screen.getByLabelText('Message Pi');
+
+    await user.type(input, '/goalmax pause{Enter}');
+    await waitFor(() => expect(controlGoalMax).toHaveBeenCalledWith({ action: 'pause' }));
+    await user.type(input, '/goalmax resume{Enter}');
+    await waitFor(() => expect(controlGoalMax).toHaveBeenCalledWith({ action: 'resume' }));
+    await user.type(input, '/goalmax clear{Enter}');
+    await waitFor(() => expect(clearGoalMax).toHaveBeenCalledOnce());
+
+    expect(useGoalMaxStore.getState().goal).toBeNull();
     expect(prompt).not.toHaveBeenCalled();
   });
 
@@ -1176,10 +1233,26 @@ describe('conversation components', () => {
     expect(screen.getByText('Use the smaller API')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /More options for queued message/u })).not.toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: `Cancel queued message: ${queued.text}` })).toHaveLength(1);
-    await user.click(screen.getByRole('switch', { name: `Follow-up queued message: ${queued.text}` }));
+    const mode = screen.getByRole('switch', { name: `Follow-up queued message: ${queued.text}` });
+    expect(mode).toHaveTextContent('');
+    await user.click(mode);
 
     expect(mutateQueuedMessage).toHaveBeenCalledWith({ id: queued.id, action: 'steer' });
-    expect(await screen.findByRole('switch', { name: `Steer queued message: ${queued.text}` })).toBeEnabled();
+    const steerMode = await screen.findByRole('switch', { name: `Steer queued message: ${queued.text}` });
+    expect(steerMode).toBeEnabled();
+    expect(steerMode).toHaveTextContent('');
+  });
+
+  it('shows accepted GoalMax updates after the composer draft clears', () => {
+    const goal = activeGoalFixture();
+    useGoalMaxStore.setState({ goal: {
+      ...goal,
+      steering: [{ id: 'steering-1', text: 'Also document the recovery path.', behavior: 'followUp', timestamp: 2, revision: 2 }],
+    } });
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    expect(screen.getByRole('region', { name: 'GoalMax updates' })).toHaveTextContent('Also document the recovery path.');
+    expect(screen.getByRole('region', { name: 'GoalMax updates' })).toHaveTextContent('Goal update');
   });
 
   it('moves a queued message back into the composer for editing', async () => {

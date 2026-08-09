@@ -49,12 +49,38 @@ async function sidebarSearchVisual(input: Locator): Promise<Record<string, strin
   });
 }
 
+function sidebarSearchWidth(visual: Record<string, string>): number {
+  const width = visual.width;
+  if (!width) throw new Error('Sidebar search width was not measured.');
+  return Number.parseFloat(width);
+}
+
 function expectSidebarSearchVisualMatch(actual: Record<string, string>, expected: Record<string, string>): void {
-  const { width: actualWidth, ...actualStyle } = actual;
-  const { width: expectedWidth, ...expectedStyle } = expected;
-  if (!actualWidth || !expectedWidth) throw new Error('Sidebar search width was not measured.');
+  const { width: _actualWidth, ...actualStyle } = actual;
+  const { width: _expectedWidth, ...expectedStyle } = expected;
+  expect(sidebarSearchWidth(actual)).toBeGreaterThan(0);
+  expect(sidebarSearchWidth(expected)).toBeGreaterThan(0);
   expect(actualStyle).toEqual(expectedStyle);
-  expect(Math.abs(Number.parseFloat(actualWidth) - Number.parseFloat(expectedWidth))).toBeLessThanOrEqual(1);
+}
+
+async function sidebarToolbarLayout(input: Locator): Promise<{ rowTopSpread: number; overflow: number; searchToActionGap: number }> {
+  return input.evaluate((node) => {
+    const search = node.closest('label');
+    const toolbar = search?.parentElement;
+    if (!search || !toolbar) throw new Error('Sidebar search toolbar is incomplete.');
+    const searchBox = search.getBoundingClientRect();
+    const itemBoxes = [...toolbar.children]
+      .map((item) => item.getBoundingClientRect())
+      .filter((box) => box.width > 0 && box.height > 0);
+    const firstActionBox = itemBoxes.at(1);
+    if (!firstActionBox) throw new Error('Sidebar toolbar actions are missing.');
+    const tops = itemBoxes.map((box) => box.top);
+    return {
+      rowTopSpread: Math.max(...tops) - Math.min(...tops),
+      overflow: toolbar.scrollWidth - toolbar.clientWidth,
+      searchToActionGap: firstActionBox.left - searchBox.right,
+    };
+  });
 }
 
 async function writeBrowserPreview(root: string): Promise<void> {
@@ -134,9 +160,37 @@ test('left sidebar unifies real resources and persisted project automations', as
     await page.getByRole('button', { name: /Open project/u }).first().click();
     await expect(page.getByText(path.basename(fixture.root)).first()).toBeVisible();
 
+    const voiceButton = page.getByRole('button', { name: 'Start voice recording' });
+    const voiceBox = await voiceButton.boundingBox();
+    if (!voiceBox) throw new Error('Voice input button was not rendered.');
+    await page.mouse.move(voiceBox.x + voiceBox.width / 2, voiceBox.y + voiceBox.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(200);
+    const pressedVoiceStyle = await voiceButton.evaluate((button) => {
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--theme-accent)';
+      document.body.append(probe);
+      const accent = getComputedStyle(probe).color;
+      probe.remove();
+      const style = getComputedStyle(button);
+      return { accent, color: style.color, backgroundColor: style.backgroundColor, boxShadow: style.boxShadow, transform: style.transform };
+    });
+    await page.mouse.move(1, 1);
+    await page.mouse.up();
+    expect(pressedVoiceStyle.color).toBe(pressedVoiceStyle.accent);
+    expect(pressedVoiceStyle.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(pressedVoiceStyle.boxShadow).toBe('none');
+    expect(pressedVoiceStyle.transform).toBe('none');
+
     const sidebarTabs = page.getByRole('tablist', { name: 'Sidebar destinations' });
     await expect(sidebarTabs.getByRole('tab')).toHaveText(['Sessions', 'Automations', 'Resources']);
-    const sessionSearchVisual = await sidebarSearchVisual(page.getByLabel('Search sessions'));
+    const sessionSearch = page.getByLabel('Search sessions');
+    const sessionSearchVisual = await sidebarSearchVisual(sessionSearch);
+    const sessionToolbarLayout = await sidebarToolbarLayout(sessionSearch);
+    expect(sessionToolbarLayout.rowTopSpread).toBeLessThanOrEqual(1);
+    expect(sessionToolbarLayout.overflow).toBeLessThanOrEqual(0);
+    expect(sessionToolbarLayout.searchToActionGap).toBeGreaterThanOrEqual(4);
+    expect(sessionToolbarLayout.searchToActionGap).toBeLessThanOrEqual(6);
     await sidebarTabs.getByRole('tab', { name: 'Resources' }).click();
     await expect(page.getByRole('button', { name: /Files.*Browse and preview project files/u })).toBeVisible();
     await expect(page.getByRole('button', { name: /Browser.*Built-in Chromium workspace/u })).toBeVisible();
@@ -145,14 +199,25 @@ test('left sidebar unifies real resources and persisted project automations', as
     await expect(page.locator('.resource-preview-group').filter({ hasText: 'Pi Library' })).toHaveCount(0);
 
     const resourceSearch = page.getByRole('searchbox', { name: 'Search resources' });
-    expectSidebarSearchVisualMatch(await sidebarSearchVisual(resourceSearch), sessionSearchVisual);
+    const resourceSearchVisual = await sidebarSearchVisual(resourceSearch);
+    expectSidebarSearchVisualMatch(resourceSearchVisual, sessionSearchVisual);
+    expect(sidebarSearchWidth(resourceSearchVisual)).toBeGreaterThan(sidebarSearchWidth(sessionSearchVisual) + 20);
+    const resourceToolbarLayout = await sidebarToolbarLayout(resourceSearch);
+    expect(resourceToolbarLayout.rowTopSpread).toBeLessThanOrEqual(1);
+    expect(resourceToolbarLayout.overflow).toBeLessThanOrEqual(0);
     await resourceSearch.fill('example');
     await page.getByRole('button', { name: /example\.ts.*src\/example\.ts/u }).click();
     await expect(page.getByRole('tab', { name: 'Files' })).toHaveAttribute('data-state', 'active');
     await expect(page.locator('.preview-heading')).toContainText('src/example.ts');
 
     await sidebarTabs.getByRole('tab', { name: 'Automations' }).click();
-    expectSidebarSearchVisualMatch(await sidebarSearchVisual(page.getByRole('searchbox', { name: 'Search automations' })), sessionSearchVisual);
+    const automationSearch = page.getByRole('searchbox', { name: 'Search automations' });
+    const automationSearchVisual = await sidebarSearchVisual(automationSearch);
+    expectSidebarSearchVisualMatch(automationSearchVisual, sessionSearchVisual);
+    expect(sidebarSearchWidth(automationSearchVisual)).toBeGreaterThan(sidebarSearchWidth(sessionSearchVisual) + 20);
+    const automationToolbarLayout = await sidebarToolbarLayout(automationSearch);
+    expect(automationToolbarLayout.rowTopSpread).toBeLessThanOrEqual(1);
+    expect(automationToolbarLayout.overflow).toBeLessThanOrEqual(0);
     const automationPanel = page.locator('.sidebar-automation-panel');
     const automationEmpty = automationPanel.locator('.sidebar-tab-empty');
     await expect(automationEmpty).toContainText('No automations yet');
@@ -263,6 +328,7 @@ test('expanding the bottom project keeps its sessions contained, indented, and b
       const groupRect = bottomGroup.getBoundingClientRect();
       const headerRect = bottomGroup.querySelector<HTMLElement>(':scope > .folder-header')!.getBoundingClientRect();
       const childRect = bottomGroup.querySelector<HTMLElement>(':scope > .folder-children')!.getBoundingClientRect();
+      const chevronRect = bottomGroup.querySelector<SVGElement>(':scope > .folder-header .folder-chevron > svg')!.getBoundingClientRect();
       const rowRects = [...bottomGroup.querySelectorAll<HTMLElement>('.folder-children .session-row')].map((row) => {
         const rect = row.getBoundingClientRect();
         return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
@@ -273,7 +339,16 @@ test('expanding the bottom project keeps its sessions contained, indented, and b
           return (overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight;
         })
         .map((node) => node.className);
-      return { headers, groupRect: { top: groupRect.top, bottom: groupRect.bottom }, headerRect: { left: headerRect.left, bottom: headerRect.bottom }, childLeft: childRect.left, rowRects, scrollOwners };
+      return {
+        headers,
+        groupRect: { top: groupRect.top, bottom: groupRect.bottom },
+        headerRect: { left: headerRect.left, bottom: headerRect.bottom },
+        childLeft: childRect.left,
+        connectorCenter: childRect.left + Number.parseFloat(getComputedStyle(bottomGroup.querySelector<HTMLElement>(':scope > .folder-children')!).borderInlineStartWidth) / 2,
+        chevronCenter: chevronRect.left + chevronRect.width / 2,
+        rowRects,
+        scrollOwners,
+      };
     });
 
     for (const collapsedGroup of before) {
@@ -288,6 +363,7 @@ test('expanding the bottom project keeps its sessions contained, indented, and b
     }
     expect(after.headers[0]!.bottom).toBeLessThanOrEqual(after.headers[1]!.top);
     expect(after.childLeft).toBeGreaterThan(after.headerRect.left + 8);
+    expect(after.chevronCenter).toBeCloseTo(after.connectorCenter, 5);
     expect(after.rowRects[0]!.left).toBeGreaterThan(after.headerRect.left + 16);
     expect(after.rowRects[0]!.top).toBeGreaterThanOrEqual(after.headerRect.bottom);
     expect(after.rowRects[0]!.bottom).toBeLessThanOrEqual(after.rowRects[1]!.top);

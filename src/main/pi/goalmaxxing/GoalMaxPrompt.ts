@@ -1,6 +1,7 @@
 import type { GoalMaxState } from '../../../shared/contracts/goalmaxxing';
 import { AGENT_TEAM_MAX_MESSAGE_BYTES } from '../../../shared/contracts/multiAgent';
 import type { GoalMaxRecovery } from './GoalMaxStallDetector';
+import { GOALMAX_VERIFICATION_TITLE, hasGoalMaxTaskPlan } from './GoalMaxStateMachine';
 
 export const GOALMAX_CAPSULE_MAX_BYTES = 30 * 1_024;
 export const GOALMAX_VERIFIER_PROMPT_MAX_BYTES = AGENT_TEAM_MAX_MESSAGE_BYTES - 1_024;
@@ -40,6 +41,15 @@ export function goalMaxCapsule(goal: GoalMaxState, recovery?: GoalMaxRecovery): 
   const tokenLimit = goal.budget.tokenLimit === null ? 'none' : goal.budget.tokenLimit.toLocaleString('en-US');
   const timeLimit = goal.budget.timeLimitMs === null ? 'none' : `${Math.ceil(goal.budget.timeLimitMs / 60_000)}m`;
   const agentPolicy = goal.agentStrategy === 'off' ? 'root only' : goal.agentStrategy === 'read-only' ? 'read-only delegation' : 'bounded delegation when useful';
+  const taskPlanCaptured = hasGoalMaxTaskPlan(goal);
+  const needsTaskPlan = !taskPlanCaptured && goal.status !== 'completed' && goal.status !== 'cancelled';
+  const planningContract = needsTaskPlan ? [
+    'PLANNING CONTRACT',
+    'Before implementation, decompose the objective into one cohesive, ordered execution plan.',
+    'Call goalmax_report once with outcome "progress", phase "planning", and taskPlan containing 2-12 concrete implementation tasks (use more only when the work truly requires it).',
+    'Each task needs a distinct action title and a detailed observable completion condition. Do not copy the objective, use placeholders, duplicate tasks, or add the final verification task; the control plane adds verification.',
+    '',
+  ] : [];
   const capsule = [
     `GOALMAX OBJECTIVE · ${goal.status.toUpperCase()}`,
     clipUtf8(goal.objective, 5 * 1_024),
@@ -51,6 +61,8 @@ export function goalMaxCapsule(goal: GoalMaxState, recovery?: GoalMaxRecovery): 
     `REQUIRED CRITERIA\n${criteria}`,
     '',
     `AUTHORITATIVE USER STEERING\n${steering}`,
+    'Treat new steering as part of this goal now, not as a message to replay after completion.',
+    'If steering changes remaining scope, use goalmax_report.pendingTaskChanges to add new pending tasks or remove untouched pending criteria. Never rewrite the active, satisfied, failed, or evidence-linked work.',
     '',
     `CURRENT EVIDENCE\n${evidence}`,
     '',
@@ -58,18 +70,21 @@ export function goalMaxCapsule(goal: GoalMaxState, recovery?: GoalMaxRecovery): 
     '',
     `BLOCKERS\n${blockers}`,
     '',
+    ...planningContract,
     'NEXT-TURN CONTRACT',
     instruction,
-    'Use tools and change or verify real artefacts. Do not produce another plan unless new uncertainty requires it.',
+    needsTaskPlan
+      ? 'Submit the execution task plan before implementation, then advance its first active task.'
+      : 'Use tools and change or verify real artefacts. Do not replace the captured plan unless new uncertainty requires a user-approved edit.',
     'Use goalmax_status to inspect current evidence IDs. Use goalmax_report for interim progress or an exact blocker.',
-    'When all requested work and checks are finished, call goalmax_complete exactly once with current evidence, then stop tool use and end the root turn so the completion gate can run.',
-    'Never create a budget, elevate permissions, or claim completion in prose. Completion is decided by the control plane after independent verification.',
+    'When all requested work and checks are finished, call goalmax_complete exactly once with current evidence. If it reports completion, stop tool use and end the root turn; otherwise continue the returned work.',
+    'Never create a budget, elevate permissions, or claim completion in prose. Completion is decided atomically by the control plane from current evidence.',
   ].join('\n');
   return clipUtf8(capsule, GOALMAX_CAPSULE_MAX_BYTES);
 }
 
 export function goalMaxVerificationPrompt(goal: GoalMaxState): string {
-  const requiredCriteria = goal.criteria.filter((criterion) => criterion.required && criterion.status !== 'waived');
+  const requiredCriteria = goal.criteria.filter((criterion) => criterion.required && criterion.status !== 'waived' && criterion.title !== GOALMAX_VERIFICATION_TITLE);
   const required = boundedItems(requiredCriteria, 12 * 1_024, (criterion) => [
     `- ${criterion.id}: ${criterion.title}`,
     criterion.description ? `  ${criterion.description}` : '',

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { GoalMaxState } from '../../../shared/contracts/goalmaxxing';
-import { canTransitionGoalMax, isGoalMaxCriterionEvidence, normalizeGoalMaxBrief, transitionGoalMax } from './GoalMaxStateMachine';
+import { GOALMAX_MAX_EVIDENCE, goalMaxStateSchema, type GoalMaxEvidence, type GoalMaxState } from '../../../shared/contracts/goalmaxxing';
+import { canTransitionGoalMax, isGoalMaxCriterionEvidence, normalizeGoalMaxBrief, reconcileGoalMaxReferences, transitionGoalMax } from './GoalMaxStateMachine';
 
 function baseGoal(): GoalMaxState {
   const now = 1_700_000_000_000;
@@ -67,6 +67,40 @@ describe('GoalMax Gate A (strict non-verifier evidence)', () => {
     expect(completed.status).toBe('completed');
   });
 
+  it('repairs evidence links pruned at the retention boundary before completing', () => {
+    const now = 1_700_000_000_003;
+    const evidence = Array.from({ length: GOALMAX_MAX_EVIDENCE - 2 }, (_value, index): GoalMaxEvidence => ({
+      id: `filler-${index}`, kind: 'runtime', title: `Filler ${index}`, summary: 'Bounded runtime evidence.',
+      criterionIds: [], source: 'root-tool', timestamp: now + index, current: true,
+    }));
+    evidence.unshift({
+      id: 'e-old', kind: 'file', title: 'Old linked evidence', summary: 'This record will be evicted.',
+      criterionIds: ['c1'], source: 'root-tool', timestamp: now - 1, current: true, path: 'src/old.ts',
+    });
+    evidence.push(
+      { id: 'e1', kind: 'test', title: 'Current tests', summary: 'passed', criterionIds: ['c1'], source: 'root-tool', timestamp: now + GOALMAX_MAX_EVIDENCE, current: true, command: 'pnpm test', exitCode: 0 },
+      { id: 'e-verifier', kind: 'verification', title: 'Independent pass', summary: 'passed', criterionIds: ['c1'], source: 'verifier', timestamp: now + GOALMAX_MAX_EVIDENCE + 1, current: true },
+    );
+    const goal: GoalMaxState = {
+      ...baseGoal(),
+      criteria: baseGoal().criteria.map((criterion) => ({ ...criterion, evidenceIds: ['e-old', 'e1', 'e-verifier'] })),
+      evidence,
+    };
+
+    const prunedWithoutReconciliation = goalMaxStateSchema.safeParse({ ...goal, evidence: goal.evidence.slice(-GOALMAX_MAX_EVIDENCE) });
+    expect(prunedWithoutReconciliation.success).toBe(false);
+    if (!prunedWithoutReconciliation.success) {
+      expect(prunedWithoutReconciliation.error.issues.map((issue) => issue.message)).toEqual(['Criteria must reference retained goal evidence.']);
+    }
+
+    const reconciled = reconcileGoalMaxReferences(goal);
+    expect(reconciled.evidence).toHaveLength(GOALMAX_MAX_EVIDENCE);
+    expect(reconciled.evidence.some((item) => item.id === 'e-old')).toBe(false);
+    expect(reconciled.criteria[0]?.evidenceIds).toEqual(['e1', 'e-verifier']);
+    expect(reconciled.evidence.find((item) => item.id === 'e1')?.criterionIds).toContain('c1');
+    expect(transitionGoalMax(goal, 'completed', now).status).toBe('completed');
+  });
+
   it('refuses to complete while a required criterion is still unverified', () => {
     const now = 1_700_000_000_003;
     const goal: GoalMaxState = {
@@ -83,9 +117,17 @@ describe('GoalMax state machine', () => {
     expect(canTransitionGoalMax('active', 'verifying')).toBe(true);
     expect(canTransitionGoalMax('active', 'completed')).toBe(false);
     expect(canTransitionGoalMax('verifying', 'active')).toBe(true);
+    expect(canTransitionGoalMax('verifying', 'paused')).toBe(true);
     expect(canTransitionGoalMax('blocked', 'active')).toBe(true);
     expect(canTransitionGoalMax('completed', 'active')).toBe(false);
     expect(canTransitionGoalMax('cancelled', 'paused')).toBe(false);
+  });
+
+  it('uses a planning placeholder instead of copying an unstructured objective into one fake task', () => {
+    const objective = 'Build a polished settings workflow with validation, persistence, tests, and clear recovery states.';
+    const result = normalizeGoalMaxBrief(objective);
+    expect(result.criteria.map((criterion) => criterion.title)).toEqual(['Plan the execution', 'Verify the delivered result']);
+    expect(result.criteria[0]?.description).not.toBe(objective);
   });
 
   it('derives bounded criteria from long briefs without discarding the source', () => {

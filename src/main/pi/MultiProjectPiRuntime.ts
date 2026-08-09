@@ -100,7 +100,11 @@ export class MultiProjectPiRuntime {
         },
         onEvicted: () => this.rewireSinks(),
       },
-      { evictionEnabled: true },
+      // Keep every folder's agent alive (no idle eviction). Correctness and
+      // instant folder switching come first; the hard concurrency cap still
+      // reclaims the oldest idle slot when too many folders are open at once.
+      // Re-enable idle eviction later once multi-folder is stable and tuned.
+      { evictionEnabled: false },
     );
     this.manager.start();
     this.router = this.buildRouter();
@@ -123,6 +127,14 @@ export class MultiProjectPiRuntime {
    */
   async openProject(project: ProjectState, defaults?: SessionDefaults): Promise<RuntimeState> {
     this.requestedDefaults = defaults;
+    // Fast path: if this folder already has a live runtime, re-focus it
+    // directly and return its current state. This skips the boot-service
+    // "empty preview" flash and the disk-session reload, so switching back to
+    // a folder whose agent is already running is instant and never blanks the
+    // session list the user was looking at.
+    if (this.manager.focus(project.path)) {
+      return this.getFocused().getState();
+    }
     // Focus a lightweight preview immediately. This removes the long blank
     // interval while Pi loads extensions, tools, and model providers.
     this.manager.focusPreview(project);
@@ -146,7 +158,13 @@ export class MultiProjectPiRuntime {
   }
 
   async focusProject(project: ProjectState): Promise<RuntimeState> {
+    // A live runtime is re-focused instantly without recreation.
     if (this.manager.focus(project.path)) return this.getFocused().getState();
+    // No live runtime: show a lightweight preview (session titles read from
+    // disk) WITHOUT spawning a Pi agent. The agent spawns lazily when the user
+    // opens a session in this folder. This keeps folder browsing cheap and
+    // matches the multi-folder design: titles always, agents on demand, idle
+    // agents evicted after the grace period.
     this.manager.focusPreview(project);
     const sessions = await this.bootService.listSessionsForPath(project.path).catch(() => []);
     return this.bootService.setProjectPreview(project, sessions);
@@ -173,9 +191,17 @@ export class MultiProjectPiRuntime {
     const live = this.manager.get(projectPath);
     if (live && live.getState(false).project?.path === projectPath) {
       const state = live.getState(false);
-      const sessions = state.status !== 'disconnected' && state.status !== 'error'
-        ? await live.listSessions(query)
-        : await live.listSessionsForPath(projectPath, query);
+      // Prefer the runtime's own session list (which merges live attention
+      // dots: running / completed / error) so background folders keep their
+      // colored status dots. Fall back to a disk-only listing only when the
+      // runtime has no selected slot to project from.
+      let sessions: SessionSummary[];
+      if (state.status !== 'disconnected' && state.status !== 'error') {
+        const liveSessions = await live.listSessions(query);
+        sessions = liveSessions.length > 0 ? liveSessions : await live.listSessionsForPath(projectPath, query);
+      } else {
+        sessions = await live.listSessionsForPath(projectPath, query);
+      }
       const remembered = this.attentionByProject.get(projectPath);
       const selectedId = state.sessionId;
       const merged = this.manager.focusedProjectPath !== projectPath && selectedId && remembered?.has(selectedId)

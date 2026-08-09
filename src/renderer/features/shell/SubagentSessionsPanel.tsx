@@ -617,7 +617,7 @@ function AgentTeamLifecycleControls({ team }: { team: AgentTeam }) {
         void run({ action: 'closeTeam', teamId: team.id, force, operationId: crypto.randomUUID() });
       }}><X size={12} /></button> : null}
       {team.status !== 'released' ? <button type="button" disabled={Boolean(pending)} title="Reset team history and runtime" aria-label={`Reset team ${team.name}`} onClick={() => setConfirmation({ action: 'resetTeam', force: active, title: `Reset ${team.name}?`, message: 'Team tasks and messages will be cleared.', confirmLabel: 'Reset team' })}><RotateCcw size={12} /></button> : null}
-      {(team.status === 'closed' || team.status === 'released') ? <button type="button" className="subagent-control-danger" disabled={Boolean(pending)} title="Delete team history after safe cleanup" aria-label={`Delete team history for ${team.name}`} onClick={() => setConfirmation({ action: 'deleteTeam', title: `Delete ${team.name} history?`, message: 'This cannot be undone.', confirmLabel: 'Delete history' })}><Trash2 size={12} /></button> : null}
+      {(team.status === 'closed' || team.status === 'released') ? <button type="button" className="subagent-control-danger" disabled={Boolean(pending)} title="Delete team history after safe cleanup" aria-label={`Delete team history for ${team.name}`} onClick={() => setConfirmation({ action: 'deleteTeam', title: `Delete ${team.name} history?`, message: 'This cannot be undone.', confirmLabel: 'Delete' })}><Trash2 size={12} /></button> : null}
       {pending ? <LoaderCircle className="tool-spinner" size={12} aria-label={`${pending} pending`} /> : null}
       {confirmation ? <InlineConfirm
         title={confirmation.title}

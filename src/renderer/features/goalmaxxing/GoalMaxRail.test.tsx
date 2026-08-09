@@ -40,6 +40,22 @@ describe('GoalMax rail', () => {
     expect(useGoalMaxStore.getState().goal?.status).toBe('paused');
   });
 
+  it('presents a completed goal as achieved with no warning state', () => {
+    useGoalMaxStore.setState({ goal: {
+      ...goal('completed'),
+      phase: 'handoff',
+      criteria: [{ ...goal().criteria[0]!, status: 'satisfied' }],
+      completedAt: 2,
+      blockedReason: null,
+      failure: null,
+    } });
+    const { container } = render(<GoalMaxRail />);
+
+    expect(screen.getByRole('region', { name: 'Current GoalMax goal' })).toHaveTextContent('Achieved · handoff · 1/1');
+    expect(container.querySelector('.goalmax-rail[data-status="completed"] .lucide-check')).toBeInTheDocument();
+    expect(container.querySelector('.goalmax-rail .lucide-circle-alert')).not.toBeInTheDocument();
+  });
+
   it('preserves in-progress edits when live goal events advance the revision', async () => {
     const user = userEvent.setup();
     const updateGoalMax = vi.fn(async () => ({ ...goal(), revision: 3, objective: 'Edited objective' }));

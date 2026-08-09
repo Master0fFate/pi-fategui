@@ -1,13 +1,20 @@
 export type ParsedGoalMaxCommand =
-  | { kind: 'create'; objective: string }
-  | { kind: 'invalid'; message: string };
+  | { kind: 'view' }
+  | { kind: 'pause' }
+  | { kind: 'resume' }
+  | { kind: 'clear' }
+  | { kind: 'create'; objective: string };
 
-/** Strict renderer-owned routing. Only `/goalmax <objective>` is a command. */
+/** Renderer-owned, thread-scoped GoalMax lifecycle commands. */
 export function parseGoalMaxCommand(draft: string): ParsedGoalMaxCommand | null {
   if (!draft.startsWith('/goalmax')) return null;
   const boundary = draft['/goalmax'.length];
   if (boundary !== undefined && !/\s/u.test(boundary)) return null;
-  const objective = draft.slice('/goalmax'.length).trim();
-  if (!objective) return { kind: 'invalid', message: 'Add an objective after /goalmax.' };
-  return { kind: 'create', objective };
+  const argument = draft.slice('/goalmax'.length).trim();
+  if (!argument || argument.toLocaleLowerCase() === 'status') return { kind: 'view' };
+  const lifecycle = argument.toLocaleLowerCase();
+  if (lifecycle === 'pause') return { kind: 'pause' };
+  if (lifecycle === 'resume') return { kind: 'resume' };
+  if (lifecycle === 'clear') return { kind: 'clear' };
+  return { kind: 'create', objective: argument };
 }

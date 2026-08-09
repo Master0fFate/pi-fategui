@@ -1,5 +1,8 @@
 import { app, BrowserWindow, dialog, Menu, protocol, screen, session, shell, systemPreferences } from 'electron';
 import { existsSync, readdirSync } from 'node:fs';
+import { spawn, execFile } from 'node:child_process';
+import { copyFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FilesystemService } from './files/FilesystemService';
@@ -97,6 +100,13 @@ const files = new FilesystemService();
 const git = new GitService(files);
 const updates = new UpdateService(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'PRODVER'), {
   openExternal: (url) => shell.openExternal(url),
+  downloadDir: app.getPath('temp'),
+  reportProgress: (progress) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send(ipcChannels.updatesProgress, progress);
+    }
+  },
+  launchInstaller: (filePath, version) => installDownloadedUpdate(filePath, version),
 });
 const windowState = new WindowStateService(logs);
 const music = new MusicService();
@@ -136,6 +146,58 @@ function dispatchProjectPath(projectPath: string): void {
     return;
   }
   void projectPathOpener(projectPath, mainWindow).catch(reportLaunchError);
+}
+
+// Installs a downloaded updater for this platform, then relaunches and quits.
+// Windows: runs the NSIS installer (silent) which replaces the app.
+// macOS: mounts the DMG, copies the .app over /Applications, then relaunches.
+// Linux: replaces the running AppImage at its path, then relaunches it.
+const MACOS_APP_NAME = 'Fate UI.app';
+const MACOS_INSTALL_DIR = '/Applications';
+function relaunchDetached(command: string, args: readonly string[] = []): void {
+  const child = spawn(command, [...args], { detached: true, stdio: 'ignore' });
+  child.unref();
+}
+async function installDownloadedUpdate(filePath: string, _version: string): Promise<void> {
+  if (process.platform === 'win32') {
+    // NSIS installer (/S = silent). Detach so it survives this process quitting.
+    relaunchDetached(filePath, ['/S']);
+    setTimeout(() => app.quit(), 800);
+    return;
+  }
+  if (process.platform === 'darwin') {
+    const mountPoint = path.join(tmpdir(), `fate-ui-update-${Date.now()}`);
+    await new Promise<void>((resolve, reject) => {
+      execFile('hdiutil', ['attach', filePath, '-nobrowse', '-mountpoint', mountPoint], (error) => error ? reject(error) : resolve());
+    });
+    try {
+      const sourceApp = path.join(mountPoint, MACOS_APP_NAME);
+      const targetApp = path.join(MACOS_INSTALL_DIR, MACOS_APP_NAME);
+      // Replace the installed bundle (a running app keeps its old inode).
+      await rm(targetApp, { recursive: true, force: true }).catch(() => undefined);
+      await new Promise<void>((resolve, reject) => {
+        execFile('cp', ['-R', sourceApp, targetApp], (error) => error ? reject(error) : resolve());
+      });
+      await new Promise<void>((resolve) => execFile('xattr', ['-dr', 'com.apple.quarantine', targetApp], () => resolve()));
+    } finally {
+      await new Promise<void>((resolve) => execFile('hdiutil', ['detach', mountPoint], () => resolve()));
+    }
+    relaunchDetached(path.join(MACOS_INSTALL_DIR, MACOS_APP_NAME, 'Contents', 'MacOS', 'fate-ui'));
+    setTimeout(() => app.quit(), 800);
+    return;
+  }
+  if (process.platform === 'linux') {
+    // AppImage: replace the running binary, then relaunch it.
+    const target = process.execPath;
+    await new Promise<void>((resolve, reject) => {
+      execFile('chmod', ['+x', filePath], (error) => error ? reject(error) : resolve());
+    });
+    await copyFile(filePath, target);
+    relaunchDetached(target);
+    setTimeout(() => app.quit(), 800);
+    return;
+  }
+  throw new Error(`Auto-update is not supported on ${process.platform}.`);
 }
 
 // Register this before app readiness work begins. A second launch can arrive

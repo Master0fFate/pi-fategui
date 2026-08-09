@@ -85,7 +85,23 @@ describe('GoalMax prompts', () => {
     expect(capsule).not.toContain('constraint-23');
     expect(capsule).not.toContain('�');
     expect(capsule).toContain('call goalmax_complete exactly once');
-    expect(capsule).toMatch(/Completion is decided by the control plane after independent verification\.$/u);
+    expect(capsule).toMatch(/Completion is decided atomically by the control plane from current evidence\.$/u);
+  });
+
+  it('requires one detailed AI task plan during intake and stops asking after capture', () => {
+    const intake = { ...largeGoal(), phase: 'intake' as const, status: 'active' as const, executionState: 'running-root' as const };
+    const initialCapsule = goalMaxCapsule(intake);
+    expect(initialCapsule).toContain('PLANNING CONTRACT');
+    expect(initialCapsule).toContain('taskPlan containing 2-12 concrete implementation tasks');
+    expect(initialCapsule).toContain('Do not copy the objective');
+
+    const plannedCapsule = goalMaxCapsule({
+      ...intake,
+      phase: 'planning',
+      taskPlanCaptured: true,
+      timeline: [],
+    });
+    expect(plannedCapsule).not.toContain('PLANNING CONTRACT');
   });
 
   it('fits the Agent Team UTF-8 envelope while retaining every criterion and the newest evidence', () => {

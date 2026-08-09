@@ -87,6 +87,7 @@ const speech = {
 const updates = {
   check: async () => ({ status: 'current' as const, message: 'FateGUI is up to date.' }),
   openDownload: async () => undefined,
+  downloadAndInstall: async () => undefined,
 };
 let browser: BrowserHost;
 browser = new BrowserHost({

@@ -740,7 +740,17 @@ export class BrowserService {
       return humanApprovedPrivate || this.policy.allowsPrivateNetworkForOrigin(url.origin);
     }
     try {
-      const addresses = await lookup(url.hostname, { all: true, verbatim: true });
+      // Bound the DNS lookup. On macOS, AAAA/IPv6 resolution for some hosts can
+      // stall getaddrinfo, and an unbounded lookup here would freeze the
+      // webRequest gate (and thus the whole page load) forever. On timeout we
+      // ALLOW the request: the explicit proxy's resolveTarget() still enforces
+      // the private/cloud policy with its own bounded lookup, so security is
+      // preserved — we only stop the request from hanging at this gate.
+      const addresses = await Promise.race([
+        lookup(url.hostname, { all: true, verbatim: true }),
+        new Promise<Array<{ address: string; family: number }>>((resolve) => setTimeout(() => resolve([]), 4_000)),
+      ]);
+      if (addresses.length === 0) return true;
       if (addresses.some((entry) => isCloudMetadataHostname(entry.address))) return false;
       const resolvesPrivate = addresses.some((entry) => isPrivateNetworkHostname(entry.address));
       return !resolvesPrivate || humanApprovedPrivate || this.policy.allowsPrivateNetworkForOrigin(url.origin);

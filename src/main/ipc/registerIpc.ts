@@ -84,6 +84,8 @@ import {
   terminalWriteInputSchema,
   themeCatalogSchema,
   updateCheckResultSchema,
+  updateInstallStartedSchema,
+  updateVersionInputSchema,
   windowControlInputSchema,
   windowStateSchema,
   type AppInfo,
@@ -190,7 +192,7 @@ export interface IpcServices {
   logs: AppLogService;
   music: Pick<MusicService, 'getStatus' | 'load' | 'resolveTrack' | 'clearQueue' | 'reset'>;
   speech: Pick<SpeechService, 'setEventSink' | 'getStatus' | 'download' | 'cancelDownload' | 'remove' | 'transcribe' | 'cancel'>;
-  updates: Pick<UpdateService, 'check' | 'openDownload'>;
+  updates: Pick<UpdateService, 'check' | 'openDownload' | 'downloadAndInstall'>;
   browser: Pick<BrowserHost, 'ensure' | 'current' | 'setAppOverlay' | 'respondToConfirmation' | 'reset'>;
   automations: Pick<AutomationRepository, 'list' | 'create' | 'update' | 'remove' | 'recordLaunch'>;
   rendererPolicy: TrustedRendererPolicy;
@@ -1020,6 +1022,11 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     emptyInputSchema.parse(input);
     await updates.openDownload();
     return openUpdateDownloadResultSchema.parse({ opened: true });
+  });
+  handle(ipcChannels.updatesDownloadInstall, async (_event, input) => {
+    const version = updateVersionInputSchema.parse(input).version;
+    await updates.downloadAndInstall(version);
+    return updateInstallStartedSchema.parse({ installing: true });
   });
   handle(ipcChannels.themesGet, async (_event, input) => {
     emptyInputSchema.parse(input);

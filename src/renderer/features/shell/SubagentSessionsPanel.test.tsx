@@ -343,6 +343,18 @@ describe('subagent session inspector', () => {
     expect(screen.getByLabelText('Reviewer Agent Team node ready')).toBeInTheDocument();
   });
 
+  it('uses a compact themed confirmation when deleting Agent Team history', async () => {
+    const user = userEvent.setup();
+    useRuntimeStore.getState().hydrateRuntime({ ...state, subagents: [], agentTeams: [{ ...team, status: 'closed' }] });
+    render(<SubagentSessionsPanel />);
+
+    await user.click(screen.getByRole('button', { name: 'Delete team history for Review team' }));
+
+    const confirmation = screen.getByRole('alertdialog', { name: 'Delete Review team history?' });
+    expect(within(confirmation).getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    expect(within(confirmation).queryByRole('button', { name: 'Delete history' })).not.toBeInTheDocument();
+  });
+
   it('opens an Agent Team V2 child and shows its retained conversation', async () => {
     const user = userEvent.setup();
     useRuntimeStore.getState().hydrateRuntime({ ...state, subagents: [], agentTeams: [team] });

@@ -46,7 +46,8 @@ describe('Sidebar sessions', () => {
   beforeEach(() => {
     localStorage.clear();
     useRuntimeStore.getState().setRuntime(ready());
-    useProjectStore.setState({ projects: [], expandedByPath: {} });
+    // Tests exercise expanded-folder rendering; production starts collapsed.
+    useProjectStore.setState({ projects: [], expandedByPath: { '/project': true } });
     useUiStore.setState({ sidebarTab: 'sessions', composerDraftRequest: null, automationOpenRequest: null, toast: null, compactSessions: false });
     useWorkspaceStore.setState({ projectPath: '/project', git: null });
     useAutomationStore.getState().reset();
@@ -211,15 +212,17 @@ describe('Sidebar sessions', () => {
     expect(paths.closest('.folder-group')).toHaveClass('folder-group--active');
     expect(paths.closest('.folder-group')).toContainElement(screen.getByRole('button', { name: 'Create an isolated Git worktree session from First' }));
     expect(paths.previousElementSibling).toHaveClass('session-row');
-    expect(paths.querySelectorAll('.session-row--path')).toHaveLength(2);
-    expect(paths).toHaveTextContent('Active');
-    expect(paths).toHaveTextContent('Fork');
-    expect(paths).toHaveTextContent('Current path');
-    expect(paths).toHaveTextContent('Alternate path 1');
+    // Only forks render — the active branch (the main session) is never
+    // duplicated as a "Current path" row. No "Fork"/"Worktree" label text.
+    expect(paths.querySelectorAll('.session-row--path')).toHaveLength(1);
+    expect(paths).toHaveTextContent('Alternative implementation response');
+    expect(paths).not.toHaveTextContent('Current path');
+    expect(paths).not.toHaveTextContent('Alternate path');
+    expect(paths).not.toHaveTextContent(/^Fork$/u);
     expect(paths).not.toHaveTextContent(/^Branches$/u);
     expect(paths).not.toHaveTextContent('custom');
 
-    await user.click(screen.getByRole('button', { name: /Switch to Alternate path 1/u }));
+    await user.click(screen.getByRole('button', { name: /Switch to fork: Alternative implementation response/u }));
 
     await waitFor(() => expect(navigateSessionBranch).toHaveBeenCalledWith('alternate-leaf'));
     await waitFor(() => expect(useRuntimeStore.getState().runtime.branches?.find((branch) => branch.id === 'alternate-leaf')?.active).toBe(true));
@@ -238,8 +241,11 @@ describe('Sidebar sessions', () => {
 
     const paths = screen.getByRole('list', { name: 'Conversation paths' });
     expect(paths).toHaveClass('session-path-list--compact');
+    // Only the fork renders (active branch is the main session, not duplicated).
+    expect(paths.querySelectorAll('.session-row--path')).toHaveLength(1);
     expect(paths.querySelector('.session-row--path')).toHaveClass('session-row--path');
-    expect(paths.querySelectorAll('.session-path-copy small')).toHaveLength(2);
+    expect(paths).toHaveTextContent('Forked path');
+    expect(paths).not.toHaveTextContent('Current path');
   });
 
   it('keeps the Settings control as a tooltip-wrapped icon beside sidebar collapse', () => {
@@ -520,7 +526,7 @@ describe('Sidebar sessions', () => {
     expect(screen.getByRole('button', { name: 'Expand other' }).closest('.folder-group')).not.toHaveClass('folder-group--active');
   });
 
-  it('keeps active and attention sessions visible while their parent folder is collapsed', () => {
+  it('hides session rows while a folder is collapsed but keeps its count chip', () => {
     useRuntimeStore.getState().setRuntime(ready({
       sessionId: 'active',
       sessions: [
@@ -534,15 +540,15 @@ describe('Sidebar sessions', () => {
     useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }], expandedByPath: { '/project': false } });
     render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
 
-    const surfaced = screen.getByRole('group', { name: 'Active sessions in project' });
-    expect(surfaced).toHaveTextContent('Active work');
-    expect(surfaced).toHaveTextContent('Background run');
-    expect(surfaced).toHaveTextContent('Unread result');
-    expect(surfaced).toHaveTextContent('Failed run');
-    expect(surfaced).not.toHaveTextContent('Idle history');
+    // Collapsed: no session rows surface (collapsed folders stay quiet), but
+    // the count chip still reflects the total session count.
+    expect(screen.queryByRole('group', { name: 'Active sessions in project' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Active work')).not.toBeInTheDocument();
+    expect(screen.queryByText('Background run')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'project 5' })).toBeInTheDocument();
   });
 
-  it('bounds large background caches without dropping attention or the exact count', async () => {
+  it('bounds large background caches without dropping the exact count chip', async () => {
     useProjectStore.setState({
       projects: [{ path: '/project', name: 'project' }, { path: '/other', name: 'other' }],
       expandedByPath: { '/project': true, '/other': false },
@@ -557,8 +563,11 @@ describe('Sidebar sessions', () => {
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { listProjectSessions } as unknown as PiDesktopApi });
     render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
 
-    expect(await screen.findByRole('group', { name: 'Active sessions in other' })).toHaveTextContent('Critical unread');
-    expect(screen.getByRole('button', { name: 'other 300' })).toBeInTheDocument();
+    // Collapsed: no session rows surface, but the count chip still shows the
+    // exact total read from disk.
+    await waitFor(() => expect(listProjectSessions).toHaveBeenCalledWith('/other'));
+    expect(screen.queryByRole('group', { name: 'Active sessions in other' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'other 300' })).toBeInTheDocument();
   });
 
   it('invalidates a pending preview request when the sidebar refreshes', async () => {
@@ -584,7 +593,7 @@ describe('Sidebar sessions', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: /^Stale preview/u })).not.toBeInTheDocument());
   });
 
-  it('loads and surfaces active or unread sessions from a collapsed background folder', async () => {
+  it('hides session rows for a collapsed background folder but still reads its count from disk', async () => {
     useProjectStore.setState({
       projects: [{ path: '/project', name: 'project' }, { path: '/other', name: 'other' }],
       expandedByPath: { '/project': true, '/other': false },
@@ -597,11 +606,13 @@ describe('Sidebar sessions', () => {
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { listProjectSessions } as unknown as PiDesktopApi });
     render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
 
-    const surfaced = await screen.findByRole('group', { name: 'Active sessions in other' });
-    expect(listProjectSessions).toHaveBeenCalledWith('/other');
-    expect(surfaced).toHaveTextContent('Other active');
-    expect(surfaced).toHaveTextContent('Other unread');
-    expect(surfaced).not.toHaveTextContent('Other idle');
+    await waitFor(() => expect(listProjectSessions).toHaveBeenCalledWith('/other'));
+    // Collapsed: no session rows surface.
+    expect(screen.queryByRole('group', { name: 'Active sessions in other' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Other active')).not.toBeInTheDocument();
+    expect(screen.queryByText('Other unread')).not.toBeInTheDocument();
+    // The count chip still reflects the disk total.
+    expect(await screen.findByRole('button', { name: 'other 3' })).toBeInTheDocument();
   });
 
   it('opens the active folder and reveals its sessions when its name is clicked', async () => {
@@ -637,7 +648,7 @@ describe('Sidebar sessions', () => {
     expect(await screen.findByRole('menuitem', { name: 'Clone Second' })).toBeInTheDocument();
   });
 
-  it('focuses a foreign folder without opening a runtime when the lazy bridge is available', async () => {
+  it('routes a foreign folder focus through focusProject when the bridge is available', async () => {
     const other = { path: '/other', name: 'other' };
     useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }, other], expandedByPath: { '/project': true, '/other': false } });
     const focused = ready({ status: 'disconnected', project: { ...other, trusted: true }, sessionId: null, sessions: [] });
@@ -651,6 +662,88 @@ describe('Sidebar sessions', () => {
     await waitFor(() => expect(focusProject).toHaveBeenCalledWith('/other'));
     expect(openProject).not.toHaveBeenCalled();
     expect(useRuntimeStore.getState().runtime.project?.path).toBe('/other');
+  });
+
+  it('uses the same compact preview-style rows for the active and inactive folders in compact mode', async () => {
+    useUiStore.setState({ compactSessions: true });
+    const project = { path: '/project', name: 'project' };
+    const other = { path: '/other', name: 'other' };
+    useProjectStore.setState({ projects: [project, other], expandedByPath: { '/project': true, '/other': true } });
+    useRuntimeStore.getState().setRuntime(ready({
+      project: { ...project, trusted: true },
+      sessions: [session('p1', 'Project one', true), session('p2', 'Project two', false)],
+    }));
+    const listProjectSessions = vi.fn(async (path: string) => path === '/other' ? [session('o1', 'Other one', false)] : []);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { listProjectSessions } as unknown as PiDesktopApi });
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    // Both folders render the unified preview row class with title + meta, so
+    // gaining/losing focus does not visibly change the row design.
+    await waitFor(() => expect(screen.getByText('Other one')).toBeInTheDocument());
+    const activeRows = document.querySelectorAll('section.folder-group--active .session-row--preview');
+    const inactiveRows = document.querySelectorAll('section:not(.folder-group--active) .session-row--preview');
+    expect(activeRows.length).toBeGreaterThan(0);
+    expect(inactiveRows.length).toBeGreaterThan(0);
+    expect(activeRows[0]).toHaveClass('session-row--preview');
+    expect(inactiveRows[0]).toHaveClass('session-row--preview');
+  });
+
+  it('keeps the outgoing folder\'s sessions and does not reload them when focus moves to another folder', async () => {
+    const project = { path: '/project', name: 'project' };
+    const other = { path: '/other', name: 'other' };
+    useProjectStore.setState({ projects: [project, other], expandedByPath: { '/project': true, '/other': true } });
+    // /project is active with two live sessions visible.
+    useRuntimeStore.getState().setRuntime(ready({
+      project: { ...project, trusted: true },
+      sessions: [session('p1', 'Project one', true), session('p2', 'Project two', false)],
+    }));
+    const otherState = ready({ project: { ...other, trusted: true }, sessions: [session('o1', 'Other one', true)] });
+    const focusProject = vi.fn(async () => otherState);
+    const listProjectSessions = vi.fn(async () => [session('o1', 'Other one', false)]);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { focusProject, listProjectSessions } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /^other$/u }));
+    await waitFor(() => expect(useRuntimeStore.getState().runtime.project?.path).toBe('/other'));
+
+    // The outgoing /project folder keeps showing the sessions it just had
+    // (seeded from its live list) and is NOT re-fetched from disk on the switch.
+    expect(screen.getByText('Project one')).toBeInTheDocument();
+    expect(screen.getByText('Project two')).toBeInTheDocument();
+    expect(listProjectSessions).not.toHaveBeenCalledWith('/project');
+  });
+
+  it('keeps showing a folder\'s cached sessions while its agent re-spawns (initializing), instead of collapsing to "Loading…"', async () => {
+    const project = { path: '/project', name: 'project' };
+    const other = { path: '/other', name: 'other' };
+    useProjectStore.setState({ projects: [project, other], expandedByPath: { '/project': true, '/other': true } });
+    // Start with /other active so /project is a background folder whose disk
+    // sessions get cached into the preview store.
+    useRuntimeStore.getState().setRuntime(ready({ project: { ...other, trusted: true }, sessionId: 'o1', sessions: [session('o1', 'Other', true)] }));
+    const listProjectSessions = vi.fn(async (path: string) => path === '/project'
+      ? [session('p1', 'Project one', false), session('p2', 'Project two', false)]
+      : []);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { listProjectSessions } as unknown as PiDesktopApi });
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    // Wait for /project's background preview to load.
+    await waitFor(() => expect(screen.getByText('Project one')).toBeInTheDocument());
+
+    // Now focus /project and simulate its Pi runtime re-spawning: active,
+    // status 'initializing', and an empty in-memory session list. The cached
+    // preview must keep showing instead of vanishing into "Loading…".
+    useRuntimeStore.getState().setRuntime(ready({
+      project: { ...project, trusted: true },
+      status: 'initializing',
+      sessionId: null,
+      sessionFile: null,
+      sessions: [],
+    }));
+
+    expect(screen.getByText('Project one')).toBeInTheDocument();
+    expect(screen.getByText('Project two')).toBeInTheDocument();
+    expect(screen.queryByText('Loading sessions…')).not.toBeInTheDocument();
   });
 
   it('closes a background runtime before forgetting its folder', async () => {

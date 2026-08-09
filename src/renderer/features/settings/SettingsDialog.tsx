@@ -106,6 +106,9 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   const [saving, setSaving] = useState(false);
   const [checkingForUpdates, setCheckingForUpdates] = useState(false);
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<{ percent: number; version: string } | null>(null);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const updateProgressPending = useRef(false);
   const [speechStatus, setSpeechStatus] = useState<SpeechStatus | null>(null);
   const [speechBusy, setSpeechBusy] = useState<SpeechModelId | null>(null);
   const [speechProgress, setSpeechProgress] = useState<SpeechDownloadProgress | null>(null);
@@ -306,6 +309,38 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
         title: 'Could not open releases',
         message: error instanceof Error ? error.message : 'Open the Fate UI releases page in your browser and try again.',
       });
+    }
+  };
+
+  useEffect(() => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.onUpdatesProgress !== 'function') return;
+    const unsubscribe = window.piDesktop.onUpdatesProgress((progress) => {
+      setUpdateProgress({ percent: progress.percent, version: progress.version });
+    });
+    return unsubscribe;
+  }, []);
+
+  const downloadAndInstallUpdate = async () => {
+    const version = updateResult?.productionVersion;
+    if (!version || !('piDesktop' in window) || typeof window.piDesktop.downloadAndInstallUpdate !== 'function' || updateProgressPending.current) return;
+    updateProgressPending.current = true;
+    setUpdateInstalling(true);
+    setUpdateProgress({ percent: 0, version });
+    try {
+      await window.piDesktop.downloadAndInstallUpdate(version);
+      // The installer launches and the app quits; this line runs only if the
+      // download finished but the launcher deferred the quit.
+      setUpdateProgress({ percent: 1, version });
+    } catch (error) {
+      setUpdateInstalling(false);
+      setUpdateProgress(null);
+      setToast({
+        kind: 'error',
+        title: 'Update failed',
+        message: error instanceof Error ? error.message : 'The update could not be downloaded. Try again or open the releases page.',
+      });
+    } finally {
+      updateProgressPending.current = false;
     }
   };
 
@@ -594,7 +629,9 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
             <div className="settings-footer-status" aria-live="polite">
               <span>{status ?? (settingsLoaded ? 'Changes apply after saving.' : 'Loading settings…')}</span>
               {updateResult && (updateResult.status === 'available'
-                ? <button type="button" className="update-download-link" onClick={() => void openUpdateDownload()}>{updateResult.message}</button>
+                ? (updateInstalling && updateProgress
+                    ? <span className="update-check-result" role="status">Installing {updateProgress.version}… {Math.round(updateProgress.percent * 100)}%</span>
+                    : <button type="button" className="update-download-link" disabled={updateInstalling} onClick={() => void downloadAndInstallUpdate()}>Download &amp; install {updateResult.productionVersion ?? 'update'}</button>)
                 : <span className="update-check-result" role="status">{updateResult.message}</span>)}
             </div>
             <div className="settings-footer-actions">

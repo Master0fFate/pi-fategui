@@ -239,7 +239,8 @@ export class TaskService {
         // Task verification is derived solely from current independent
         // verification evidence. Stale verification (workspace change) or a
         // changed criterion never self-verifies a task.
-        const verified = goal.evidence.some((evidence) => evidence.kind === 'verification' && evidence.current && evidence.criterionIds.includes(criterion.id));
+        const verified = goal.status === 'completed'
+          && goal.evidence.some((evidence) => evidence.kind === 'verification' && evidence.current && evidence.criterionIds.includes(criterion.id));
         goalTasks.push({
           id: existing?.id ?? `task-${randomUUID()}`,
           title: criterion.title,

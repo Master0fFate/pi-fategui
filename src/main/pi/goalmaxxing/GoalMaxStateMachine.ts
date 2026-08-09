@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
+  GOALMAX_MAX_ASSIGNMENTS,
   GOALMAX_MAX_CRITERIA,
+  GOALMAX_MAX_EVIDENCE,
+  GOALMAX_MAX_STEERING,
   GOALMAX_MAX_TIMELINE_EVENTS,
   GOALMAX_OBJECTIVE_LIMIT,
   goalMaxStateSchema,
@@ -11,13 +14,17 @@ import {
   type GoalMaxTimelineEvent,
 } from '../../../shared/contracts/goalmaxxing';
 
+export const GOALMAX_PLAN_PLACEHOLDER_TITLE = 'Plan the execution';
+export const GOALMAX_VERIFICATION_TITLE = 'Verify the delivered result';
+export const GOALMAX_TASK_PLAN_TIMELINE_PREFIX = 'Execution task plan captured:';
+
 const terminalStatuses = new Set<GoalMaxStatus>(['completed', 'cancelled']);
 const transitions: Record<GoalMaxStatus, ReadonlySet<GoalMaxStatus>> = {
   normalising: new Set(['active', 'failed', 'cancelled']),
   active: new Set(['paused', 'blocked', 'verifying', 'cancelled', 'budget-limited', 'usage-limited', 'failed']),
   paused: new Set(['active', 'cancelled']),
   blocked: new Set(['active', 'paused', 'cancelled', 'failed']),
-  verifying: new Set(['active', 'blocked', 'completed', 'cancelled', 'failed']),
+  verifying: new Set(['active', 'paused', 'blocked', 'completed', 'cancelled', 'failed']),
   completed: new Set(),
   cancelled: new Set(),
   'budget-limited': new Set(['active', 'paused', 'cancelled']),
@@ -29,6 +36,10 @@ export function isGoalMaxTerminal(status: GoalMaxStatus): boolean {
   return terminalStatuses.has(status);
 }
 
+export function hasGoalMaxTaskPlan(goal: Pick<GoalMaxState, 'taskPlanCaptured' | 'timeline'>): boolean {
+  return goal.taskPlanCaptured === true || goal.timeline.some((event) => event.summary.startsWith(GOALMAX_TASK_PLAN_TIMELINE_PREFIX));
+}
+
 export function canTransitionGoalMax(from: GoalMaxStatus, to: GoalMaxStatus): boolean {
   return from === to || transitions[from].has(to);
 }
@@ -38,21 +49,64 @@ export function isGoalMaxCriterionEvidence(evidence: GoalMaxEvidence): boolean {
   return evidence.current && evidence.source !== 'verifier';
 }
 
+export function reconcileGoalMaxReferences(goal: GoalMaxState): GoalMaxState {
+  const criteria = goal.criteria.slice(0, GOALMAX_MAX_CRITERIA);
+  const criterionIds = new Set(criteria.map((criterion) => criterion.id));
+  const evidence = goal.evidence.slice(-GOALMAX_MAX_EVIDENCE).map((item) => ({
+    ...item,
+    criterionIds: item.criterionIds.filter((id) => criterionIds.has(id)),
+  }));
+  const evidenceIds = new Set(evidence.map((item) => item.id));
+  const childAssignments = goal.childAssignments.slice(0, GOALMAX_MAX_ASSIGNMENTS).map((assignment) => ({
+    ...assignment,
+    criterionIds: assignment.criterionIds.filter((id) => criterionIds.has(id)),
+    evidenceIds: assignment.evidenceIds.filter((id) => evidenceIds.has(id)),
+  }));
+  const ownerNodeIds = new Set(childAssignments.map((assignment) => assignment.nodeId));
+  const normalizedCriteria = criteria.map((criterion) => {
+    const retainedEvidenceIds = criterion.evidenceIds.filter((id) => evidenceIds.has(id));
+    return {
+      ...criterion,
+      evidenceIds: retainedEvidenceIds,
+      ownerNodeIds: criterion.ownerNodeIds.filter((id) => ownerNodeIds.has(id)),
+      status: criterion.status === 'satisfied' && retainedEvidenceIds.length === 0 ? 'active' as const : criterion.status,
+    };
+  });
+  const criterionLinks = new Map<string, string[]>();
+  for (const criterion of normalizedCriteria) {
+    for (const evidenceId of criterion.evidenceIds) {
+      criterionLinks.set(evidenceId, [...(criterionLinks.get(evidenceId) ?? []), criterion.id]);
+    }
+  }
+  const normalizedEvidence = evidence.map((item) => criterionLinks.has(item.id)
+    ? { ...item, criterionIds: [...new Set([...item.criterionIds, ...criterionLinks.get(item.id)!])].slice(0, GOALMAX_MAX_CRITERIA) }
+    : item);
+  return {
+    ...goal,
+    criteria: normalizedCriteria,
+    evidence: normalizedEvidence,
+    childAssignments,
+    steering: goal.steering.slice(-GOALMAX_MAX_STEERING),
+    timeline: goal.timeline.slice(-GOALMAX_MAX_TIMELINE_EVENTS),
+  };
+}
+
 export function transitionGoalMax(goal: GoalMaxState, status: GoalMaxStatus, now = Date.now()): GoalMaxState {
-  if (!canTransitionGoalMax(goal.status, status)) throw new Error(`GoalMax cannot transition from ${goal.status} to ${status}.`);
+  const reconciled = reconcileGoalMaxReferences(goal);
+  if (!canTransitionGoalMax(reconciled.status, status)) throw new Error(`GoalMax cannot transition from ${reconciled.status} to ${status}.`);
   // Gate A (strict, verification-level-independent): a required criterion may
   // only be satisfied, and a goal may only complete, with current NON-VERIFIER
   // evidence. A verifier pass alone can never satisfy a required criterion.
-  const currentEvidenceIds = status === 'completed' ? new Set(goal.evidence.filter(isGoalMaxCriterionEvidence).map((evidence) => evidence.id)) : null;
-  if (currentEvidenceIds && goal.criteria.some((criterion) => criterion.required && criterion.status !== 'waived' && (
+  const currentEvidenceIds = status === 'completed' ? new Set(reconciled.evidence.filter(isGoalMaxCriterionEvidence).map((evidence) => evidence.id)) : null;
+  if (currentEvidenceIds && reconciled.criteria.some((criterion) => criterion.required && criterion.status !== 'waived' && (
     criterion.status !== 'satisfied' || !criterion.evidenceIds.some((id) => currentEvidenceIds.has(id))
   ))) throw new Error('GoalMax cannot complete while a required criterion lacks current non-verifier evidence.');
   return goalMaxStateSchema.parse({
-    ...goal,
+    ...reconciled,
     status,
-    executionState: status === 'active' ? goal.executionState : status === 'verifying' ? 'waiting' : 'idle',
-    blockedReason: status === 'blocked' ? goal.blockedReason : null,
-    completedAt: status === 'completed' ? now : goal.completedAt,
+    executionState: status === 'active' ? reconciled.executionState : status === 'verifying' ? 'waiting' : 'idle',
+    blockedReason: status === 'blocked' ? reconciled.blockedReason : null,
+    completedAt: status === 'completed' ? now : reconciled.completedAt,
     updatedAt: now,
   });
 }
@@ -73,10 +127,14 @@ export function normalizeGoalMaxBrief(brief: string): { objective: string; crite
   const unique = [...new Set(candidates.map((value) => value.slice(0, 2_000)))].slice(0, Math.max(0, GOALMAX_MAX_CRITERIA - 1));
   const criteria = unique.length > 0
     ? unique.map((description) => ({ title: criterionTitle(description), description, required: true }))
-    : [{ title: 'Deliver the objective', description: objective, required: true }];
+    : [{
+        title: GOALMAX_PLAN_PLACEHOLDER_TITLE,
+        description: 'Decompose the objective into concrete, ordered tasks with observable completion conditions before implementation.',
+        required: true,
+      }];
   criteria.push({
-    title: 'Verify the delivered result',
-    description: 'Current observable evidence and an independent read-only review must support completion.',
+    title: GOALMAX_VERIFICATION_TITLE,
+    description: 'Current observable evidence must satisfy the atomic completion gate.',
     required: true,
   });
   return { objective, criteria: criteria.slice(0, GOALMAX_MAX_CRITERIA), preserveBrief: compact !== objective };

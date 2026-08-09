@@ -399,6 +399,38 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('does not rescan saved sessions when creating an unpersisted empty session', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'saved', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/saved.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const repository = {
+      invalidate: vi.fn(),
+      list: vi.fn().mockResolvedValueOnce([saved]).mockRejectedValue(new Error('redundant scan')),
+      branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as ((session: typeof fake.session) => Promise<void>) | undefined;
+    fake.runtime.newSession.mockImplementationOnce(async () => {
+      fake.session.sessionId = 'draft-2';
+      fake.session.sessionFile = '/sessions/draft-2.jsonl';
+      fake.session.messages = [];
+      fake.agent.state.messages = fake.session.messages;
+      await rebind?.(fake.session);
+      return { cancelled: false };
+    });
+
+    const state = await service.newSession();
+    expect(state).toMatchObject({ sessionId: 'draft-2', sessionOperation: false });
+    expect(state.sessions).toEqual([expect.objectContaining({ id: 'saved', active: false })]);
+    expect(state.sessions?.some((session) => session.id === 'draft-2')).toBe(false);
+    expect(repository.list).toHaveBeenCalledOnce();
+    expect(repository.invalidate).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
   it('keeps a rejected first prompt out of the session list', async () => {
     const fake = fixture();
     const source = { list: vi.fn(async () => []), rename: vi.fn() };
@@ -1054,6 +1086,21 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('pauses a persistent GoalMax objective when the user interrupts its active turn', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.createGoalMax({ objective: 'Implement and verify the durable result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+
+    expect(await service.abort()).toEqual({ aborted: true });
+    expect(fake.session.abort).toHaveBeenCalledOnce();
+    expect(await service.getGoalMax()).toMatchObject({ status: 'paused', blockedReason: 'Interrupted by the user.' });
+    fake.emitSession({ type: 'agent_settled' });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledTimes(1);
+    await service.dispose();
+  });
+
   it('continues an unfinished turn automatically after an output-length stop', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
@@ -1328,7 +1375,7 @@ describe('PiRuntimeService', () => {
     const state = await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     expect(state.commands).toEqual([
-      { name: 'goalmax', description: 'Start a persistent, visible, evidence-verified engineering goal', source: 'builtin' },
+      { name: 'goalmax', description: 'Start or manage a persistent goal · /goalmax, pause, resume, clear', source: 'builtin' },
       { name: 'parallax', description: 'Control Parallax', source: 'extension' },
       { name: 'review', description: 'Review changes', source: 'prompt' },
       { name: 'skill:vibesecurity', description: 'Defensive security review', source: 'skill' },
@@ -1490,7 +1537,7 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
-  it('preserves recent-session order while switching until the session receives a prompt', async () => {
+  it('changes recent-session order only for accepted user input or a settled AI turn', async () => {
     const fake = fixture();
     const saved = {
       id: 'saved', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/saved.jsonl',
@@ -1517,8 +1564,18 @@ describe('PiRuntimeService', () => {
     fake.emitSession({ type: 'compaction_end', reason: 'manual', result: {}, aborted: false, willRetry: false });
     expect(service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt).toBe(saved.modifiedAt);
 
-    await service.prompt({ text: 'Continue this work', behavior: 'prompt' });
+    fake.session.messages = [{ role: 'user', content: 'Earlier work', timestamp: 1 }];
+    fake.emitSession({ type: 'message_end', message: { role: 'user', content: 'A queued message entered the model loop' } });
+    expect(service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt).toBe(saved.modifiedAt);
+    fake.emitSession({ type: 'message_end', message: { role: 'assistant', content: 'Partial output', stopReason: 'stop' } });
+    expect(service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt).toBe(saved.modifiedAt);
+    fake.emitSession({ type: 'agent_settled' });
     expect(service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt).not.toBe(saved.modifiedAt);
+
+    const afterSettled = service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await service.prompt({ text: 'Continue this work', behavior: 'prompt' });
+    expect(service.getState(false).sessions?.find((summary) => summary.id === saved.id)?.modifiedAt).not.toBe(afterSettled);
     fake.settle();
     await service.dispose();
   });
@@ -1680,7 +1737,7 @@ describe('PiRuntimeService', () => {
       invalidate: vi.fn(),
       list: vi.fn(() => {
         listCalls += 1;
-        if (listCalls === 3) {
+        if (listCalls === 2) {
           markRefreshStarted?.();
           return delayedRefresh;
         }
@@ -2321,32 +2378,41 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
-  it('Gate B: holds a post-task prompt while a goal is active instead of running it', async () => {
+  it('accepts an idle-session message directly into the active GoalMax objective', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
     await service.createGoalMax({ objective: 'Implement and verify the result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
     fake.settle(); // goal start run settles; goal stays active, session idle
 
-    const acceptance = await service.prompt({ text: 'after all tasks are finished, run C', behavior: 'prompt' });
+    const acceptance = await service.prompt({ text: 'also run C as part of this goal', behavior: 'prompt' });
     expect(acceptance.accepted).toBe(true);
-    expect(fake.session.prompt).not.toHaveBeenCalledWith('after all tasks are finished, run C', expect.anything());
-    expect(service.getState(false).queue?.held?.map((item) => item.text)).toEqual(['after all tasks are finished, run C']);
+    expect(fake.session.prompt).not.toHaveBeenCalledWith('also run C as part of this goal', expect.anything());
+    expect((await service.getGoalMax())?.steering.at(-1)?.text).toBe('also run C as part of this goal');
+    expect(service.getState(false).queue?.held ?? []).toEqual([]);
+    await vi.waitFor(() => expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ customType: 'fate-goalmax-continuation' }),
+      { triggerTurn: true },
+    ));
     await service.dispose();
   });
 
-  it('Gate B: holds a queued follow-up instead of delivering it to the SDK while a goal is active', async () => {
+  it('steers an active GoalMax root immediately without adding a phantom SDK queue item', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
-    // createGoalMax leaves the goal-start root turn streaming.
+    // createGoalMax starts the root turn. Mirror the SDK streaming state here.
     await service.createGoalMax({ objective: 'Implement and verify the result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    fake.setStreaming(true);
+    fake.emitSession({ type: 'agent_start' });
 
-    const acceptance = await service.prompt({ text: 'do C once the tasks are done', behavior: 'followUp' });
+    const acceptance = await service.prompt({ text: 'also include C in the remaining work', behavior: 'prompt' });
     expect(acceptance.accepted).toBe(true);
-    expect(fake.session.followUp).not.toHaveBeenCalledWith('do C once the tasks are done', expect.anything());
-    expect(fake.session.steer).not.toHaveBeenCalledWith('do C once the tasks are done', expect.anything());
-    expect(service.getState(false).queue?.held?.map((item) => item.text)).toEqual(['do C once the tasks are done']);
+    expect(fake.session.followUp).not.toHaveBeenCalledWith('also include C in the remaining work', expect.anything());
+    expect(fake.session.steer).not.toHaveBeenCalledWith('also include C in the remaining work', expect.anything());
+    expect((await service.getGoalMax())?.steering.at(-1)?.text).toBe('also include C in the remaining work');
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'fate-goalmax-update' }), expect.objectContaining({ deliverAs: 'steer' }));
+    expect(service.getState(false).queue?.held ?? []).toEqual([]);
     await service.dispose();
   });
 
@@ -2361,17 +2427,17 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
-  it('Gate B: returns held messages to the editable queue when the goal is cancelled', async () => {
+  it('does not replay accepted GoalMax updates as ordinary prompts after cancellation', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
     await service.createGoalMax({ objective: 'Implement and verify the result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
     fake.settle();
-    await service.prompt({ text: 'do C afterwards', behavior: 'prompt' });
-    expect(service.getState(false).queue?.held?.length).toBe(1);
+    await service.prompt({ text: 'also include C in this goal', behavior: 'prompt' });
+    expect((await service.getGoalMax())?.steering.at(-1)?.text).toBe('also include C in this goal');
     await service.controlGoalMax({ action: 'cancel' });
-    await vi.waitFor(() => expect(service.getState(false).queue?.held ?? []).toEqual([]));
-    expect(service.getState(false).queue?.items?.map((item) => item.text)).toContain('do C afterwards');
+    expect(service.getState(false).queue?.held ?? []).toEqual([]);
+    expect(service.getState(false).queue?.items?.map((item) => item.text) ?? []).not.toContain('also include C in this goal');
     await service.dispose();
   });
 });

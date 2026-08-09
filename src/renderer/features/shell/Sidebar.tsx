@@ -37,7 +37,7 @@ import { projectPathKey, useProjectStore, type KnownProject } from '../../stores
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { SidebarAutomations } from '../automations/SidebarAutomations';
 import { SidebarResources } from '../resources/SidebarResources';
-import { ConversationPaths } from './ConversationPaths';
+import { ConversationPaths, type ForkAction } from './ConversationPaths';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -137,14 +137,17 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const orderStorageKey = runtime.project ? `fate-ui:session-order:${runtime.project.path}` : null;
   const manualRanks = useMemo(() => new Map(manualOrder.map((id, index) => [id, index])), [manualOrder]);
   const sessionTitleByPath = useMemo(() => new Map(sessions.map((session) => [session.path, session.title])), [sessions]);
-  const sortedSessions = useMemo(() => [...sessions].sort((left, right) => {
+  // Shared comparator so background/preview folders render in the SAME order
+  // as the active folder — the list stays 1:1 whether a folder is focused or not.
+  const compareSessions = (left: SessionSummary, right: SessionSummary): number => {
     if (sort === 'manual') {
       return (manualRanks.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (manualRanks.get(right.id) ?? Number.MAX_SAFE_INTEGER);
     }
     if (sort === 'alphabetical') return left.title.localeCompare(right.title, undefined, { sensitivity: 'base' }) || left.id.localeCompare(right.id);
     const difference = new Date(left.modifiedAt).getTime() - new Date(right.modifiedAt).getTime();
     return (sort === 'oldest' ? difference : -difference) || left.id.localeCompare(right.id);
-  }), [manualRanks, sessions, sort]);
+  };
+  const sortedSessions = useMemo(() => [...sessions].sort(compareSessions), [manualRanks, sessions, sort]);
 
   useEffect(() => {
     void initializeAutomations(runtime.project?.path ?? null);
@@ -286,6 +289,33 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       });
     return true;
   };
+  // Folder-level focus/open runs WITHOUT the global navigation-busy gate.
+  // Folders are isolated Pi agents, so switching to (or opening a session in)
+  // another folder must work even while the focused folder is still starting
+  // or streaming. The project-navigation generation discards superseded
+  // results, and the activation queue serializes the actual opens safely.
+  const pendingFolderFocusRef = useRef<{ path: string; generation: number } | null>(null);
+  const runFolderFocus = (targetPath: string, operation: () => Promise<ReturnType<typeof useRuntimeStore.getState>['runtime'] | null>): void => {
+    const navigationGeneration = projectNavigationGeneration.current;
+    const current = pendingFolderFocusRef.current;
+    if (current && current.path === targetPath && current.generation === navigationGeneration) return; // same click already in flight
+    pendingFolderFocusRef.current = { path: targetPath, generation: navigationGeneration };
+    let pending: ReturnType<typeof operation>;
+    try { pending = operation(); }
+    catch (error) { pending = Promise.reject(error); }
+    void pending
+      .then((state) => {
+        if (pendingFolderFocusRef.current?.path === targetPath) pendingFolderFocusRef.current = null;
+        if (!state || !mounted.current) return;
+        if (navigationGeneration !== projectNavigationGeneration.current) return;
+        setRuntime(state);
+      })
+      .catch((error: unknown) => {
+        if (pendingFolderFocusRef.current?.path === targetPath) pendingFolderFocusRef.current = null;
+        if (!mounted.current) return;
+        if (navigationGeneration === projectNavigationGeneration.current) showToast({ kind: 'error', title: 'Switching folder failed', message: sidebarErrorMessage(error, 'The project could not be opened.') });
+      });
+  };
   const switchSession = (session: SessionSummary) => {
     if (!('piDesktop' in window) || navigationBusyRef.current || actionBusyRef.current) return;
     const store = useRuntimeStore.getState();
@@ -349,7 +379,16 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   };
   const deleteSession = (sessionId: string) => {
     if (!('piDesktop' in window)) return;
-    if (invokeState('Deleting session', () => window.piDesktop.deleteSession(sessionId))) setConfirmingDeleteId(null);
+    // Non-blocking: a delete only removes one saved session. Locking the whole
+    // list (via invokeState/actionBusy) made every other session unclickable
+    // until the disk refresh finished. Run it in the background and update the
+    // list when it lands; the activation queue still serializes it safely.
+    setConfirmingDeleteId(null);
+    void window.piDesktop.deleteSession(sessionId)
+      .then((state) => { if (mounted.current) setRuntime(state); })
+      .catch((error: unknown) => {
+        if (mounted.current) showToast({ kind: 'error', title: 'Deleting session failed', message: sidebarErrorMessage(error, 'The session could not be deleted.') });
+      });
   };
   const deleteAllSessions = (project: KnownProject) => {
     if (!('piDesktop' in window) || typeof window.piDesktop.deleteProjectSessions !== 'function' || replacementBusy || actionBusyRef.current) return;
@@ -483,6 +522,31 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         }
       });
   };
+  // Fork actions: navigate to the fork first (it becomes the active session),
+  // then run rename/compact on it. Clone/fork/worktree are intentionally not
+  // offered (no infinite nesting); delete is omitted because a fork is an
+  // in-session branch and removing it would delete the whole session.
+  const runForkAction = (branch: SessionBranch, action: ForkAction) => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.navigateSessionBranch !== 'function' || replacementBusy) return;
+    actionBusyRef.current = true;
+    setActionBusy(true);
+    setNavigatingBranchId(branch.id);
+    void window.piDesktop.navigateSessionBranch(branch.id)
+      .then((result) => {
+        if (!mounted.current) return;
+        useRuntimeStore.getState().hydrateRuntime(result.state);
+        const active = result.state.sessions?.find((session) => session.id === result.state.sessionId);
+        if (action === 'rename' && active) beginRename(active);
+        else if (action === 'compact') void window.piDesktop.compact().then((state) => { if (mounted.current) setRuntime(state); }).catch(() => undefined);
+      })
+      .catch((error: unknown) => {
+        if (mounted.current) showToast({ kind: 'error', title: 'Fork action failed', message: sidebarErrorMessage(error, 'That fork action could not run.') });
+      })
+      .finally(() => {
+        actionBusyRef.current = false;
+        if (mounted.current) { setActionBusy(false); setNavigatingBranchId(null); }
+      });
+  };
   const reorderSession = (targetId: string) => {
     if (!draggingSessionId || draggingSessionId === targetId || query) return;
     const order = sortedSessions.map((session) => session.id).filter((id) => id !== draggingSessionId);
@@ -532,7 +596,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     const key = projectPathKey(path);
     return Object.entries(expandedByPath).find(([storedPath]) => projectPathKey(storedPath) === key)?.[1];
   };
-  const folderExpanded = (path: string) => storedFolderExpansion(path) ?? isActiveProject(path);
+  const folderExpanded = (path: string) => storedFolderExpansion(path) ?? false;
   const folderSessionCount = (path: string): number | undefined => {
     if (isActiveProject(path)) return sessions.length;
     return previewCountByPath[path] ?? previewsByPath[path]?.length;
@@ -545,8 +609,38 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     store.addProject({ path: project.path, name: project.name });
     const key = projectPathKey(project.path);
     const hasExpansionState = Object.keys(store.expandedByPath).some((path) => projectPathKey(path) === key);
-    if (!hasExpansionState) store.setExpanded(project.path, true);
+    if (!hasExpansionState) store.setExpanded(project.path, false);
   }, [runtime.project?.path, runtime.project?.name]);
+
+  // Cache the active folder's live session list so that when focus moves to
+  // another folder, the outgoing folder keeps showing the sessions it just had
+  // instead of flashing "Scanning sessions…" → "No sessions yet" while its
+  // disk listing reloads in the background. Defined BEFORE the preview-loading
+  // effect so it runs first on an active-folder change and marks the outgoing
+  // folder loaded before the loader below can re-fetch it.
+  const activeSessionsCacheRef = useRef<Map<string, SessionSummary[]>>(new Map());
+  useEffect(() => {
+    const path = runtime.project?.path;
+    if (path && sortedSessions.length > 0) {
+      activeSessionsCacheRef.current.set(path, sortedSessions);
+    }
+  }, [runtime.project?.path, sortedSessions]);
+  const prevActivePathRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevActivePathRef.current;
+    prevActivePathRef.current = activeProjectPath;
+    if (!prev || prev === activeProjectPath) return;
+    const cached = activeSessionsCacheRef.current.get(prev);
+    if (!cached || cached.length === 0) return;
+    // Seed the outgoing folder's preview from its last-known live sessions and
+    // mark it loaded so the loader below does not re-fetch it (and cannot
+    // clobber it with a transient empty result). The periodic refresh still
+    // reconciles it.
+    setPreviewsByPath((state) => (state[prev] ? state : { ...state, [prev]: cached }));
+    setPreviewCountByPath((state) => (state[prev] !== undefined ? state : { ...state, [prev]: cached.length }));
+    setPreviewStateByPath((state) => ({ ...state, [prev]: 'idle' }));
+    loadedPaths.current.add(projectPathKey(prev));
+  }, [activeProjectPath]);
 
   useEffect(() => {
     if (query.trim()) return;
@@ -578,8 +672,17 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             ? items
             : [...priority, ...items.filter((session) => !session.active && !session.attention)]
               .slice(0, Math.max(MAX_CACHED_PROJECT_SESSIONS, priority.length));
-          setPreviewsByPath((state) => ({ ...state, [path]: cached }));
-          setPreviewCountByPath((state) => ({ ...state, [path]: items.length }));
+          setPreviewsByPath((state) => {
+            // Don't replace a session list the user is already looking at with
+            // an empty result from a background read that landed mid-focus-change.
+            // Keep the last-known list; the periodic refresh reconciles it.
+            if (items.length === 0 && state[path] && state[path].length > 0) return state;
+            return { ...state, [path]: cached };
+          });
+          setPreviewCountByPath((state) => {
+            if (items.length === 0 && previewsByPath[path] && previewsByPath[path].length > 0) return state;
+            return { ...state, [path]: items.length };
+          });
           setPreviewStateByPath((state) => ({ ...state, [path]: 'idle' }));
         })
         .catch(() => {
@@ -624,14 +727,16 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   }, [collapsed, query, projects]);
 
   const switchToProject = (path: string) => {
-    if (isActiveProject(path) || replacementBusy) return;
+    if (isActiveProject(path)) return;
     if (!('piDesktop' in window)) return;
     const focus = typeof window.piDesktop.focusProject === 'function'
       ? window.piDesktop.focusProject
       : window.piDesktop.openProject;
     if (typeof focus !== 'function') return;
-    refreshPreviews([activeProjectPath ?? '', path]);
-    invokeState('Switching project', () => focus(path), 'navigation');
+    // Folder switch bypasses the global navigation-busy gate (folders are
+    // isolated Pi agents). The outgoing folder is seeded from its live
+    // sessions; the incoming folder becomes active.
+    runFolderFocus(path, () => focus(path));
   };
   const openFolder = (project: KnownProject) => {
     if (!folderExpanded(project.path)) toggleFolderExpanded(project.path);
@@ -647,7 +752,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     navigationBusyRef.current = true;
     setNavigationBusy(true);
     const navigationGeneration = projectNavigationGeneration.current;
-    refreshPreviews([activeProjectPath ?? '', project.path]);
     void window.piDesktop.openProject(project.path)
       .then((state) => {
         if (!mounted.current || navigationGeneration !== projectNavigationGeneration.current) return null;
@@ -657,7 +761,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       .then((state) => {
         if (state && mounted.current && navigationGeneration === projectNavigationGeneration.current) {
           setRuntime(state);
-          refreshPreviews([project.path]);
         }
       })
       .catch((error) => {
@@ -669,40 +772,26 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       });
   };
   const focusForeignSession = (project: KnownProject, session: SessionSummary) => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.openProject !== 'function' || navigationBusyRef.current || actionBusyRef.current) return;
-    navigationBusyRef.current = true;
-    setNavigationBusy(true);
-    const navigationGeneration = projectNavigationGeneration.current;
-    refreshPreviews([activeProjectPath ?? '', project.path]);
-    void window.piDesktop.openProject(project.path)
-      .then(async (state) => {
-        if (!mounted.current || navigationGeneration !== projectNavigationGeneration.current) return null;
-        // Do not paint the project's default session between the folder focus
-        // and the requested session switch. Only the final destination is
-        // authoritative for this click.
-        if (state.status === 'error' || !state.project) return state;
-        if (state.sessionId !== session.id) {
-          try { return await window.piDesktop.switchSession(session.id); }
-          catch (error) {
-            if (mounted.current) showToast({ kind: 'error', title: 'Opening session failed', message: sidebarErrorMessage(error, 'The session could not be opened.') });
-            return state;
-          }
+    if (!('piDesktop' in window) || typeof window.piDesktop.openProject !== 'function' || actionBusyRef.current) return;
+    // Folder sessions are isolated Pi agents: clicking a session in another
+    // folder must work even while the focused folder is starting/streaming.
+    // Uses the non-blocking folder-focus helper (generation-guarded, queued).
+    runFolderFocus(project.path, async () => {
+      const state = await window.piDesktop.openProject(project.path);
+      if (!mounted.current) return state;
+      // Do not paint the project's default session between the folder focus
+      // and the requested session switch. Only the final destination is
+      // authoritative for this click.
+      if (state.status === 'error' || !state.project) return state;
+      if (state.sessionId !== session.id) {
+        try { return await window.piDesktop.switchSession(session.id); }
+        catch (error) {
+          if (mounted.current) showToast({ kind: 'error', title: 'Opening session failed', message: sidebarErrorMessage(error, 'The session could not be opened.') });
+          return state;
         }
-        return state;
-      })
-      .then((state) => {
-        if (state && mounted.current && navigationGeneration === projectNavigationGeneration.current) {
-          setRuntime(state);
-          refreshPreviews([project.path]);
-        }
-      })
-      .catch((error) => {
-        if (mounted.current && navigationGeneration === projectNavigationGeneration.current) showToast({ kind: 'error', title: 'Switching folder failed', message: sidebarErrorMessage(error, 'The project could not be opened.') });
-      })
-      .finally(() => {
-        navigationBusyRef.current = false;
-        if (mounted.current) setNavigationBusy(false);
-      });
+      }
+      return state;
+    });
   };
   const forgetFolder = (project: KnownProject) => {
     if (!('piDesktop' in window) || typeof window.piDesktop.closeProjectRuntime !== 'function' || isActiveProject(project.path) || navigationBusyRef.current || actionBusyRef.current) return;
@@ -879,43 +968,109 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           busy={replacementBusy}
           pendingId={navigatingBranchId}
           onSelect={navigateConversationPath}
+          onAction={runForkAction}
           compact={compactSessions}
         />
+      </div>
+    );
+  };
+  // Unified compact session row, shared by the active folder (compact mode)
+  // and inactive/preview folders so the design never visibly changes when a
+  // folder gains or loses focus. Active-folder rows additionally carry drag
+  // reordering and a hover-only actions menu.
+  const renderCompactSessionRow = (session: SessionSummary, project: KnownProject, asActiveFolder: boolean) => {
+    if (asActiveFolder && confirmingDeleteId === session.id) {
+      return (
+        <div className="session-delete-confirm session-delete-confirm--compact" key={session.id}>
+          <span>Delete this session?</span>
+          <AppTooltip content="Delete session" wrapTrigger triggerClassName="session-delete-confirm-button session-delete-confirm-button--danger"><button type="button" onClick={() => deleteSession(session.id)}>Delete</button></AppTooltip>
+          <AppTooltip content="Cancel deletion" wrapTrigger triggerClassName="session-delete-confirm-button"><button type="button" onClick={() => setConfirmingDeleteId(null)}>Cancel</button></AppTooltip>
+        </div>
+      );
+    }
+    if (asActiveFolder && editingSessionId === session.id) {
+      return (
+        <form className="session-rename" key={session.id} onSubmit={(event) => { event.preventDefault(); saveRename(); }}>
+          <input autoFocus aria-label={`Rename ${session.title}`} value={sessionName} maxLength={120} onChange={(event) => setSessionName(event.target.value)} />
+          <AppTooltip content="Save session name" wrapTrigger triggerClassName="session-inline-action"><button type="submit" aria-label="Save session name" disabled={!sessionName.trim()}><Check size={13} /></button></AppTooltip>
+          <AppTooltip content="Cancel rename" wrapTrigger triggerClassName="session-inline-action"><button type="button" aria-label="Cancel rename" onClick={() => setEditingSessionId(null)}><X size={13} /></button></AppTooltip>
+        </form>
+      );
+    }
+    const localRuntimeReady = asActiveFolder && runtime.status !== 'disconnected' && runtime.status !== 'error' && runtime.status !== 'initializing';
+    // Other folders are isolated Pi agents, so their sessions stay clickable
+    // even while the focused folder is starting/switching. Only the focused
+    // folder's own sessions lock during a replacement to avoid conflicts in
+    // the same runtime.
+    const disabled = (asActiveFolder && replacementBusy) || (localRuntimeReady && session.active);
+    const openTitle = `${session.active ? 'Active: ' : 'Open '}“${session.title}” in ${project.name}`;
+    return (
+      <div
+        key={session.id}
+        className={`session-row session-row--preview${session.active ? ' active' : ''}${asActiveFolder && draggingSessionId === session.id ? ' dragging' : ''}${asActiveFolder && dragOverSessionId === session.id ? ' drag-over' : ''}`}
+        {...(asActiveFolder ? {
+          draggable: !query,
+          onDragStart: (event: React.DragEvent) => {
+            const target = event.target instanceof Element ? event.target : null;
+            if (target?.closest('.session-menu-trigger')) { event.preventDefault(); return; }
+            setDraggingSessionId(session.id);
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', session.id);
+          },
+          onDragEnter: () => { if (draggingSessionId !== session.id) setDragOverSessionId(session.id); },
+          onDragOver: (event: React.DragEvent) => { if (!query) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } },
+          onDragLeave: (event: React.DragEvent) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOverSessionId(null); },
+          onDragEnd: () => { setDraggingSessionId(null); setDragOverSessionId(null); },
+          onDrop: (event: React.DragEvent) => { event.preventDefault(); reorderSession(session.id); setDragOverSessionId(null); },
+        } : {})}
+      >
+        <AppTooltip content={`${session.title}${asActiveFolder && !session.active && operationUnavailableReason ? `\n${operationUnavailableReason}` : ''}`} side="right" sideOffset={8} wrapTrigger triggerClassName="session-open-tooltip">
+          <button className="session-preview-open" type="button" disabled={disabled} onClick={() => localRuntimeReady ? switchSession(session) : focusForeignSession(project, session)} title={openTitle}>
+            <span className="session-preview-title">{session.parentSessionPath && <GitFork size={10} aria-label="Forked session" />}{session.title}</span>
+            <small>{session.messageCount} {session.messageCount === 1 ? 'message' : 'messages'} · {formatRelativeTime(session.modifiedAt, relativeNow)}</small>
+          </button>
+        </AppTooltip>
+        {!session.active && session.attention && (
+          <AppTooltip content={attentionLabels[session.attention]} side="right" sideOffset={6}>
+            <span className="session-attention-dot session-attention-dot--preview" data-attention={session.attention} role="img" aria-label={attentionLabels[session.attention]} />
+          </AppTooltip>
+        )}
+        {asActiveFolder && (
+          <Popover.Root>
+            <AppTooltip content="Session actions">
+              <Popover.Trigger asChild>
+                <button className="session-menu-trigger" type="button" aria-label={`Actions for ${session.title}`}><MoreHorizontal size={14} /></button>
+              </Popover.Trigger>
+            </AppTooltip>
+            <Popover.Portal>
+              <Popover.Content className="session-action-menu" side="top" align="end" sideOffset={6} onOpenAutoFocus={(event) => event.preventDefault()}>
+                {renderSessionActions(session, true)}
+              </Popover.Content>
+            </Popover.Portal>
+          </Popover.Root>
+        )}
       </div>
     );
   };
   const renderPreviewRows = (project: KnownProject, suppliedItems?: SessionSummary[]) => {
     const state = previewStateByPath[project.path];
     const items = suppliedItems ?? previewsByPath[project.path];
-    if (state === 'loading' && !items) return <div key="state" className="folder-preview-state">Scanning sessions…</div>;
-    if (state === 'error' && !items) return <div key="state" className="folder-preview-state folder-preview-state--error">Couldn’t read sessions for this folder.</div>;
+    // Treat a never-loaded folder (state === undefined) the same as 'loading'
+    // so it reads "Scanning…" instead of jumping straight to "No sessions yet".
+    const effectiveState = state ?? 'loading';
+    if (effectiveState === 'loading' && !items) return <div key="state" className="folder-preview-state">Scanning sessions…</div>;
+    if (effectiveState === 'error' && !items) return <div key="state" className="folder-preview-state folder-preview-state--error">Couldn’t read sessions for this folder.</div>;
     if (!items || items.length === 0) return <div key="state" className="folder-preview-state">No sessions yet — open this folder to start.</div>;
-    const renderPreview = (session: SessionSummary) => {
-      const local = isActiveProject(project.path);
-      const localRuntimeReady = local && runtime.status !== 'disconnected' && runtime.status !== 'error';
-      const disabled = replacementBusy || (localRuntimeReady && session.active);
-      return (
-        <button
-          key={session.id}
-          className={`session-row session-row--preview${session.active ? ' active' : ''}`}
-          type="button"
-          disabled={disabled}
-          onClick={() => localRuntimeReady ? switchSession(session) : focusForeignSession(project, session)}
-          title={`${session.active ? 'Active: ' : 'Open '}“${session.title}” in ${project.name}`}
-        >
-          <span className="session-preview-title">{session.parentSessionPath && <GitFork size={10} aria-label="Forked session" />}{session.title}</span>
-          <small>{session.messageCount} {session.messageCount === 1 ? 'message' : 'messages'} · {formatRelativeTime(session.modifiedAt, relativeNow)}</small>
-          {session.attention && <span className="session-attention-dot session-attention-dot--preview" data-attention={session.attention} role="img" aria-label={attentionLabels[session.attention]} />}
-        </button>
-      );
-    };
+    // Apply the same sort as the active folder so the list is 1:1 regardless of focus.
+    const sortedItems = [...items].sort(compareSessions);
+    const renderPreview = (session: SessionSummary) => renderCompactSessionRow(session, project, isActiveProject(project.path));
     const total = suppliedItems ? suppliedItems.length : previewCountByPath[project.path] ?? items.length;
-    const list = items.length > 100
+    const list = sortedItems.length > 100
       ? folderScrollParent
-        ? <Virtuoso customScrollParent={folderScrollParent} data={items} defaultItemHeight={27} itemContent={(_index, session) => renderPreview(session)} />
+        ? <Virtuoso customScrollParent={folderScrollParent} data={sortedItems} defaultItemHeight={27} itemContent={(_index, session) => renderPreview(session)} />
         : <div className="folder-preview-state">Preparing session list…</div>
-      : items.map(renderPreview);
-    return <>{list}{total > items.length && <div className="folder-preview-state">Showing {items.length} of {total} — open this folder to load all sessions.</div>}</>;
+      : sortedItems.map(renderPreview);
+    return <>{list}{total > sortedItems.length && <div className="folder-preview-state">Showing {sortedItems.length} of {total} — open this folder to load all sessions.</div>}</>;
   };
   const renderFolderHeader = (project: KnownProject) => {
     const isActive = isActiveProject(project.path);
@@ -986,37 +1141,72 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   const renderFolderGroup = (project: KnownProject) => {
     const isActive = isActiveProject(project.path);
-    const previewOnly = isActive && runtime.status === 'disconnected';
+    // While the focused folder is disconnected (lazy preview) or still
+    // initializing its Pi runtime, render the lightweight preview rows from the
+    // cached/seeded session list instead of the empty in-memory runtime list.
+    // This stops the session list from vanishing into "Loading…" every time a
+    // folder's agent re-spawns after being idle-evicted.
+    const previewOnly = isActive && (runtime.status === 'disconnected' || runtime.status === 'initializing');
+    const cachedPreview = previewsByPath[project.path];
+    const activePreviewItems = (!sessions || sessions.length === 0) && cachedPreview && cachedPreview.length > 0
+      ? cachedPreview
+      : sessions;
     const expanded = folderExpanded(project.path);
     const sessionList = sortedSessions.length > 100
       ? folderScrollParent
         ? <Virtuoso customScrollParent={folderScrollParent} data={sortedSessions} defaultItemHeight={compactSessions ? 33 : 69} itemContent={(_index, session) => renderSessionListItem(session)} />
         : <div className="folder-preview-state">Preparing session list…</div>
       : sortedSessions.map(renderSessionListItem);
-    const collapsedSessions = (isActive ? sessions : previewsByPath[project.path])?.filter((session) => session.active || Boolean(session.attention));
+    // Compact active folder uses the SAME unified preview-style rows as inactive
+    // folders, so the design does not visibly change when a folder gains focus.
+    // Conversation paths still render beneath the active session's row.
+    const renderCompactActiveItem = (session: SessionSummary) => {
+      const row = renderCompactSessionRow(session, project, true);
+      const branches = runtime.branches;
+      if (session.id !== runtime.sessionId || editingSessionId === session.id || confirmingDeleteId === session.id || capabilities?.navigate !== true || !branches || branches.length <= 1) return row;
+      return (
+        <div className="session-row-with-paths" key={`compact-with-paths-${session.id}`}>
+          {row}
+          <ConversationPaths
+            branches={branches}
+            busy={replacementBusy}
+            pendingId={navigatingBranchId}
+            onSelect={navigateConversationPath}
+            onAction={runForkAction}
+            compact
+          />
+        </div>
+      );
+    };
+    const compactActiveList = sortedSessions.length > 100
+      ? folderScrollParent
+        ? <Virtuoso customScrollParent={folderScrollParent} data={sortedSessions} defaultItemHeight={27} itemContent={(_index, session) => renderCompactActiveItem(session)} />
+        : <div className="folder-preview-state">Preparing session list…</div>
+      : sortedSessions.map((session) => renderCompactActiveItem(session));
+    const emptySessions = (
+      <div className="empty-sessions empty-sessions--inline">
+        <FileText size={19} />
+        <p>{runtime.status === 'initializing' ? 'Loading sessions…' : query ? 'No matching sessions' : 'No sessions yet'}</p>
+        <span>{runtime.status === 'initializing' ? 'Reading this folder’s saved Pi sessions.' : runtime.status === 'auth-required' ? 'Saved sessions remain available; authenticate to prompt Pi.' : 'Create a session to start working with Pi.'}</span>
+      </div>
+    );
     return (
       <section className={`folder-group${isActive ? ' folder-group--active' : ''}${expanded ? ' folder-group--expanded' : ''}`} key={project.path}>
         {renderFolderHeader(project)}
-        {expanded && isActive && !previewOnly && (
+        {expanded && isActive && !previewOnly && !compactSessions && (
           <div className="session-list folder-children" aria-label="Sessions">
             {sessionList}
-            {sessions.length === 0 && (
-              <div className="empty-sessions empty-sessions--inline">
-                <FileText size={19} />
-                <p>{query ? 'No matching sessions' : 'No sessions yet'}</p>
-                <span>{runtime.status === 'auth-required' ? 'Saved sessions remain available; authenticate to prompt Pi.' : 'Create a session to start working with Pi.'}</span>
-              </div>
-            )}
+            {sessions.length === 0 && emptySessions}
+          </div>
+        )}
+        {expanded && isActive && !previewOnly && compactSessions && (
+          <div className="folder-children folder-preview-list">
+            {sessions.length === 0 ? emptySessions : compactActiveList}
           </div>
         )}
         {expanded && (!isActive || previewOnly) && (
           <div className="folder-children folder-preview-list">
-            {renderPreviewRows(project, previewOnly ? sessions : undefined)}
-          </div>
-        )}
-        {!expanded && collapsedSessions && collapsedSessions.length > 0 && (
-          <div className="folder-children folder-preview-list folder-preview-list--attention" role="group" aria-label={`Active sessions in ${project.name}`}>
-            {renderPreviewRows(project, collapsedSessions)}
+            {renderPreviewRows(project, previewOnly ? activePreviewItems : undefined)}
           </div>
         )}
       </section>

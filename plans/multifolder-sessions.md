@@ -92,13 +92,14 @@ Control artifact for this feature. Tick `- [ ]` → `- [x]` **only after** the t
 - [x] CSS: folder band, preview row, compact row, tree indent/left line, count chip, chevron rotate; collapsed folders retain compact rows for their active/running/unread/error sessions; honors reduced-motion + performance/holy-shit modes.
   - Acceptance: visual review against `DESIGN.md`; no layout shift on expand/collapse.
 
-### Phase 2 — Lazy runtime per folder (spawn on first interaction)
-- [ ] Focus a non-active folder → mark focused; do NOT spawn runtime until a session is opened or "New session" is used there.
-  - Acceptance: merely expanding a folder lists from disk with no runtime cost.
-- [ ] First session open in a folder spawns its runtime lazily; show first-click busy state (acceptable lag).
-  - Acceptance: runtime starts only on open; switching back to an already-live folder is instant.
-- [ ] "New session" in a non-active folder: open folder → new session in one flow.
+### Phase 2 — Runtime per folder (lazy: titles always, agent on demand)
+- [x] Focus a non-active folder → re-focus its live runtime instantly, or show a lightweight preview (session titles read from disk) WITHOUT spawning an agent. The agent spawns lazily only when a session is opened. Idle agents are evicted after the grace period.
+  - Acceptance: browsing folders never spawns agents; clicking a session starts the agent for that folder; switching back to an already-live folder is instant.
+- [x] First session open in a folder spawns its runtime lazily; switching back to an already-live folder is instant.
+  - Acceptance: runtime starts only on session open; switching back to an already-live folder is instant.
+- [x] "New session" in a non-active folder: open folder → new session in one flow.
   - Acceptance: creates session under the correct folder.
+- [x] Collapsed folders show no session rows (only the count chip). Expanding a folder loads its session titles from disk with a loading state; a background read never replaces a visible session list with an empty result (prevents the "Scanning… → No sessions yet" flash when focus moves between folders).
 
 ### Phase 3 — Concurrent live folders + idle eviction (gated)
 - [x] **3.0 GATE (PASSED):** Verified in the installed SDK source that concurrent multi-project runtimes work **in-process**. `ModelRuntime.create()` has no singleton/global state (all instance-private); `createRuntime(cwd, modelRuntime, …)` is cwd-scoped. Auth is global (`~/.pi/agent/auth.json`, read-only concurrent access). Conclusion: keep ONE shared `ModelRuntime`; make the existing `liveSlots` pool project-aware (each slot carries its `projectPath`) so different cwds coexist. No child-process spawning needed.

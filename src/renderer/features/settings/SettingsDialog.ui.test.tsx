@@ -61,6 +61,8 @@ function installBridge(
       productionVersion: '1.4.0',
     })),
     openUpdateDownload: vi.fn(async () => undefined),
+    downloadAndInstallUpdate: vi.fn(async () => undefined),
+    onUpdatesProgress: vi.fn(() => () => {}),
   };
   Object.defineProperty(window, 'piDesktop', {
     configurable: true,
@@ -227,9 +229,9 @@ describe('SettingsDialog feedback', () => {
       installedVersion: '0.4.1-beta1',
       productionVersion: '0.4.1-beta2',
     });
-    const download = await screen.findByRole('button', { name: 'Update available. Click to download.' });
+    const download = await screen.findByRole('button', { name: 'Download & install 0.4.1-beta2' });
     await user.click(download);
-    expect(bridge.openUpdateDownload).toHaveBeenCalledOnce();
+    expect(bridge.downloadAndInstallUpdate).toHaveBeenCalledWith('0.4.1-beta2');
   });
 
   it('defers diagnostics and logs until the System section is opened', async () => {

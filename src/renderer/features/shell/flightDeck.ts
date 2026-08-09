@@ -70,7 +70,7 @@ export function selectActivityPulse(input: PulseInput): ActivityPulseState {
   if (runtime.sessionOperation) return { label: 'Changing session', tone: 'active', evidence, context };
   if (runtime.status === 'auth-required') return { label: 'Authentication required', tone: 'attention', evidence, context };
   if (runtime.status === 'error' || runtime.error) return { label: 'Runtime needs attention', tone: 'attention', evidence, context };
-  if (runtime.status === 'disconnected' && runtime.project) return { label: 'Runtime unavailable', tone: 'neutral', evidence, context };
+  if (runtime.status === 'disconnected' && runtime.project) return { label: 'No agent running — pick a session', tone: 'neutral', evidence, context };
   if (!runtime.project) return { label: runtime.status === 'initializing' ? 'Starting' : 'No project open', tone: 'neutral', evidence, context };
   if (runtime.status === 'initializing') return { label: 'Starting', tone: 'active', evidence, context };
   if (runningTools.some((tool) => testToolNames.has(tool.name.toLocaleLowerCase()))) return { label: 'Testing', tone: 'active', evidence, context };

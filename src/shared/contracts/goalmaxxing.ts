@@ -168,6 +168,7 @@ export const goalMaxStateSchema = z.object({
   verificationLevel: goalMaxVerificationLevelSchema,
   agentStrategy: goalMaxAgentStrategySchema,
   criteria: z.array(goalMaxCriterionSchema).min(1).max(GOALMAX_MAX_CRITERIA),
+  taskPlanCaptured: z.boolean().optional(),
   budget: goalMaxBudgetSchema,
   permission: goalMaxPermissionSnapshotSchema,
   progress: goalMaxProgressSchema,
@@ -200,7 +201,10 @@ export const goalMaxStateSchema = z.object({
   if (steeringIds.size !== goal.steering.length) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Goal steering IDs must be unique.' });
   if (goal.steering.some((item) => item.revision > goal.revision)) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Goal steering cannot reference a future revision.' });
   if (goal.criteria.some((criterion) => criterion.evidenceIds.some((id) => !evidenceIds.has(id)))) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Criteria must reference retained goal evidence.' });
-  if (goal.criteria.some((criterion) => criterion.evidenceIds.some((id) => !evidenceById.get(id)?.criterionIds.includes(criterion.id)))) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Criterion evidence links must be acknowledged by the evidence record.' });
+  if (goal.criteria.some((criterion) => criterion.evidenceIds.some((id) => {
+    const evidence = evidenceById.get(id);
+    return evidence !== undefined && !evidence.criterionIds.includes(criterion.id);
+  }))) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Criterion evidence links must be acknowledged by the evidence record.' });
   if (goal.evidence.some((evidence) => evidence.criterionIds.some((id) => !criterionIds.has(id)))) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Evidence must reference retained criteria.' });
   if (goal.status === 'completed') {
     const currentEvidenceIds = new Set(goal.evidence.filter((evidence) => evidence.current && evidence.source !== 'verifier').map((evidence) => evidence.id));

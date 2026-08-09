@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppCommand, PiDesktopApi, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
 import { clearComposerSessionDrafts } from '../features/chat/Composer';
 import { useRuntimeStore } from '../stores/runtimeStore';
+import { useProjectStore } from '../stores/projectStore';
 import { useGoalMaxStore } from '../stores/goalMaxStore';
 import { LEFT_MAX, LEFT_MIN, RIGHT_MAX, RIGHT_MIN, useUiStore } from '../stores/uiStore';
 import { App, hasBlockingBrowserOverlay, reconcileHydrationEvents } from './App';
@@ -318,6 +319,7 @@ describe('first-launch shell', () => {
       value: { getRuntimeState: vi.fn(async () => runtime), onEvents: vi.fn(() => () => undefined), switchSession, forkSession } as unknown as PiDesktopApi,
     });
     useRuntimeStore.getState().setRuntime(runtime);
+    useProjectStore.setState({ projects: [{ path: 'C:/project', name: 'project' }], expandedByPath: { 'C:/project': true } });
     const { container } = render(<App />);
 
     expect(screen.getByRole('button', { name: 'Create an isolated Git worktree session from First' })).toBeInTheDocument();
@@ -355,6 +357,7 @@ describe('first-launch shell', () => {
       value: { getRuntimeState: vi.fn(async () => runtime), onEvents: vi.fn(() => () => undefined), createWorktreeSession } as unknown as PiDesktopApi,
     });
     useRuntimeStore.getState().setRuntime(runtime);
+    useProjectStore.setState({ projects: [{ path: 'C:/project', name: 'project' }], expandedByPath: { 'C:/project': true } });
     render(<App />);
 
     await user.click(screen.getByRole('button', { name: 'Create an isolated Git worktree session from Repair Git' }));

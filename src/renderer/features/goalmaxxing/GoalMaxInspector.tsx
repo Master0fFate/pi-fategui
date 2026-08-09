@@ -5,6 +5,7 @@ import { Virtuoso } from 'react-virtuoso';
 import type { GoalMaxCriterion, GoalMaxEvidence, GoalMaxState, GoalMaxTimelineEvent } from '../../../shared/contracts/goalmaxxing';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { useUiStore } from '../../stores/uiStore';
+import { goalMaxStatusLabel } from './goalMaxPresentation';
 
 const integer = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 function compactNumber(value: number): string {
@@ -28,7 +29,8 @@ function criterionIcon(status: GoalMaxCriterion['status']) {
 function timelinePresentation(type: GoalMaxTimelineEvent['type']) {
   const label = type.split('.').map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`).join(' ');
   if (type === 'goal.completed' || type === 'verification.passed') return { Icon: Check, label, tone: 'success' } as const;
-  if (type === 'goal.blocked' || type === 'goal.cancelled' || type === 'verification.failed' || type === 'budget.reached') return { Icon: CircleAlert, label, tone: 'danger' } as const;
+  if (type === 'goal.blocked' || type === 'goal.cancelled' || type === 'budget.reached') return { Icon: CircleAlert, label, tone: 'danger' } as const;
+  if (type === 'verification.failed') return { Icon: RefreshCw, label: 'Verification returned follow-up work', tone: 'active' } as const;
   if (type === 'goal.paused') return { Icon: Pause, label, tone: 'neutral' } as const;
   if (type === 'goal.resumed') return { Icon: Play, label, tone: 'active' } as const;
   if (type === 'goal.recovered') return { Icon: RefreshCw, label, tone: 'active' } as const;
@@ -71,7 +73,7 @@ export function GoalMaxInspector() {
     <section className="goalmax-flight-deck" aria-label="Goal Flight Deck">
       <header className="goalmax-deck-header" data-status={goal.status}>
         <span className="goalmax-deck-mark"><Target size={15} /></span>
-        <span><strong>{goal.status === 'verifying' ? 'Verifying' : goal.status.charAt(0).toUpperCase() + goal.status.slice(1)}</strong><small>{goal.phase} · revision {goal.revision}</small></span>
+        <span><strong>{goalMaxStatusLabel(goal.status)}</strong><small>{goal.phase} · revision {goal.revision}</small></span>
         <div>
           <button type="button" disabled={Boolean(busy) || goal.status === 'completed' || goal.status === 'cancelled'} onClick={() => void control('checkpoint')}>{busy === 'checkpoint' ? <LoaderCircle className="tool-spinner" size={12} /> : <Gauge size={12} />}<span>Checkpoint</span></button>
           <button type="button" disabled={Boolean(busy) || goal.status === 'completed' || goal.status === 'cancelled'} onClick={() => void control('verify')}>{busy === 'verify' ? <LoaderCircle className="tool-spinner" size={12} /> : <TestTube2 size={12} />}<span>Verify</span></button>

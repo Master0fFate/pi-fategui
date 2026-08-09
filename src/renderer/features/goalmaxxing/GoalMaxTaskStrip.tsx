@@ -60,6 +60,10 @@ interface TaskRow {
 function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [mutatingId, setMutatingId] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const setList = useTaskStore((state) => state.setList);
   const rows: TaskRow[] = [...tasks].sort((left, right) => left.order - right.order).map((task) => ({
     id: task.id, title: task.title, detail: task.detail, status: task.status, required: task.required, verified: task.verified, managed: task.source === 'goalmax',
   }));
@@ -67,23 +71,51 @@ function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
   const requiredDone = rows.filter((row) => row.required && row.status === 'done').length;
   const requiredVerified = rows.filter((row) => row.required && row.status === 'done' && row.verified).length;
   const current = rows.find((row) => row.status === 'in-progress') ?? rows.find((row) => row.status === 'todo') ?? rows.find((row) => row.status === 'blocked') ?? rows[rows.length - 1]!;
-  const gateSuffix = requiredVerified === requiredTotal && requiredTotal > 0 ? ' · verified' : requiredDone < requiredTotal ? ' · unverified' : ' · unverified';
+  const taskCount = `${rows.length} ${rows.length === 1 ? 'task' : 'tasks'}`;
+  const gateSummary = requiredTotal === 0
+    ? 'no required tasks'
+    : `${requiredDone}/${requiredTotal} required · ${requiredVerified === requiredTotal ? 'verified' : 'unverified'}`;
   const canEdit = typeof window !== 'undefined' && 'piDesktop' in window;
 
   const addTask = async () => {
     const title = draft.trim();
-    if (!title || !canEdit || typeof window.piDesktop.createTask !== 'function') return;
-    setDraft('');
-    try { await window.piDesktop.createTask({ title, required: false, status: 'todo' }); } catch { setDraft(title); }
+    if (!title || adding || !canEdit || typeof window.piDesktop.createTask !== 'function') return;
+    setAdding(true);
+    setMutationError(null);
+    try {
+      const list = await window.piDesktop.createTask({ title, required: false, status: 'todo' });
+      setList(list);
+      setDraft('');
+    } catch {
+      setMutationError('Could not add the task. Check the session and try again.');
+    } finally {
+      setAdding(false);
+    }
   };
   const cycleStatus = async (row: TaskRow) => {
-    if (row.managed || !canEdit || typeof window.piDesktop.updateTask !== 'function') return;
+    if (row.managed || mutatingId || !canEdit || typeof window.piDesktop.updateTask !== 'function') return;
     const next = TASK_STATUS_CYCLE[(TASK_STATUS_CYCLE.indexOf(row.status) + 1) % TASK_STATUS_CYCLE.length];
-    try { await window.piDesktop.updateTask({ id: row.id, status: next }); } catch { /* keep */ }
+    setMutatingId(row.id);
+    setMutationError(null);
+    try {
+      setList(await window.piDesktop.updateTask({ id: row.id, status: next }));
+    } catch {
+      setMutationError('Could not update the task. Try again.');
+    } finally {
+      setMutatingId(null);
+    }
   };
-  const removeTask = async (row: TaskRow) => {
-    if (row.managed || !canEdit || typeof window.piDesktop.deleteTask !== 'function') return;
-    try { await window.piDesktop.deleteTask({ id: row.id }); } catch { /* keep */ }
+  const cancelTask = async (row: TaskRow) => {
+    if (row.managed || mutatingId || !canEdit || typeof window.piDesktop.deleteTask !== 'function') return;
+    setMutatingId(row.id);
+    setMutationError(null);
+    try {
+      setList(await window.piDesktop.deleteTask({ id: row.id }));
+    } catch {
+      setMutationError('Could not cancel the task. Try again.');
+    } finally {
+      setMutatingId(null);
+    }
   };
 
   return (
@@ -93,29 +125,45 @@ function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
         <span className="goalmax-task-strip-copy">
           <strong>{current.title}</strong>
           {current.detail ? <small className="goalmax-task-strip-criterion-description">{current.detail}</small> : null}
-          <small>{requiredDone}/{requiredTotal} required{gateSuffix}</small>
+          <small>{taskCount} · {gateSummary}</small>
         </span>
         {expanded ? <ChevronUp size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}
       </button>
       {expanded ? (
         <>
           <ol id="goalmax-task-strip-tasks" className="goalmax-task-strip-criteria" aria-label="Task status">
-            {rows.map((row) => (
-              <li key={row.id} className="goalmax-task-strip-criterion" data-status={row.status} data-required={row.required || undefined}>
-                <button type="button" className="goalmax-task-strip-criterion-mark" aria-label={`Cycle ${row.title} status`} disabled={row.managed} onClick={() => cycleStatus(row)}>{taskStatusIcon(row.status)}</button>
-                <span className="goalmax-task-strip-criterion-body">
-                  <span className="goalmax-task-strip-criterion-title">{row.title}</span>
-                  {row.detail ? <small className="goalmax-task-strip-criterion-description">{row.detail}</small> : null}
-                </span>
-                <em className="goalmax-task-strip-criterion-status">{taskStatusLabel(row.status)}{row.required && row.status === 'done' ? (row.verified ? ' · verified' : ' · unverified') : ''}</em>
-                {!row.managed ? <button type="button" className="goalmax-task-strip-criterion-remove" aria-label={`Remove task ${row.title}`} onClick={() => removeTask(row)}><X size={11} aria-hidden="true" /></button> : null}
-              </li>
-            ))}
+            {rows.map((row) => {
+              const busy = mutatingId === row.id;
+              const statusText = `${taskStatusLabel(row.status)}${row.required && row.status === 'done' ? (row.verified ? ' · verified' : ' · unverified') : ''}`;
+              return (
+                <li key={row.id} className="goalmax-task-strip-criterion" data-status={row.status} data-required={row.required || undefined}>
+                  {row.managed ? (
+                    <span className="goalmax-task-strip-criterion-mark">{taskStatusIcon(row.status)}</span>
+                  ) : (
+                    <button type="button" className="goalmax-task-strip-criterion-mark goalmax-task-strip-criterion-cancel" aria-label={`Cancel task ${row.title}`} title="Cancel task" disabled={busy} data-busy={busy || undefined} onClick={() => void cancelTask(row)}>
+                      {busy ? <LoaderCircle className="tool-spinner" size={11} aria-hidden="true" /> : (
+                        <><span className="goalmax-task-strip-criterion-status-icon">{taskStatusIcon(row.status)}</span><X className="goalmax-task-strip-criterion-cancel-icon" size={11} aria-hidden="true" /></>
+                      )}
+                    </button>
+                  )}
+                  <span className="goalmax-task-strip-criterion-body">
+                    <span className="goalmax-task-strip-criterion-title">{row.title}</span>
+                    {row.detail ? <small className="goalmax-task-strip-criterion-description">{row.detail}</small> : null}
+                  </span>
+                  {row.managed ? (
+                    <em className="goalmax-task-strip-criterion-status">{statusText}</em>
+                  ) : (
+                    <button type="button" className="goalmax-task-strip-criterion-status goalmax-task-strip-criterion-status-action" aria-label={`Change status for ${row.title}`} disabled={busy} onClick={() => void cycleStatus(row)}>{statusText}</button>
+                  )}
+                </li>
+              );
+            })}
           </ol>
-          <form className="goalmax-task-strip-add" onSubmit={(event) => { event.preventDefault(); void addTask(); }}>
-            <input type="text" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Add a task…" aria-label="Add a task" maxLength={240} />
-            <button type="submit" disabled={!draft.trim()} aria-label="Add task"><Plus size={12} aria-hidden="true" /></button>
+          <form className="goalmax-task-strip-add" aria-busy={adding} onSubmit={(event) => { event.preventDefault(); void addTask(); }}>
+            <input type="text" value={draft} onChange={(event) => { setDraft(event.target.value); setMutationError(null); }} onKeyDown={(event) => { if (event.key === 'Escape') { setDraft(''); setMutationError(null); } }} placeholder="Add a task…" aria-label="Add a task" maxLength={240} disabled={adding} />
+            <button type="submit" disabled={adding || !draft.trim()} aria-label={adding ? 'Adding task' : 'Add task'}>{adding ? <LoaderCircle className="tool-spinner" size={12} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}</button>
           </form>
+          {mutationError ? <p className="goalmax-task-strip-error" role="status">{mutationError}</p> : null}
         </>
       ) : null}
     </section>
@@ -136,8 +184,9 @@ function GoalMaxCriteriaStrip({ goal }: { goal: GoalMaxState }) {
     ?? goal.criteria.find((criterion) => criterion.status === 'failed')
     ?? goal.criteria[goal.criteria.length - 1]
     ?? null;
-  const currentStatus: GoalMaxCriterion['status'] = currentCriterion?.status ?? fallbackStatus(goal);
-  const taskLabel = currentCriterion ? currentCriterion.title : statusFallback(goal);
+  const verificationPending = goal.status === 'verifying';
+  const currentStatus: GoalMaxCriterion['status'] = verificationPending ? 'pending' : currentCriterion?.status ?? fallbackStatus(goal);
+  const taskLabel = verificationPending ? statusFallback(goal) : currentCriterion ? currentCriterion.title : statusFallback(goal);
   const toggleLabel = expanded ? 'Collapse goal criteria' : 'Expand goal criteria';
   return (
     <section className="goalmax-task-strip" data-status={goal.status} aria-label="GoalMax task strip">
@@ -182,14 +231,15 @@ export function GoalMaxTaskStrip() {
 }
 
 function fallbackStatus(goal: GoalMaxState): GoalMaxCriterion['status'] {
-  if (goal.status === 'completed' || goal.status === 'verifying') return 'satisfied';
+  if (goal.status === 'completed') return 'satisfied';
+  if (goal.status === 'verifying') return 'pending';
   if (goal.status === 'blocked' || goal.status === 'failed') return 'failed';
   return 'pending';
 }
 
 function statusFallback(goal: GoalMaxState): string {
-  if (goal.status === 'completed') return 'Goal complete';
-  if (goal.status === 'verifying') return 'Verifying goal';
-  if (goal.status === 'blocked') return 'Goal blocked';
+  if (goal.status === 'completed') return 'Goal achieved';
+  if (goal.status === 'verifying') return 'Checking completion';
+  if (goal.status === 'blocked') return 'Goal needs input';
   return 'No active criterion';
 }

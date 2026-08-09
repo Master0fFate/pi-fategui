@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { compareSemanticVersions, parseSemanticVersion, RELEASES_URL, UpdateService, updateMessages } from './UpdateService';
 
 const parsed = (value: string) => {
@@ -94,5 +97,51 @@ describe('UpdateService', () => {
     const updates = service('1.0.0', '1.0.0', { openExternal });
     await updates.openDownload();
     expect(openExternal).toHaveBeenCalledWith(RELEASES_URL);
+  });
+});
+
+describe('UpdateService download and install', () => {
+  it('downloads the platform installer, reports progress, then launches it', async () => {
+    const tmp = await mkdtemp(path.join(tmpdir(), 'fate-update-'));
+    const chunks = [Uint8Array.from([1, 2, 3]), Uint8Array.from([4, 5])];
+    const fetchAsset = vi.fn(async () => ({ ok: true, status: 200, total: 5, body: (async function* () { for (const c of chunks) yield c; })() }));
+    const launchInstaller = vi.fn(async () => undefined);
+    const reportProgress = vi.fn();
+    const removeFile = vi.fn(async () => undefined);
+    const updates = new UpdateService('/installed/PRODVER', {
+      fetchAsset, launchInstaller, reportProgress, removeFile, downloadDir: tmp, platform: 'win32', arch: 'x64',
+    });
+
+    await updates.downloadAndInstall('0.8.10-beta14');
+
+    expect(fetchAsset).toHaveBeenCalledWith(
+      'https://github.com/Master0fFate/pi-fategui/releases/download/v0.8.10-beta14/Fate-UI-0.8.10-beta14-Windows-x64.exe',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    const fetchCalls = fetchAsset.mock.calls as unknown as Array<[string, unknown]>;
+    expect(reportProgress).toHaveBeenCalledWith(expect.objectContaining({ downloaded: 5, total: 5, percent: 1, version: '0.8.10-beta14' }));
+    expect(launchInstaller).toHaveBeenCalledTimes(1);
+    const launchCalls = launchInstaller.mock.calls as unknown as Array<[string, string]>;
+    expect(launchCalls[0]![0]).toMatch(/Fate-UI-0\.8\.10-beta14-Windows-x64\.exe$/);
+    expect(launchCalls[0]![1]).toBe('0.8.10-beta14');
+  });
+
+  it('selects the macOS DMG and Linux AppImage for their platforms', async () => {
+    const fetchAsset = vi.fn(async () => ({ ok: true, status: 200, total: 0, body: (async function* () { /* empty */ })() }));
+    const launchInstaller = vi.fn(async () => undefined);
+    const removeFile = vi.fn(async () => undefined);
+    const fetchCalls = fetchAsset.mock.calls as unknown as Array<[string, unknown]>;
+    const mac = new UpdateService('/p', { fetchAsset, launchInstaller, removeFile, downloadDir: '/tmp', platform: 'darwin', arch: 'arm64' });
+    await mac.downloadAndInstall('1.0.0');
+    expect(fetchCalls[fetchCalls.length - 1]![0]).toContain('Fate-UI-1.0.0-macOS-arm64.dmg');
+    const linux = new UpdateService('/p', { fetchAsset, launchInstaller, removeFile, downloadDir: '/tmp', platform: 'linux', arch: 'x64' });
+    await linux.downloadAndInstall('1.0.0');
+    expect(fetchCalls[fetchCalls.length - 1]![0]).toContain('Fate-UI-1.0.0-Linux-x64.AppImage');
+  });
+
+  it('throws when the asset download fails to start', async () => {
+    const fetchAsset = vi.fn(async () => ({ ok: false, status: 404, total: 0, body: (async function* () { /* empty */ })() }));
+    const updates = new UpdateService('/p', { fetchAsset, launchInstaller: vi.fn(async () => undefined), removeFile: vi.fn(async () => undefined), downloadDir: '/tmp', platform: 'win32', arch: 'x64' });
+    await expect(updates.downloadAndInstall('1.0.0')).rejects.toThrow(/could not start/i);
   });
 });
