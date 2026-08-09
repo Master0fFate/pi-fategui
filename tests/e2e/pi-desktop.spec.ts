@@ -817,6 +817,11 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.mouse.move(1, 1);
 
     const sessionList = page.locator('.session-list');
+    // Folders start collapsed by default; expand the active folder if its session list isn't visible yet.
+    if (!await sessionList.isVisible().catch(() => false)) {
+      const activeFolderOpen = page.locator('.folder-group--active .folder-open');
+      if (await activeFolderOpen.count() > 0) await activeFolderOpen.first().click();
+    }
     const firstSessionRow = page.locator('.session-row').filter({ hasText: 'First session' });
     await expect(sessionList).toBeVisible();
     await expect(firstSessionRow).toContainText(/main.*messages.*updated (?:now|.* ago)/iu);
@@ -891,23 +896,28 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await composerInput.fill('__FATE_V2_AGENT_FIXTURE__');
     await page.getByRole('button', { name: 'Send message' }).click();
     const conversationPaths = page.getByRole('list', { name: 'Conversation paths' });
-    await expect(conversationPaths).toContainText('Current path');
-    await expect(conversationPaths).toContainText('Alternate path 1');
-    await expect(conversationPaths).toContainText('Fork');
-    await expect(conversationPaths).not.toContainText('custom');
-    await expect(conversationPaths.locator('.session-row--path')).toHaveCount(2);
+    // Forks only: the active branch (the main session) is not duplicated, and
+    // there is no "Current path" / "Alternate path" / "Fork" label text.
+    await expect(conversationPaths).toContainText('Explore the alternate implementation');
+    await expect(conversationPaths).not.toContainText('Current path');
+    await expect(conversationPaths).not.toContainText('Alternate path');
+    await expect(conversationPaths).not.toContainText(/^Fork$/u);
+    await expect(conversationPaths.locator('.session-row--path')).toHaveCount(1);
     const pathLayout = await conversationPaths.evaluate((element) => ({
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
       rowHeights: [...element.querySelectorAll<HTMLElement>('.session-row--path')].map((row) => row.getBoundingClientRect().height),
     }));
     expect(pathLayout.scrollWidth).toBeLessThanOrEqual(pathLayout.clientWidth);
-    expect(pathLayout.rowHeights.every((height) => height >= 40)).toBe(true);
-    const alternatePath = conversationPaths.getByRole('button', { name: /Switch to Alternate path 1/u });
+    expect(pathLayout.rowHeights.every((height) => height >= 24)).toBe(true);
+    const alternatePath = conversationPaths.getByRole('button', { name: /Switch to fork: Explore the alternate implementation/u });
     await alternatePath.focus();
     await expect(alternatePath).toBeFocused();
     await alternatePath.press('Enter');
-    await expect(conversationPaths.locator('[aria-current="true"]')).toContainText('Explore the alternate implementation');
+    // After switching, the alternate becomes the main session; the previously
+    // active branch now shows as a fork.
+    await expect(conversationPaths).toContainText('Keep the verified implementation');
+    await expect(conversationPaths).not.toContainText('Explore the alternate implementation');
     await expect(composerInput).toHaveValue('Continue from the alternate implementation prompt');
     await composerInput.fill('');
     const v2Team = agents.getByLabel('E2E team Agent Team e2e-agent-team');
