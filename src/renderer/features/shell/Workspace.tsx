@@ -143,7 +143,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
             disabled={!runtime.project?.trusted}
           ><TerminalSquare size={17} /></IconButton>
           <IconButton
-            label={inspectorCollapsed ? 'Open inspector' : 'Close sidebar'}
+            label={inspectorCollapsed ? 'Open inspector' : 'Collapse inspector'}
             className="workspace-inspector-toggle"
             aria-pressed={!inspectorCollapsed}
             onClick={onToggleInspector}
