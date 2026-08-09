@@ -218,7 +218,7 @@ button:disabled { cursor: not-allowed; }
 .sidebar-tab-content[data-state="inactive"] { display: none; }
 @keyframes sidebar-tab-enter { from { opacity: 0; transform: translateY(3px); } }
 .sidebar-session-panel { min-width: 0; overflow: hidden; }
-.session-toolbar { margin: 10px 1px 0; }
+.session-toolbar { margin: 10px 11px 0 1px; }
 
 .sidebar-resource-panel, .sidebar-automation-panel { display: flex; min-height: 0; flex: 1; padding: 10px 1px 4px; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .sidebar-search {

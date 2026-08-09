@@ -738,16 +738,16 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(firstSessionRow).toContainText(/main.*messages.*updated (?:now|.* ago)/iu);
     await expect(firstSessionRow.locator('.session-drag-handle')).toHaveCount(0);
     const activeFolder = sessionList.locator('..');
-    const [sessionListBox, folderHeaderBox, activeFolderBox, sidebarFooterBox] = await Promise.all([
+    const [sessionListBox, folderHeaderBox, activeFolderBox, sidebarBox] = await Promise.all([
       sessionList.boundingBox(),
       activeFolder.locator(':scope > .folder-header').boundingBox(),
       activeFolder.boundingBox(),
-      page.locator('.sidebar-footer').boundingBox(),
+      page.locator('.sidebar').boundingBox(),
     ]);
     expect(sessionListBox!.height).toBeGreaterThan(120);
     expect(sessionListBox!.y).toBeGreaterThanOrEqual(folderHeaderBox!.y + folderHeaderBox!.height);
     expect(sessionListBox!.y + sessionListBox!.height).toBeLessThanOrEqual(activeFolderBox!.y + activeFolderBox!.height);
-    expect(activeFolderBox!.y + activeFolderBox!.height).toBeLessThanOrEqual(sidebarFooterBox!.y);
+    expect(activeFolderBox!.y + activeFolderBox!.height).toBeLessThanOrEqual(sidebarBox!.y + sidebarBox!.height);
     await firstSessionRow.hover();
     await expect(firstSessionRow.getByRole('button', { name: 'Create new session from latest prompt in First session' })).toBeVisible();
     await expect(firstSessionRow.getByRole('button', { name: 'Clone First session' })).toBeVisible();
@@ -1457,18 +1457,18 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect.poll(() => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.getSize())).toEqual([600, 620]);
     const narrowLayout = await page.evaluate(() => {
       const shell = document.querySelector<HTMLElement>('.app-shell')!;
-      const footer = document.querySelector<HTMLElement>('.sidebar-footer')!;
-      const settingsTrigger = footer.querySelector<HTMLElement>(':scope > .tooltip-trigger')!;
+      const rail = document.querySelector<HTMLElement>('.sidebar .nav-list')!;
+      const settingsTrigger = rail.querySelector<HTMLElement>('.sidebar-settings-tooltip')!;
       return {
         documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         shellOverflow: shell.scrollWidth - shell.clientWidth,
         settingsTriggerWidth: settingsTrigger.getBoundingClientRect().width,
-        footerWidth: footer.getBoundingClientRect().width,
+        railWidth: rail.getBoundingClientRect().width,
       };
     });
     expect(narrowLayout.documentOverflow).toBeLessThanOrEqual(0);
     expect(narrowLayout.shellOverflow).toBeLessThanOrEqual(0);
-    expect(Math.abs(narrowLayout.settingsTriggerWidth - narrowLayout.footerWidth)).toBeLessThanOrEqual(1);
+    expect(Math.abs(narrowLayout.settingsTriggerWidth - narrowLayout.railWidth)).toBeLessThanOrEqual(1);
 
     const [, closeError] = await Promise.all([
       page.waitForEvent('close'),
