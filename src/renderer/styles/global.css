@@ -1252,6 +1252,7 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 .subagent-transcript-empty { display: flex; min-height: 0; flex: 1; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: var(--theme-subtle); font-size: 9px; text-align: center; }
 
 .inspector { display: flex; grid-column: 5; min-width: 0; flex-direction: column; border-left: 1px solid color-mix(in srgb, var(--theme-border) 55%, transparent); container-type: inline-size; overflow: hidden; }
+:root:not([data-platform="darwin"]) .app-shell--inspector-open .inspector { padding-top: 38px; }
 .inspector-heading { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 36px; padding: 0 14px 0 8px; app-region: drag; -webkit-app-region: drag; user-select: none; }
 .app-shell--inspector-open .inspector-heading { margin-right: 150px; }
 :root[data-platform="darwin"] .app-shell--inspector-open .inspector-heading { margin-right: 0; }
