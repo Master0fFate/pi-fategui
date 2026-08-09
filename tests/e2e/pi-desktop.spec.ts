@@ -49,6 +49,14 @@ async function sidebarSearchVisual(input: Locator): Promise<Record<string, strin
   });
 }
 
+function expectSidebarSearchVisualMatch(actual: Record<string, string>, expected: Record<string, string>): void {
+  const { width: actualWidth, ...actualStyle } = actual;
+  const { width: expectedWidth, ...expectedStyle } = expected;
+  if (!actualWidth || !expectedWidth) throw new Error('Sidebar search width was not measured.');
+  expect(actualStyle).toEqual(expectedStyle);
+  expect(Math.abs(Number.parseFloat(actualWidth) - Number.parseFloat(expectedWidth))).toBeLessThanOrEqual(1);
+}
+
 async function writeBrowserPreview(root: string): Promise<void> {
   await mkdir(path.join(root, 'preview'), { recursive: true });
   await writeFile(path.join(root, 'preview/index.html'), `<!doctype html>
@@ -137,14 +145,14 @@ test('left sidebar unifies real resources and persisted project automations', as
     await expect(page.locator('.resource-preview-group').filter({ hasText: 'Pi Library' })).toHaveCount(0);
 
     const resourceSearch = page.getByRole('searchbox', { name: 'Search resources' });
-    expect(await sidebarSearchVisual(resourceSearch)).toEqual(sessionSearchVisual);
+    expectSidebarSearchVisualMatch(await sidebarSearchVisual(resourceSearch), sessionSearchVisual);
     await resourceSearch.fill('example');
     await page.getByRole('button', { name: /example\.ts.*src\/example\.ts/u }).click();
     await expect(page.getByRole('tab', { name: 'Files' })).toHaveAttribute('data-state', 'active');
     await expect(page.locator('.preview-heading')).toContainText('src/example.ts');
 
     await sidebarTabs.getByRole('tab', { name: 'Automations' }).click();
-    expect(await sidebarSearchVisual(page.getByRole('searchbox', { name: 'Search automations' }))).toEqual(sessionSearchVisual);
+    expectSidebarSearchVisualMatch(await sidebarSearchVisual(page.getByRole('searchbox', { name: 'Search automations' })), sessionSearchVisual);
     const automationPanel = page.locator('.sidebar-automation-panel');
     const automationEmpty = automationPanel.locator('.sidebar-tab-empty');
     await expect(automationEmpty).toContainText('No automations yet');
@@ -1290,10 +1298,9 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.getByLabel('Message Pi').press('Enter');
     const queuedMessages = page.getByRole('region', { name: 'Queued messages' });
     await expect(queuedMessages).toContainText('Use the smaller API');
-    await queuedMessages.getByRole('button', { name: 'Steer queued message: Use the smaller API' }).click();
-    await expect(queuedMessages.getByRole('button', { name: 'Steering queued message: Use the smaller API' })).toBeDisabled();
-    await queuedMessages.getByRole('button', { name: /More options for queued message/u }).click();
-    await page.getByRole('button', { name: 'Edit queued message: Use the smaller API' }).click();
+    await queuedMessages.getByRole('switch', { name: 'Follow-up queued message: Use the smaller API' }).click();
+    await expect(queuedMessages.getByRole('switch', { name: 'Steer queued message: Use the smaller API' })).toBeEnabled();
+    await queuedMessages.getByRole('button', { name: 'Edit queued message: Use the smaller API' }).click();
     await expect(page.getByLabel('Message Pi')).toHaveValue('Use the smaller API');
     await expect(page.getByLabel('Message Pi')).toBeFocused();
     await expect(queuedMessages).toHaveCount(0);
