@@ -127,21 +127,23 @@ describe('UpdateService download and install', () => {
   });
 
   it('selects the macOS DMG and Linux AppImage for their platforms', async () => {
+    const tmp = await mkdtemp(path.join(tmpdir(), 'fate-update-'));
     const fetchAsset = vi.fn(async () => ({ ok: true, status: 200, total: 0, body: (async function* () { /* empty */ })() }));
     const launchInstaller = vi.fn(async () => undefined);
     const removeFile = vi.fn(async () => undefined);
     const fetchCalls = fetchAsset.mock.calls as unknown as Array<[string, unknown]>;
-    const mac = new UpdateService('/p', { fetchAsset, launchInstaller, removeFile, downloadDir: '/tmp', platform: 'darwin', arch: 'arm64' });
+    const mac = new UpdateService('/p', { fetchAsset, launchInstaller, removeFile, downloadDir: tmp, platform: 'darwin', arch: 'arm64' });
     await mac.downloadAndInstall('1.0.0');
     expect(fetchCalls[fetchCalls.length - 1]![0]).toContain('Fate-UI-1.0.0-macOS-arm64.dmg');
-    const linux = new UpdateService('/p', { fetchAsset, launchInstaller, removeFile, downloadDir: '/tmp', platform: 'linux', arch: 'x64' });
+    const linux = new UpdateService('/p', { fetchAsset, launchInstaller, removeFile, downloadDir: tmp, platform: 'linux', arch: 'x64' });
     await linux.downloadAndInstall('1.0.0');
     expect(fetchCalls[fetchCalls.length - 1]![0]).toContain('Fate-UI-1.0.0-Linux-x64.AppImage');
   });
 
   it('throws when the asset download fails to start', async () => {
+    const tmp = await mkdtemp(path.join(tmpdir(), 'fate-update-'));
     const fetchAsset = vi.fn(async () => ({ ok: false, status: 404, total: 0, body: (async function* () { /* empty */ })() }));
-    const updates = new UpdateService('/p', { fetchAsset, launchInstaller: vi.fn(async () => undefined), removeFile: vi.fn(async () => undefined), downloadDir: '/tmp', platform: 'win32', arch: 'x64' });
+    const updates = new UpdateService('/p', { fetchAsset, launchInstaller: vi.fn(async () => undefined), removeFile: vi.fn(async () => undefined), downloadDir: tmp, platform: 'win32', arch: 'x64' });
     await expect(updates.downloadAndInstall('1.0.0')).rejects.toThrow(/could not start/i);
   });
 });
