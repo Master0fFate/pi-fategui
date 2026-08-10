@@ -118,8 +118,9 @@ const MODEL_NAME_MAX_LENGTH = 28;
 const MIN_COMPOSER_INPUT_HEIGHT = 53;
 const COMPOSER_RESIZE_STEP = 18;
 const MAX_VOICE_DURATION_MS = 180_000;
-/** Live-stream chunk size (300 ms of 16 kHz mono = 4 800 samples), kept in step
- *  with the backend STREAM_CHUNK_MS so each feed is one model decode. */
+/** Live-stream feed chunk size (300 ms of 16 kHz mono = 4 800 samples). The
+ *  backend's buffered-stream window (PARAKEET_BUFFERED_WINDOW_MS) is separate
+ *  and model-constrained; this only sizes mic captures. */
 const STREAM_CHUNK_SAMPLES = 16_000 * 0.3;
 const SEND_HOLD_TO_ABORT_MS = 2_000;
 const afterNextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));

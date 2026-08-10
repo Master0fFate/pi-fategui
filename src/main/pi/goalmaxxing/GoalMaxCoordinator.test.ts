@@ -829,7 +829,11 @@ describe('GoalMax coordinator', () => {
 
     await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.status).toBe('active'));
     expect(host.verifyGoal).not.toHaveBeenCalled();
-    expect((await coordinator.statusForModel('session-1')).details.criteria.some((criterion) => criterion.title.startsWith('Attach current non-verifier evidence'))).toBe(true);
+    // BUG 1 regression: the gate failure must not create follow-up criteria.
+    const failed = (await coordinator.statusForModel('session-1')).details;
+    expect(failed.criteria.some((criterion) => criterion.title.startsWith('Attach current non-verifier evidence'))).toBe(false);
+    // The finding is carried on the verification evidence for the next capsule.
+    expect(failed.evidence.findLast((item) => item.kind === 'verification')?.summary).toContain('Attach current non-verifier evidence to required criterion');
   });
 
   it('re-resolves visible permissions immediately before continuation dispatch', async () => {
@@ -887,8 +891,11 @@ describe('GoalMax coordinator', () => {
     const after = await coordinator.statusForModel('session-1');
     // The goal must NOT complete: required criteria lack current non-verifier evidence.
     expect(after.details.status).not.toBe('completed');
-    // A deterministic finding returns as pending follow-up work, not a warning-state task.
-    expect(after.details.criteria.some((criterion) => criterion.status === 'pending' && /non-verifier evidence/iu.test(criterion.title))).toBe(true);
+    // BUG 1 regression: the goal returns to active with an untouched criteria
+    // list; a gate failure never creates follow-up criteria.
+    expect(after.details.status).toBe('active');
+    expect(after.details.criteria.some((criterion) => /non-verifier evidence/iu.test(criterion.title))).toBe(false);
+    expect(after.details.evidence.findLast((item) => item.kind === 'verification')?.summary).toContain('Attach current non-verifier evidence to required criterion');
     void before;
   });
 
@@ -991,5 +998,146 @@ describe('GoalMax coordinator', () => {
     expect(completion.details.executionState).toBe('idle');
     expect(completion.details.blockedReason).toBeNull();
     expect(completion.details.failure).toBeNull();
+  });
+
+  it('never converts verification findings into nested follow-up criteria (BUG 1 base case)', async () => {
+    const { coordinator, runtime } = fixture();
+    await coordinator.create({ objective: 'Implement and verify the release', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await captureTestPlan(coordinator);
+    const titles = (await coordinator.statusForModel('session-1')).details.criteria.map((criterion) => criterion.title);
+    expect(titles).toHaveLength(3);
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await coordinator.report('session-1', { outcome: 'completion-candidate', summary: `Candidate cycle ${cycle}` });
+      runtime.idle = true; runtime.streaming = false;
+      coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
+      await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.status).toBe('active'));
+      const state = (await coordinator.statusForModel('session-1')).details;
+      // Repeated failed cycles must leave the criteria list exactly as planned.
+      expect(state.criteria.map((criterion) => criterion.title)).toEqual(titles);
+      expect(state.criteria.some((criterion) => criterion.title.startsWith('Attach current non-verifier evidence'))).toBe(false);
+    }
+  });
+
+  it('recovers through the normal flow after a failed completion candidate (BUG 1)', async () => {
+    const { coordinator, host, runtime } = fixture();
+    await coordinator.create({ objective: 'Implement and verify the release', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await captureTestPlan(coordinator);
+    await coordinator.report('session-1', { outcome: 'completion-candidate', summary: 'Premature candidate without evidence.' });
+    runtime.idle = true; runtime.streaming = false;
+    coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
+    await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.status).toBe('active'));
+    const failed = (await coordinator.statusForModel('session-1')).details;
+    expect(failed.criteria.some((criterion) => criterion.title.startsWith('Attach current non-verifier evidence'))).toBe(false);
+    expect(failed.evidence.findLast((item) => item.kind === 'verification')?.summary).toContain('Attach current non-verifier evidence to required criterion');
+    expect(host.verifyGoal).not.toHaveBeenCalled();
+
+    // The agent fixes the original criteria with current evidence and re-candidates: the goal completes.
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'recover-test', toolName: 'bash', args: { command: 'pnpm test' } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'recover-test', toolName: 'bash', result: 'passed', isError: false } as never);
+    const linked = (await coordinator.statusForModel('session-1')).details;
+    const testEvidence = linked.evidence.findLast((item) => item.kind === 'test' && item.current && item.exitCode === 0)!;
+    await coordinator.report('session-1', {
+      outcome: 'completion-candidate',
+      summary: 'Current test evidence linked to the original criteria.',
+      criterionUpdates: linked.criteria.filter((criterion) => criterion.required && criterion.title !== 'Verify the delivered result').map((criterion) => ({ criterionId: criterion.id, status: 'satisfied', evidenceIds: [testEvidence.id] })),
+    });
+    runtime.idle = true; runtime.streaming = false;
+    coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
+    await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.status).toBe('completed'));
+    expect(host.verifyGoal).toHaveBeenCalledOnce();
+  });
+
+  it('returns an explicit per-criterion rejection when a satisfied update cannot be honored (BUG 3)', async () => {
+    const { coordinator } = fixture();
+    await coordinator.create({ objective: 'Implement and verify the release', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await captureTestPlan(coordinator);
+    // A passing test superseded by a failing re-run of the same command leaves
+    // one stale record and one current record with exitCode 1.
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'pass-test', toolName: 'bash', args: { command: 'pnpm test' } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'pass-test', toolName: 'bash', result: 'passed', isError: false } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'fail-test', toolName: 'bash', args: { command: 'pnpm test' } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'fail-test', toolName: 'bash', result: 'failed', isError: true } as never);
+    // A failed verification also leaves verification-kind evidence in the ledger.
+    await coordinator.control({ action: 'verify' });
+    const state = (await coordinator.statusForModel('session-1')).details;
+    const criterion = state.criteria.find((candidate) => candidate.required && candidate.title !== 'Verify the delivered result')!;
+    const stale = state.evidence.find((item) => item.kind === 'test' && item.current === false)!;
+    const failed = state.evidence.find((item) => item.kind === 'test' && item.current === true)!;
+    const verification = state.evidence.findLast((item) => item.kind === 'verification')!;
+    expect(stale).toBeTruthy();
+    expect(failed.exitCode).toBe(1);
+    expect(verification).toBeTruthy();
+
+    const result = await coordinator.report('session-1', {
+      outcome: 'progress',
+      summary: 'Attempt to satisfy a criterion with invalid evidence.',
+      criterionUpdates: [{ criterionId: criterion.id, status: 'satisfied', evidenceIds: [stale.id, failed.id, verification.id, 'evidence-unknown'] }],
+    });
+
+    expect(result.text).not.toContain('Goal progress recorded.');
+    expect(result.rejections).toHaveLength(1);
+    expect(result.rejections[0]).toMatchObject({ criterionId: criterion.id, requestedStatus: 'satisfied', appliedStatus: 'active' });
+    expect(result.rejections[0]!.rejections.map((rejection) => rejection.reason)).toEqual(['stale', 'exit-code', 'verification', 'unknown']);
+    expect(result.details.criteria.find((candidate) => candidate.id === criterion.id)?.status).toBe('active');
+  });
+
+  it('exposes gate inputs in the status capsule: criterion evidence ids and per-evidence current, exitCode, criterionIds (BUG 4)', async () => {
+    const { coordinator } = fixture();
+    await coordinator.create({ objective: 'Implement and verify the release', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await captureTestPlan(coordinator);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'capsule-test', toolName: 'bash', args: { command: 'pnpm test' } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'capsule-test', toolName: 'bash', result: 'passed', isError: false } as never);
+    const state = (await coordinator.statusForModel('session-1')).details;
+    const testEvidence = state.evidence.findLast((item) => item.kind === 'test')!;
+    const criterion = state.criteria.find((candidate) => candidate.required && candidate.title !== 'Verify the delivered result')!;
+    await coordinator.report('session-1', {
+      outcome: 'progress',
+      summary: 'Linked current test evidence.',
+      criterionUpdates: [{ criterionId: criterion.id, status: 'satisfied', evidenceIds: [testEvidence.id] }],
+    });
+    const status = await coordinator.statusForModel('session-1');
+    // Per criterion: the linked evidence ids appear in the capsule.
+    expect(status.text).toContain(`(evidence: ${testEvidence.id})`);
+    // Per evidence: current, exitCode, and criterionIds appear in the capsule.
+    expect(status.text).toContain(`${testEvidence.id} · test · current=yes · exit=0`);
+    expect(status.text).toContain(`criteria=${criterion.id}`);
+  });
+
+  it('rejects completion after an edit without a current verification command and states the recovery path (BUG 2)', async () => {
+    const { coordinator, progress } = fixture();
+    await coordinator.create({ objective: 'Edit then verify the result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await captureTestPlan(coordinator);
+    progress.capture.mockResolvedValue({ fingerprint: 'changed', changedFileCount: 1, paths: ['src/app.ts'], repository: true });
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'edit-late', toolName: 'edit', args: { path: 'src/app.ts' } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'edit-late', toolName: 'edit', result: 'done', isError: false } as never);
+
+    const rejected = await coordinator.requestCompletion('session-1', { summary: 'Complete without re-running the checks.' });
+
+    expect(rejected.text).toContain('Completion was not accepted');
+    expect(rejected.text).toContain('test, build, lint, or typecheck after the latest workspace change');
+    expect(rejected.text).toContain('same turn');
+    expect(rejected.details.status).toBe('active');
+  });
+
+  it('accepts a successful test recorded in the completing turn after the latest edit, without a turn marker (BUG 2 recovery)', async () => {
+    const { coordinator, progress } = fixture();
+    await coordinator.create({ objective: 'Edit then verify the result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await captureTestPlan(coordinator);
+    progress.capture.mockResolvedValue({ fingerprint: 'changed', changedFileCount: 1, paths: ['src/app.ts'], repository: true });
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'edit-late', toolName: 'edit', args: { path: 'src/app.ts' } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'edit-late', toolName: 'edit', result: 'done', isError: false } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'recover-test', toolName: 'bash', args: { command: 'pnpm test' } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'recover-test', toolName: 'bash', result: 'passed', isError: false } as never);
+    const state = (await coordinator.statusForModel('session-1')).details;
+    const testEvidence = state.evidence.findLast((item) => item.kind === 'test' && item.current && item.exitCode === 0)!;
+
+    const completion = await coordinator.requestCompletion('session-1', {
+      summary: 'Re-tested after the latest edit in the completing turn.',
+      criterionEvidence: state.criteria
+        .filter((criterion) => criterion.required && criterion.title !== 'Verify the delivered result')
+        .map((criterion) => ({ criterionId: criterion.id, evidenceIds: [testEvidence.id] })),
+    });
+
+    expect(completion.details.status).toBe('completed');
   });
 });

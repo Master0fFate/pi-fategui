@@ -34,7 +34,7 @@ import {
   subagentHandle,
 } from '../../shared/subagentIdentity';
 import { PiEventNormalizer, messageText, safeText } from './PiEventNormalizer';
-import { toolNamesForPermission } from './PiToolPolicy';
+import { requiredPermissionForTool, toolNamesForPermission } from './PiToolPolicy';
 import {
   discoverSubagentProfiles,
   resolveSubagentProfile,
@@ -934,6 +934,15 @@ export class SubagentCoordinator {
       const permitted = childToolNamesForPermission(permissionLevel);
       const requestedTools = request.tools === undefined ? null : new Set(request.tools);
       const profileTools = profile.tools ? new Set(profile.tools) : null;
+      // An explicitly requested tool must never be silently dropped. Fail loudly
+      // with the exact reason so the caller can re-spawn with the right authority.
+      if (requestedTools) {
+        const denied = [...requestedTools].filter((name) => !permitted.includes(name));
+        if (denied.length) {
+          const detail = denied.map((name) => `'${name}' requires '${requiredPermissionForTool(name) ?? 'full-access'}'`).join('; ');
+          throw new Error(`Requested child tool${denied.length === 1 ? '' : 's'} ${denied.map((name) => `'${name}'`).join(', ')} ${denied.length === 1 ? 'is' : 'are'} not granted at the effective child permission '${permissionLevel}': ${detail}. Re-spawn the child with the required permission.`);
+        }
+      }
       const toolNames = permitted.filter((name) => (!requestedTools || requestedTools.has(name)) && (!profileTools || profileTools.has(name)));
       const selectedSkills = await selectSubagentSkills(parent.session, request.skills, request.skillMode, request.preloadSkills);
       assertSkillTools(selectedSkills, toolNames);

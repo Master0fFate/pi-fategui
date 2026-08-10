@@ -8,7 +8,7 @@ import { AGENT_TEAM_MAX_GLOBAL_NODES, AGENT_TEAM_MAX_WAIT_MS, type AgentTeam, ty
 import type { ToolActor } from '../../../shared/contracts/provenance';
 import { addUsage, createSdkChildSession, emptyUsage, finalAssistant, usageFromMessages, type SubagentChildSessionFactory } from '../SubagentSessionFactory';
 import { assertContextTransfer } from '../SubagentContext';
-import { toolNamesForPermission } from '../PiToolPolicy';
+import { requiredPermissionForTool, toolNamesForPermission } from '../PiToolPolicy';
 import { createToolProvenance } from '../ToolProvenance';
 import { discoverSubagentProfiles, resolveSubagentProfile } from '../SubagentProfiles';
 import { assertSkillTools, selectSubagentSkills } from '../SubagentSkills';
@@ -898,6 +898,19 @@ export class AgentTeamCoordinator {
     const callerCap = caller.depth === 0 ? new Set(permitted) : new Set(caller.enabledTools);
     const requested = request.tools ? new Set(request.tools) : null;
     const profileTools = profile.tools ? new Set(profile.tools) : null;
+    // An explicitly requested tool must never be silently dropped. Fail loudly
+    // with the exact reason so the caller can re-spawn with the right authority.
+    if (requested) {
+      const deniedByPermission = [...requested].filter((tool) => !permitted.includes(tool));
+      if (deniedByPermission.length) {
+        const detail = deniedByPermission.map((tool) => `'${tool}' requires '${requiredPermissionForTool(tool) ?? 'full-access'}'`).join('; ');
+        throw new Error(`Requested child tool${deniedByPermission.length === 1 ? '' : 's'} ${deniedByPermission.map((tool) => `'${tool}'`).join(', ')} ${deniedByPermission.length === 1 ? 'is' : 'are'} not granted at the effective child permission '${permission}': ${detail}. Re-spawn the child with the required permission.`);
+      }
+      const deniedByCaller = [...requested].filter((tool) => permitted.includes(tool) && !callerCap.has(tool));
+      if (deniedByCaller.length) {
+        throw new Error(`Requested child tool${deniedByCaller.length === 1 ? '' : 's'} ${deniedByCaller.map((tool) => `'${tool}'`).join(', ')} ${deniedByCaller.length === 1 ? 'is' : 'are'} not enabled for the calling node; a child can only grant tools its caller already holds.`);
+      }
+    }
     const tools = permitted.filter((tool) => callerCap.has(tool) && (!requested || requested.has(tool)) && (!profileTools || profileTools.has(tool)));
     const skillMode = request.skillMode ?? 'all';
     const selectedSkills = await selectSubagentSkills(root.session, request.skills ?? [], skillMode, request.preloadSkills ?? true);

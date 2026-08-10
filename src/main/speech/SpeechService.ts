@@ -12,9 +12,14 @@ import { speechModels, type SpeechModelDefinition } from './speechModels';
 const MODEL_IDLE_TIMEOUT_MS = 5 * 60_000;
 const MAX_AUDIO_SAMPLES = 16_000 * 180;
 const CPU_THREADS = Math.max(1, Math.min(8, Math.ceil(os.availableParallelism() / 2)));
-/** Audio committed per streaming feed. Large enough for low latency without
- *  flooding the model with tiny decodes. */
-const STREAM_CHUNK_MS = 300;
+/** Parakeet buffered-stream context window (left, chunk, right) in ms.
+ *  transcribe.cpp requires every field to be a positive multiple of the 80 ms
+ *  encoder frame AND the resolved (L, C, R) tuple to be one of the model's
+ *  training-menu configurations; anything else makes transcribe_stream_begin
+ *  return TRANSCRIBE_ERR_INVALID_ARG. (70, 2, 2) = 5.6 s / 160 ms / 160 ms =
+ *  320 ms lookahead: the closest valid tuple to the original 300 ms intent,
+ *  with ~1.64% streaming WER (vs 1.44% at the 2.08 s default). */
+const PARAKEET_BUFFERED_WINDOW_MS = { leftMs: 5_600, chunkMs: 160, rightMs: 160 } as const;
 const MAX_STREAM_CHUNK_BYTES = 16_000 * 4 * 2;
 const LEGACY_MODEL_FILES = [
   'parakeet-tdt_ctc-110m-Q5_K_M.gguf',
@@ -178,7 +183,7 @@ export class SpeechService {
         language: language && language !== 'auto' ? language : 'en',
         timestamps: 'none',
         commitPolicy: 'stable_prefix',
-        family: { kind: 'parakeet_buffered', chunkMs: STREAM_CHUNK_MS },
+        family: { kind: 'parakeet_buffered', ...PARAKEET_BUFFERED_WINDOW_MS },
       });
     } catch (error) {
       session.dispose();

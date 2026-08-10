@@ -87,7 +87,7 @@ export function createGoalMaxTools(coordinator: GoalMaxCoordinator): ToolDefinit
       executionMode: 'sequential',
       execute: async (_toolCallId, params, _signal, _onUpdate, context) => {
         const result = await coordinator.report(context.sessionManager.getSessionId(), params as GoalMaxReportInput);
-        return { content: [{ type: 'text' as const, text: result.text }], details: result.details };
+        return { content: [{ type: 'text' as const, text: result.text }], details: result.details, ...(result.rejections.length > 0 ? { rejections: result.rejections } : {}) };
       },
     }),
     defineTool({

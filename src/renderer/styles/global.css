@@ -2221,6 +2221,10 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 :root[data-performance-mode="true"] .app-toast { box-shadow: none; filter: none; }
 :root[data-performance-mode="true"] .cinematic-image-overlay,
 :root[data-performance-mode="true"] .dialog-overlay { backdrop-filter: none; }
+:root[data-performance-mode="true"] .workspace-header {
+  /* Plain rectangle: no separator line. */
+  border-bottom: none;
+}
 
 /* Explicit emergency rendering profile. Keep structural transforms and opacity
    untouched because dialogs, popovers, scrollbars, and disclosures depend on them. */

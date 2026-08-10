@@ -247,7 +247,10 @@ describe('SpeechService live streaming', () => {
     service.setStreamSink((update) => updates.push({ state: update.state, committed: update.committed }));
 
     await service.streamStart('balanced', 'en');
-    expect(session.stream).toHaveBeenCalledWith(expect.objectContaining({ commitPolicy: 'stable_prefix', family: expect.objectContaining({ kind: 'parakeet_buffered' }) }));
+    // BUG regression: the buffered-stream window must be a valid (left, chunk,
+    // right) menu tuple — multiples of the 80 ms encoder frame. The old 300 ms
+    // chunk made transcribe_stream_begin return TRANSCRIBE_ERR_INVALID_ARG.
+    expect(session.stream).toHaveBeenCalledWith(expect.objectContaining({ commitPolicy: 'stable_prefix', family: expect.objectContaining({ kind: 'parakeet_buffered', leftMs: 5_600, chunkMs: 160, rightMs: 160 }) }));
     expect(updates.at(-1)).toMatchObject({ state: 'active' });
 
     await service.streamFeed(new Float32Array([0, 0, 0, 0]).buffer);

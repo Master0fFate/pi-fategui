@@ -30,8 +30,26 @@ function boundedItems<T>(items: readonly T[], maxBytes: number, format: (item: T
 }
 
 export function goalMaxCapsule(goal: GoalMaxState, recovery?: GoalMaxRecovery): string {
-  const criteria = boundedItems(goal.criteria, 7 * 1_024, (criterion) => `- [${criterion.status}] ${criterion.id}: ${criterion.title}`) || '- None';
-  const evidence = boundedItems(goal.evidence.filter((item) => item.current).slice(-10), 4 * 1_024, (item) => `- ${item.id} · ${item.kind} · ${item.title}`) || '- None recorded yet';
+  const criteria = boundedItems(goal.criteria, 7 * 1_024, (criterion) => {
+    const evidenceIds = criterion.evidenceIds.length === 0
+      ? ''
+      : criterion.evidenceIds.length <= 6
+        ? ` (evidence: ${criterion.evidenceIds.join(',')})`
+        : ` (evidence: ${criterion.evidenceIds.slice(0, 6).join(',')},+${criterion.evidenceIds.length - 6} more)`;
+    return `- [${criterion.status}] ${criterion.id}: ${criterion.title}${evidenceIds}`;
+  }) || '- None';
+  const evidence = boundedItems(goal.evidence.slice(-10), 4 * 1_024, (item) => {
+    const exitCode = item.exitCode === undefined ? 'none' : String(item.exitCode);
+    const criterionIds = item.criterionIds.length === 0
+      ? 'none'
+      : item.criterionIds.length <= 6
+        ? item.criterionIds.join(',')
+        : `${item.criterionIds.slice(0, 6).join(',')},+${item.criterionIds.length - 6}`;
+    // Verification evidence carries the last gate report; showing its summary
+    // lets the agent see exactly which findings a failed completion returned.
+    const findings = item.kind === 'verification' && item.summary ? `\n  ${item.summary}` : '';
+    return `- ${item.id} · ${item.kind} · current=${item.current ? 'yes' : 'no'} · exit=${exitCode} · criteria=${criterionIds} · ${item.title}${findings}`;
+  }) || '- None recorded yet';
   const steering = boundedItems(goal.steering.slice(-8), 5 * 1_024, (item) => `- ${item.text}`) || '- None';
   const diagnosis = clipUtf8(goal.evidence.findLast((item) => item.current && item.kind === 'subagent' && item.title.startsWith('Diagnostic review'))?.summary ?? 'None', 2 * 1_024);
   const blockers = clipUtf8(goal.blockedReason ?? 'None', 2 * 1_024);
@@ -64,7 +82,7 @@ export function goalMaxCapsule(goal: GoalMaxState, recovery?: GoalMaxRecovery): 
     'Treat new steering as part of this goal now, not as a message to replay after completion.',
     'If steering changes remaining scope, use goalmax_report.pendingTaskChanges to add new pending tasks or remove untouched pending criteria. Never rewrite the active, satisfied, failed, or evidence-linked work.',
     '',
-    `CURRENT EVIDENCE\n${evidence}`,
+    `EVIDENCE LEDGER · newest first\n${evidence}`,
     '',
     `LATEST RECOVERY DIAGNOSIS\n${diagnosis}`,
     '',

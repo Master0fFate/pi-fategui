@@ -228,8 +228,15 @@ describe('SubagentCoordinator', () => {
     expect(children.inputs).toEqual([]);
 
     agentStrategy = 'read-only';
-    const result = await executeTool(coordinator, {
+    // An explicit tool request beyond the effective permission is rejected loudly
+    // instead of being silently dropped.
+    await expect(executeTool(coordinator, {
       task: 'inspect without writing', role: 'reviewer', permission: 'full-access', tools: ['read', 'grep', 'write', 'edit', 'bash'],
+    }, undefined, undefined, runtime())).rejects.toThrow(/not granted at the effective child permission 'read-only'/u);
+    expect(children.inputs).toEqual([]);
+
+    const result = await executeTool(coordinator, {
+      task: 'inspect without writing', role: 'reviewer', permission: 'read-only', tools: ['read', 'grep'],
     }, undefined, undefined, runtime());
     const details = subagentToolDetailsSchema.parse(result.details);
 
@@ -250,7 +257,7 @@ describe('SubagentCoordinator', () => {
       role: 'reviewer',
       model: { provider: 'alternate', id: 'glm' },
       thinkingLevel: 'high',
-      tools: ['read', 'grep', 'bash'],
+      tools: ['read', 'grep'],
     }, undefined, undefined, runtime());
     const details = subagentToolDetailsSchema.parse(result.details);
 
@@ -1061,11 +1068,22 @@ describe('SubagentCoordinator', () => {
       emit: () => undefined,
     }, children.factory);
 
-    const result = await executeTool(coordinator, {
+    // An explicit bash/write request beyond the read-only parent is rejected
+    // loudly; a narrowed request still preserves the role label and bounds.
+    await expect(executeTool(coordinator, {
       task: 'Perform the domain pass',
       role: 'database-migration-specialist',
       permission: 'full-access',
       tools: ['read', 'grep', 'bash', 'write'],
+      skillMode: 'none',
+    })).rejects.toThrow(/not granted at the effective child permission 'read-only'/u);
+    expect(children.inputs).toEqual([]);
+
+    const result = await executeTool(coordinator, {
+      task: 'Perform the domain pass',
+      role: 'database-migration-specialist',
+      permission: 'full-access',
+      tools: ['read', 'grep'],
       skillMode: 'none',
     });
     const run = (result.details as SubagentToolDetails).runs?.[0];

@@ -22,6 +22,22 @@ const toolsByPermissionLevel: Record<PermissionLevel, readonly string[]> = {
 };
 const permissionControlledTools = new Set(['read', 'write', 'edit', 'bash', 'generate_image']);
 
+/** Minimum child permission that grants each ordinary tool. */
+const toolMinimumPermission: Record<string, PermissionLevel> = {
+  read: 'read-only',
+  grep: 'read-only',
+  find: 'read-only',
+  ls: 'read-only',
+  generate_image: 'read-only',
+  write: 'edit',
+  edit: 'edit',
+  bash: 'full-access',
+};
+
+export function requiredPermissionForTool(tool: string): PermissionLevel | undefined {
+  return toolMinimumPermission[tool];
+}
+
 export function activeToolsForPermission(activeTools: readonly string[], level: PermissionLevel): string[] {
   const allowed = new Set(toolsByPermissionLevel[level]);
   const selected = activeTools.filter((name) => !permissionControlledTools.has(name) || allowed.has(name));

@@ -140,6 +140,45 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(persisted.length).toBeGreaterThan(0);
   });
 
+  it('grants an explicitly requested bash tool when the effective permission allows it', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'run the suite', name: 'runner', permission: 'full-access', tools: ['bash', 'read', 'write', 'edit'] }, 'bash-grant-spawn', runtime());
+    await settle();
+    expect(createdInputs[0]?.toolNames).toEqual(expect.arrayContaining(['bash', 'read', 'write', 'edit']));
+    expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)).toMatchObject({ status: 'ready' });
+  });
+
+  it('rejects an explicitly requested bash tool at edit permission with an actionable error instead of silently dropping it', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    await expect(coordinator.spawn(rootId, { task: 'run the suite', name: 'runner', permission: 'edit', tools: ['bash'] }, 'bash-denied-spawn', runtime()))
+      .rejects.toThrow(/requires 'full-access'/u);
+    expect(createdInputs).toHaveLength(0);
+  });
+
+  it('rejects a grandchild tool request that the calling node does not hold', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'investigate', name: 'reviewer', permission: 'full-access', tools: ['read'] }, 'cap-spawn-1', runtime());
+    await settle();
+    await expect(coordinator.spawn(child.nodeId, { task: 'verify', name: 'tester', permission: 'full-access', tools: ['bash'] }, 'cap-spawn-2', runtime()))
+      .rejects.toThrow(/caller already holds/u);
+    expect(createdInputs).toHaveLength(1);
+  });
+
   it('waits for the terminal task result instead of an intermediate child change', async () => {
     let releasePrompt: () => void = () => undefined;
     promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
