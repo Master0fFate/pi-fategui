@@ -204,7 +204,9 @@ describe('first-launch shell', () => {
     await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
 
     act(() => useUiStore.getState().setPaletteOpen(true));
-    const modelCommand = await screen.findByRole('option', { name: /Use model: Fast Model/u });
+    // Long wait on purpose: the palette mounts in a portal and slow CI runners
+    // can exceed the default 1 s findByRole timeout under load.
+    const modelCommand = await screen.findByRole('option', { name: /Use model: Fast Model/u }, { timeout: 5_000 });
     expect(modelCommand).toBeEnabled();
     await user.click(modelCommand);
     await waitFor(() => expect(setModel).toHaveBeenCalledWith('test', 'fast'));

@@ -74,13 +74,13 @@ Themes Pi already knows about are picked up automatically too, including any a p
 
 ## What Fate UI provides
 
-- **The real Pi runtime.** Streamed text, reasoning, tools, sessions, models, skills, prompts, and provider authentication come from the embedded Pi SDK.
-- **Local control and explicit trust.** Repositories, sessions, Git, terminals, settings, and credentials stay on your machine. Terminal-opened and manually selected projects get the same **Trust and open**, **Open without Pi**, or **Cancel** choice.
-- **Fate Flight Deck.** Activity Pulse reports runtime, queue, context, and change state. Flight Recorder keeps a bounded, navigable history of root, legacy, and team activity. Review Runway pairs diffs and review status with recorded direct-file provenance when available.
-- **A focused coding workspace.** One resizable workspace brings together durable sessions, branches and worktrees, project-confined files, Monaco previews and diffs, Git status and history, and a manual terminal. Virtualized timelines, queued messages, guarded project switching, and stop/steer controls keep long-running work responsive.
-- **Agent orchestration.** Choose either recursive Agent Teams V2 or isolated legacy subagents, with model, tool, skill, and permission controls.
-- **Personal preferences, kept local.** Choose built-in, Pi-compatible, or validated custom themes and interface or code fonts. Use local voice transcription, optional ambient audio, or a dedicated image-generation model when useful.
-- **Native installers.** See [Installation](#installation) for published builds, checksum guidance, and platform-specific setup.
+- **The real Pi runtime.** No scraping. Streamed text, reasoning, tools, sessions, models, skills, and prompts all come from the embedded Pi SDK.
+- **Stays on your machine.** Repos, sessions, Git, terminals, settings, and credentials never leave. Every project — opened from the terminal or picked by hand — gets the same Trust and open, Open without Pi, or Cancel choice.
+- **Fate Flight Deck.** See what's running at a glance: Activity Pulse tracks runtime, queue, context, and changes. Flight Recorder keeps a navigable history of root, legacy, and team activity. Review Runway pairs diffs with review status and direct-file provenance.
+- **A workspace that stays out of your way.** Durable sessions, branches and worktrees, project-confined files, Monaco previews and diffs, Git status and history, and a manual terminal in one resizable window. Virtualized timelines, queued messages, guarded project switching, and stop/steer controls keep long work responsive.
+- **Agent orchestration.** Recursive Agent Teams V2 or isolated legacy subagents, with per-child control over model, tools, skills, and permissions.
+- **Yours, not the cloud's.** Built-in, Pi-compatible, or custom themes; interface and code fonts; local voice transcription; optional ambient audio; and an image-generation model when you want one.
+- **Real installers.** See [Installation](#installation) for builds, checksums, and per-platform setup.
 
 ## Installation
 

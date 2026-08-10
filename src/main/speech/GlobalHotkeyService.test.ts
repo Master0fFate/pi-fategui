@@ -4,10 +4,14 @@ import { parseAccelerator } from './GlobalHotkeyService';
 
 describe('GlobalHotkeyService.parseAccelerator', () => {
   it('maps a CommandOrControl combo to the platform primary modifier', () => {
-    // The test host is not macOS, so CommandOrControl resolves to Control.
+    // CommandOrControl resolves to Control everywhere except macOS, where it
+    // resolves to Command; the assertion must follow the running platform.
+    const isMac = process.platform === 'darwin';
     const combo = parseAccelerator('CommandOrControl+Shift+Space', UiohookKey);
     expect(combo).not.toBeNull();
-    expect(combo).toMatchObject({ keycode: UiohookKey.Space, ctrl: true, shift: true, meta: false, alt: false });
+    expect(combo).toMatchObject(isMac
+      ? { keycode: UiohookKey.Space, ctrl: false, shift: true, meta: true, alt: false }
+      : { keycode: UiohookKey.Space, ctrl: true, shift: true, meta: false, alt: false });
   });
 
   it('maps explicit Command and Control tokens', () => {
