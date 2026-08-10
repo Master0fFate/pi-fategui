@@ -1528,6 +1528,14 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.getByRole('button', { name: 'Enable full access' }).click();
     await expect(page.getByRole('button', { name: 'Permission level: Full access' })).toBeVisible();
 
+    // Switching worktrees reopens Pi at another folder; make sure the active
+    // folder is expanded again before switching sessions.
+    if (!await page.locator('.session-list').isVisible().catch(() => false)) {
+      const activeChevron = page.locator('.folder-group--active .folder-chevron').first();
+      if (await activeChevron.count() > 0) await activeChevron.click();
+    }
+    await expect(page.locator('.session-list')).toBeVisible();
+
     await composerInput.fill('First session draft');
     await page.locator('.session-open').filter({ hasText: 'Second session' }).click();
     await expect(page.getByRole('button', { name: 'Permission level: Full access' })).toBeVisible();
