@@ -5,8 +5,6 @@ import {
   FileCode2,
   Globe2,
   LoaderCircle,
-  Pause,
-  Play,
   RefreshCw,
   ScanSearch,
   ShieldCheck,
@@ -101,7 +99,6 @@ export function BrowserToolbar() {
 
   const closeBrowser = () => {
     setBrowserOpen(false);
-    void window.piDesktop.setBrowserPaused(true).then((next) => useBrowserStore.getState().hydrate(next)).catch(() => undefined);
   };
 
   const canAnnotate = Boolean(tab && tab.url !== 'about:blank' && tab.semanticAvailable);
@@ -133,17 +130,6 @@ export function BrowserToolbar() {
           <ModeButton mode="agent" active={state.mode === 'agent'} label="Agent" icon={Bot} attention={agentNeedsAccess} onSelect={setMode} />
           <ModeButton mode="annotate" active={state.mode === 'annotate'} label="Annotate" icon={ScanSearch} disabled={!canAnnotate} onSelect={setMode} />
         </div>
-        <AppTooltip content={state.paused ? 'Resume agent browser actions' : 'Pause agent browser actions'}>
-          <button
-            type="button"
-            className="browser-pause"
-            aria-label={state.paused ? 'Resume browser agent' : 'Pause browser agent'}
-            disabled={state.mode !== 'agent' || Boolean(pending)}
-            onClick={() => void run(state.paused ? 'resume' : 'pause', () => window.piDesktop.setBrowserPaused(!state.paused))}
-          >
-            {state.paused ? <Play size={14} /> : <Pause size={14} />}
-          </button>
-        </AppTooltip>
         <AppTooltip content="Close browser"><button type="button" className="browser-close" aria-label="Close browser" onClick={closeBrowser}><X size={14} /></button></AppTooltip>
       </div>
       {accessOpen && currentOrigin && (

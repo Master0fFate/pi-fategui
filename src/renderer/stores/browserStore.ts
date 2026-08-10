@@ -41,7 +41,6 @@ const initialBrowserState: BrowserState = {
   visible: false,
   viewBlocked: false,
   sessionFullAccess: false,
-  paused: true,
   controlLevel: 'off',
   mode: 'agent',
   tabs: [],

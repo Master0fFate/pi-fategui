@@ -64,10 +64,15 @@ import {
   projectDeleteSessionsResultSchema,
   speechCancelResultSchema,
   speechDownloadProgressSchema,
+  speechHotkeyStatusSchema,
   speechModelInputSchema,
   speechStatusSchema,
+  speechStreamFeedInputSchema,
+  speechStreamStartInputSchema,
+  speechStreamUpdateSchema,
   speechTranscribeInputSchema,
   speechTranscriptionSchema,
+  voiceHotkeyEventSchema,
   subagentControlInputSchema,
   setModelInputSchema,
   setPermissionInputSchema,
@@ -95,9 +100,12 @@ import {
   type QueueMutationInput,
   type PermissionLevel,
   type SpeechDownloadProgress,
+  type SpeechHotkeyStatus,
   type SpeechModelId,
+  type SpeechStreamUpdate,
   type SubagentControlInput,
   type ThinkingLevel,
+  type VoiceHotkeyEvent,
   type WindowControlAction,
   type WindowState,
 } from '../shared/contracts/ipc';
@@ -123,7 +131,6 @@ import {
   browserOriginGrantSchema,
   browserOriginInputSchema,
   browserOverlayInputSchema,
-  browserPauseInputSchema,
   browserSnapshotInputSchema,
   browserStateSchema,
   browserTabIdInputSchema,
@@ -155,10 +162,14 @@ import {
   goalMaxCreateInputSchema,
   goalMaxEventBatchSchema,
   goalMaxStateSchema,
+  goalMaxSteeringEditInputSchema,
+  goalMaxSteeringRemoveInputSchema,
   goalMaxUpdateInputSchema,
   type GoalMaxControlInput,
   type GoalMaxCreateInput,
   type GoalMaxEvent,
+  type GoalMaxSteeringEditInput,
+  type GoalMaxSteeringRemoveInput,
   type GoalMaxUpdateInput,
 } from '../shared/contracts/goalmaxxing';
 import {
@@ -299,10 +310,6 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSetControlLevel, browserControlLevelInputSchema.parse({ level }));
     return browserStateSchema.parse(result);
   },
-  async setBrowserPaused(paused: boolean) {
-    const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSetPaused, browserPauseInputSchema.parse({ paused }));
-    return browserStateSchema.parse(result);
-  },
   async setBrowserOriginGrant(grant: BrowserOriginGrant) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSetGrant, browserOriginGrantSchema.parse(grant));
     return browserStateSchema.parse(result);
@@ -427,6 +434,14 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async clearGoalMax() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGoalMaxClear, emptyInputSchema.parse({}));
     return goalMaxClearResultSchema.parse(result);
+  },
+  async editGoalMaxSteering(input: GoalMaxSteeringEditInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGoalMaxSteeringEdit, goalMaxSteeringEditInputSchema.parse(input));
+    return goalMaxStateSchema.parse(result);
+  },
+  async removeGoalMaxSteering(input: GoalMaxSteeringRemoveInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeGoalMaxSteeringRemove, goalMaxSteeringRemoveInputSchema.parse(input));
+    return goalMaxStateSchema.parse(result);
   },
   async getTaskList() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeTaskGet, emptyInputSchema.parse({}));
@@ -639,10 +654,38 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     const result: unknown = await ipcRenderer.invoke(ipcChannels.speechCancel, emptyInputSchema.parse({}));
     return speechCancelResultSchema.parse(result).cancelled;
   },
+  async startSpeechStream(modelId: SpeechModelId, language?: string) {
+    const input = speechStreamStartInputSchema.parse({ modelId, language });
+    await ipcRenderer.invoke(ipcChannels.speechStreamStart, input);
+  },
+  async feedSpeechStream(audio: ArrayBuffer) {
+    const input = speechStreamFeedInputSchema.parse({ audio });
+    await ipcRenderer.invoke(ipcChannels.speechStreamFeed, input);
+  },
+  async stopSpeechStream() {
+    await ipcRenderer.invoke(ipcChannels.speechStreamStop, emptyInputSchema.parse({}));
+  },
+  async cancelSpeechStream() {
+    await ipcRenderer.invoke(ipcChannels.speechStreamCancel, emptyInputSchema.parse({}));
+  },
+  async getSpeechHotkeyStatus() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.speechHotkeyStatus, emptyInputSchema.parse({}));
+    return speechHotkeyStatusSchema.parse(result);
+  },
   onSpeechDownload(listener: (progress: SpeechDownloadProgress) => void) {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(speechDownloadProgressSchema.parse(payload));
     ipcRenderer.on(ipcChannels.speechEvents, handler);
     return () => ipcRenderer.removeListener(ipcChannels.speechEvents, handler);
+  },
+  onSpeechStreamUpdate(listener: (update: SpeechStreamUpdate) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(speechStreamUpdateSchema.parse(payload));
+    ipcRenderer.on(ipcChannels.speechStreamEvents, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.speechStreamEvents, handler);
+  },
+  onVoiceHotkey(listener: (event: VoiceHotkeyEvent) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(voiceHotkeyEventSchema.parse(payload));
+    ipcRenderer.on(ipcChannels.voiceHotkey, handler);
+    return () => ipcRenderer.removeListener(ipcChannels.voiceHotkey, handler);
   },
   async getMusicStatus() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.musicGetStatus, emptyInputSchema.parse({}));

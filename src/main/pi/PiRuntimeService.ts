@@ -50,6 +50,8 @@ import type {
   GoalMaxCreateInput,
   GoalMaxEvent,
   GoalMaxState,
+  GoalMaxSteeringEditInput,
+  GoalMaxSteeringRemoveInput,
   GoalMaxUpdateInput,
 } from '../../shared/contracts/goalmaxxing';
 import { PiEventBatcher } from './PiEventBatcher';
@@ -1184,7 +1186,9 @@ export class PiRuntimeService {
       if (input.images?.length || input.browserAnnotations?.length) {
         throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'GoalMax updates are text-only. Remove image and page-note attachments, then send the update again.', retryable: true });
       }
-      await this.goalMax.recordSteering(session.sessionId, input.text, input.behavior);
+      // Every GoalMax update is delivered as steering into the running root
+      // turn (or the next idle continuation) — never as a queued follow-up.
+      await this.goalMax.recordSteering(session.sessionId, input.text, 'steer');
       slot.modifiedAt = new Date().toISOString();
       this.mergeLiveSessionSummaries();
       if (this.selectedSlot === slot) {
@@ -1620,6 +1624,24 @@ export class PiRuntimeService {
     return this.goalMax.clear();
   }
 
+  async editGoalMaxSteering(input: GoalMaxSteeringEditInput): Promise<GoalMaxState> {
+    this.requireSession();
+    const session = this.runtime?.session;
+    if (!session || !this.project) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'No active session is bound to a goal.', retryable: false });
+    const updated = await this.goalMax.updateSteering(session.sessionId, input.steeringId, input.text);
+    if (!updated) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'No active goal is accepting steering edits.', retryable: false });
+    return updated;
+  }
+
+  async removeGoalMaxSteering(input: GoalMaxSteeringRemoveInput): Promise<GoalMaxState> {
+    this.requireSession();
+    const session = this.runtime?.session;
+    if (!session || !this.project) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'No active session is bound to a goal.', retryable: false });
+    const updated = await this.goalMax.removeSteering(session.sessionId, input.steeringId);
+    if (!updated) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'No active goal is accepting steering edits.', retryable: false });
+    return updated;
+  }
+
   async getTaskList(): Promise<TaskList | null> {
     const session = this.runtime?.session;
     const project = this.project;
@@ -1795,13 +1817,31 @@ export class PiRuntimeService {
   async deleteSessionsForPath(projectPath: string): Promise<{ deleted: number; skipped: number }> {
     const liveSessionIds = new Set([...this.liveSlots].map((slot) => slot.runtime.session.sessionId));
     const sessions = await this.sessionRepository.list(projectPath, null);
-    const deletable = sessions.filter((candidate) => !liveSessionIds.has(candidate.id));
     const initialization = this.initialization;
-    for (const candidate of deletable) {
-      await this.agentTeams.deleteRootStorage(candidate.id);
+    const deletable: SessionSummary[] = [];
+    const blocked = new Set<string>();
+    for (const candidate of sessions) {
+      if (liveSessionIds.has(candidate.id)) continue;
+      // A parent session with a descendant Agent Team turn still writing to it
+      // must not be deleted, and one blocked session must never abort the
+      // whole batch: skip it and keep deleting everything else.
+      try {
+        await this.agentTeams.deleteRootStorage(candidate.id);
+      } catch {
+        blocked.add(candidate.id);
+        continue;
+      }
       if (initialization !== this.initialization) throw this.replacementSuperseded();
-      await this.sessionRepository.delete(projectPath, candidate.id);
-      this.manualSessionNames.add(this.sessionClaimKey(projectPath, candidate.id));
+      deletable.push(candidate);
+    }
+    // Remove the files in ONE pass (the repository lists once, validates every
+    // path against the project's session directory, then deletes). The old
+    // per-session delete() re-resolved through the cache, which was
+    // invalidated by the previous removal — one full disk scan per session.
+    const excluded = new Set([...liveSessionIds, ...blocked]);
+    const deleted = await this.sessionRepository.deleteAll(projectPath, excluded);
+    // Metadata cleanup is auxiliary: it must never strand or abort the batch.
+    for (const candidate of deletable) {
       await this.goalMax.deleteSession(projectPath, candidate.id).catch(() => undefined);
       await this.tasks.deleteSession(projectPath, candidate.id).catch(() => undefined);
       await this.sessionPermissions.delete(projectPath, candidate.id).catch(() => undefined);
@@ -1810,12 +1850,17 @@ export class PiRuntimeService {
       this.coldPendingModels.delete(candidate.id);
       this.subagents.releaseParent(candidate.id);
       this.agentTeams.releaseRoot(candidate.id);
+      this.manualSessionNames.add(this.sessionClaimKey(projectPath, candidate.id));
+      while (this.manualSessionNames.size > MAX_MANUAL_SESSION_NAME_CLAIMS) this.manualSessionNames.delete(this.manualSessionNames.values().next().value!);
     }
+    // The session store cache was already invalidated by deleteAll; a forced
+    // refresh now reloads it from disk and pushes the fresh list to the UI.
     if (this.project?.path === projectPath && this.selectedSlot) {
       await this.refreshSessions(true);
       this.emitState();
     }
-    return { deleted: deletable.length, skipped: sessions.length - deletable.length };
+    const listedLive = sessions.filter((candidate) => liveSessionIds.has(candidate.id)).length;
+    return { deleted, skipped: listedLive + blocked.size };
   }
 
   async deleteSession(sessionId: string): Promise<RuntimeState> {

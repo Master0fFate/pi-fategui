@@ -1,9 +1,9 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
-import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, FileText, FolderOpen, GitFork, Globe2, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
+import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, FileText, FolderOpen, GitFork, Globe2, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Search, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
 import { type ChangeEvent, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { BrowserAnnotation, FileEntry, PromptInput, QueueMutationInput } from '../../../shared/contracts/ipc';
+import type { BrowserAnnotation, FileEntry, PromptInput, QueueMutationInput, SpeechStreamUpdate } from '../../../shared/contracts/ipc';
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AppTooltip } from '../../components/AppTooltip';
 import { SelectControl } from '../../components/SelectControl';
@@ -18,6 +18,7 @@ import { ContextWheel } from './ContextWheel';
 import { agentMentionContext, findAgentMentions, parseAgentStopCommand } from './agentMentions';
 import { fileTagContext, fileTagText, findFileTags } from './fileTags';
 import { findSlashCommands, slashCommandContext, slashCommandDescription, slashCommandLabel, type SlashCommand } from './slashCommands';
+import { startVoiceStream, type VoiceStreamController } from './voiceStream';
 
 interface Attachment {
   name: string;
@@ -117,6 +118,9 @@ const MODEL_NAME_MAX_LENGTH = 28;
 const MIN_COMPOSER_INPUT_HEIGHT = 53;
 const COMPOSER_RESIZE_STEP = 18;
 const MAX_VOICE_DURATION_MS = 180_000;
+/** Live-stream chunk size (300 ms of 16 kHz mono = 4 800 samples), kept in step
+ *  with the backend STREAM_CHUNK_MS so each feed is one model decode. */
+const STREAM_CHUNK_SAMPLES = 16_000 * 0.3;
 const SEND_HOLD_TO_ABORT_MS = 2_000;
 const afterNextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 type VoiceState = 'idle' | 'preparing' | 'downloading' | 'recording' | 'transcribing';
@@ -201,6 +205,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const [forking, setForking] = useState(false);
   const [forkNotice, setForkNotice] = useState<string | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [modelSearch, setModelSearch] = useState('');
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [utilityMenuOpen, setUtilityMenuOpen] = useState(false);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
@@ -208,6 +213,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const [modelBusy, setModelBusy] = useState(false);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [queueBusyId, setQueueBusyId] = useState<string | null>(null);
+  const [goalUpdateBusyId, setGoalUpdateBusyId] = useState<string | null>(null);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [selectedAgentIndex, setSelectedAgentIndex] = useState(0);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
@@ -243,6 +249,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const draftScrollTopRef = useRef(0);
   const submittingRef = useRef(false);
   const queueBusyRef = useRef(false);
+  const goalUpdateBusyRef = useRef(false);
   const modelBusyRef = useRef(false);
   const permissionBusyRef = useRef(false);
   const forkingRef = useRef(false);
@@ -252,6 +259,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const voiceAttempt = useRef(0);
   const voiceStateRef = useRef<VoiceState>('idle');
   const voiceSelectionKey = useRef<string | null>(null);
+  const liveRecording = useRef<{ controller: VoiceStreamController; attempt: number } | null>(null);
+  const liveAnchorRef = useRef<number | null>(null);
+  const liveSpanLenRef = useRef(0);
   const mounted = useRef(true);
   const runtime = useRuntimeStore(useShallow((state) => ({
     status: state.runtime.status,
@@ -297,6 +307,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const showToast = useUiStore((state) => state.showToast);
   const speech = useUiStore((state) => state.speech);
   const speechDownload = useUiStore((state) => state.speechDownload);
+  const speechStatus = useUiStore((state) => state.speechStatus);
+  const isLiveModel = speech.enabled && speech.liveTranscription
+    && Boolean(speechStatus?.models.find((model) => model.id === speech.modelId)?.streaming);
   const connected = runtime.status === 'ready';
   const nextModel = runtime.pendingModel ?? runtime.model;
   const nextThinkingLevel = runtime.pendingThinkingLevel ?? runtime.thinkingLevel;
@@ -320,6 +333,19 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const nextModelName = nextModel?.name ?? 'No model';
   const modelLabel = compactModelName(nextModelName);
   const modelTooltip = `Current: ${currentModelName}\nNext: ${nextModelName}`;
+  const modelSearchQuery = modelSearch.trim().toLowerCase();
+  const modelOptions = useMemo(() => {
+    if (!nextModel) return [{ value: '', label: 'Not connected' }];
+    const matches = modelSearchQuery
+      ? runtime.models.filter((model) =>
+          model.name.toLowerCase().includes(modelSearchQuery) ||
+          model.provider.toLowerCase().includes(modelSearchQuery) ||
+          model.id.toLowerCase().includes(modelSearchQuery))
+      : [...runtime.models];
+    const selectedKey = `${nextModel.provider}/${nextModel.id}`;
+    if (!matches.some((model) => `${model.provider}/${model.id}` === selectedKey)) matches.unshift(nextModel);
+    return matches.map((model) => ({ value: `${model.provider}/${model.id}`, label: model.name, detail: model.provider }));
+  }, [runtime.models, modelSearchQuery, nextModel]);
   const voiceDownloadProgress = speechDownload?.modelId === speech.modelId
     ? speechDownload.state === 'verifying' ? 100 : Math.min(100, Math.round(speechDownload.downloadedBytes / speechDownload.totalBytes * 100))
     : 0;
@@ -387,6 +413,36 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     if (mounted.current) setVoiceState(next);
   }, []);
   const isCurrentVoiceAttempt = useCallback((attempt: number) => mounted.current && voiceAttempt.current === attempt, []);
+
+  /** Replace the live-transcription span (anchored at liveAnchorRef) with the latest
+   *  committed text. The span grows as Parakeet stabilizes words, giving the
+   *  type-as-you-speak effect without rewriting anything the user typed outside it. */
+  const applyLiveText = useCallback((committed: string) => {
+    const anchor = liveAnchorRef.current;
+    if (anchor === null || !mounted.current) return;
+    const text = committed.trim();
+    const current = draftRef.current;
+    const before = current.slice(0, anchor);
+    const after = current.slice(anchor + liveSpanLenRef.current);
+    const leading = before && !/\s$/u.test(before) ? ' ' : '';
+    const insertion = `${leading}${text}`;
+    liveSpanLenRef.current = insertion.length;
+    updateDraft(`${before}${insertion}${after}`);
+    const caret = anchor + insertion.length;
+    setCaretPosition(caret);
+    const input = textarea.current;
+    if (input) { input.focus({ preventScroll: true }); input.setSelectionRange(caret, caret); }
+  }, [updateDraft]);
+
+  const teardownLiveRecording = () => {
+    const recording = liveRecording.current;
+    if (recording) {
+      liveRecording.current = null;
+      try { recording.controller.stop(); } catch { /* best-effort teardown */ }
+    }
+    liveAnchorRef.current = null;
+    liveSpanLenRef.current = 0;
+  };
   const clearSendHoldGesture = useCallback((pointerId?: number) => {
     const gesture = sendHoldGesture.current;
     if (!gesture || (pointerId !== undefined && gesture.pointerId !== pointerId)) return null;
@@ -657,6 +713,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       forkingRef.current = false;
       for (const frame of voiceRestoreFrames.current) cancelAnimationFrame(frame);
       voiceRestoreFrames.current.clear();
+      teardownLiveRecording();
       const recording = activeRecording.current;
       if (recording) {
         recording.cancelled = true;
@@ -668,6 +725,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       }
       if ('piDesktop' in window && typeof window.piDesktop.cancelSpeechTranscription === 'function') {
         void window.piDesktop.cancelSpeechTranscription().catch(() => undefined);
+      }
+      if ('piDesktop' in window && typeof window.piDesktop.cancelSpeechStream === 'function') {
+        void window.piDesktop.cancelSpeechStream().catch(() => undefined);
       }
     };
   }, [clearSendHoldGesture]);
@@ -687,6 +747,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     voiceSelectionKey.current = selectionKey;
     if (voiceStateRef.current === 'idle') return;
     voiceAttempt.current += 1;
+    teardownLiveRecording();
     const recording = activeRecording.current;
     if (recording) {
       recording.cancelled = true;
@@ -700,7 +761,32 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     if ('piDesktop' in window && typeof window.piDesktop.cancelSpeechTranscription === 'function') {
       void window.piDesktop.cancelSpeechTranscription().catch(() => undefined);
     }
+    if ('piDesktop' in window && typeof window.piDesktop.cancelSpeechStream === 'function') {
+      void window.piDesktop.cancelSpeechStream().catch(() => undefined);
+    }
   }, [runtime.project?.path, runtime.sessionId, updateVoiceState]);
+
+  // Live transcription updates: committed text writes straight into the input box.
+  useEffect(() => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.onSpeechStreamUpdate !== 'function') return;
+    return window.piDesktop.onSpeechStreamUpdate((update: SpeechStreamUpdate) => {
+      if (update.state === 'active' || update.state === 'final') applyLiveText(update.committed);
+      else if (update.state === 'error') setComposerError(update.error ?? 'Live transcription failed.');
+      else if (update.state === 'cancelled') { teardownLiveRecording(); if (voiceStateRef.current !== 'idle') updateVoiceState('idle'); }
+    });
+  }, [applyLiveText, updateVoiceState]);
+
+  // Global voice hotkey (registered by the main process): start/stop from anywhere.
+  useEffect(() => {
+    if (!('piDesktop' in window) || typeof window.piDesktop.onVoiceHotkey !== 'function') return;
+    return window.piDesktop.onVoiceHotkey((event) => {
+      if (event.source !== 'hotkey') return;
+      if (event.action === 'start') { if (voiceStateRef.current === 'idle') void startVoiceRecording(); }
+      else { if (voiceStateRef.current === 'recording') stopVoiceRecording(); }
+    });
+  // startVoiceRecording/stopVoiceRecording are stable closures over refs + state setters.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!compactToolbar) setUtilityMenuOpen(false);
@@ -1234,6 +1320,64 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     };
   }, [addImageFiles]);
 
+  const startLiveRecording = async () => {
+    const runtimeNow = useRuntimeStore.getState().runtime;
+    if (!speech.enabled || speechDownload || voiceStateRef.current !== 'idle' || runtimeNow.status !== 'ready' || !('piDesktop' in window)) return;
+    const attempt = voiceAttempt.current + 1;
+    voiceAttempt.current = attempt;
+    const input = textarea.current;
+    liveAnchorRef.current = input ? Math.max(0, input.selectionStart ?? draftRef.current.length) : draftRef.current.length;
+    liveSpanLenRef.current = 0;
+    updateVoiceState('preparing');
+    setComposerError(null);
+    try {
+      if (typeof window.piDesktop.startSpeechStream !== 'function') throw new Error('Restart Fate UI to activate live transcription.');
+      await afterNextPaint();
+      if (!isCurrentVoiceAttempt(attempt)) return;
+      updateVoiceState('downloading');
+      await window.piDesktop.ensureSpeechModel(speech.modelId);
+      if (!isCurrentVoiceAttempt(attempt)) return;
+      updateVoiceState('preparing');
+      await window.piDesktop.startSpeechStream(speech.modelId, speech.language === 'auto' ? undefined : speech.language);
+      if (!isCurrentVoiceAttempt(attempt)) { await window.piDesktop.cancelSpeechStream().catch(() => undefined); return; }
+      const controller = await startVoiceStream(speech.inputDeviceId, STREAM_CHUNK_SAMPLES, async (pcm) => {
+        if (!isCurrentVoiceAttempt(attempt) || voiceStateRef.current !== 'recording') return;
+        const audio = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer;
+        try { await window.piDesktop.feedSpeechStream(audio); }
+        catch (error) { if (isCurrentVoiceAttempt(attempt)) setComposerError(error instanceof Error ? error.message : 'Live transcription stalled.'); }
+      });
+      if (!isCurrentVoiceAttempt(attempt)) { controller.stop(); await window.piDesktop.cancelSpeechStream().catch(() => undefined); return; }
+      liveRecording.current = { controller, attempt };
+      updateVoiceState('recording');
+    } catch (error) {
+      teardownLiveRecording();
+      await window.piDesktop.cancelSpeechStream().catch(() => undefined);
+      if (isCurrentVoiceAttempt(attempt)) {
+        setComposerError(error instanceof Error ? error.message : 'Could not start live transcription.');
+        updateVoiceState('idle');
+      }
+    }
+  };
+
+  const stopLiveRecording = async () => {
+    const recording = liveRecording.current;
+    if (!recording) return;
+    liveRecording.current = null;
+    if (voiceStateRef.current === 'recording') updateVoiceState('transcribing');
+    try { recording.controller.stop(); } catch { /* best-effort teardown */ }
+    try {
+      await window.piDesktop.stopSpeechStream();
+    } catch (error) {
+      if (isCurrentVoiceAttempt(recording.attempt)) setComposerError(error instanceof Error ? error.message : 'Live transcription failed to finalize.');
+    } finally {
+      if (isCurrentVoiceAttempt(recording.attempt)) {
+        liveAnchorRef.current = null;
+        liveSpanLenRef.current = 0;
+        updateVoiceState('idle');
+      }
+    }
+  };
+
   const insertTranscript = (transcript: string, target: VoiceInsertionTarget) => {
     const text = transcript.trim();
     if (!text) throw new Error('No speech was detected. Try again closer to the microphone.');
@@ -1327,6 +1471,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   };
 
   const stopVoiceRecording = () => {
+    if (liveRecording.current) { void stopLiveRecording(); return; }
     const recording = activeRecording.current;
     if (!recording || recording.recorder.state === 'inactive') return;
     updateVoiceState('transcribing');
@@ -1334,6 +1479,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   };
 
   const startVoiceRecording = async () => {
+    if (isLiveModel) return startLiveRecording();
     const runtimeNow = useRuntimeStore.getState().runtime;
     if (!speech.enabled || speechDownload || voiceStateRef.current !== 'idle' || runtimeNow.status !== 'ready' || !('piDesktop' in window)) return;
     const attempt = voiceAttempt.current + 1;
@@ -1475,6 +1621,46 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     } finally {
       queueBusyRef.current = false;
       if (mounted.current) setQueueBusyId(null);
+    }
+  };
+
+  const mutateGoalUpdate = async (id: string, action: 'edit' | 'cancel') => {
+    if (!('piDesktop' in window) || goalUpdateBusyRef.current) return;
+    const goalNow = useGoalMaxStore.getState().goal;
+    const item = goalNow?.steering.find((entry) => entry.id === id);
+    if (!item) return;
+    if (action === 'edit' && (draftRef.current.trim() || imagesRef.current.length > 0 || browserAnnotationIdsRef.current.length > 0)) {
+      setComposerError('Finish or clear the current draft and attachments before editing a goal update.');
+      textarea.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (typeof window.piDesktop.removeGoalMaxSteering !== 'function') {
+      setComposerError('Restart Fate UI to edit goal updates.');
+      return;
+    }
+    goalUpdateBusyRef.current = true;
+    setGoalUpdateBusyId(id);
+    setComposerError(null);
+    try {
+      // Goal updates are authoritative steering: editing withdraws the entry
+      // and restores its text to the composer (mirroring queued-message edit),
+      // while cancel removes it from the goal entirely.
+      const goal = await window.piDesktop.removeGoalMaxSteering({ steeringId: id });
+      if (mounted.current) setActiveGoal(goal);
+      if (action === 'edit') {
+        updateDraft(item.text);
+        requestAnimationFrame(() => {
+          if (!mounted.current) return;
+          textarea.current?.focus({ preventScroll: true });
+          const end = item.text.length;
+          textarea.current?.setSelectionRange(end, end);
+        });
+      }
+    } catch (error) {
+      if (mounted.current) setComposerError(error instanceof Error ? error.message : 'The goal update could not be changed.');
+    } finally {
+      goalUpdateBusyRef.current = false;
+      if (mounted.current) setGoalUpdateBusyId(null);
     }
   };
 
@@ -1681,11 +1867,22 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         <section className="queued-messages goalmax-steering-messages" aria-label="GoalMax updates" aria-live="polite">
           {goalUpdates.map((item) => {
             const preview = item.text.split('\n', 1)[0]?.trim() || item.text;
+            const busy = goalUpdateBusyId === item.id;
             return (
               <div className="queued-message" key={item.id} data-behavior="steer" data-goal-update="true">
                 <CornerUpLeft size={13} aria-hidden="true" />
                 <AppTooltip content={item.text}><span className="queued-message-preview icon-label">{preview}</span></AppTooltip>
                 <span className="queued-message-status">Goal update</span>
+                <div className="queued-message-actions">
+                  <AppTooltip content="Edit goal update" wrapTrigger>
+                    <button className="queued-message-edit" type="button" aria-label={`Edit goal update: ${preview}`} disabled={Boolean(goalUpdateBusyId)} onClick={() => void mutateGoalUpdate(item.id, 'edit')}><Pencil size={13} aria-hidden="true" /></button>
+                  </AppTooltip>
+                  <AppTooltip content="Cancel goal update" wrapTrigger>
+                    <button className="queued-message-cancel" type="button" aria-label={`Cancel goal update: ${preview}`} disabled={Boolean(goalUpdateBusyId)} onClick={() => void mutateGoalUpdate(item.id, 'cancel')}>
+                      {busy ? <LoaderCircle className="tool-spinner" size={13} /> : <Trash2 size={13} aria-hidden="true" />}
+                    </button>
+                  </AppTooltip>
+                </div>
               </div>
             );
           })}
@@ -1817,6 +2014,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
           />
         </div>
         <div className="composer-toolbar">
+          {(voiceState === 'recording' || voiceState === 'transcribing') && (
+            <div className="composer-voice-meter" aria-hidden="true" data-live={isLiveModel || undefined}><i /><i /><i /><i /><i /></div>
+          )}
           <div className="composer-toolbar-leading">
             {compactToolbar && (
               <Popover.Root
@@ -1925,7 +2125,13 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
           </div>
           <div className="composer-toolbar-trailing">
               <div className="composer-model-context">
-                <Popover.Root open={modelMenuOpen} onOpenChange={setModelMenuOpen}>
+                <Popover.Root
+                  open={modelMenuOpen}
+                  onOpenChange={(nextOpen) => {
+                    setModelMenuOpen(nextOpen);
+                    if (!nextOpen) setModelSearch('');
+                  }}
+                >
                   <AppTooltip content={modelTooltip}>
                     <Popover.Trigger asChild>
                       <button className="model-pill" type="button" aria-label="Model and reasoning settings" disabled={!connected || modelBusy}>
@@ -1952,9 +2158,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                           label="Model"
                           disabled={!connected || modelBusy}
                           value={nextModel ? `${nextModel.provider}/${nextModel.id}` : ''}
-                          options={nextModel
-                            ? runtime.models.map((model) => ({ value: `${model.provider}/${model.id}`, label: model.name, detail: model.provider }))
-                            : [{ value: '', label: 'Not connected' }]}
+                          options={modelOptions}
+                          contentClassName="model-select-content"
                           onValueChange={(value) => void changeModel(value)}
                         />
                       </div>
@@ -1965,9 +2170,33 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                           disabled={!reasoningCapable || modelBusy}
                           value={reasoningCapable ? nextThinkingLevel : 'off'}
                           options={(reasoningCapable ? thinkingLevels : ['off'] as const).map((level) => ({ value: level, label: reasoningCapable ? thinkingLabel(level) : 'Not supported' }))}
+                          contentClassName="model-select-content"
                           onValueChange={(value) => void changeThinking(value as typeof thinkingLevels[number])}
                         />
                       </div>
+                      <label className="model-search">
+                        <Search size={12} aria-hidden="true" />
+                        <input
+                          type="text"
+                          value={modelSearch}
+                          onChange={(event) => setModelSearch(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Escape' && modelSearch) {
+                              event.stopPropagation();
+                              setModelSearch('');
+                            }
+                          }}
+                          placeholder="Search models"
+                          aria-label="Search models"
+                          spellCheck={false}
+                          disabled={!connected}
+                        />
+                        {modelSearch && (
+                          <button type="button" aria-label="Clear model search" onClick={() => setModelSearch('')}>
+                            <X size={11} aria-hidden="true" />
+                          </button>
+                        )}
+                      </label>
                     </Popover.Content>
                   </Popover.Portal>
                 </Popover.Root>

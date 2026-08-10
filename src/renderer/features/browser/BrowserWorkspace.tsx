@@ -68,9 +68,6 @@ export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
       {state.mode === 'annotate' && !state.tabs.find((tab) => tab.id === state.activeTabId)?.semanticAvailable && (
         <div className="browser-error-strip" role="alert"><span>Element selection is unavailable for this page.</span></div>
       )}
-      {state.mode === 'agent' && state.paused && state.activeTabId && (
-        <div className="browser-agent-paused" role="status">Agent control paused — the page is still yours to browse.</div>
-      )}
       {state.activeTabId && <BrowserViewport visible={visible} />}
       {!state.activeTabId && <div className="browser-blank-state"><strong>Opening Chromium…</strong></div>}
       <BrowserConfirmationBanner />

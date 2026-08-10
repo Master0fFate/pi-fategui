@@ -112,7 +112,7 @@ export interface GoalMaxCoordinatorHost {
 
 type BufferedEvidence = { evidence: GoalMaxEvidence; observation: ToolObservation };
 type ObservationBuffer = { items: BufferedEvidence[]; timer: ReturnType<typeof setTimeout> };
-type TurnMarker = { toolCount: number; meaningful: boolean; novelInvestigation: boolean; latestAssistantText: string; startedAt: number };
+type TurnMarker = { toolCount: number; meaningful: boolean; novelInvestigation: boolean; latestAssistantText: string; startedAt: number; statusCalls: number; reportCalls: number; completeCalls: number };
 interface GoalMaxCommitGuard {
   validate(): string | null;
   recover(previous: GoalMaxState, attempted: GoalMaxState, reason: string, now: number): GoalMaxState;
@@ -505,13 +505,56 @@ export class GoalMaxCoordinator {
     });
     this.clearFailClosedState(sessionId);
     const updated = this.requireState(sessionId);
+    await this.redeliverSteering(sessionId, updated);
+    return structuredClone(updated);
+  }
+
+  async updateSteering(sessionId: string, steeringId: string, textValue: string): Promise<GoalMaxState | null> {
+    const existing = this.stateForSession(sessionId);
+    const text = textValue.trim().slice(0, GOALMAX_STEERING_TEXT_LIMIT);
+    if (!existing || !text || isGoalMaxTerminal(existing.status)) return existing ? structuredClone(existing) : null;
+    if (!existing.steering.some((item) => item.id === steeringId)) throw new Error('That goal update is no longer listed.');
+    if (this.completionFences.has(sessionId)) this.completionFenceConflicts.set(sessionId, 'A goal update edit arrived during the completion gate.');
+    await this.mutate(sessionId, (current, now) => {
+      if (!current.steering.some((item) => item.id === steeringId)) throw new GoalMaxOperationSuperseded();
+      return appendGoalMaxTimeline({
+        ...current,
+        revision: current.revision + 1,
+        steering: current.steering.map((item) => item.id === steeringId ? { ...item, text, timestamp: now } : item),
+        updatedAt: now,
+      }, 'steering.updated', 'Goal update edited by the user.', now);
+    });
+    this.clearFailClosedState(sessionId);
+    const updated = this.requireState(sessionId);
+    await this.redeliverSteering(sessionId, updated);
+    return structuredClone(updated);
+  }
+
+  async removeSteering(sessionId: string, steeringId: string): Promise<GoalMaxState | null> {
+    const existing = this.stateForSession(sessionId);
+    if (!existing || isGoalMaxTerminal(existing.status)) return existing ? structuredClone(existing) : null;
+    if (!existing.steering.some((item) => item.id === steeringId)) return structuredClone(existing);
+    if (this.completionFences.has(sessionId)) this.completionFenceConflicts.set(sessionId, 'A goal update was withdrawn during the completion gate.');
+    await this.mutate(sessionId, (current, now) => appendGoalMaxTimeline({
+      ...current,
+      revision: current.revision + 1,
+      steering: current.steering.filter((item) => item.id !== steeringId),
+      updatedAt: now,
+    }, 'steering.removed', 'Goal update withdrawn by the user.', now));
+    this.clearFailClosedState(sessionId);
+    const updated = this.requireState(sessionId);
+    await this.redeliverSteering(sessionId, updated);
+    return structuredClone(updated);
+  }
+
+  /** Deliver edited/withdrawn steering to the running root or the next idle continuation. */
+  private async redeliverSteering(sessionId: string, updated: GoalMaxState): Promise<void> {
     const runtime = this.host.runtime(sessionId);
     if (updated.status === 'active' && runtime?.streaming && updated.executionState === 'running-root') {
       await this.host.steerGoal(sessionId, goalMaxCapsule(updated), updated.id, updated.revision).catch(() => undefined);
     } else if (updated.status === 'active' && runtime?.idle && updated.executionState === 'idle') {
       this.schedule(updated, 'user-steering');
     }
-    return structuredClone(updated);
   }
 
   async clear(): Promise<GoalMaxClearResult> {
@@ -857,7 +900,7 @@ export class GoalMaxCoordinator {
     if (!goal || isGoalMaxTerminal(goal.status)) return;
     const raw = event as AgentSessionEvent & Record<string, unknown>;
     if (event.type === 'agent_start') {
-      this.turnMarkers.set(sessionId, { toolCount: 0, meaningful: false, novelInvestigation: false, latestAssistantText: '', startedAt: Date.now() });
+      this.turnMarkers.set(sessionId, { toolCount: 0, meaningful: false, novelInvestigation: false, latestAssistantText: '', startedAt: Date.now(), statusCalls: 0, reportCalls: 0, completeCalls: 0 });
       void this.mutate(sessionId, (current, now) => ({ ...current, revision: current.revision + 1, executionState: 'running-root', continuation: { ...current.continuation, pending: false }, updatedAt: now }), false).catch(() => undefined);
       return;
     }
@@ -867,7 +910,12 @@ export class GoalMaxCoordinator {
       while (map.size > MAX_TRACKED_TOOL_STARTS) map.delete(map.keys().next().value!);
       this.toolStarts.set(sessionId, map);
       const marker = this.turnMarkers.get(sessionId);
-      if (marker && event.toolName !== 'goalmax_status' && event.toolName !== 'goalmax_report' && event.toolName !== 'goalmax_complete') marker.toolCount += 1;
+      if (marker) {
+        if (event.toolName === 'goalmax_status') marker.statusCalls += 1;
+        else if (event.toolName === 'goalmax_report') marker.reportCalls += 1;
+        else if (event.toolName === 'goalmax_complete') marker.completeCalls += 1;
+        else marker.toolCount += 1;
+      }
       return;
     }
     if (event.type === 'tool_execution_end') {
@@ -1024,8 +1072,9 @@ export class GoalMaxCoordinator {
 
   private async onRootSettled(sessionId: string): Promise<void> {
     await this.flushObservations(sessionId);
-    const marker = this.turnMarkers.get(sessionId) ?? { toolCount: 0, meaningful: false, novelInvestigation: false, latestAssistantText: '', startedAt: Date.now() };
+    const marker = this.turnMarkers.get(sessionId) ?? { toolCount: 0, meaningful: false, novelInvestigation: false, latestAssistantText: '', startedAt: Date.now(), statusCalls: 0, reportCalls: 0, completeCalls: 0 };
     this.turnMarkers.delete(sessionId);
+    let gatewayViolation: string | null = null;
     await this.serialize(sessionId, async () => {
       const goal = this.requireState(sessionId);
       if (isGoalMaxTerminal(goal.status)) return;
@@ -1033,6 +1082,7 @@ export class GoalMaxCoordinator {
       const workspace = await this.progressEngine.capture(goal.projectPath);
       const now = Date.now();
       const workspaceChanged = workspace.fingerprint !== goal.progress.latestWorkspaceFingerprint;
+      gatewayViolation = strictGatewayViolation(goal, marker, workspaceChanged);
       let evidence = goal.evidence;
       const researchProgress = goalMaxResearchProgress(goal, marker.latestAssistantText, marker.novelInvestigation);
       let meaningful = marker.meaningful || workspaceChanged || researchProgress;
@@ -1066,6 +1116,10 @@ export class GoalMaxCoordinator {
       next = appendGoalMaxTimeline(next, 'continuation.settled', meaningful ? 'Root turn settled with observable progress.' : 'Root turn settled without observable progress.', now);
       await this.commit(next, goal.revision);
     });
+    if (gatewayViolation) {
+      await this.blockForGatewayViolation(sessionId, gatewayViolation);
+      return;
+    }
     const current = this.stateForSession(sessionId);
     if (!current || isGoalMaxTerminal(current.status) || current.status === 'paused' || current.status === 'blocked') return;
     if (current.status === 'verifying') {
@@ -1089,6 +1143,22 @@ export class GoalMaxCoordinator {
       return;
     }
     this.schedule(current, 'root-settled');
+  }
+
+  private async blockForGatewayViolation(sessionId: string, reason: string): Promise<void> {
+    const current = this.stateForSession(sessionId);
+    if (!current || current.status !== 'active') return;
+    this.scheduler.cancel(current.id);
+    try {
+      await this.mutate(sessionId, (goal, now) => {
+        if (goal.status !== 'active') throw new GoalMaxOperationSuperseded();
+        return appendGoalMaxTimeline({
+          ...transitionGoalMax(goal, 'blocked', now),
+          revision: goal.revision + 1,
+          blockedReason: reason,
+        }, 'goal.blocked', reason, now);
+      });
+    } catch { /* A concurrent change superseded the gateway block; the goal already reflects it. */ }
   }
 
   private async blockAfterRootSettlementFailure(sessionId: string, error: unknown): Promise<void> {
@@ -2045,4 +2115,26 @@ function classifyContinuationFailure(error: unknown):
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * STRICT GATEWAY: the root agent must work through the captured task plan and
+ * keep the goal plane in sync every turn. Implementation work (workspace
+ * change or meaningful evidence) before the plan exists, or without any
+ * goalmax_status/goalmax_report/goalmax_complete call in the same turn, is a
+ * hard contract violation that blocks the goal immediately.
+ */
+function strictGatewayViolation(goal: GoalMaxState, marker: TurnMarker, workspaceChanged: boolean): string | null {
+  // A completion-candidate report is itself a goalmax_report sync; the
+  // verification gate owns the goal from that point on.
+  if (goal.status === 'verifying') return null;
+  const implementationWork = workspaceChanged || marker.meaningful;
+  if (!implementationWork) return null;
+  if (!hasGoalMaxTaskPlan(goal)) {
+    return 'The agent performed implementation work before capturing the execution task plan. The plan gate is mandatory: submit 2-12 concrete tasks via goalmax_report (outcome "progress", phase "planning") before changing the workspace.';
+  }
+  if (marker.statusCalls === 0 && marker.reportCalls === 0 && marker.completeCalls === 0) {
+    return 'The agent changed the workspace without consulting the goal plane this turn. Every working turn must call goalmax_status or goalmax_report so the task list stays the single source of truth.';
+  }
+  return null;
 }

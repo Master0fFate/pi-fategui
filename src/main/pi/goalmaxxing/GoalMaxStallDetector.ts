@@ -9,23 +9,20 @@ export type GoalMaxRecovery =
 
 export function decideGoalMaxRecovery(goal: GoalMaxState): GoalMaxRecovery {
   const { noProgressTurnCount, repeatedFailureCount, planningOnlyTurnCount } = goal.progress;
-  if (noProgressTurnCount >= 5) {
-    return { kind: 'blocked', reason: 'Five consecutive continuations produced no observable progress. Review the blocker or change the approach before resuming.' };
+  if (noProgressTurnCount >= 4) {
+    return { kind: 'blocked', reason: 'Four consecutive continuations produced no observable progress. Review the blocker or change the approach before resuming.' };
   }
-  if (repeatedFailureCount >= 4) {
-    return { kind: 'blocked', reason: 'The same failure repeated four times without a successful recovery.' };
+  if (repeatedFailureCount >= 3) {
+    return { kind: 'blocked', reason: 'The same failure repeated three times without a successful recovery.' };
   }
-  if (noProgressTurnCount === 4) {
-    return { kind: 'change-strategy', instruction: 'Change execution strategy now. Return to the last useful evidence, choose a different concrete route, and do not repeat the failed action.' };
-  }
-  if (noProgressTurnCount === 3 || repeatedFailureCount === 3) {
+  if (noProgressTurnCount === 3 || repeatedFailureCount === 2) {
     return { kind: 'diagnose', instruction: 'Diagnose the exact blocker before retrying. Use read-only inspection or a focused reviewer, then perform a different artefact-producing action.' };
   }
-  if (noProgressTurnCount === 2 || planningOnlyTurnCount >= 2) {
-    return { kind: 'reconcile', instruction: 'Planning-only output is exhausted. Reconcile current artefacts and perform one concrete implementation or verification action this turn.' };
+  if (noProgressTurnCount === 2 || repeatedFailureCount === 1) {
+    return { kind: 'change-strategy', instruction: 'Change execution strategy now. Return to the last useful evidence, choose a different concrete route, and do not repeat the failed action.' };
   }
-  if (noProgressTurnCount === 1) {
-    return { kind: 'continue', instruction: 'The previous turn produced no observable delta. Perform the smallest concrete action that advances an unsatisfied criterion.' };
+  if (noProgressTurnCount === 1 || planningOnlyTurnCount >= 1) {
+    return { kind: 'reconcile', instruction: 'Planning-only output is exhausted. Reconcile current artefacts and perform one concrete implementation or verification action this turn.' };
   }
   return { kind: 'continue', instruction: 'Perform the highest-value concrete action that advances an unsatisfied criterion.' };
 }

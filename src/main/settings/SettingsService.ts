@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { appSettingsSchema, type AppSettings, type ProjectState } from '../../shared/contracts/ipc';
+import { appSettingsSchema, defaultSpeechSettings, type AppSettings, type ProjectState } from '../../shared/contracts/ipc';
 import { builtInThemes, customThemeFileSchema, themeCatalogSchema, type ThemeDefinition } from '../../shared/themes';
 import type { AppLogService } from '../logging/AppLogService';
 import { PiThemeService } from './PiThemeService';
@@ -25,7 +25,7 @@ const defaults: AppSettings = {
   interfaceFont: 'noto-sans',
   codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
-  speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
+  speech: defaultSpeechSettings,
 };
 
 export class SettingsService {

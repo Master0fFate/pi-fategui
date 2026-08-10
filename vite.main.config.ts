@@ -13,7 +13,7 @@ export default defineConfig({
     target: 'node22',
     minify: false,
     rollupOptions: {
-      external: (id) => id === 'electron' || id.startsWith('node:') || id === 'node-pty' || id === 'transcribe-cpp' || id === '@earendil-works/pi-coding-agent',
+      external: (id) => id === 'electron' || id.startsWith('node:') || id === 'node-pty' || id === 'transcribe-cpp' || id === 'uiohook-napi' || id === '@earendil-works/pi-coding-agent',
     },
   },
 });

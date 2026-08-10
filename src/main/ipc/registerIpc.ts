@@ -67,8 +67,12 @@ import {
   projectDeleteSessionsResultSchema,
   speechCancelResultSchema,
   speechDownloadProgressSchema,
+  speechHotkeyStatusSchema,
   speechModelInputSchema,
   speechStatusSchema,
+  speechStreamFeedInputSchema,
+  speechStreamStartInputSchema,
+  speechStreamUpdateSchema,
   speechTranscribeInputSchema,
   speechTranscriptionSchema,
   subagentControlInputSchema,
@@ -109,6 +113,8 @@ import {
   goalMaxCreateInputSchema,
   goalMaxEventBatchSchema,
   goalMaxStateSchema,
+  goalMaxSteeringEditInputSchema,
+  goalMaxSteeringRemoveInputSchema,
   goalMaxUpdateInputSchema,
   type GoalMaxEvent,
 } from '../../shared/contracts/goalmaxxing';
@@ -132,6 +138,7 @@ import type { TerminalService } from '../terminal/TerminalService';
 import type { AppLogService } from '../logging/AppLogService';
 import type { MusicService } from '../music/MusicService';
 import type { SpeechService } from '../speech/SpeechService';
+import type { GlobalHotkeyService } from '../speech/GlobalHotkeyService';
 import type { UpdateService } from '../updates/UpdateService';
 import { isTrustedRendererUrl, type TrustedRendererPolicy } from '../security/trustedRenderer';
 import type { BrowserHost } from '../browser/BrowserHost';
@@ -155,7 +162,6 @@ import {
   browserOriginGrantSchema,
   browserOriginInputSchema,
   browserOverlayInputSchema,
-  browserPauseInputSchema,
   browserSnapshotInputSchema,
   browserStateSchema,
   browserTabIdInputSchema,
@@ -191,7 +197,8 @@ export interface IpcServices {
   terminal: TerminalService;
   logs: AppLogService;
   music: Pick<MusicService, 'getStatus' | 'load' | 'resolveTrack' | 'clearQueue' | 'reset'>;
-  speech: Pick<SpeechService, 'setEventSink' | 'getStatus' | 'download' | 'cancelDownload' | 'remove' | 'transcribe' | 'cancel'>;
+  speech: Pick<SpeechService, 'setEventSink' | 'setStreamSink' | 'getStatus' | 'download' | 'cancelDownload' | 'remove' | 'transcribe' | 'cancel' | 'streamStart' | 'streamFeed' | 'streamStop' | 'streamCancel'>;
+  hotkey: GlobalHotkeyService;
   updates: Pick<UpdateService, 'check' | 'openDownload' | 'downloadAndInstall'>;
   browser: Pick<BrowserHost, 'ensure' | 'current' | 'setAppOverlay' | 'respondToConfirmation' | 'reset'>;
   automations: Pick<AutomationRepository, 'list' | 'create' | 'update' | 'remove' | 'recordLaunch'>;
@@ -383,7 +390,7 @@ function register(channel: string, rendererPolicy: TrustedRendererPolicy, handle
   });
 }
 
-export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, updates, browser, automations, rendererPolicy }: IpcServices) {
+export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser, automations, rendererPolicy }: IpcServices) {
   runtime.setEventSink((events) => {
     const batch = piEventBatchSchema.parse(events);
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeEvents, batch);
@@ -437,6 +444,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   speech.setEventSink((progress) => {
     const payload = speechDownloadProgressSchema.parse(progress);
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.speechEvents, payload);
+  });
+  speech.setStreamSink((update) => {
+    const payload = speechStreamUpdateSchema.parse(update);
+    for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.speechStreamEvents, payload);
   });
 
   const handle = (channel: string, handler: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown | Promise<unknown>) => register(channel, rendererPolicy, handler);
@@ -593,12 +604,6 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     const { level } = browserControlLevelInputSchema.parse(input);
     const service = await activeBrowser(event);
     service.setControlLevel(level);
-    return browserStateSchema.parse(service.getState());
-  });
-  handle(ipcChannels.browserSetPaused, async (event, input) => {
-    const { paused } = browserPauseInputSchema.parse(input);
-    const service = await activeBrowser(event);
-    service.setPaused(paused);
     return browserStateSchema.parse(service.getState());
   });
   handle(ipcChannels.browserSetGrant, async (event, input) => {
@@ -844,6 +849,12 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     emptyInputSchema.parse(input);
     return goalMaxClearResultSchema.parse(await runtime.clearGoalMax());
   }));
+  handle(ipcChannels.runtimeGoalMaxSteeringEdit, async (_event, input) => runRuntimeMutation('editing a goal update', async () => (
+    goalMaxStateSchema.parse(await runtime.editGoalMaxSteering(goalMaxSteeringEditInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.runtimeGoalMaxSteeringRemove, async (_event, input) => runRuntimeMutation('removing a goal update', async () => (
+    goalMaxStateSchema.parse(await runtime.removeGoalMaxSteering(goalMaxSteeringRemoveInputSchema.parse(input)))
+  )));
   handle(ipcChannels.runtimeTaskGet, async (_event, input) => {
     emptyInputSchema.parse(input);
     const list = await runtime.getTaskList();
@@ -1012,6 +1023,7 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.settingsSet, async (_event, input) => {
     const saved = appSettingsSchema.parse(await settings.set(appSettingsSchema.parse(input)));
     if (!saved.musicPlayerEnabled) music.reset();
+    await hotkey.applySpeechSettings(saved.speech);
     return saved;
   });
   handle(ipcChannels.updatesCheck, async (_event, input) => {
@@ -1061,6 +1073,28 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.speechCancel, (_event, input) => {
     emptyInputSchema.parse(input);
     return speechCancelResultSchema.parse({ cancelled: speech.cancel() });
+  });
+  handle(ipcChannels.speechStreamStart, async (_event, input) => {
+    const { modelId, language } = speechStreamStartInputSchema.parse(input);
+    await speech.streamStart(modelId, language);
+  });
+  handle(ipcChannels.speechStreamFeed, async (_event, input) => {
+    const { audio } = speechStreamFeedInputSchema.parse(input);
+    await speech.streamFeed(audio);
+  });
+  handle(ipcChannels.speechStreamStop, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    await speech.streamStop();
+    hotkey.resetActive();
+  });
+  handle(ipcChannels.speechStreamCancel, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    await speech.streamCancel();
+    hotkey.resetActive();
+  });
+  handle(ipcChannels.speechHotkeyStatus, (_event, input) => {
+    emptyInputSchema.parse(input);
+    return speechHotkeyStatusSchema.parse(hotkey.getStatus());
   });
   const requireMusicEnabled = async () => {
     if (!(await settings.load()).musicPlayerEnabled) {

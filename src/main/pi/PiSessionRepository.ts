@@ -1,5 +1,7 @@
 import { rm } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import {
+  getAgentDir,
   SessionManager,
   type AgentSession,
   type SessionInfo,
@@ -19,6 +21,35 @@ const sdkSource: SessionRepositorySource = {
   rename: (sessionPath, name) => { SessionManager.open(sessionPath).appendSessionInfo(name); },
   remove: (sessionPath) => rm(sessionPath),
 };
+
+/**
+ * Absolute root that owns every project session directory. The Pi SDK stores
+ * each project's sessions one level below this root, in a
+ * `--<encoded project path>--` folder it derives deterministically. Every
+ * delete must resolve to a direct `.jsonl` child of such a folder; anything
+ * else is refused so a deletion can never escape the session store.
+ */
+export function defaultSessionsRoot(): string {
+  return resolve(join(getAgentDir(), 'sessions'));
+}
+
+/**
+ * True when `sessionPath` is a direct `.jsonl` child of a project session
+ * directory that lives directly under `sessionsRoot`. This is the only shape
+ * the SDK ever produces for a listed session, and it is verified here so that
+ * removal safety never depends on the listing source behaving.
+ */
+export function isSafeSessionPath(sessionsRoot: string, sessionPath: string): boolean {
+  if (!sessionPath || sessionPath.includes('\0')) return false;
+  const resolved = resolve(sessionPath);
+  const parent = dirname(resolved);
+  if (parent === resolved) return false; // a filesystem root
+  if (dirname(parent) !== sessionsRoot) return false; // not a project session directory
+  const name = basename(resolved);
+  if (!name.endsWith('.jsonl')) return false;
+  if (name === '.' || name === '..') return false;
+  return true;
+}
 
 const FALLBACK_TITLE_LIMIT = 58;
 const EXPLICIT_TITLE_LIMIT = 120;
@@ -78,8 +109,29 @@ function boundedSessionSearchText(session: SessionInfo, limit: number): string {
 /** Project-scoped, bounded projection of Pi's persistent JSONL session store. */
 export class PiSessionRepository {
   private readonly cache = new Map<string, { expiresAt: number; value: Promise<CachedSessionInfo[]> }>();
+  private readonly sessionsRoot: string;
 
-  constructor(private readonly source: SessionRepositorySource = sdkSource) {}
+  constructor(private readonly source: SessionRepositorySource = sdkSource, sessionsRoot: string = defaultSessionsRoot()) {
+    this.sessionsRoot = resolve(sessionsRoot);
+  }
+
+  /**
+   * Validate a batch of session paths before any removal happens. Every path
+   * must be a direct `.jsonl` child of ONE shared project session directory
+   * under the sessions root. Any violation aborts the whole batch so nothing
+   * outside the project's own session folder can ever be deleted.
+   */
+  private assertSafeSessionPaths(paths: readonly string[]): string[] {
+    if (paths.length === 0) return [];
+    const resolvedPaths = paths.map((sessionPath) => resolve(sessionPath));
+    const root = dirname(resolvedPaths[0]!);
+    for (const sessionPath of resolvedPaths) {
+      if (dirname(sessionPath) !== root || !isSafeSessionPath(this.sessionsRoot, sessionPath)) {
+        throw new Error('Refusing to delete a session outside this project’s session directory.');
+      }
+    }
+    return resolvedPaths;
+  }
 
   invalidate(cwd: string): void {
     this.cache.delete(this.cacheKey(cwd, false));
@@ -178,17 +230,26 @@ export class PiSessionRepository {
     const session = await this.resolve(cwd, sessionId);
     if (!session) throw new Error('The selected session no longer exists.');
     if (!this.source.remove) throw new Error('Deleting sessions is unavailable.');
+    this.assertSafeSessionPaths([session.path]);
     await this.source.remove(session.path);
     this.invalidate(cwd);
   }
 
+  /**
+   * Delete every listed session except the excluded ones in a single pass.
+   * The listing is read ONCE, every path is containment-checked up front
+   * (fail closed: a single bad path deletes nothing), and the summary/search
+   * cache is invalidated once at the end so the next read reloads from disk.
+   */
   async deleteAll(cwd: string, excludedSessionIds: ReadonlySet<string> = new Set()): Promise<number> {
     if (!this.source.remove) throw new Error('Deleting sessions is unavailable.');
     const sessions = await this.source.list(cwd);
+    const paths = this.assertSafeSessionPaths(
+      sessions.filter((session) => !excludedSessionIds.has(session.id)).map((session) => session.path),
+    );
     let deleted = 0;
-    for (const session of sessions) {
-      if (excludedSessionIds.has(session.id)) continue;
-      await this.source.remove(session.path);
+    for (const sessionPath of paths) {
+      await this.source.remove(sessionPath);
       deleted += 1;
     }
     this.invalidate(cwd);

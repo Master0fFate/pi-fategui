@@ -72,7 +72,6 @@ export const browserSnapshotInputSchema = z.object({
   query: z.string().trim().min(1).max(500).optional(),
 }).strict();
 export const browserVisibilityInputSchema = z.object({ visible: z.boolean() }).strict();
-export const browserPauseInputSchema = z.object({ paused: z.boolean() }).strict();
 export const browserControlLevelInputSchema = z.object({ level: browserControlLevelSchema }).strict();
 export const browserUiModeInputSchema = z.object({ mode: browserUiModeSchema }).strict();
 export const browserHistoryInputSchema = z.object({ action: z.enum(['back', 'forward', 'reload', 'stop']) }).strict();
@@ -169,14 +168,13 @@ export const browserStateSchema = z.object({
   visible: z.boolean(),
   viewBlocked: z.boolean().default(false),
   sessionFullAccess: z.boolean().default(false),
-  paused: z.boolean(),
   controlLevel: browserControlLevelSchema,
   mode: browserUiModeSchema.default('agent'),
   tabs: z.array(browserTabStateSchema).max(32),
   grants: z.array(browserOriginGrantSchema).max(256),
 }).strict();
 export const browserWorkLogActionSchema = z.enum([
-  'navigate', 'snapshot', 'click', 'type', 'press', 'scroll', 'annotate', 'pause', 'resume', 'grant', 'revoke', 'blocked',
+  'navigate', 'snapshot', 'click', 'type', 'press', 'scroll', 'annotate', 'grant', 'revoke', 'blocked',
 ]);
 export const browserConfirmationSchema = z.object({
   id: z.string().uuid(),

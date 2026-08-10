@@ -20,6 +20,7 @@ allowBuilds:
   koffi: true
   node-pty: true
   protobufjs: false
+  uiohook-napi: true
 patchedDependencies:
   node-pty@1.1.0: patches/node-pty@1.1.0.patch
 minimumReleaseAgeExclude:

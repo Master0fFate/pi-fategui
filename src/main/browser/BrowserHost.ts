@@ -33,7 +33,7 @@ export interface BrowserHostOptions {
   currentPermissionLevel?(): PermissionLevel;
   bridge: Pick<BrowserRuntimeBridge, 'currentRoot' | 'syncService'>;
   emit(owner: BrowserWindow, event: BrowserEvent): void;
-  command(owner: BrowserWindow, command: Extract<AppCommand, 'focus-address' | 'toggle-browser' | 'open-palette' | 'pause-browser'>): void;
+  command(owner: BrowserWindow, command: Extract<AppCommand, 'focus-address' | 'toggle-browser' | 'open-palette'>): void;
   /** Per-project last-URL store. When omitted, reopen starts on the home page. */
   history?: BrowserHistoryRepository;
 }
@@ -45,7 +45,6 @@ export class BrowserHost {
   private pending: PendingConfirmation | null = null;
   private ensuring: { ownerId: number; projectPath: string; promise: Promise<BrowserService> } | null = null;
   private appOverlayBlocked = false;
-  private resumeAfterAppOverlay = false;
 
   constructor(private readonly options: BrowserHostOptions) {}
 
@@ -95,7 +94,6 @@ export class BrowserHost {
       confirmAction: (action, reason, binding) => this.requestConfirmation(owner, action, reason, binding),
       annotationOwner: () => this.options.bridge.currentRoot(),
       onAppShortcut: (command) => this.options.command(owner, command),
-      onPaused: () => this.clearConfirmation(false),
       onNavigated: (url) => { void this.options.history?.save(project.path, url).catch(() => undefined); },
       restoreUrl: lastUrl,
     });
@@ -122,21 +120,10 @@ export class BrowserHost {
     const service = this.current(owner);
     if (!service || this.appOverlayBlocked === blocked) return;
     this.appOverlayBlocked = blocked;
-    if (blocked) {
-      const state = service.getState();
-      this.resumeAfterAppOverlay = state.mode === 'agent' && state.controlLevel === 'interact' && !state.paused;
-      service.setViewBlocked('app-overlay', true);
-      service.setPaused(true);
-      return;
-    }
-    service.setViewBlocked('app-overlay', false);
-    const next = service.getState();
-    const shouldResume = this.resumeAfterAppOverlay
-      && service.isVisibilityRequested()
-      && next.mode === 'agent'
-      && next.controlLevel === 'interact';
-    this.resumeAfterAppOverlay = false;
-    if (shouldResume) service.setPaused(false);
+    // App dialogs cover the renderer, so the native browser view is hidden
+    // behind them. The agent stays fully available the whole time; the view
+    // returns the moment the dialog closes.
+    service.setViewBlocked('app-overlay', blocked);
   }
 
   respondToConfirmation(owner: BrowserWindow, id: string, approved: boolean): boolean {
@@ -161,7 +148,6 @@ export class BrowserHost {
     this.owner = null;
     this.projectPath = null;
     this.appOverlayBlocked = false;
-    this.resumeAfterAppOverlay = false;
     if (service) await service.dispose();
   }
 
@@ -174,7 +160,7 @@ export class BrowserHost {
     const service = this.current(owner);
     const tab = service?.getState().tabs.find((candidate) => candidate.id === binding.tabId);
     const lease = service?.lease.getState();
-    if (!service || service.getState().paused || !tab || tab.documentEpoch !== binding.documentEpoch || !lease) return Promise.resolve(false);
+    if (!service || !tab || tab.documentEpoch !== binding.documentEpoch || !lease) return Promise.resolve(false);
     this.clearConfirmation(false);
     const id = randomUUID();
     const confirmation: BrowserConfirmation = {

@@ -53,7 +53,7 @@ const projects = {
   selectFile: async () => 'src/example.ts',
 } as unknown as ProjectService;
 const profileVisualMode = process.env.FATE_GUI_PROFILE_VISUAL_MODE;
-let settingsValue: AppSettings = { appearance: 'dark', defaultModel: 'test/deterministic', thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } };
+let settingsValue: AppSettings = { appearance: 'dark', defaultModel: 'test/deterministic', thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' } };
 const e2ePiTheme = { ...builtInThemes[4]!, id: 'pi-e2e-theme-0123456789ab', name: 'Pi · E2E Theme' };
 const settings = {
   load: async () => settingsValue,
@@ -71,18 +71,23 @@ const music = {
   reset: () => undefined,
 } as unknown as MusicService;
 const speechModels = [
-  { id: 'mini', tier: 'mini', name: 'Mini', model: 'Test Mini', description: 'Test model', detail: '1 MB', bytes: 1, installed: true, downloadedBytes: 1 },
-  { id: 'balanced', tier: 'balanced', name: 'Medium', model: 'Test Medium', description: 'Test model', detail: '2 MB', bytes: 2, installed: false, downloadedBytes: 0 },
-  { id: 'max', tier: 'max', name: 'Max', model: 'Test Max', description: 'Test model', detail: '3 MB', bytes: 3, installed: false, downloadedBytes: 0 },
+  { id: 'mini', tier: 'mini', name: 'Mini', model: 'Test Mini', description: 'Test model', detail: '1 MB', bytes: 1, installed: true, downloadedBytes: 1, streaming: true },
+  { id: 'balanced', tier: 'balanced', name: 'Medium', model: 'Test Medium', description: 'Test model', detail: '2 MB', bytes: 2, installed: false, downloadedBytes: 0, streaming: false },
+  { id: 'max', tier: 'max', name: 'Max', model: 'Test Max', description: 'Test model', detail: '3 MB', bytes: 3, installed: false, downloadedBytes: 0, streaming: false },
 ] as const;
 const speech = {
   setEventSink: () => undefined,
+  setStreamSink: () => undefined,
   getStatus: async () => ({ models: speechModels, backend: 'E2E CPU', accelerated: false }),
   download: async () => undefined,
   cancelDownload: () => false,
   remove: async () => undefined,
   transcribe: async () => ({ text: 'voice test', language: 'en', backend: 'E2E CPU', accelerated: false }),
   cancel: () => false,
+  streamStart: async () => undefined,
+  streamFeed: async () => undefined,
+  streamStop: async () => undefined,
+  streamCancel: async () => undefined,
 } as unknown as SpeechService;
 const updates = {
   check: async () => ({ status: 'current' as const, message: 'FateGUI is up to date.' }),
@@ -135,6 +140,7 @@ app.whenReady().then(() => {
     logs,
     music,
     speech,
+    hotkey: { getStatus: () => ({ pushToTalkAvailable: true }), applySpeechSettings: async () => ({ pushToTalkAvailable: true }), register: async () => ({ pushToTalkAvailable: true }), unregister() {}, resetActive() {}, dispose() {} } as never,
     updates,
     browser,
     automations,

@@ -395,13 +395,23 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     actionBusyRef.current = true;
     setActionBusy(true);
     void window.piDesktop.deleteProjectSessions(project.path)
-      .then((result) => {
+      .then(async (result) => {
         if (!mounted.current) return;
         setConfirmingDeleteAllPath(null);
         refreshPreviews([project.path]);
+        if (isActiveProject(project.path)) {
+          // The IPC result only carries counts; pull the authoritative state
+          // (which the main process refreshed before replying) so the active
+          // list never waits on the state.changed event to catch up.
+          try {
+            const state = await window.piDesktop.getRuntimeState();
+            if (mounted.current) setRuntime(state);
+          } catch {
+            // The main-process state.changed event reconciles the list instead.
+          }
+        }
         const skippedMessage = result.skipped > 0 ? ` ${result.skipped} active session${result.skipped === 1 ? '' : 's'} stayed open.` : '';
         showToast({ kind: 'success', title: 'Sessions deleted', message: `Deleted ${result.deleted} session${result.deleted === 1 ? '' : 's'} from ${project.name}.${skippedMessage}` });
-        if (isActiveProject(project.path)) setRuntime(useRuntimeStore.getState().runtime);
       })
       .catch((error: unknown) => {
         if (mounted.current) showToast({ kind: 'error', title: 'Could not delete sessions', message: sidebarErrorMessage(error, 'The folder sessions could not be deleted.') });

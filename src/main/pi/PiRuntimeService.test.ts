@@ -1012,7 +1012,8 @@ describe('PiRuntimeService', () => {
 
     fake.settle();
     await service.prompt({ text: 'Use the compact rail for controls', behavior: 'prompt' });
-    expect((await service.getGoalMax())?.steering).toContainEqual(expect.objectContaining({ text: 'Use the compact rail for controls', behavior: 'prompt' }));
+    // GoalMax updates are delivered as steering, never queued follow-ups.
+    expect((await service.getGoalMax())?.steering).toContainEqual(expect.objectContaining({ text: 'Use the compact rail for controls', behavior: 'steer' }));
     expect(fake.session.sendCustomMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({ customType: 'fate-goalmax-capsule', details: expect.objectContaining({ goalId: goal.id }) }),
       { triggerTurn: false, deliverAs: 'nextTurn' },
@@ -1505,6 +1506,98 @@ describe('PiRuntimeService', () => {
 
     await expect(service.deleteSession('saved')).rejects.toBe(cleanupError);
     expect(repository.delete).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  it('deletes every non-live session in one batch and reloads the session cache', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'saved', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/saved.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const older = { ...saved, id: 'older', title: 'Older work', modifiedAt: '2025-01-01T00:00:00.000Z' };
+    const repository = {
+      list: vi.fn(async (_cwd: string, activeId: string | null) => [
+        { ...saved, active: activeId === saved.id },
+        { ...older, active: false },
+        { ...saved, id: 'session-1', active: activeId === 'session-1' },
+      ]),
+      deleteAll: vi.fn(async () => 2),
+      resolve: vi.fn(),
+      delete: vi.fn(),
+      branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    const deleteRootStorage = vi.spyOn((service as unknown as { agentTeams: { deleteRootStorage: (sessionId: string) => Promise<void> } }).agentTeams, 'deleteRootStorage').mockResolvedValue();
+    const releaseRoot = vi.spyOn((service as unknown as { agentTeams: { releaseRoot: (sessionId: string) => void } }).agentTeams, 'releaseRoot').mockImplementation(() => undefined);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    const result = await service.deleteSessionsForPath('/project');
+    // The fixture's live slot owns session-1; it is skipped, the other two are deleted.
+    expect(result).toEqual({ deleted: 2, skipped: 1 });
+    expect(deleteRootStorage).toHaveBeenCalledWith('saved');
+    expect(deleteRootStorage).toHaveBeenCalledWith('older');
+    expect(deleteRootStorage).not.toHaveBeenCalledWith('session-1');
+    expect(repository.deleteAll).toHaveBeenCalledWith('/project', expect.any(Set));
+    const excluded = (repository.deleteAll as ReturnType<typeof vi.fn>).mock.calls[0]![1] as Set<string>;
+    expect(excluded.has('session-1')).toBe(true);
+    expect(excluded.has('saved')).toBe(false);
+    expect(releaseRoot).toHaveBeenCalledWith('saved');
+    expect(releaseRoot).toHaveBeenCalledWith('older');
+    await service.dispose();
+  });
+
+  it('skips sessions with active descendant work instead of aborting the batch', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'saved', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/saved.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const busy = { ...saved, id: 'busy', title: 'Busy work' };
+    const repository = {
+      list: vi.fn(async () => [saved, busy]),
+      deleteAll: vi.fn(async () => 1),
+      resolve: vi.fn(),
+      delete: vi.fn(),
+      branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    vi.spyOn((service as unknown as { agentTeams: { deleteRootStorage: (sessionId: string) => Promise<void> } }).agentTeams, 'deleteRootStorage')
+      .mockImplementation(async (sessionId: string) => {
+        if (sessionId === 'busy') throw new Error('Cannot delete Agent Team child history while a descendant turn is active.');
+      });
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    const result = await service.deleteSessionsForPath('/project');
+    expect(result).toEqual({ deleted: 1, skipped: 1 });
+    const excluded = (repository.deleteAll as ReturnType<typeof vi.fn>).mock.calls[0]![1] as Set<string>;
+    expect(excluded.has('busy')).toBe(true);
+    expect(excluded.has('saved')).toBe(false);
+    await service.dispose();
+  });
+
+  it('keeps deleting the remaining sessions when auxiliary metadata cleanup fails', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'saved', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/saved.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const second = { ...saved, id: 'second', title: 'Second work' };
+    const repository = {
+      list: vi.fn(async () => [saved, second]),
+      deleteAll: vi.fn(async () => 2),
+      resolve: vi.fn(),
+      delete: vi.fn(),
+      branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    vi.spyOn((service as unknown as { agentTeams: { deleteRootStorage: (sessionId: string) => Promise<void> } }).agentTeams, 'deleteRootStorage').mockResolvedValue();
+    const sessionPermissions = (service as unknown as { sessionPermissions: { delete: (projectPath: string, sessionId: string) => Promise<void> } }).sessionPermissions;
+    vi.spyOn(sessionPermissions, 'delete').mockRejectedValue(new Error('disk full'));
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    await expect(service.deleteSessionsForPath('/project')).resolves.toEqual({ deleted: 2, skipped: 0 });
+    expect(repository.deleteAll).toHaveBeenCalledOnce();
     await service.dispose();
   });
 

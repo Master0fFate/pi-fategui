@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { SpeechDownloadProgress, SpeechSettings } from '../../shared/contracts/ipc';
+import { defaultSpeechSettings, type SpeechDownloadProgress, type SpeechSettings, type SpeechStatus } from '../../shared/contracts/ipc';
 import type { FlightDeckTarget } from '../features/shell/flightDeck';
 
 export type AppToastKind = 'info' | 'success' | 'warning' | 'error';
@@ -76,6 +76,7 @@ interface UiState {
   compactSessions: boolean;
   speech: SpeechSettings;
   speechDownload: SpeechDownloadProgress | null;
+  speechStatus: SpeechStatus | null;
   toast: AppToastMessage | null;
   composerDraftRequest: { id: number; text: string; selectAll: boolean; mode: 'replace' | 'insert'; notice?: string } | null;
   automationOpenRequest: AutomationOpenRequest | null;
@@ -103,6 +104,7 @@ interface UiState {
   setCompactSessions: (enabled: boolean) => void;
   setSpeech: (speech: SpeechSettings) => void;
   setSpeechDownload: (speechDownload: SpeechDownloadProgress | null) => void;
+  setSpeechStatus: (speechStatus: SpeechStatus | null) => void;
   showToast: (toast: Omit<AppToastMessage, 'id'>) => void;
   dismissToast: () => void;
   requestComposerDraft: (text: string, selectAll?: boolean, notice?: string) => void;
@@ -151,8 +153,9 @@ export const useUiStore = create<UiState>()(
       musicPlaying: false,
       sendMessageWithModifier: false,
       compactSessions: false,
-      speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
+      speech: defaultSpeechSettings,
       speechDownload: null,
+      speechStatus: null,
       toast: null,
       composerDraftRequest: null,
       automationOpenRequest: null,
@@ -180,6 +183,7 @@ export const useUiStore = create<UiState>()(
       setCompactSessions: (compactSessions) => set({ compactSessions }),
       setSpeech: (speech) => set({ speech }),
       setSpeechDownload: (speechDownload) => set({ speechDownload }),
+      setSpeechStatus: (speechStatus) => set({ speechStatus }),
       showToast: (toast) => set({ toast: { ...toast, id: ++nextToastId } }),
       dismissToast: () => set({ toast: null }),
       requestComposerDraft: (text, selectAll = false, notice) => set({ composerDraftRequest: { id: ++nextComposerDraftRequestId, text, selectAll, mode: 'replace', ...(notice ? { notice } : {}) } }),

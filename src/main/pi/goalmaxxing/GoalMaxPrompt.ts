@@ -71,6 +71,13 @@ export function goalMaxCapsule(goal: GoalMaxState, recovery?: GoalMaxRecovery): 
     `BLOCKERS\n${blockers}`,
     '',
     ...planningContract,
+    'GATEWAY CONTRACT (STRICT)',
+    'The control plane is a hard gateway, not advice. Violations block the goal immediately:',
+    '1. PLAN GATE: no implementation tool or workspace change is allowed before the execution task plan is captured via goalmax_report (outcome "progress", phase "planning", taskPlan 2-12 tasks).',
+    '2. SYNC GATE: every turn that changes the workspace or produces meaningful evidence must first call goalmax_status or goalmax_report in that same turn, so the task list stays the single source of truth.',
+    '3. CLOSE GATE: mark each finished task satisfied with current evidence via goalmax_report.criterionUpdates before moving on; only goalmax_complete finishes the goal.',
+    '4. User goal updates are delivered as steering and are always authoritative; treat them as part of the goal now.',
+    '',
     'NEXT-TURN CONTRACT',
     instruction,
     needsTaskPlan

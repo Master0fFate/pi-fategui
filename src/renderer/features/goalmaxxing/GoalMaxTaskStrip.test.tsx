@@ -71,24 +71,19 @@ describe('GoalMax task strip', () => {
     expect(screen.queryByRole('list', { name: 'Goal criteria status' })).toBeNull();
   });
 
-  it('adds a manual task immediately and increments the visible total count', async () => {
+  it('no longer offers a manual add-task form; the agent owns task creation', async () => {
     const user = userEvent.setup();
-    const initial = buildTaskList();
-    const added = buildTaskList(true);
-    const createTask = vi.fn(async () => added);
-    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { createTask } });
-    useTaskStore.setState({ list: initial });
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {} });
+    useTaskStore.setState({ list: buildTaskList() });
     render(<GoalMaxTaskStrip />);
 
     const strip = screen.getByRole('region', { name: 'Task list strip' });
     expect(strip).toHaveTextContent('2 tasks · 0/2 required · unverified');
     await user.click(screen.getByRole('button', { name: 'Expand task list' }));
-    await user.type(screen.getByRole('textbox', { name: 'Add a task' }), 'Review the copy');
-    await user.click(screen.getByRole('button', { name: 'Add task' }));
 
-    expect(createTask).toHaveBeenCalledWith({ title: 'Review the copy', required: false, status: 'todo' });
-    expect(strip).toHaveTextContent('3 tasks · 0/2 required · unverified');
-    expect(screen.getByRole('list', { name: 'Task status' })).toHaveTextContent('Review the copy');
+    // Task creation is prompted to the agent instead of typed manually.
+    expect(screen.queryByRole('textbox', { name: 'Add a task' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add task' })).toBeNull();
   });
 
   it('applies the returned list when a manual task status changes', async () => {

@@ -38,7 +38,7 @@ describe('SettingsService', () => {
       confirmRiskyCommands: false, terminalShell: 'pwsh.exe', reduceMotion: true, performanceMode: true, holyShitMode: true, musicPlayerEnabled: true, sendMessageWithModifier: true, compactSessions: false, themeId: 'graphite',
       interfaceFont: 'poppins', codeFont: 'noto-sans-mono',
       imageGeneration: { provider: 'google', model: 'gemini-3.1-flash-image', customProvider: null },
-      speech: { enabled: true, modelId: 'balanced', language: 'auto', inputDeviceId: null },
+      speech: { enabled: true, modelId: 'balanced', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' },
     });
 
     expect(saved.reduceMotion).toBe(true);
@@ -99,7 +99,7 @@ describe('SettingsService', () => {
   it('serializes concurrent writes and returns each persisted snapshot', async () => {
     const logs = new AppLogService();
     const service = createSettings(logs);
-    const first = { appearance: 'dark', defaultModel: null, thinkingLevel: 'low', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null } } as const;
+    const first = { appearance: 'dark', defaultModel: null, thinkingLevel: 'low', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' } } as const;
     const second = { ...first, thinkingLevel: 'high' as const, reduceMotion: true };
 
     const [firstSaved, secondSaved] = await Promise.all([service.set(first), service.set(second)]);

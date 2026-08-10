@@ -18,6 +18,17 @@ describe('browser overlay ownership', () => {
     root.insertAdjacentHTML('beforeend', '<div role="dialog" aria-modal="true" data-state="open">Image viewer</div>');
     expect(hasBlockingBrowserOverlay(root)).toBe(true);
   });
+
+  it('dims the browser behind the cinematic image viewer like any other modal', () => {
+    const root = document.createElement('div');
+    root.innerHTML = '<div class="cinematic-image-viewer" role="dialog" aria-modal="true" data-state="open"><img alt=""/></div>';
+    // The image viewer is a modal surface: the native browser view is hidden
+    // behind the dim overlay instead of covering the opened image.
+    expect(hasBlockingBrowserOverlay(root)).toBe(true);
+
+    root.innerHTML = '<div class="cinematic-image-viewer" role="dialog" aria-modal="true" data-state="closed"><img alt=""/></div>';
+    expect(hasBlockingBrowserOverlay(root)).toBe(false);
+  });
 });
 
 describe('first-launch shell', () => {
@@ -59,7 +70,7 @@ describe('first-launch shell', () => {
       streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
     };
     const browserState = {
-      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, paused: true, controlLevel: 'off' as const, mode: 'agent' as const,
+      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off' as const, mode: 'agent' as const,
       tabs: [{ id: 'browser-main', profileId: 'project', url: 'http://localhost:4173/', title: 'Preview', loading: false, canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true }], grants: [],
     };
     let openLink: ((url: string) => void) | undefined;

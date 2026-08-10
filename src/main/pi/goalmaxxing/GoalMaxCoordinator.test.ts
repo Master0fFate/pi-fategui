@@ -58,11 +58,13 @@ describe('GoalMax coordinator', () => {
   it('persists before starting and schedules exactly one evidence-backed continuation after settle', async () => {
     const { coordinator, host, runtime, repository } = fixture();
     const goal = await coordinator.create({ objective: 'Implement and test the control plane', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
-    expect(await repository.load('/project', 'session-1')).toMatchObject({ id: goal.id, revision: 1 });
+    await captureTestPlan(coordinator);
+    expect(await repository.load('/project', 'session-1')).toMatchObject({ id: goal.id, revision: 2 });
     expect(host.startGoal).toHaveBeenCalledWith('session-1', goal.objective, expect.stringContaining('GOALMAX OBJECTIVE · ACTIVE'));
 
     runtime.idle = false; runtime.streaming = true;
     coordinator.observeSessionEvent('session-1', { type: 'agent_start' } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'status-1', toolName: 'goalmax_status', args: {} } as never);
     coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'edit-1', toolName: 'edit', args: { path: 'src/app.ts' } } as never);
     coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'edit-1', toolName: 'edit', result: { content: [{ type: 'text', text: 'done' }] }, isError: false } as never);
     runtime.idle = true; runtime.streaming = false; runtime.tokensUsed = 250;
@@ -73,6 +75,37 @@ describe('GoalMax coordinator', () => {
     expect(current).toMatchObject({ status: 'active', executionState: 'running-root', tokensUsed: 150 });
     expect(current?.evidence.some((evidence) => evidence.kind === 'file' && evidence.path === 'src/app.ts')).toBe(true);
     expect(current?.progress.meaningfulTurnCount).toBe(1);
+  });
+
+  it('blocks implementation work before the execution task plan is captured', async () => {
+    const { coordinator, host, runtime } = fixture();
+    await coordinator.create({ objective: 'Implement the settings workflow', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    runtime.idle = false; runtime.streaming = true;
+    coordinator.observeSessionEvent('session-1', { type: 'agent_start' } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'edit-early', toolName: 'edit', args: { path: 'src/settings.ts' } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'edit-early', toolName: 'edit', result: 'done', isError: false } as never);
+    runtime.idle = true; runtime.streaming = false;
+    coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
+
+    await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.status).toBe('blocked'));
+    expect(host.continueGoal).not.toHaveBeenCalled();
+    expect((await coordinator.statusForModel('session-1')).details.blockedReason).toContain('plan gate');
+  });
+
+  it('blocks a working turn that never consults the goal plane', async () => {
+    const { coordinator, host, runtime } = fixture();
+    await coordinator.create({ objective: 'Implement and verify the release', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await captureTestPlan(coordinator);
+    runtime.idle = false; runtime.streaming = true;
+    coordinator.observeSessionEvent('session-1', { type: 'agent_start' } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'edit-silent', toolName: 'edit', args: { path: 'src/release.ts' } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'edit-silent', toolName: 'edit', result: 'done', isError: false } as never);
+    runtime.idle = true; runtime.streaming = false;
+    coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
+
+    await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.status).toBe('blocked'));
+    expect(host.continueGoal).not.toHaveBeenCalled();
+    expect((await coordinator.statusForModel('session-1')).details.blockedReason).toContain('goal plane');
   });
 
   it('requires task planning before progress, implementation, or completion reports', async () => {
@@ -684,6 +717,31 @@ describe('GoalMax coordinator', () => {
     expect(state.steering.at(-1)?.text).toContain('Constraint 39');
     expect((await repository.load('/project', 'session-1'))?.steering).toEqual(state.steering);
     expect((await coordinator.statusForModel('session-1')).text).toContain('AUTHORITATIVE USER STEERING');
+  });
+
+  it('edits a recorded goal update and re-steers the running root with the new capsule', async () => {
+    const { coordinator, host, runtime } = fixture();
+    await coordinator.create({ objective: 'Implement the release workflow', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    runtime.idle = false; runtime.streaming = true;
+    await coordinator.recordSteering('session-1', 'Original constraint', 'steer');
+    const before = (await coordinator.statusForModel('session-1')).details;
+    const edited = await coordinator.updateSteering('session-1', before.steering[0]!.id, 'Edited constraint');
+
+    expect(edited?.steering[0]).toMatchObject({ id: before.steering[0]!.id, text: 'Edited constraint' });
+    await vi.waitFor(() => expect(host.steerGoal).toHaveBeenCalledWith('session-1', expect.stringContaining('Edited constraint'), edited?.id, edited?.revision));
+  });
+
+  it('withdraws a recorded goal update and refuses edits to unknown steering ids', async () => {
+    const { coordinator, host, runtime } = fixture();
+    await coordinator.create({ objective: 'Implement the release workflow', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    runtime.idle = false; runtime.streaming = true;
+    await coordinator.recordSteering('session-1', 'Temporary note', 'steer');
+    const before = (await coordinator.statusForModel('session-1')).details;
+    const removed = await coordinator.removeSteering('session-1', before.steering[0]!.id);
+
+    expect(removed?.steering).toHaveLength(0);
+    await vi.waitFor(() => expect(host.steerGoal).toHaveBeenCalledWith('session-1', expect.not.stringContaining('Temporary note'), removed?.id, removed?.revision));
+    await expect(coordinator.updateSteering('session-1', 'steering-missing', 'Nope')).rejects.toThrow(/no longer listed/);
   });
 
   it('links child tool evidence to inferred criterion ownership', async () => {

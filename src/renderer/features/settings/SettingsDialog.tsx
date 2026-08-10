@@ -23,7 +23,8 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AppSettings, Diagnostics, LogEntry, ModelInfo, SpeechDownloadProgress, SpeechModelId, SpeechStatus, UpdateCheckResult } from '../../../shared/contracts/ipc';
+import type { AppSettings, Diagnostics, LogEntry, ModelInfo, SpeechDownloadProgress, SpeechHotkeyStatus, SpeechModelId, SpeechStatus, UpdateCheckResult, VoiceHotkeyMode } from '../../../shared/contracts/ipc';
+import { defaultSpeechSettings } from '../../../shared/contracts/ipc';
 import type { ThemeDefinition } from '../../../shared/themes';
 import {
   defaultImageGenerationModel,
@@ -46,7 +47,7 @@ const fallback: AppSettings = {
   terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, themeId: 'midnight',
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
-  speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
+  speech: defaultSpeechSettings,
 };
 
 type SettingsSection = 'general' | 'agent' | 'voice' | 'workspace' | 'system';
@@ -78,6 +79,34 @@ export const groupModelsByProvider = (models: readonly ModelInfo[]) => {
     }))
     .sort((left, right) => left.title.localeCompare(right.title));
 };
+
+const SPECIAL_KEY_CODES: Record<string, string> = {
+  Space: 'Space', Enter: 'Enter', Tab: 'Tab', Escape: 'Escape', Backspace: 'Backspace',
+  Insert: 'Insert', Delete: 'Delete', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+  ArrowLeft: 'Left', ArrowRight: 'Right', ArrowUp: 'Up', ArrowDown: 'Down',
+};
+
+/** Translate a captured keyboard event into an Electron accelerator string
+ *  (e.g. "CommandOrControl+Shift+Space"). Returns null for modifier-only presses. */
+function acceleratorFromEvent(event: KeyboardEvent): string | null {
+  const isMac = navigator.platform.toLowerCase().includes('mac');
+  const tokens: string[] = [];
+  const primary = isMac ? event.metaKey : event.ctrlKey;
+  if (primary) tokens.push('CommandOrControl');
+  if (isMac && event.ctrlKey) tokens.push('Control');
+  if (!isMac && event.metaKey) tokens.push('Command');
+  if (event.altKey) tokens.push('Alt');
+  if (event.shiftKey) tokens.push('Shift');
+  let key: string | null = null;
+  const code = event.code;
+  if (/^Key([A-Z])$/.test(code)) key = code.slice('Key'.length);
+  else if (/^Digit([0-9])$/.test(code)) key = code.slice('Digit'.length);
+  else if (/^F([1-9]|1\d|2[0-4])$/.test(code)) key = code;
+  else key = SPECIAL_KEY_CODES[code] ?? null;
+  if (!key) return null;
+  tokens.push(key);
+  return tokens.join('+');
+}
 
 export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog?: ThemeDefinition[] }) {
   const open = useUiStore((state) => state.settingsOpen);
@@ -113,6 +142,8 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   const [speechBusy, setSpeechBusy] = useState<SpeechModelId | null>(null);
   const [speechProgress, setSpeechProgress] = useState<SpeechDownloadProgress | null>(null);
   const [speechStatusError, setSpeechStatusError] = useState<string | null>(null);
+  const [capturingHotkey, setCapturingHotkey] = useState(false);
+  const [hotkeyStatus, setHotkeyStatus] = useState<SpeechHotkeyStatus | null>(null);
   const [systemLoading, setSystemLoading] = useState(false);
   const [inputDevices, setInputDevices] = useState<MicrophoneDevice[]>([]);
   const [inputDevicesError, setInputDevicesError] = useState<string | null>(null);
@@ -176,6 +207,27 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
       });
     return () => { active = false; };
   }, [activeSection, open]);
+
+  useEffect(() => {
+    if (!open || activeSection !== 'voice' || !('piDesktop' in window) || typeof window.piDesktop.getSpeechHotkeyStatus !== 'function') return;
+    let active = true;
+    window.piDesktop.getSpeechHotkeyStatus().then((status) => { if (active) setHotkeyStatus(status); }).catch(() => undefined);
+    return () => { active = false; };
+  }, [activeSection, open]);
+
+  useEffect(() => {
+    if (!capturingHotkey) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const accelerator = acceleratorFromEvent(event);
+      if (!accelerator) return;
+      setSettings((current) => ({ ...current, speech: { ...current.speech, voiceHotkey: accelerator } }));
+      setCapturingHotkey(false);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [capturingHotkey]);
 
   useEffect(() => {
     if (!open || activeSection !== 'system' || systemLoadStarted.current || !('piDesktop' in window)) return;
@@ -582,6 +634,21 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                       : <div className="settings-skeleton"><span /><span /><span /></div>)}
                   </div>
                   <p className="voice-license-note">Models download from pinned Hugging Face releases, are SHA-256 verified before installation, and retain their upstream licenses. Supported hardware acceleration is used when stable; otherwise transcription uses CPU safety mode.</p>
+                  <div className="settings-title settings-title--spaced"><span><Keyboard size={17} /></span><div><h3>Live transcription &amp; hotkey</h3><p>Medium (Parakeet) transcribes as you speak. Trigger it from any application with a global hotkey.</p></div></div>
+                  <div className="settings-group">
+                    <label className="settings-toggle"><div><strong>Live transcription</strong><small>Type words into the composer as you speak. Only the Medium (Parakeet) model supports live mode; other models record first, then transcribe after you stop.</small></div><input type="checkbox" checked={settings.speech.liveTranscription} onChange={(event) => setSettings({ ...settings, speech: { ...settings.speech, liveTranscription: event.target.checked } })} /><span aria-hidden="true" /></label>
+                  </div>
+                  <div className="settings-theme-row voice-hotkey-row">
+                    <div><strong>Voice hotkey</strong><small>{settings.speech.voiceHotkey ? `Press ${settings.speech.voiceHotkey} ${settings.speech.voiceHotkeyMode === 'push-to-talk' ? 'and hold to talk' : 'to toggle recording'}.` : 'Off — use the microphone button in the composer instead.'}</small></div>
+                    <div className="voice-hotkey-controls">
+                      <button type="button" className="voice-hotkey-capture" data-active={capturingHotkey || undefined} aria-pressed={capturingHotkey} onClick={() => setCapturingHotkey((value) => !value)}>{capturingHotkey ? 'Press keys…' : (settings.speech.voiceHotkey ?? 'Record')}</button>
+                      {settings.speech.voiceHotkey && <button type="button" className="voice-hotkey-clear" aria-label="Clear voice hotkey" onClick={() => setSettings({ ...settings, speech: { ...settings.speech, voiceHotkey: null } })}><X size={14} /></button>}
+                      <SelectControl label="Voice hotkey mode" value={settings.speech.voiceHotkeyMode} options={[{ value: 'toggle', label: 'Toggle' }, { value: 'push-to-talk', label: 'Push to talk' }]} onValueChange={(value) => setSettings({ ...settings, speech: { ...settings.speech, voiceHotkeyMode: value as VoiceHotkeyMode } })} />
+                    </div>
+                  </div>
+                  {hotkeyStatus && !hotkeyStatus.pushToTalkAvailable && settings.speech.voiceHotkeyMode === 'push-to-talk' && (
+                    <div className="voice-model-error" role="alert"><CircleAlert size={15} /><span className="icon-label">{hotkeyStatus.reason ?? 'Push-to-talk is unavailable on this platform. Toggle mode still works.'}</span></div>
+                  )}
                 </div>
               )}
 

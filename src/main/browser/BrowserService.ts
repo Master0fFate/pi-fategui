@@ -67,7 +67,7 @@ interface BrowserTab {
   semanticAvailable: boolean;
 }
 
-export type BrowserAppShortcut = 'focus-address' | 'toggle-browser' | 'open-palette' | 'pause-browser';
+export type BrowserAppShortcut = 'focus-address' | 'toggle-browser' | 'open-palette';
 
 export interface BrowserAnnotationOwner {
   projectPath: string;
@@ -79,7 +79,6 @@ export interface BrowserServiceOptions {
   confirmAction?: BrowserConfirmationHandler;
   annotationOwner?: () => BrowserAnnotationOwner | null;
   onAppShortcut?: (shortcut: BrowserAppShortcut) => void;
-  onPaused?: () => void;
   /** Notified with every restorable committed navigation so the host can persist the last URL. */
   onNavigated?: (url: string) => void;
   /** Page to land on when the main tab is (re)opened without an explicit URL. */
@@ -102,7 +101,6 @@ export class BrowserService {
   private bounds: Rectangle = { x: 0, y: 0, width: 0, height: 0 };
   private visible = false;
   private readonly viewBlockers = new Set<string>();
-  private paused = true;
   private mode: BrowserUiMode = 'agent';
   private actionController = new AbortController();
   private annotationController: AbortController | null = null;
@@ -132,7 +130,6 @@ export class BrowserService {
       visible: this.visible && this.viewBlockers.size === 0,
       viewBlocked: this.viewBlockers.size > 0,
       sessionFullAccess: this.policy.hasSessionFullAccess(),
-      paused: this.paused,
       controlLevel: this.policy.getControlLevel(),
       mode: this.mode,
       tabs: [...this.tabs.values()].map((tab) => ({
@@ -232,7 +229,6 @@ export class BrowserService {
       if (!event.available) {
         this.refs.clearTab(tabId);
         this.cancelActions();
-        this.setPaused(true);
       }
       this.eventSink?.({ type: 'cdp-availability', tabId, available: event.available, ...(event.reason ? { reason: event.reason.slice(0, 1_000) } : {}) });
       this.emitState();
@@ -297,10 +293,7 @@ export class BrowserService {
 
   setVisible(visible: boolean): void {
     this.visible = visible;
-    if (!visible) {
-      this.cancelAnnotationSelection();
-      this.setPaused(true);
-    }
+    if (!visible) this.cancelAnnotationSelection();
     this.applyVisibility();
     if (visible && this.mode === 'annotate') this.startAnnotationLoop();
     this.emitState();
@@ -316,32 +309,10 @@ export class BrowserService {
     this.emitState();
   }
 
-  setPaused(paused: boolean): void {
-    const changed = this.paused !== paused;
-    if (paused || changed) this.cancelActions();
-    this.paused = paused;
-    if (paused) {
-      this.clearAgentNavigationGuards();
-      for (const tab of this.tabs.values()) void tab.pointerOverlay.clear();
-      this.options.onPaused?.();
-    }
-    if (changed) {
-      this.eventSink?.({
-        type: 'work-log',
-        tabId: this.activeTabId ?? 'browser-main',
-        action: paused ? 'pause' : 'resume',
-        target: paused ? 'Agent browser control paused' : 'Agent browser control resumed',
-        timestamp: Date.now(),
-      });
-    }
-    this.emitState();
-  }
-
   setControlLevel(level: BrowserControlLevel): void {
     this.policy.setControlLevel(level);
     if (level === 'off') this.cancelAnnotationSelection();
-    if (level !== 'interact') this.setPaused(true);
-    else this.emitState();
+    this.emitState();
   }
 
   setSessionFullAccess(enabled: boolean): void {
@@ -351,16 +322,14 @@ export class BrowserService {
   }
 
   setMode(mode: BrowserUiMode): void {
-    if (this.mode === mode && (mode === 'annotate' ? Boolean(this.annotationController) : !this.paused && this.policy.getControlLevel() === 'interact')) return;
+    if (this.mode === mode && (mode === 'annotate' ? Boolean(this.annotationController) : this.policy.getControlLevel() === 'interact')) return;
     this.mode = mode;
     this.cancelAnnotationSelection();
     if (mode === 'annotate') {
       this.policy.setControlLevel('observe');
-      this.setPaused(true);
       this.startAnnotationLoop();
     } else {
       this.policy.setControlLevel('interact');
-      this.setPaused(false);
     }
     this.emitState();
   }
@@ -391,7 +360,6 @@ export class BrowserService {
     this.policy.clearScopedGrants('once');
     this.policy.clearScopedGrants('task');
     this.networkProxy.resetConnections();
-    this.setPaused(true);
   }
 
   async navigate(tabId: string, value: string, source: BrowserNavigationSource = 'user', signal?: AbortSignal): Promise<void> {
@@ -399,7 +367,6 @@ export class BrowserService {
     if (source === 'user') this.clearAgentNavigationGuard(tabId);
     const destination = await this.resolveNavigation(tab, value, source);
     if (source === 'agent') {
-      this.assertAgentReady();
       const activeSignal = signal ? AbortSignal.any([this.actionController.signal, signal]) : this.actionController.signal;
       assertBrowserOperationActive(activeSignal);
       const action = {
@@ -589,7 +556,6 @@ export class BrowserService {
   }
 
   async click(tabId: string, input: { ref: string; signal?: AbortSignal }): Promise<BrowserActionResult> {
-    this.assertAgentReady();
     const tab = this.tab(tabId);
     return this.withAgentInput(async () => {
       const result = await tab.actions.click(this.actionContext(tab, input.signal), { ref: input.ref });
@@ -599,7 +565,6 @@ export class BrowserService {
   }
 
   async type(tabId: string, input: { ref: string; text: string; signal?: AbortSignal }): Promise<BrowserActionResult> {
-    this.assertAgentReady();
     const tab = this.tab(tabId);
     return this.withAgentInput(async () => {
       const result = await tab.actions.type(this.actionContext(tab, input.signal), { ref: input.ref, text: input.text });
@@ -609,7 +574,6 @@ export class BrowserService {
   }
 
   async press(tabId: string, key: string, signal?: AbortSignal): Promise<BrowserActionResult> {
-    this.assertAgentReady();
     const tab = this.tab(tabId);
     return this.withAgentInput(async () => {
       const result = await tab.actions.press(this.actionContext(tab, signal), key);
@@ -619,7 +583,6 @@ export class BrowserService {
   }
 
   async scroll(tabId: string, deltaX: number, deltaY: number, signal?: AbortSignal): Promise<BrowserActionResult> {
-    this.assertAgentReady();
     const tab = this.tab(tabId);
     return this.withAgentInput(async () => {
       const result = await tab.actions.scroll(this.actionContext(tab, signal), deltaX, deltaY);
@@ -646,7 +609,6 @@ export class BrowserService {
         this.mode = 'agent';
         this.policy.setControlLevel('interact');
       }
-      this.setPaused(true);
     }
     if (this.tabs.size === 0) {
       this.mode = 'agent';
@@ -850,7 +812,6 @@ export class BrowserService {
     });
     contents.on('before-input-event', (event, input) => {
       if (input.type !== 'keyDown') return;
-      if (this.agentInputDepth === 0 && !this.paused) this.setPaused(true);
       const key = input.key.toLocaleLowerCase();
       const primary = input.control || input.meta;
       if (primary && key === 'l') {
@@ -874,15 +835,8 @@ export class BrowserService {
           this.mode = 'agent';
           this.policy.setControlLevel('interact');
           this.cancelAnnotationSelection();
-          this.setPaused(true);
-        } else {
-          this.setPaused(true);
         }
-        this.options.onAppShortcut?.('pause-browser');
       }
-    });
-    contents.on('before-mouse-event', (_event, mouse) => {
-      if (this.agentInputDepth === 0 && !this.paused && (mouse.type === 'mouseDown' || mouse.type === 'mouseWheel')) this.setPaused(true);
     });
     contents.on('did-start-navigation', (event) => {
       if (!event.isMainFrame) return;
@@ -1026,10 +980,6 @@ export class BrowserService {
     };
   }
 
-  private assertAgentReady(): void {
-    if (this.paused) throw new BrowserError('ACTION_BLOCKED', 'Browser agent actions are paused.');
-  }
-
   activateTab(tabId: string): void {
     this.tab(tabId);
     const changed = this.activeTabId !== tabId;
@@ -1095,7 +1045,6 @@ export class BrowserService {
           this.eventSink?.({ type: 'annotation-error', message: message.slice(0, 1_000) });
           this.mode = 'agent';
           this.policy.setControlLevel('interact');
-          this.paused = true;
           this.emitState();
         }
       } finally {

@@ -79,12 +79,11 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
     if (!runtime.project?.trusted || !('piDesktop' in window)) return;
     const opening = !browserOpen;
     setBrowserOpen(opening);
-    const operation = opening
-      ? window.piDesktop.setBrowserMode('agent')
-      : window.piDesktop.setBrowserPaused(true);
-    void operation.then((state) => useBrowserStore.getState().hydrate(state)).catch((error: unknown) => {
-      useBrowserStore.getState().setError(error instanceof Error ? error.message : 'The browser could not change state.');
-    });
+    if (opening) {
+      void window.piDesktop.setBrowserMode('agent').then((state) => useBrowserStore.getState().hydrate(state)).catch((error: unknown) => {
+        useBrowserStore.getState().setError(error instanceof Error ? error.message : 'The browser could not change state.');
+      });
+    }
   };
   const showWelcome = !runtime.project && entryCount === 0;
   const conversationMode = runtime.project !== null || entryCount > 0;

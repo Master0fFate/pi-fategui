@@ -17,7 +17,6 @@ const browserState = (overrides: Partial<BrowserState> = {}): BrowserState => ({
   visible: false,
   viewBlocked: false,
   sessionFullAccess: false,
-  paused: true,
   controlLevel: 'off',
   mode: 'agent',
   tabs: [],
@@ -44,7 +43,7 @@ describe('Workspace built-in browser', () => {
   afterEach(() => Reflect.deleteProperty(window, 'piDesktop'));
 
   it('opens beside the thread, keeps the composer mounted, and resizes the preview', () => {
-    const setBrowserMode = vi.fn(async () => browserState({ paused: false, controlLevel: 'interact' }));
+    const setBrowserMode = vi.fn(async () => browserState({ controlLevel: 'interact' }));
     Object.defineProperty(window, 'piDesktop', {
       configurable: true,
       value: { setBrowserMode } as unknown as PiDesktopApi,
@@ -71,18 +70,16 @@ describe('Workspace built-in browser', () => {
     expect(useUiStore.getState().browserPaneWidth).toBe(520);
   });
 
-  it('pauses browser automation before closing the preview', () => {
+  it('closes the preview without pausing or hiding the browser automation', () => {
     useUiStore.setState({ browserOpen: true });
-    const pause = vi.fn(async () => browserState());
     Object.defineProperty(window, 'piDesktop', {
       configurable: true,
-      value: { setBrowserPaused: pause } as unknown as PiDesktopApi,
+      value: {} as unknown as PiDesktopApi,
     });
 
     render(<Workspace inspectorCollapsed={false} onToggleInspector={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Close browser' }));
 
-    expect(pause).toHaveBeenCalledWith(true);
     expect(useUiStore.getState().browserOpen).toBe(false);
     expect(screen.queryByTestId('browser-workspace')).not.toBeInTheDocument();
     expect(screen.getByTestId('composer')).toBeInTheDocument();

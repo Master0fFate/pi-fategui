@@ -125,7 +125,7 @@ describe('conversation components', () => {
 
   it('opens HTTP(S) and localhost links in the built-in browser, with a native link menu on right click', async () => {
     const browserState = {
-      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, paused: true, controlLevel: 'off' as const, mode: 'agent' as const,
+      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off' as const, mode: 'agent' as const,
       tabs: [{ id: 'browser-main', profileId: 'project', url: 'http://localhost:4173/preview', title: 'Preview', loading: false, canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true }], grants: [],
     };
     const navigateBrowser = vi.fn(async () => browserState);
@@ -632,7 +632,7 @@ describe('conversation components', () => {
       comment: 'Use this exact control', semanticCoverage: 1, reattachConfidence: 0.9, createdAt: 1,
     };
     useBrowserStore.getState().hydrate({
-      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, paused: true, controlLevel: 'off', mode: 'agent', tabs: [], grants: [],
+      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off', mode: 'agent', tabs: [], grants: [],
     }, '/project');
     useBrowserStore.getState().setAnnotations([annotation]);
     attachBrowserAnnotationToSession('/project', 's1', annotation.id);
@@ -1253,6 +1253,43 @@ describe('conversation components', () => {
 
     expect(screen.getByRole('region', { name: 'GoalMax updates' })).toHaveTextContent('Also document the recovery path.');
     expect(screen.getByRole('region', { name: 'GoalMax updates' })).toHaveTextContent('Goal update');
+    expect(screen.getByRole('button', { name: 'Edit goal update: Also document the recovery path.' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel goal update: Also document the recovery path.' })).toBeInTheDocument();
+  });
+
+  it('withdraws a goal update from the composer and restores its text for editing', async () => {
+    const goal = activeGoalFixture();
+    const steered = { ...goal, steering: [{ id: 'steering-1', text: 'Also document the recovery path.', behavior: 'steer' as const, timestamp: 2, revision: 3 }] };
+    const cleared = { ...goal, revision: 4, steering: [] };
+    const removeGoalMaxSteering = vi.fn(async () => cleared);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { removeGoalMaxSteering } as unknown as PiDesktopApi });
+    useGoalMaxStore.setState({ goal: steered });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Edit goal update: Also document the recovery path.' }));
+
+    expect(removeGoalMaxSteering).toHaveBeenCalledWith({ steeringId: 'steering-1' });
+    expect(useGoalMaxStore.getState().goal).toEqual(cleared);
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('Also document the recovery path.');
+    await waitFor(() => expect(screen.getByLabelText('Message Pi')).toHaveFocus());
+  });
+
+  it('cancels a goal update outright', async () => {
+    const goal = activeGoalFixture();
+    const steered = { ...goal, steering: [{ id: 'steering-1', text: 'Scrap this note.', behavior: 'steer' as const, timestamp: 2, revision: 3 }] };
+    const cleared = { ...goal, revision: 4, steering: [] };
+    const removeGoalMaxSteering = vi.fn(async () => cleared);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { removeGoalMaxSteering } as unknown as PiDesktopApi });
+    useGoalMaxStore.setState({ goal: steered });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Cancel goal update: Scrap this note.' }));
+
+    expect(removeGoalMaxSteering).toHaveBeenCalledWith({ steeringId: 'steering-1' });
+    expect(useGoalMaxStore.getState().goal).toEqual(cleared);
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('');
   });
 
   it('moves a queued message back into the composer for editing', async () => {

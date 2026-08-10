@@ -5,7 +5,7 @@ import { useBrowserStore } from '../../stores/browserStore';
 import { BrowserToolbar } from './BrowserToolbar';
 
 const state = (grant = false, mode: BrowserState['mode'] = 'agent'): BrowserState => ({
-  activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, paused: true, controlLevel: mode === 'annotate' ? 'observe' : 'interact', mode,
+  activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: mode === 'annotate' ? 'observe' : 'interact', mode,
   tabs: [{
     id: 'browser-main', profileId: 'project', url: 'https://example.test/page', title: 'Example', loading: false,
     canGoBack: true, canGoForward: false, documentEpoch: 1, semanticAvailable: true,

@@ -146,7 +146,7 @@ export const goalMaxTimelineEventSchema = z.object({
   type: z.enum([
     'goal.created', 'goal.updated', 'goal.paused', 'goal.resumed', 'goal.blocked', 'goal.cancelled', 'goal.completed',
     'goal.recovered', 'goal.cleared', 'phase.changed', 'continuation.scheduled', 'continuation.settled', 'checkpoint.created',
-    'steering.recorded', 'verification.started', 'verification.passed', 'verification.failed', 'evidence.added', 'assignment.updated', 'budget.reached',
+    'steering.recorded', 'steering.updated', 'steering.removed', 'verification.started', 'verification.passed', 'verification.failed', 'evidence.added', 'assignment.updated', 'budget.reached',
   ]),
   summary: z.string().trim().min(1).max(1_000),
   timestamp: z.number().int().nonnegative().safe(),
@@ -247,6 +247,15 @@ export const goalMaxUpdateInputSchema = z.object({
 
 export const goalMaxClearResultSchema = z.object({ cleared: z.boolean(), archivedGoalId: boundedIdSchema.nullable() }).strict();
 
+export const goalMaxSteeringEditInputSchema = z.object({
+  steeringId: boundedIdSchema,
+  text: z.string().trim().min(1).max(GOALMAX_STEERING_TEXT_LIMIT),
+}).strict();
+
+export const goalMaxSteeringRemoveInputSchema = z.object({
+  steeringId: boundedIdSchema,
+}).strict();
+
 const goalEventBase = z.object({ projectPath: z.string().min(1).max(32_768), sessionId: z.string().min(1).max(500), timestamp: z.number().int().nonnegative().safe() }).strict();
 export const goalMaxEventSchema = z.discriminatedUnion('type', [
   goalEventBase.extend({ type: z.literal('goalmax.snapshot'), goal: goalMaxStateSchema }),
@@ -273,4 +282,6 @@ export type GoalMaxCreateInput = z.infer<typeof goalMaxCreateInputSchema>;
 export type GoalMaxControlInput = z.infer<typeof goalMaxControlInputSchema>;
 export type GoalMaxUpdateInput = z.infer<typeof goalMaxUpdateInputSchema>;
 export type GoalMaxClearResult = z.infer<typeof goalMaxClearResultSchema>;
+export type GoalMaxSteeringEditInput = z.infer<typeof goalMaxSteeringEditInputSchema>;
+export type GoalMaxSteeringRemoveInput = z.infer<typeof goalMaxSteeringRemoveInputSchema>;
 export type GoalMaxEvent = z.infer<typeof goalMaxEventSchema>;

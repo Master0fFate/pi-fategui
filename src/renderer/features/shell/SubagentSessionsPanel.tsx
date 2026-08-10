@@ -500,7 +500,7 @@ function DelegationBranch({
 
   return (
     <section className="agent-tree-branch" data-status={branchStatus} aria-label={workflow ? `Workflow ${workflow.id}` : `Delegation ${ordinal}`}>
-      <header className="agent-tree-branch-heading">
+      <header className="agent-tree-branch-heading agent-tree-branch-heading--delegation">
         <span className="agent-tree-branch-mark"><Icon size={12} aria-hidden="true" /></span>
         <span className="agent-tree-branch-copy"><strong>{label}</strong><small>{summary}</small></span>
         <span className="agent-tree-branch-state">{branchStatus}</span>

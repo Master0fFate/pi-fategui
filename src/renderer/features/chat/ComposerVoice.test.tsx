@@ -29,7 +29,7 @@ class FakeRecorder extends EventTarget {
 describe('Composer voice input', () => {
   beforeEach(() => {
     useRuntimeStore.getState().setRuntime(runtime);
-    useUiStore.setState({ speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null }, speechDownload: null, toast: null });
+    useUiStore.setState({ speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' }, speechDownload: null, toast: null });
     const stop = vi.fn();
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop }] })) } });
     Object.defineProperty(Blob.prototype, 'arrayBuffer', { configurable: true, value: async () => new ArrayBuffer(8) });
@@ -121,7 +121,7 @@ describe('Composer voice input', () => {
       .mockRejectedValueOnce(new DOMException('Missing device', 'NotFoundError'))
       .mockResolvedValueOnce({ getTracks: () => [{ stop }] });
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
-    useUiStore.setState({ speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: 'missing-device' } });
+    useUiStore.setState({ speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: 'missing-device', liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' } });
 
     const { container } = render(<><Composer onOpenProject={vi.fn()} /><AppToast /></>);
     await user.click(screen.getByRole('button', { name: 'Start voice recording' }));

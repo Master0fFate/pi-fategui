@@ -26,6 +26,7 @@ import { secureWebPreferences } from './security/windowOptions';
 import { createTrustedRendererPolicy, isExternalHttpsUrl, isTrustedAudioPermissionRequest, isTrustedRendererUrl } from './security/trustedRenderer';
 import { SettingsService } from './settings/SettingsService';
 import { SpeechService } from './speech/SpeechService';
+import { GlobalHotkeyService } from './speech/GlobalHotkeyService';
 import { smokeTerminalRuntime, TerminalService } from './terminal/TerminalService';
 import { UpdateService } from './updates/UpdateService';
 import { MINIMUM_WINDOW_SIZE, WindowStateService, type WindowPlacement } from './windowState';
@@ -112,6 +113,12 @@ const windowState = new WindowStateService(logs);
 const music = new MusicService();
 const rendererNetworkProxy = new PublicHttpsProxy();
 const speech = new SpeechService(logs);
+const emitVoiceHotkey = (action: 'start' | 'stop') => {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send(ipcChannels.voiceHotkey, { action, source: 'hotkey' });
+  }
+};
+const hotkey = new GlobalHotkeyService(logs, () => emitVoiceHotkey('start'), () => emitVoiceHotkey('stop'));
 const terminal = new TerminalService(files, runtime, settings, logs);
 let mainWindow: BrowserWindow | null = null;
 let rendererReady = false;
@@ -463,8 +470,11 @@ app.whenReady().then(async () => {
       logs.write('warn', 'microphone', `macOS microphone permission could not be requested: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, updates, browser: browserHost, automations, rendererPolicy });
+  const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser: browserHost, automations, rendererPolicy });
   projectPathOpener = mainCommands.openProjectPath;
+  void hotkey.applySpeechSettings((await settings.load()).speech).then((status) => {
+    if (!status.pushToTalkAvailable) logs.write('warn', 'speech', status.reason ?? 'Push-to-talk is unavailable on this platform.');
+  });
   installMenu();
   mainWindow = createWindow();
   app.on('activate', () => {
@@ -481,7 +491,7 @@ app.on('before-quit', (event) => {
   music.dispose();
   rendererNetworkProxy.dispose();
   shutdown = Promise.race([
-    Promise.all([runtime.dispose(), speech.dispose(), windowState.flush(), browserHost?.reset()]).then(() => undefined),
+    Promise.all([runtime.dispose(), speech.dispose(), hotkey.dispose(), windowState.flush(), browserHost?.reset()]).then(() => undefined),
     new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
   ]).catch((error: unknown) => {
     logs.write('warn', 'app', `Application shutdown failed: ${error instanceof Error ? error.message : String(error)}`);

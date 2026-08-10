@@ -593,7 +593,8 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
     await expect(agent).toHaveAttribute('aria-pressed', 'true');
     await clickNativeElement('#save');
     await expect.poll(readSaveClicks).toBe(1);
-    await expect(page.getByRole('button', { name: 'Resume browser agent' })).toBeVisible();
+    await expect(page.locator('.browser-interaction-switch').getByRole('button')).toHaveText(['Agent', 'Annotate']);
+    await expect(agent).toHaveAttribute('aria-pressed', 'true');
 
     await page.getByRole('button', { name: 'Close Fate Local Preview' }).click();
     await expect(page.getByRole('tablist', { name: 'Browser tabs' }).getByRole('tab')).toHaveCount(1);
@@ -603,7 +604,6 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
     await addressInput.press('Enter');
     await expect(page.getByRole('tab', { name: 'Private live update ready' })).toBeVisible();
     await expect(page.getByText('Let Pi use this site?')).toHaveCount(0);
-    await expect(page.getByText('Browser paused behind an app dialog')).toHaveCount(0);
 
     await page.locator('.workspace-browser-toggle').click();
     await expect(page.getByTestId('browser-workspace')).toHaveCount(0);

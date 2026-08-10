@@ -10,7 +10,7 @@ function serviceFixture() {
     cancelAnnotationSelection: vi.fn(),
     ensureTab: vi.fn(async () => undefined),
     getState: vi.fn(() => ({
-      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, paused: true, controlLevel: 'off' as const,
+      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off' as const,
       tabs: [{
         id: 'browser-main', profileId: 'project', url: 'https://example.test/', title: 'Example', loading: false,
         canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true,

@@ -9,7 +9,6 @@ const blockedState: BrowserState = {
   visible: false,
   viewBlocked: true,
   sessionFullAccess: false,
-  paused: false,
   controlLevel: 'interact',
   mode: 'agent',
   tabs: [{

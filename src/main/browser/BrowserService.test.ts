@@ -3,21 +3,18 @@ import type { BrowserWindow } from 'electron';
 import { BrowserService } from './BrowserService';
 
 describe('BrowserService visibility safety', () => {
-  it('pauses and notifies the host whenever the native browser becomes hidden', async () => {
-    const onPaused = vi.fn();
+  it('stays fully available and hidden-state free when the native browser is hidden', async () => {
     const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
       canonicalProjectPath: process.cwd(),
-      onPaused,
     });
 
-    service.setPaused(false);
     service.setVisible(true);
-    expect(service.getState().paused).toBe(false);
+    expect(service.getState().visible).toBe(true);
 
     service.setVisible(false);
 
-    expect(service.getState()).toMatchObject({ visible: false, paused: true });
-    expect(onPaused).toHaveBeenCalledOnce();
+    // Hiding the view never pauses agent control; the agent stays available.
+    expect(service.getState()).toMatchObject({ visible: false, viewBlocked: false });
     await service.dispose();
   });
 

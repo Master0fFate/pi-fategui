@@ -39,6 +39,8 @@ import type {
   GoalMaxCreateInput,
   GoalMaxEvent,
   GoalMaxState,
+  GoalMaxSteeringEditInput,
+  GoalMaxSteeringRemoveInput,
   GoalMaxUpdateInput,
 } from './goalmaxxing';
 import {
@@ -83,7 +85,6 @@ export const ipcChannels = {
   browserHistory: 'browser:history',
   browserSetMode: 'browser:set-mode',
   browserSetControlLevel: 'browser:set-control-level',
-  browserSetPaused: 'browser:set-paused',
   browserSetGrant: 'browser:set-grant',
   browserRevokeGrant: 'browser:revoke-grant',
   browserSnapshot: 'browser:snapshot',
@@ -115,6 +116,8 @@ export const ipcChannels = {
   runtimeGoalMaxControl: 'runtime:goalmax:control',
   runtimeGoalMaxUpdate: 'runtime:goalmax:update',
   runtimeGoalMaxClear: 'runtime:goalmax:clear',
+  runtimeGoalMaxSteeringEdit: 'runtime:goalmax:steering-edit',
+  runtimeGoalMaxSteeringRemove: 'runtime:goalmax:steering-remove',
   runtimeGoalMaxEvents: 'runtime:goalmax:events',
   runtimeTaskGet: 'runtime:task:get',
   runtimeTaskCreate: 'runtime:task:create',
@@ -155,6 +158,13 @@ export const ipcChannels = {
   speechTranscribe: 'speech:transcribe',
   speechCancel: 'speech:cancel',
   speechEvents: 'speech:events',
+  speechStreamStart: 'speech:stream-start',
+  speechStreamFeed: 'speech:stream-feed',
+  speechStreamStop: 'speech:stream-stop',
+  speechStreamCancel: 'speech:stream-cancel',
+  speechStreamEvents: 'speech:stream-events',
+  speechHotkeyStatus: 'speech:hotkey-status',
+  voiceHotkey: 'voice-hotkey',
   musicGetStatus: 'music:get-status',
   musicLoad: 'music:load',
   musicResolveTrack: 'music:resolve-track',
@@ -894,7 +904,7 @@ export const queueMutationResultSchema = z.object({
 export const sessionSearchInputSchema = z.object({ query: z.string().max(500).default('') }).strict();
 export const projectPathInputSchema = z.object({ projectPath: z.string().min(1).max(32_768) }).strict();
 export const projectSessionListInputSchema = z.object({ projectPath: z.string().min(1).max(32_768), query: z.string().max(500).default('') }).strict();
-export const projectDeleteSessionsResultSchema = z.object({ deleted: z.number().int().nonnegative().max(5_000), skipped: z.number().int().nonnegative().max(5_000) }).strict();
+export const projectDeleteSessionsResultSchema = z.object({ deleted: z.number().int().nonnegative().max(100_000), skipped: z.number().int().nonnegative().max(100_000) }).strict();
 export const sessionIdInputSchema = z.object({ sessionId: z.string().min(1).max(500) }).strict();
 export const sessionRenameInputSchema = z.object({
   sessionId: z.string().min(1).max(500),
@@ -917,11 +927,24 @@ export const terminalEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('data'), id: terminalIdSchema, data: z.string().max(131_072) }),
   z.object({ type: z.literal('exit'), id: terminalIdSchema, exitCode: z.number().int(), signal: z.number().int().optional() }),
 ]);
+export const voiceHotkeyModeSchema = z.enum(['toggle', 'push-to-talk']);
+export const defaultSpeechSettings = {
+  enabled: true,
+  modelId: 'mini' as const,
+  language: 'auto',
+  inputDeviceId: null,
+  liveTranscription: true,
+  voiceHotkey: null,
+  voiceHotkeyMode: 'toggle' as const,
+};
 export const speechSettingsSchema = z.object({
   enabled: z.boolean().default(true),
   modelId: speechModelIdSchema.default('mini'),
   language: z.string().trim().min(2).max(16).default('auto'),
   inputDeviceId: z.string().max(1_024).nullable().default(null),
+  liveTranscription: z.boolean().default(true),
+  voiceHotkey: z.string().trim().min(1).max(64).nullable().default(null),
+  voiceHotkeyMode: voiceHotkeyModeSchema.default('toggle'),
 }).strict();
 export const speechModelInfoSchema = z.object({
   id: speechModelIdSchema,
@@ -933,6 +956,8 @@ export const speechModelInfoSchema = z.object({
   bytes: z.number().int().positive(),
   installed: z.boolean(),
   downloadedBytes: z.number().int().nonnegative(),
+  /** True when the model supports live streaming transcription. */
+  streaming: z.boolean(),
 }).strict();
 export const speechStatusSchema = z.object({
   models: z.array(speechModelInfoSchema).length(3),
@@ -960,6 +985,28 @@ export const speechDownloadProgressSchema = z.object({
   error: z.string().min(1).max(1_000).optional(),
 }).strict();
 export const speechCancelResultSchema = z.object({ cancelled: z.boolean() }).strict();
+export const speechStreamStateSchema = z.enum(['active', 'final', 'error', 'cancelled']);
+export const speechStreamStartInputSchema = z.object({
+  modelId: speechModelIdSchema,
+  language: z.string().trim().min(2).max(16).optional(),
+}).strict();
+export const speechStreamFeedInputSchema = z.object({
+  audio: arrayBufferSchema.refine((value) => value.byteLength > 0 && value.byteLength <= 16_000 * 4 * 2 && value.byteLength % 4 === 0, 'Audio must be bounded 16 kHz Float32 PCM.'),
+}).strict();
+export const speechStreamUpdateSchema = z.object({
+  state: speechStreamStateSchema,
+  committed: z.string().max(200_000),
+  tentative: z.string().max(200_000),
+  error: z.string().min(1).max(1_000).optional(),
+}).strict();
+export const voiceHotkeyEventSchema = z.object({
+  action: z.enum(['start', 'stop']),
+  source: z.enum(['hotkey', 'button']).default('hotkey'),
+}).strict();
+export const speechHotkeyStatusSchema = z.object({
+  pushToTalkAvailable: z.boolean(),
+  reason: z.string().min(1).max(300).optional(),
+}).strict();
 
 export const updateCheckResultSchema = z.object({
   status: z.enum(['local-unreadable', 'local-invalid', 'remote-unavailable', 'remote-invalid', 'current', 'available', 'development']),
@@ -1000,7 +1047,7 @@ export const appSettingsSchema = z.object({
   interfaceFont: interfaceFontSchema.default('noto-sans'),
   codeFont: codeFontSchema.default('jetbrains-mono'),
   imageGeneration: imageGenerationSettingsSchema.default({ provider: 'auto', model: null, customProvider: null }),
-  speech: speechSettingsSchema.default({ enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null }),
+  speech: speechSettingsSchema.default(defaultSpeechSettings),
 }).strict();
 export const musicStatusSchema = z.object({
   available: z.boolean(),
@@ -1044,7 +1091,7 @@ export const diagnosticsSchema = z.object({
 });
 export const logEntrySchema = z.object({ timestamp: z.string().datetime(), level: z.enum(['info', 'warn', 'error']), scope: z.string(), message: z.string() });
 export const logListSchema = z.array(logEntrySchema).max(500);
-export const appCommandSchema = z.enum(['open-project', 'new-session', 'focus-composer', 'focus-address', 'stop-generation', 'toggle-sidebar', 'toggle-inspector', 'toggle-browser', 'open-settings', 'open-terminal', 'open-palette', 'pause-browser']);
+export const appCommandSchema = z.enum(['open-project', 'new-session', 'focus-composer', 'focus-address', 'stop-generation', 'toggle-sidebar', 'toggle-inspector', 'toggle-browser', 'open-settings', 'open-terminal', 'open-palette']);
 
 export type AppInfo = z.infer<typeof appInfoSchema>;
 export type AppError = z.infer<typeof appErrorSchema>;
@@ -1058,6 +1105,11 @@ export type SpeechModelInfo = z.infer<typeof speechModelInfoSchema>;
 export type SpeechStatus = z.infer<typeof speechStatusSchema>;
 export type SpeechDownloadProgress = z.infer<typeof speechDownloadProgressSchema>;
 export type SpeechTranscription = z.infer<typeof speechTranscriptionSchema>;
+export type SpeechStreamState = z.infer<typeof speechStreamStateSchema>;
+export type SpeechStreamUpdate = z.infer<typeof speechStreamUpdateSchema>;
+export type VoiceHotkeyMode = z.infer<typeof voiceHotkeyModeSchema>;
+export type VoiceHotkeyEvent = z.infer<typeof voiceHotkeyEventSchema>;
+export type SpeechHotkeyStatus = z.infer<typeof speechHotkeyStatusSchema>;
 export type ModelInfo = z.infer<typeof modelInfoSchema>;
 export type ProjectState = z.infer<typeof projectStateSchema>;
 export type RuntimeImage = z.infer<typeof runtimeImageSchema>;
@@ -1159,7 +1211,6 @@ export interface PiDesktopApi {
   controlBrowserHistory: (action: 'back' | 'forward' | 'reload' | 'stop') => Promise<BrowserState>;
   setBrowserMode: (mode: BrowserUiMode) => Promise<BrowserState>;
   setBrowserControlLevel: (level: BrowserControlLevel) => Promise<BrowserState>;
-  setBrowserPaused: (paused: boolean) => Promise<BrowserState>;
   setBrowserOriginGrant: (grant: BrowserOriginGrant) => Promise<BrowserState>;
   revokeBrowserOriginGrant: (origin: string) => Promise<BrowserState>;
   snapshotBrowser: (input?: { mode?: BrowserSnapshotMode; scopeRef?: string; query?: string }) => Promise<SemanticPageSnapshot>;
@@ -1191,6 +1242,8 @@ export interface PiDesktopApi {
   controlGoalMax: (input: GoalMaxControlInput) => Promise<GoalMaxState>;
   updateGoalMax: (input: GoalMaxUpdateInput) => Promise<GoalMaxState>;
   clearGoalMax: () => Promise<GoalMaxClearResult>;
+  editGoalMaxSteering: (input: GoalMaxSteeringEditInput) => Promise<GoalMaxState>;
+  removeGoalMaxSteering: (input: GoalMaxSteeringRemoveInput) => Promise<GoalMaxState>;
   onGoalMaxEvents: (listener: (events: GoalMaxEvent[]) => void) => () => void;
   getTaskList: () => Promise<TaskList | null>;
   createTask: (input: TaskCreateInput) => Promise<TaskList>;
@@ -1243,7 +1296,14 @@ export interface PiDesktopApi {
   removeSpeechModel: (modelId: SpeechModelId) => Promise<SpeechStatus>;
   transcribeSpeech: (modelId: SpeechModelId, audio: ArrayBuffer, language?: string) => Promise<SpeechTranscription>;
   cancelSpeechTranscription: () => Promise<boolean>;
+  startSpeechStream: (modelId: SpeechModelId, language?: string) => Promise<void>;
+  feedSpeechStream: (audio: ArrayBuffer) => Promise<void>;
+  stopSpeechStream: () => Promise<void>;
+  cancelSpeechStream: () => Promise<void>;
+  getSpeechHotkeyStatus: () => Promise<SpeechHotkeyStatus>;
   onSpeechDownload: (listener: (progress: SpeechDownloadProgress) => void) => () => void;
+  onSpeechStreamUpdate: (listener: (update: SpeechStreamUpdate) => void) => () => void;
+  onVoiceHotkey: (listener: (event: VoiceHotkeyEvent) => void) => () => void;
   getMusicStatus: () => Promise<MusicStatus>;
   loadMusic: (url: string) => Promise<MusicQueue>;
   resolveMusicTrack: (trackId: string) => Promise<MusicStream>;

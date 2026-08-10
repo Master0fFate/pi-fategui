@@ -12,7 +12,7 @@ const bytes = Buffer.from('verified-model');
 const checksum = createHash('sha256').update(bytes).digest('hex');
 const model: SpeechModelDefinition = {
   id: 'mini', tier: 'mini', name: 'Mini', model: 'Test model', description: 'Test', detail: '14 B', bytes: bytes.length,
-  fileName: 'mini.gguf', url: 'https://example.test/mini.gguf', sha256: checksum,
+  fileName: 'mini.gguf', url: 'https://example.test/mini.gguf', sha256: checksum, streaming: false,
 };
 const definitions: readonly SpeechModelDefinition[] = [
   model,
@@ -120,6 +120,42 @@ describe('SpeechService model downloads', () => {
   });
 });
 
+describe('SpeechService backend selection', () => {
+  it('forces CPU for streaming models on the macOS Metal backend but keeps batch models accelerated', async () => {
+    await installTestModel();
+    await mkdir(directory, { recursive: true });
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'balanced', fileName: 'streaming.gguf', streaming: true };
+    const batchModel: SpeechModelDefinition = { ...model, id: 'mini', fileName: 'mini.gguf' };
+    const definitions: readonly SpeechModelDefinition[] = [batchModel, streamingModel];
+    await writeFile(path.join(directory, 'streaming.gguf'), bytes);
+    await writeFile(path.join(directory, 'streaming.gguf.verified'), `${checksum}\n`);
+
+    const loadCalls: { backend?: string }[] = [];
+    const run = vi.fn(async () => ({ text: 'transcript', language: 'en' }));
+    const loaded = {
+      backend: 'cpu',
+      device: { name: 'CPU', description: 'CPU', deviceType: 'cpu' },
+      createSession: vi.fn(() => ({ run, dispose: vi.fn() })),
+      dispose: vi.fn(),
+    };
+    const runtime = {
+      getAvailableBackends: vi.fn(() => [
+        { name: 'Apple M2', description: 'Metal', kind: 'metal', deviceType: 'gpu' },
+        { name: 'CPU', description: 'CPU', kind: 'cpu', deviceType: 'cpu' },
+      ]),
+      TranscribeModel: { load: vi.fn(async (_file: string, opts?: { backend?: string }) => { loadCalls.push(opts ?? {}); return loaded; }) },
+    };
+    const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime as unknown as typeof import('transcribe-cpp'));
+
+    await service.transcribe('balanced', new Float32Array([0]).buffer); // streaming -> CPU (Metal avoided)
+    await service.transcribe('mini', new Float32Array([0]).buffer);     // batch -> auto (Metal allowed)
+
+    expect(loadCalls[0]).toMatchObject({ backend: 'cpu' });
+    expect(loadCalls[1]).toMatchObject({ backend: 'auto' });
+    await service.dispose();
+  });
+});
+
 describe('SpeechService model lifecycle', () => {
   it('caches the native backend probe instead of reinitializing it on every status refresh', async () => {
     const fake = fakeRuntime();
@@ -177,5 +213,62 @@ describe('SpeechService model lifecycle', () => {
     await expect(transcription).rejects.toThrow('Aborted');
     await disposing;
     expect(fake.disposeModel).toHaveBeenCalledOnce();
+  });
+});
+
+describe('SpeechService live streaming', () => {
+  it('starts, feeds, and finalizes a streaming session and emits committed text', async () => {
+    await installTestModel();
+    await writeFile(path.join(directory, 'balanced.gguf'), bytes);
+    await writeFile(path.join(directory, 'balanced.gguf.verified'), `${checksum}\n`);
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'balanced', fileName: 'balanced.gguf', streaming: true };
+    const definitions: readonly SpeechModelDefinition[] = [streamingModel];
+
+    const stream = {
+      feed: vi.fn(async (_pcm: Float32Array) => ({ resultChanged: true, isFinal: false, revision: 1, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false })),
+      finalize: vi.fn(async () => ({ resultChanged: true, isFinal: true, revision: 2, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false })),
+      get text() { return { committed: 'hello world', tentative: '' }; },
+      reset: vi.fn(),
+    };
+    const session = { stream: vi.fn(async () => stream), dispose: vi.fn() };
+    const loaded = {
+      backend: 'cpu',
+      device: { name: 'CPU', description: 'CPU', deviceType: 'cpu' },
+      createSession: vi.fn(() => session),
+      dispose: vi.fn(),
+    };
+    const runtime = {
+      getAvailableBackends: vi.fn(() => [{ name: 'CPU', description: 'CPU', kind: 'cpu', deviceType: 'cpu' }]),
+      TranscribeModel: { load: vi.fn(async () => loaded) },
+    } as unknown as typeof import('transcribe-cpp');
+
+    const updates: { state: string; committed: string }[] = [];
+    const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime);
+    service.setStreamSink((update) => updates.push({ state: update.state, committed: update.committed }));
+
+    await service.streamStart('balanced', 'en');
+    expect(session.stream).toHaveBeenCalledWith(expect.objectContaining({ commitPolicy: 'stable_prefix', family: expect.objectContaining({ kind: 'parakeet_buffered' }) }));
+    expect(updates.at(-1)).toMatchObject({ state: 'active' });
+
+    await service.streamFeed(new Float32Array([0, 0, 0, 0]).buffer);
+    expect(stream.feed).toHaveBeenCalledOnce();
+    expect(updates.at(-1)).toMatchObject({ state: 'active', committed: 'hello world' });
+
+    await service.streamStop();
+    expect(stream.finalize).toHaveBeenCalledOnce();
+    expect(session.dispose).toHaveBeenCalled();
+    expect(updates.at(-1)).toMatchObject({ state: 'final' });
+    await service.dispose();
+  });
+
+  it('refuses streaming on a batch-only model', async () => {
+    await installTestModel();
+    const batchModel: SpeechModelDefinition = { ...model, id: 'mini', fileName: 'mini.gguf', streaming: false };
+    const service = new SpeechService(new AppLogService(), directory, fetch, [batchModel], async () => ({
+      getAvailableBackends: () => [{ name: 'CPU', description: 'CPU', kind: 'cpu', deviceType: 'cpu' }],
+      TranscribeModel: { load: vi.fn() },
+    } as unknown as typeof import('transcribe-cpp')));
+    await expect(service.streamStart('mini', 'en')).rejects.toThrow('streaming');
+    await service.dispose();
   });
 });

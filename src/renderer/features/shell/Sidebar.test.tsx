@@ -410,7 +410,7 @@ describe('Sidebar sessions', () => {
 
   it('activates real Browser tabs without changing grants or resuming agent control', async () => {
     const browserState = {
-      activeTabId: 'tab-1', visible: false, viewBlocked: false, sessionFullAccess: false, paused: true,
+      activeTabId: 'tab-1', visible: false, viewBlocked: false, sessionFullAccess: false,
       controlLevel: 'observe' as const, mode: 'agent' as const, grants: [],
       tabs: [{ id: 'tab-1', profileId: 'project', url: 'https://example.test/auth', title: 'Auth callback', loading: false, canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true }],
     };
@@ -425,7 +425,7 @@ describe('Sidebar sessions', () => {
 
     await waitFor(() => expect(activateBrowserTab).toHaveBeenCalledWith('tab-1'));
     expect(useUiStore.getState().browserOpen).toBe(true);
-    expect(useBrowserStore.getState().state).toMatchObject({ paused: true, controlLevel: 'observe', grants: [] });
+    expect(useBrowserStore.getState().state).toMatchObject({ controlLevel: 'observe', grants: [] });
   });
 
   it('shows one Pi Library launcher without duplicating its contents as a category', async () => {

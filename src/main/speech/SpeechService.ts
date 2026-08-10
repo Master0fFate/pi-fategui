@@ -4,13 +4,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
-import type { SpeechDownloadProgress, SpeechModelId, SpeechStatus, SpeechTranscription } from '../../shared/contracts/ipc';
+import type { SpeechDownloadProgress, SpeechModelId, SpeechStatus, SpeechStreamUpdate, SpeechTranscription } from '../../shared/contracts/ipc';
 import type { AppLogService } from '../logging/AppLogService';
+import type { Backend } from 'transcribe-cpp';
 import { speechModels, type SpeechModelDefinition } from './speechModels';
 
 const MODEL_IDLE_TIMEOUT_MS = 5 * 60_000;
 const MAX_AUDIO_SAMPLES = 16_000 * 180;
 const CPU_THREADS = Math.max(1, Math.min(8, Math.ceil(os.availableParallelism() / 2)));
+/** Audio committed per streaming feed. Large enough for low latency without
+ *  flooding the model with tiny decodes. */
+const STREAM_CHUNK_MS = 300;
+const MAX_STREAM_CHUNK_BYTES = 16_000 * 4 * 2;
 const LEGACY_MODEL_FILES = [
   'parakeet-tdt_ctc-110m-Q5_K_M.gguf',
   'parakeet-tdt-0.6b-v2-Q4_K_M.gguf',
@@ -18,6 +23,8 @@ const LEGACY_MODEL_FILES = [
 ] as const;
 type TranscribeModule = typeof import('transcribe-cpp');
 type LoadedModel = Awaited<ReturnType<TranscribeModule['TranscribeModel']['load']>>;
+type SpeechSession = ReturnType<LoadedModel['createSession']>;
+type SpeechStream = Awaited<ReturnType<SpeechSession['stream']>>;
 
 export class SpeechService {
   private readonly downloads = new Map<SpeechModelId, Promise<void>>();
@@ -29,6 +36,8 @@ export class SpeechService {
   private activeSettled: Promise<void> | null = null;
   private resolveActiveSettled: (() => void) | null = null;
   private eventSink: ((progress: SpeechDownloadProgress) => void) | null = null;
+  private streamSink: ((update: SpeechStreamUpdate) => void) | null = null;
+  private activeStream: { definition: SpeechModelDefinition; session: SpeechSession; stream: SpeechStream; settled: Promise<void>; resolveSettled: () => void } | null = null;
   private modulePromise: Promise<TranscribeModule> | null = null;
   private backendProbe: Promise<Pick<SpeechStatus, 'backend' | 'accelerated'>> | null = null;
   private legacyCleanup: Promise<void> | null = null;
@@ -50,6 +59,10 @@ export class SpeechService {
 
   setEventSink(sink: (progress: SpeechDownloadProgress) => void): void {
     this.eventSink = sink;
+  }
+
+  setStreamSink(sink: (update: SpeechStreamUpdate) => void): void {
+    this.streamSink = sink;
   }
 
   async getStatus(): Promise<SpeechStatus> {
@@ -103,7 +116,7 @@ export class SpeechService {
     const pcm = new Float32Array(audio);
     if (pcm.length > MAX_AUDIO_SAMPLES) throw new Error('Voice recordings are limited to three minutes.');
     if (!(await this.isInstalled(this.definition(modelId)))) throw new Error('Download the selected voice model before transcribing.');
-    if (this.activeRun) throw new Error('Another voice transcription is already running.');
+    if (this.activeRun || this.activeStream) throw new Error('Another voice transcription is already running.');
 
     const controller = new AbortController();
     this.activeRun = controller;
@@ -148,9 +161,93 @@ export class SpeechService {
     return true;
   }
 
+  /** Begin a live streaming transcription. Only streaming-family models
+   *  (Parakeet) support this; batch models throw. The stream holds the model's
+   *  single compute slot until streamStop/streamCancel, so batch transcribe()
+   *  is refused while it is active. */
+  async streamStart(modelId: SpeechModelId, language?: string): Promise<void> {
+    if (this.activeRun || this.activeStream) throw new Error('Another voice transcription is already running.');
+    const definition = this.definition(modelId);
+    if (!definition.streaming) throw new Error('Live transcription is only supported by streaming voice models.');
+    if (!(await this.isInstalled(definition))) throw new Error('Download the selected voice model before transcribing.');
+    const model = await this.load(definition);
+    const session = model.createSession({ nThreads: CPU_THREADS });
+    let stream: SpeechStream;
+    try {
+      stream = await session.stream({
+        language: language && language !== 'auto' ? language : 'en',
+        timestamps: 'none',
+        commitPolicy: 'stable_prefix',
+        family: { kind: 'parakeet_buffered', chunkMs: STREAM_CHUNK_MS },
+      });
+    } catch (error) {
+      session.dispose();
+      throw new Error(`Live transcription could not start: ${this.message(error)}`);
+    }
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+    this.activeStream = { definition, session, stream, settled, resolveSettled };
+    this.logs.write('info', 'speech', `${definition.model} live transcription started.`);
+    this.emitStream({ state: 'active', committed: '', tentative: '' });
+  }
+
+  /** Feed one PCM chunk to the active stream and emit the new committed/tentative
+   *  text. The chunk is copied before the native call because transcribe.cpp
+   *  borrows the buffer and reads it on a worker thread. */
+  async streamFeed(audio: ArrayBuffer): Promise<void> {
+    if (audio.byteLength === 0 || audio.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) throw new Error('The captured audio is malformed.');
+    if (audio.byteLength > MAX_STREAM_CHUNK_BYTES) throw new Error('The live audio chunk is too large.');
+    const active = this.activeStream;
+    if (!active) throw new Error('No live transcription is running.');
+    const pcm = new Float32Array(audio.slice(0));
+    await active.stream.feed(pcm);
+    if (this.activeStream !== active) return; // cancelled while the feed was in flight
+    const { committed, tentative } = active.stream.text;
+    this.emitStream({ state: 'active', committed, tentative });
+  }
+
+  /** Flush remaining audio, commit the final text, and release the stream. */
+  async streamStop(): Promise<void> {
+    const active = this.activeStream;
+    if (!active) throw new Error('No live transcription is running.');
+    try {
+      await active.stream.finalize();
+      if (this.activeStream === active) {
+        const { committed } = active.stream.text;
+        this.logs.write('info', 'speech', `${active.definition.model} live transcription finalized.`);
+        this.emitStream({ state: 'final', committed, tentative: '' });
+      }
+    } catch (error) {
+      this.emitStream({ state: 'error', committed: '', tentative: '', error: this.message(error) });
+      throw error;
+    } finally {
+      this.endStream(active);
+    }
+  }
+
+  /** Abort the active stream without finalizing. Safe to call when idle. */
+  async streamCancel(): Promise<void> {
+    const active = this.activeStream;
+    if (!active) return;
+    this.endStream(active);
+    this.emitStream({ state: 'cancelled', committed: '', tentative: '' });
+  }
+
+  private endStream(active: NonNullable<SpeechService['activeStream']>): void {
+    if (this.activeStream === active) this.activeStream = null;
+    try { active.session.dispose(); } catch { /* teardown is best-effort */ }
+    if (this.loaded?.id === active.definition.id) this.scheduleUnload();
+    active.resolveSettled();
+  }
+
+  private emitStream(update: SpeechStreamUpdate): void {
+    this.streamSink?.(update);
+  }
+
   async dispose(): Promise<void> {
     for (const controller of this.downloadControllers.values()) controller.abort();
     this.cancel();
+    if (this.activeStream) await this.streamCancel();
     const activeSettled = this.activeSettled;
     if (activeSettled) await activeSettled.catch(() => undefined);
     this.unload();
@@ -289,12 +386,7 @@ export class SpeechService {
     this.unload();
     const runtime = await this.runtime();
     try {
-      const available = runtime.getAvailableBackends();
-      const unstableVulkan = available.some((candidate) => candidate.kind === 'vulkan');
-      const backend = unstableVulkan ? 'cpu' : 'auto';
-      if (unstableVulkan) {
-        this.logs.write('warn', 'speech', `${definition.model} is using CPU because the transcribe.cpp Vulkan model loader is unstable on this platform.`);
-      }
+      const backend = this.selectBackend(runtime, definition);
       const model = await runtime.TranscribeModel.load(this.modelPath(definition), { backend });
       this.loaded = { id: definition.id, model };
       this.logs.write('info', 'speech', `${definition.model} loaded on ${model.device.name || model.backend}.`);
@@ -302,6 +394,27 @@ export class SpeechService {
     } catch (error) {
       throw new Error(`The selected voice model could not load: ${this.message(error)}`);
     }
+  }
+
+  /** Choose the compute backend for a model. "auto" lets transcribe.cpp pick the
+   *  best accelerator; we override it to CPU only where a backend is known to be
+   *  unstable for this model class:
+   *    - Vulkan's model loader is unstable on every platform that ships it, so
+   *      it is always forced to CPU (matches the upstream note).
+   *    - Streaming-family models (Parakeet RNN-T/TDT) abort inside the Metal
+   *      decode graph on macOS, while CPU is stable. Batch models (Canary,
+   *      Cohere Transcribe) run fine on Metal, so they keep the accelerator. */
+  private selectBackend(runtime: TranscribeModule, definition: SpeechModelDefinition): Backend {
+    const available = runtime.getAvailableBackends();
+    if (available.some((candidate) => candidate.kind === 'vulkan')) {
+      this.logs.write('warn', 'speech', `${definition.model} is using CPU because the transcribe.cpp Vulkan model loader is unstable on this platform.`);
+      return 'cpu';
+    }
+    if (definition.streaming && available.some((candidate) => candidate.kind === 'metal')) {
+      this.logs.write('warn', 'speech', `${definition.model} is using CPU because streaming voice models are unstable on the transcribe.cpp Metal backend on macOS.`);
+      return 'cpu';
+    }
+    return 'auto';
   }
 
   private scheduleUnload(): void {

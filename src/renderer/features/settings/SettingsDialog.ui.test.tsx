@@ -24,7 +24,7 @@ const settings: AppSettings = {
   interfaceFont: 'noto-sans',
   codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
-  speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null },
+  speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' },
 };
 
 let speechListener: ((progress: SpeechDownloadProgress) => void) | null = null;
@@ -32,9 +32,9 @@ let speechListener: ((progress: SpeechDownloadProgress) => void) | null = null;
 const speechStatus: SpeechStatus = {
   backend: 'Test Vulkan GPU', accelerated: true,
   models: [
-    { id: 'mini', tier: 'mini', name: 'Mini', model: 'Parakeet 110M', description: 'Light', detail: '101 MB', bytes: 101, installed: true, downloadedBytes: 101 },
-    { id: 'balanced', tier: 'balanced', name: 'Medium', model: 'Parakeet 0.6B', description: 'Balanced', detail: '475 MB', bytes: 475, installed: false, downloadedBytes: 0 },
-    { id: 'max', tier: 'max', name: 'Max', model: 'Whisper Turbo', description: 'Maximum', detail: '536 MB', bytes: 536, installed: false, downloadedBytes: 0 },
+    { id: 'mini', tier: 'mini', name: 'Mini', model: 'Parakeet 110M', description: 'Light', detail: '101 MB', bytes: 101, installed: true, downloadedBytes: 101, streaming: false },
+    { id: 'balanced', tier: 'balanced', name: 'Medium', model: 'Parakeet 0.6B', description: 'Balanced', detail: '475 MB', bytes: 475, installed: false, downloadedBytes: 0, streaming: true },
+    { id: 'max', tier: 'max', name: 'Max', model: 'Whisper Turbo', description: 'Maximum', detail: '536 MB', bytes: 536, installed: false, downloadedBytes: 0, streaming: false },
   ],
 };
 

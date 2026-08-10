@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import type { AppCommand, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
+import { defaultSpeechSettings, type AppCommand, type PiEvent, type RuntimeState } from '../../shared/contracts/ipc';
 import { AppToast } from '../components/AppToast';
 import { applyVisualSettings } from '../appearance';
 import { useRuntimeStore } from '../stores/runtimeStore';
@@ -267,7 +267,8 @@ export function App() {
       useUiStore.getState().setMusicPlayerEnabled(settings.musicPlayerEnabled);
       useUiStore.getState().setSendMessageWithModifier(settings.sendMessageWithModifier);
       useUiStore.getState().setCompactSessions(settings.compactSessions);
-      useUiStore.getState().setSpeech(settings.speech ?? { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null });
+      useUiStore.getState().setSpeech(settings.speech ?? defaultSpeechSettings);
+      void window.piDesktop.getSpeechStatus().then((status) => { if (active) useUiStore.getState().setSpeechStatus(status); }).catch(() => undefined);
     }).catch((error: unknown) => {
       // Settings can fail (strict-schema rejection, IPC error, …). Do not
       // swallow it silently: keep a usable built-in visual fallback.
@@ -472,26 +473,18 @@ export function App() {
           return;
         }
         const opening = !ui.browserOpen;
-        const operation = opening
-          ? window.piDesktop.setBrowserMode('agent')
-          : window.piDesktop.setBrowserPaused(true);
-        void operation.then((state) => {
-          useBrowserStore.getState().hydrate(state);
-          ui.setBrowserOpen(opening);
-        }).catch((error: unknown) => {
-          const message = appCommandErrorMessage(error, 'The Browser workspace could not change state.');
-          useBrowserStore.getState().setError(message);
-          failed('Browser command failed', error, message);
-        });
-      }
-      else if (command === 'pause-browser') {
-        const browser = useBrowserStore.getState().state;
-        const operation = browser.mode === 'annotate'
-          ? window.piDesktop.setBrowserMode('agent').then(() => window.piDesktop.setBrowserPaused(true))
-          : window.piDesktop.setBrowserPaused(true);
-        void operation
-          .then((state) => useBrowserStore.getState().hydrate(state))
-          .catch((error: unknown) => useBrowserStore.getState().setError(appCommandErrorMessage(error, 'Browser control could not be paused.')));
+        if (opening) {
+          void window.piDesktop.setBrowserMode('agent').then((state) => {
+            useBrowserStore.getState().hydrate(state);
+            ui.setBrowserOpen(true);
+          }).catch((error: unknown) => {
+            const message = appCommandErrorMessage(error, 'The Browser workspace could not change state.');
+            useBrowserStore.getState().setError(message);
+            failed('Browser command failed', error, message);
+          });
+        } else {
+          ui.setBrowserOpen(false);
+        }
       }
       else if (command === 'stop-generation') {
         if (!runtime.streaming) {
@@ -530,18 +523,9 @@ export function App() {
         && !document.querySelector('[role="dialog"], [role="listbox"], [data-radix-popper-content-wrapper], .music-dock[data-open="true"]')
       ) {
         const browser = useBrowserStore.getState().state;
-        const browserUi = useUiStore.getState();
-        if (browserUi.browserOpen && browser.mode === 'annotate' && typeof window.piDesktop.setBrowserMode === 'function') {
+        if (browser.mode === 'annotate' && typeof window.piDesktop.setBrowserMode === 'function') {
           event.preventDefault();
-          void window.piDesktop.setBrowserMode('agent')
-            .then(() => window.piDesktop.setBrowserPaused(true))
-            .then((state) => useBrowserStore.getState().hydrate(state))
-            .catch(() => undefined);
-          return;
-        }
-        if (browserUi.browserOpen && !browser.paused && typeof window.piDesktop.setBrowserPaused === 'function') {
-          event.preventDefault();
-          void window.piDesktop.setBrowserPaused(true).then((state) => useBrowserStore.getState().hydrate(state)).catch(() => undefined);
+          void window.piDesktop.setBrowserMode('agent').then((state) => useBrowserStore.getState().hydrate(state)).catch(() => undefined);
           return;
         }
         if (useRuntimeStore.getState().runtime.streaming) command = 'stop-generation';

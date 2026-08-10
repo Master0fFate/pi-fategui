@@ -494,6 +494,17 @@ export function verifyPackagedNativeDeps({ appOutDir, platform, arch }) {
   requireTargetBinary(index, errors, koffiAddon, targetPlatform, targetArch);
   const koffiAddons = index.under(koffiNative, true).filter((entry) => entry.toLocaleLowerCase().endsWith('.node'));
 
+  const uiohook = 'node_modules/uiohook-napi';
+  requireFile(index, errors, `${uiohook}/package.json`);
+  requireFile(index, errors, `${uiohook}/dist/index.js`);
+  const uiohookPackage = readJson(index, errors, `${uiohook}/package.json`);
+  validatePackageMetadata(errors, uiohookPackage, 'uiohook-napi', `${uiohook}/package.json`);
+  requireTargetBinary(index, errors, `${uiohook}/prebuilds/${targetPlatform}-${targetArch}/uiohook-napi.node`, targetPlatform, targetArch);
+  // uiohook-napi resolves its .node through node-gyp-build at require time, so the
+  // resolver must ship too (pure JS, may live inside the asar).
+  requireFile(index, errors, 'node_modules/node-gyp-build/package.json');
+  requireFile(index, errors, 'node_modules/node-gyp-build/index.js');
+
   const nodePty = 'node_modules/node-pty';
   for (const relative of ['package.json', 'LICENSE', 'lib/index.js', 'lib/utils.js']) requireFile(index, errors, `${nodePty}/${relative}`, { unpacked: true });
   const nodePtyPackage = readJson(index, errors, `${nodePty}/package.json`, { unpacked: true });
@@ -562,13 +573,14 @@ export function verifyPackagedNativeDeps({ appOutDir, platform, arch }) {
     transcribeLibraries: transcribeLibraries.length,
     koffiPackage: `@koromix/koffi-${targetPlatform}-${targetArch}`,
     koffiAddons: koffiAddons.length,
+    uiohookPrebuild: `${targetPlatform}-${targetArch}`,
     nodePtyBase,
     nodePtyAddons: nodePtyAddons.length,
     piRuntimeVersion: piPackage?.version,
     photonWasm: true,
     ytDlpVersion: ytDlpManifest?.version,
   };
-  console.log(`[native-deps] ${targetKey} verified: transcribe-cpp + ${evidence.transcribeLibraries} target libraries; Koffi ${evidence.koffiAddons} addon; node-pty ${evidence.nodePtyAddons} addons; Pi ${String(evidence.piRuntimeVersion)} + Photon WASM; yt-dlp ${String(evidence.ytDlpVersion)}`);
+  console.log(`[native-deps] ${targetKey} verified: transcribe-cpp + ${evidence.transcribeLibraries} target libraries; Koffi ${evidence.koffiAddons} addon; uiohook-napi ${evidence.uiohookPrebuild}; node-pty ${evidence.nodePtyAddons} addons; Pi ${String(evidence.piRuntimeVersion)} + Photon WASM; yt-dlp ${String(evidence.ytDlpVersion)}`);
   return evidence;
 }
 

@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronUp, CircleAlert, Clock3, LoaderCircle, Plus, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, CircleAlert, Clock3, LoaderCircle, X } from 'lucide-react';
 import { useState } from 'react';
 import type { GoalMaxCriterion, GoalMaxState } from '../../../shared/contracts/goalmaxxing';
 import type { Task, TaskStatus } from '../../../shared/contracts/tasks';
@@ -54,13 +54,12 @@ interface TaskRow {
  * Reads the canonical, session-scoped task list (the same list GoalMax binds
  * to), so the strip is not GoalMax-exclusive. The collapsed row shows the
  * current task plus the required done/total count and the verification state;
- * expanding reveals a dense status list with an inline create/toggle/remove
- * path for ordinary user tasks.
+ * expanding reveals a dense status list with inline status toggling and
+ * removal for ordinary user tasks. Task creation is owned by the agent, so the
+ * strip intentionally has no manual add form.
  */
 function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
   const [expanded, setExpanded] = useState(false);
-  const [draft, setDraft] = useState('');
-  const [adding, setAdding] = useState(false);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const setList = useTaskStore((state) => state.setList);
@@ -77,21 +76,6 @@ function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
     : `${requiredDone}/${requiredTotal} required · ${requiredVerified === requiredTotal ? 'verified' : 'unverified'}`;
   const canEdit = typeof window !== 'undefined' && 'piDesktop' in window;
 
-  const addTask = async () => {
-    const title = draft.trim();
-    if (!title || adding || !canEdit || typeof window.piDesktop.createTask !== 'function') return;
-    setAdding(true);
-    setMutationError(null);
-    try {
-      const list = await window.piDesktop.createTask({ title, required: false, status: 'todo' });
-      setList(list);
-      setDraft('');
-    } catch {
-      setMutationError('Could not add the task. Check the session and try again.');
-    } finally {
-      setAdding(false);
-    }
-  };
   const cycleStatus = async (row: TaskRow) => {
     if (row.managed || mutatingId || !canEdit || typeof window.piDesktop.updateTask !== 'function') return;
     const next = TASK_STATUS_CYCLE[(TASK_STATUS_CYCLE.indexOf(row.status) + 1) % TASK_STATUS_CYCLE.length];
@@ -131,8 +115,7 @@ function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
       </button>
       {expanded ? (
         <>
-          <ol id="goalmax-task-strip-tasks" className="goalmax-task-strip-criteria" aria-label="Task status">
-            {rows.map((row) => {
+          <ol id="goalmax-task-strip-tasks" className="goalmax-task-strip-criteria" aria-label="Task status">            {rows.map((row) => {
               const busy = mutatingId === row.id;
               const statusText = `${taskStatusLabel(row.status)}${row.required && row.status === 'done' ? (row.verified ? ' · verified' : ' · unverified') : ''}`;
               return (
@@ -159,10 +142,6 @@ function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
               );
             })}
           </ol>
-          <form className="goalmax-task-strip-add" aria-busy={adding} onSubmit={(event) => { event.preventDefault(); void addTask(); }}>
-            <input type="text" value={draft} onChange={(event) => { setDraft(event.target.value); setMutationError(null); }} onKeyDown={(event) => { if (event.key === 'Escape') { setDraft(''); setMutationError(null); } }} placeholder="Add a task…" aria-label="Add a task" maxLength={240} disabled={adding} />
-            <button type="submit" disabled={adding || !draft.trim()} aria-label={adding ? 'Adding task' : 'Add task'}>{adding ? <LoaderCircle className="tool-spinner" size={12} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}</button>
-          </form>
           {mutationError ? <p className="goalmax-task-strip-error" role="status">{mutationError}</p> : null}
         </>
       ) : null}

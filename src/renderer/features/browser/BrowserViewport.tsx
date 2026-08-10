@@ -73,8 +73,8 @@ export function BrowserViewport({ visible }: { visible: boolean }) {
         </div>
       ) : state.viewBlocked ? (
         <div className="browser-view-blocked" role="status">
-          <strong>Browser paused behind an app dialog</strong>
-          <span>Close the dialog to return. Agent control resumes automatically when it was active before.</span>
+          <strong>Browser hidden behind an app dialog</strong>
+          <span>Close the dialog to bring the page back. Agent control stays fully available.</span>
         </div>
       ) : null}
     </div>
