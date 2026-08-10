@@ -817,10 +817,12 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.mouse.move(1, 1);
 
     const sessionList = page.locator('.session-list');
-    // Folders start collapsed by default; expand the active folder if its session list isn't visible yet.
+    // Folders start collapsed; the active folder is expanded by toggling its
+    // chevron (chevron only toggles — it never triggers a project switch or
+    // runtime re-open, unlike the folder-open button).
     if (!await sessionList.isVisible().catch(() => false)) {
-      const activeFolderOpen = page.locator('.folder-group--active .folder-open');
-      if (await activeFolderOpen.count() > 0) await activeFolderOpen.first().click();
+      const activeChevron = page.locator('.folder-group--active .folder-chevron').first();
+      if (await activeChevron.count() > 0) await activeChevron.click();
     }
     const firstSessionRow = page.locator('.session-row').filter({ hasText: 'First session' });
     await expect(sessionList).toBeVisible();
