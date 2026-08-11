@@ -63,12 +63,19 @@ if (!packagedFiles.some((entry) => entry.endsWith('/node_modules/@earendil-works
 if (process.platform !== 'win32') accessSync(executable, constants.X_OK);
 
 const timeoutMs = Number(process.env.PACKAGED_SMOKE_TIMEOUT_MS ?? '120000');
-const child = spawn(executable, [], {
+// The Intel macOS hosted DMG runner can SIGBUS while Electron creates its GPU
+// context. Parakeet uses CPU there by design, so disable only this unrelated
+// renderer path for the opt-in native stream check; normal package smoke keeps GPU enabled.
+const applicationArguments = process.platform === 'darwin' && process.arch === 'x64' && process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1'
+  ? ['--disable-gpu']
+  : [];
+const child = spawn(executable, applicationArguments, {
   cwd: root,
-  env: { ...process.env, PI_DESKTOP_SMOKE: '1', PI_OFFLINE: '1' },
+  env: { ...process.env, FATE_NEW_INSTANCE: '1', PI_DESKTOP_SMOKE: '1', PI_OFFLINE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 const requiredMarkers = ['PI_DESKTOP_SPEECH_OK', 'PI_DESKTOP_YT_DLP_OK', 'PI_DESKTOP_THEMES_OK', 'PI_DESKTOP_TERMINAL_OK', 'PI_DESKTOP_SMOKE_OK'];
+if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1') requiredMarkers.push('PI_DESKTOP_PARAKEET_STREAM_OK');
 const seenMarkers = new Set();
 let output = '';
 let timedOut = false;
@@ -96,5 +103,8 @@ if (!seenMarkers.has('PI_DESKTOP_YT_DLP_OK')) throw new Error(`Packaged yt-dlp r
 if (!seenMarkers.has('PI_DESKTOP_THEMES_OK')) throw new Error(`Packaged Pi themes did not load (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
 if (!seenMarkers.has('PI_DESKTOP_TERMINAL_OK')) throw new Error(`Packaged manual terminal PTY did not start and exit cleanly (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
 if (!seenMarkers.has('PI_DESKTOP_SMOKE_OK')) throw new Error(`Packaged smoke marker was not observed (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
+if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1' && !seenMarkers.has('PI_DESKTOP_PARAKEET_STREAM_OK')) {
+  throw new Error(`Packaged Parakeet streaming smoke did not complete (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
+}
 if (exitCode !== 0 || exitSignal) throw new Error(`Packaged application exited unexpectedly (exit ${exitCode}, signal ${exitSignal ?? 'none'}).`);
 console.log('PI_DESKTOP_PACKAGED_SMOKE_OK');

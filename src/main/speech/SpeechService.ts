@@ -12,14 +12,6 @@ import { speechModels, type SpeechModelDefinition } from './speechModels';
 const MODEL_IDLE_TIMEOUT_MS = 5 * 60_000;
 const MAX_AUDIO_SAMPLES = 16_000 * 180;
 const CPU_THREADS = Math.max(1, Math.min(8, Math.ceil(os.availableParallelism() / 2)));
-/** Parakeet buffered-stream context window (left, chunk, right) in ms.
- *  transcribe.cpp requires every field to be a positive multiple of the 80 ms
- *  encoder frame AND the resolved (L, C, R) tuple to be one of the model's
- *  training-menu configurations; anything else makes transcribe_stream_begin
- *  return TRANSCRIBE_ERR_INVALID_ARG. (70, 2, 2) = 5.6 s / 160 ms / 160 ms =
- *  320 ms lookahead: the closest valid tuple to the original 300 ms intent,
- *  with ~1.64% streaming WER (vs 1.44% at the 2.08 s default). */
-const PARAKEET_BUFFERED_WINDOW_MS = { leftMs: 5_600, chunkMs: 160, rightMs: 160 } as const;
 const MAX_STREAM_CHUNK_BYTES = 16_000 * 4 * 2;
 const LEGACY_MODEL_FILES = [
   'parakeet-tdt_ctc-110m-Q5_K_M.gguf',
@@ -43,6 +35,12 @@ export class SpeechService {
   private eventSink: ((progress: SpeechDownloadProgress) => void) | null = null;
   private streamSink: ((update: SpeechStreamUpdate) => void) | null = null;
   private activeStream: { definition: SpeechModelDefinition; session: SpeechSession; stream: SpeechStream; settled: Promise<void>; resolveSettled: () => void } | null = null;
+  /** Serializes live-stream operations (feed/read/finalize). transcribe.cpp runs
+   *  each feed()/finalize() on a worker thread and rejects text reads while one
+   *  is in flight, and the renderer can dispatch several feed IPC calls before
+   *  the first one settles — so every feed→read pair (and finalize→read) must
+   *  run atomically, one after another. */
+  private streamOps: Promise<void> = Promise.resolve();
   private modulePromise: Promise<TranscribeModule> | null = null;
   private backendProbe: Promise<Pick<SpeechStatus, 'backend' | 'accelerated'>> | null = null;
   private legacyCleanup: Promise<void> | null = null;
@@ -183,7 +181,11 @@ export class SpeechService {
         language: language && language !== 'auto' ? language : 'en',
         timestamps: 'none',
         commitPolicy: 'stable_prefix',
-        family: { kind: 'parakeet_buffered', ...PARAKEET_BUFFERED_WINDOW_MS },
+        // Let transcribe.cpp select Parakeet's trained default stream menu.
+        // The old 5.6 s / 160 ms override decoded every tiny audio chunk, which
+        // falls behind real time on CPU. The native default batches audio at a
+        // stable cadence and is also the higher-accuracy configuration.
+        family: { kind: 'parakeet_buffered' },
       });
     } catch (error) {
       session.dispose();
@@ -205,10 +207,13 @@ export class SpeechService {
     const active = this.activeStream;
     if (!active) throw new Error('No live transcription is running.');
     const pcm = new Float32Array(audio.slice(0));
-    await active.stream.feed(pcm);
-    if (this.activeStream !== active) return; // cancelled while the feed was in flight
-    const { committed, tentative } = active.stream.text;
-    this.emitStream({ state: 'active', committed, tentative });
+    await this.enqueueStreamOp(async () => {
+      if (this.activeStream !== active) return; // cancelled/stopped while queued
+      await active.stream.feed(pcm);
+      if (this.activeStream !== active) return; // cancelled while the feed was in flight
+      const { committed, tentative } = active.stream.text;
+      this.emitStream({ state: 'active', committed, tentative });
+    });
   }
 
   /** Flush remaining audio, commit the final text, and release the stream. */
@@ -216,12 +221,15 @@ export class SpeechService {
     const active = this.activeStream;
     if (!active) throw new Error('No live transcription is running.');
     try {
-      await active.stream.finalize();
-      if (this.activeStream === active) {
-        const { committed } = active.stream.text;
-        this.logs.write('info', 'speech', `${active.definition.model} live transcription finalized.`);
-        this.emitStream({ state: 'final', committed, tentative: '' });
-      }
+      await this.enqueueStreamOp(async () => {
+        if (this.activeStream !== active) return; // cancelled while queued
+        await active.stream.finalize();
+        if (this.activeStream === active) {
+          const { committed } = active.stream.text;
+          this.logs.write('info', 'speech', `${active.definition.model} live transcription finalized.`);
+          this.emitStream({ state: 'final', committed, tentative: '' });
+        }
+      });
     } catch (error) {
       this.emitStream({ state: 'error', committed: '', tentative: '', error: this.message(error) });
       throw error;
@@ -243,6 +251,14 @@ export class SpeechService {
     try { active.session.dispose(); } catch { /* teardown is best-effort */ }
     if (this.loaded?.id === active.definition.id) this.scheduleUnload();
     active.resolveSettled();
+  }
+
+  /** Queue one atomic live-stream operation behind all earlier ones. Errors from
+   *  an operation reject its own promise but never block later operations. */
+  private enqueueStreamOp<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.streamOps.then(op, op);
+    this.streamOps = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   private emitStream(update: SpeechStreamUpdate): void {

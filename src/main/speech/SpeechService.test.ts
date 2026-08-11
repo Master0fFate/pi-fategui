@@ -247,10 +247,10 @@ describe('SpeechService live streaming', () => {
     service.setStreamSink((update) => updates.push({ state: update.state, committed: update.committed }));
 
     await service.streamStart('balanced', 'en');
-    // BUG regression: the buffered-stream window must be a valid (left, chunk,
-    // right) menu tuple — multiples of the 80 ms encoder frame. The old 300 ms
-    // chunk made transcribe_stream_begin return TRANSCRIBE_ERR_INVALID_ARG.
-    expect(session.stream).toHaveBeenCalledWith(expect.objectContaining({ commitPolicy: 'stable_prefix', family: expect.objectContaining({ kind: 'parakeet_buffered', leftMs: 5_600, chunkMs: 160, rightMs: 160 }) }));
+    // Performance regression: use transcribe.cpp's trained Parakeet defaults.
+    // The old 5.6 s / 160 ms override forced frequent CPU decode calls, which
+    // fell behind live audio after only a few words.
+    expect(session.stream).toHaveBeenCalledWith(expect.objectContaining({ commitPolicy: 'stable_prefix', family: { kind: 'parakeet_buffered' } }));
     expect(updates.at(-1)).toMatchObject({ state: 'active' });
 
     await service.streamFeed(new Float32Array([0, 0, 0, 0]).buffer);
@@ -272,6 +272,66 @@ describe('SpeechService live streaming', () => {
       TranscribeModel: { load: vi.fn() },
     } as unknown as typeof import('transcribe-cpp')));
     await expect(service.streamStart('mini', 'en')).rejects.toThrow('streaming');
+    await service.dispose();
+  });
+
+  it('serializes concurrent feeds so a text read never overlaps an in-flight feed', async () => {
+    await installTestModel();
+    await writeFile(path.join(directory, 'balanced.gguf'), bytes);
+    await writeFile(path.join(directory, 'balanced.gguf.verified'), `${checksum}\n`);
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'balanced', fileName: 'balanced.gguf', streaming: true };
+    const definitions: readonly SpeechModelDefinition[] = [streamingModel];
+
+    // Model the transcribe.cpp stream contract: a feed()/finalize() computes on
+    // a worker thread and text reads are rejected while one is in flight. The
+    // renderer dispatches one feed per worklet message without waiting, so a
+    // naive implementation lets two feeds overlap and the second read throws.
+    let feeding = 0;
+    const stream = {
+      feed: vi.fn(async (_pcm: Float32Array) => {
+        feeding += 1;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        feeding -= 1;
+        return { resultChanged: true, isFinal: false, revision: 1, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false };
+      }),
+      finalize: vi.fn(async () => ({ resultChanged: true, isFinal: true, revision: 2, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false })),
+      get text() {
+        if (feeding > 0) throw new Error('cannot read stream text while a feed()/finalize() is in flight; await it first');
+        return { committed: 'hello world', tentative: '' };
+      },
+      reset: vi.fn(),
+    };
+    const session = { stream: vi.fn(async () => stream), dispose: vi.fn() };
+    const loaded = {
+      backend: 'cpu',
+      device: { name: 'CPU', description: 'CPU', deviceType: 'cpu' },
+      createSession: vi.fn(() => session),
+      dispose: vi.fn(),
+    };
+    const runtime = {
+      getAvailableBackends: vi.fn(() => [{ name: 'CPU', description: 'CPU', kind: 'cpu', deviceType: 'cpu' }]),
+      TranscribeModel: { load: vi.fn(async () => loaded) },
+    } as unknown as typeof import('transcribe-cpp');
+
+    const updates: { state: string; committed: string }[] = [];
+    const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime);
+    service.setStreamSink((update) => updates.push({ state: update.state, committed: update.committed }));
+
+    await service.streamStart('balanced', 'en');
+    const chunk = new Float32Array([0, 0, 0, 0]).buffer;
+    const feeds = [
+      service.streamFeed(chunk),
+      service.streamFeed(chunk),
+      service.streamFeed(chunk),
+    ];
+    // Stop may arrive before renderer IPC responses for the last chunks. It
+    // must queue behind those feeds rather than finalize early or race a read.
+    const stopping = service.streamStop();
+    await expect(Promise.all([...feeds, stopping])).resolves.toHaveLength(4);
+    expect(stream.feed).toHaveBeenCalledTimes(3);
+    expect(updates.filter((update) => update.state === 'active' && update.committed === 'hello world')).toHaveLength(3);
+    expect(stream.finalize).toHaveBeenCalledOnce();
+    expect(updates.at(-1)).toMatchObject({ state: 'final' });
     await service.dispose();
   });
 });
