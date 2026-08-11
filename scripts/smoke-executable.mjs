@@ -9,13 +9,19 @@ if (!executableArgument) {
 
 const executable = path.resolve(executableArgument);
 accessSync(executable, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
+// See smoke-packaged.mjs: this affects only the opt-in Parakeet test on the
+// flaky Intel macOS hosted DMG renderer, not normal packaged-app checks.
+const smokeArguments = process.platform === 'darwin' && process.arch === 'x64' && process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1'
+  ? ['--disable-gpu', ...applicationArguments]
+  : applicationArguments;
 
-const child = spawn(executable, applicationArguments, {
+const child = spawn(executable, smokeArguments, {
   cwd: path.resolve(import.meta.dirname, '..'),
-  env: { ...process.env, PI_DESKTOP_SMOKE: '1', PI_OFFLINE: '1' },
+  env: { ...process.env, FATE_NEW_INSTANCE: '1', PI_DESKTOP_SMOKE: '1', PI_OFFLINE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 const requiredMarkers = ['PI_DESKTOP_SPEECH_OK', 'PI_DESKTOP_YT_DLP_OK', 'PI_DESKTOP_THEMES_OK', 'PI_DESKTOP_TERMINAL_OK', 'PI_DESKTOP_SMOKE_OK'];
+if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1') requiredMarkers.push('PI_DESKTOP_PARAKEET_STREAM_OK');
 const seenMarkers = new Set();
 let output = '';
 const capture = (chunk) => {
@@ -32,7 +38,8 @@ child.stderr.on('data', (chunk) => {
   process.stderr.write(chunk);
 });
 
-const timeout = setTimeout(() => child.kill('SIGKILL'), 45_000);
+const timeoutMs = Number(process.env.INSTALLED_SMOKE_TIMEOUT_MS ?? '45000');
+const timeout = setTimeout(() => child.kill('SIGKILL'), Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 45_000);
 const result = await new Promise((resolve, reject) => {
   child.once('error', reject);
   child.once('exit', (code, signal) => resolve({ code, signal }));

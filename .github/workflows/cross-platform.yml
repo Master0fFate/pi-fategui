@@ -15,6 +15,11 @@ on:
         description: Existing version tag to publish when promoting a verified run
         required: false
         type: string
+      parakeet_stream_smoke:
+        description: Download Parakeet Unified EN 0.6B and run the native streaming smoke on every platform
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -52,6 +57,9 @@ jobs:
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       NODE_OPTIONS: --max-old-space-size=4096
+      PI_DESKTOP_SPEECH_STREAM_SMOKE: ${{ github.event_name == 'workflow_dispatch' && inputs.parakeet_stream_smoke && '1' || '0' }}
+      PACKAGED_SMOKE_TIMEOUT_MS: ${{ github.event_name == 'workflow_dispatch' && inputs.parakeet_stream_smoke && '600000' || '120000' }}
+      INSTALLED_SMOKE_TIMEOUT_MS: ${{ github.event_name == 'workflow_dispatch' && inputs.parakeet_stream_smoke && '180000' || '45000' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -63,6 +71,9 @@ jobs:
         with:
           node-version: 22.19.0
           cache: pnpm
+      - name: Configure isolated speech data directory
+        shell: bash
+        run: echo "FATE_GUI_DATA_DIR=$RUNNER_TEMP/fate-ui-speech" >> "$GITHUB_ENV"
       - name: Assert native runner architecture
         shell: bash
         run: node -e "if (process.platform !== '${{ matrix.platform }}' || process.arch !== '${{ matrix.arch }}') throw new Error('Expected ${{ matrix.platform }}/${{ matrix.arch }}, received ' + process.platform + '/' + process.arch)"

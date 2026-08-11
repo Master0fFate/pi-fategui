@@ -43,6 +43,12 @@ export class SpeechService {
   private eventSink: ((progress: SpeechDownloadProgress) => void) | null = null;
   private streamSink: ((update: SpeechStreamUpdate) => void) | null = null;
   private activeStream: { definition: SpeechModelDefinition; session: SpeechSession; stream: SpeechStream; settled: Promise<void>; resolveSettled: () => void } | null = null;
+  /** Serializes live-stream operations (feed/read/finalize). transcribe.cpp runs
+   *  each feed()/finalize() on a worker thread and rejects text reads while one
+   *  is in flight, and the renderer can dispatch several feed IPC calls before
+   *  the first one settles — so every feed→read pair (and finalize→read) must
+   *  run atomically, one after another. */
+  private streamOps: Promise<void> = Promise.resolve();
   private modulePromise: Promise<TranscribeModule> | null = null;
   private backendProbe: Promise<Pick<SpeechStatus, 'backend' | 'accelerated'>> | null = null;
   private legacyCleanup: Promise<void> | null = null;
@@ -205,10 +211,13 @@ export class SpeechService {
     const active = this.activeStream;
     if (!active) throw new Error('No live transcription is running.');
     const pcm = new Float32Array(audio.slice(0));
-    await active.stream.feed(pcm);
-    if (this.activeStream !== active) return; // cancelled while the feed was in flight
-    const { committed, tentative } = active.stream.text;
-    this.emitStream({ state: 'active', committed, tentative });
+    await this.enqueueStreamOp(async () => {
+      if (this.activeStream !== active) return; // cancelled/stopped while queued
+      await active.stream.feed(pcm);
+      if (this.activeStream !== active) return; // cancelled while the feed was in flight
+      const { committed, tentative } = active.stream.text;
+      this.emitStream({ state: 'active', committed, tentative });
+    });
   }
 
   /** Flush remaining audio, commit the final text, and release the stream. */
@@ -216,12 +225,15 @@ export class SpeechService {
     const active = this.activeStream;
     if (!active) throw new Error('No live transcription is running.');
     try {
-      await active.stream.finalize();
-      if (this.activeStream === active) {
-        const { committed } = active.stream.text;
-        this.logs.write('info', 'speech', `${active.definition.model} live transcription finalized.`);
-        this.emitStream({ state: 'final', committed, tentative: '' });
-      }
+      await this.enqueueStreamOp(async () => {
+        if (this.activeStream !== active) return; // cancelled while queued
+        await active.stream.finalize();
+        if (this.activeStream === active) {
+          const { committed } = active.stream.text;
+          this.logs.write('info', 'speech', `${active.definition.model} live transcription finalized.`);
+          this.emitStream({ state: 'final', committed, tentative: '' });
+        }
+      });
     } catch (error) {
       this.emitStream({ state: 'error', committed: '', tentative: '', error: this.message(error) });
       throw error;
@@ -243,6 +255,14 @@ export class SpeechService {
     try { active.session.dispose(); } catch { /* teardown is best-effort */ }
     if (this.loaded?.id === active.definition.id) this.scheduleUnload();
     active.resolveSettled();
+  }
+
+  /** Queue one atomic live-stream operation behind all earlier ones. Errors from
+   *  an operation reject its own promise but never block later operations. */
+  private enqueueStreamOp<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.streamOps.then(op, op);
+    this.streamOps = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   private emitStream(update: SpeechStreamUpdate): void {

@@ -52,6 +52,22 @@ function configurePackagedSpeechLibrary(): void {
   if (library) process.env.TRANSCRIBE_LIBRARY = library;
 }
 
+/** Opt-in packaged-runtime check for native Parakeet streaming. Six seconds of
+ *  silence are sufficient to exercise the buffered window, worker-thread feed
+ *  queue, finalize path, and CPU fallback without a microphone or Max model. */
+async function smokeParakeetStream(): Promise<void> {
+  await speech.download('balanced');
+  await speech.streamStart('balanced', 'en');
+  try {
+    const feeds = Array.from({ length: 38 }, () => speech.streamFeed(new Float32Array(16_000 * 0.16).buffer));
+    const stopping = speech.streamStop();
+    await Promise.all([...feeds, stopping]);
+  } catch (error) {
+    await speech.streamCancel().catch(() => undefined);
+    throw error;
+  }
+}
+
 let initialProjectPath: string | null = null;
 let initialLaunchError: unknown = null;
 try {
@@ -375,10 +391,14 @@ function createWindow(): BrowserWindow {
 
   if (process.env.PI_DESKTOP_SMOKE === '1') {
     window.webContents.once('did-finish-load', () => {
-      void Promise.all([speech.getStatus(), music.getStatus(), settings.loadThemes(), smokeTerminalRuntime(process.cwd())]).then(([speechStatus, musicStatus, themes, terminalShell]) => {
+      void Promise.all([speech.getStatus(), music.getStatus(), settings.loadThemes(), smokeTerminalRuntime(process.cwd())]).then(async ([speechStatus, musicStatus, themes, terminalShell]) => {
         if (!musicStatus.available) throw new Error(musicStatus.message ?? 'Bundled yt-dlp is unavailable.');
         if (!themes.some((theme) => theme.name === 'Pi · dark') || !themes.some((theme) => theme.name === 'Pi · light')) {
           throw new Error('Bundled Pi themes are unavailable.');
+        }
+        if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1') {
+          await smokeParakeetStream();
+          console.log('PI_DESKTOP_PARAKEET_STREAM_OK');
         }
         console.log(`PI_DESKTOP_SPEECH_OK ${speechStatus.backend}`);
         console.log(`PI_DESKTOP_YT_DLP_OK ${musicStatus.version}`);
