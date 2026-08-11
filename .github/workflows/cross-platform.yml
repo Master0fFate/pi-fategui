@@ -61,13 +61,13 @@ jobs:
       PACKAGED_SMOKE_TIMEOUT_MS: ${{ github.event_name == 'workflow_dispatch' && inputs.parakeet_stream_smoke && '600000' || '120000' }}
       INSTALLED_SMOKE_TIMEOUT_MS: ${{ github.event_name == 'workflow_dispatch' && inputs.parakeet_stream_smoke && '180000' || '45000' }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11.17.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.19.0
           cache: pnpm
@@ -97,7 +97,7 @@ jobs:
         run: xvfb-run -a pnpm verify
       - name: Upload Playwright diagnostics
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fate-ui-${{ matrix.platform }}-${{ matrix.arch }}-test-results
           path: test-results/
@@ -109,7 +109,7 @@ jobs:
         run: bash scripts/ci-package.sh
       - name: Upload package debug logs
         if: failure() && runner.os != 'Linux'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fate-ui-${{ matrix.platform }}-${{ matrix.arch }}-package-logs
           path: release-package-attempt-*.log
@@ -280,7 +280,7 @@ jobs:
           test "$(cat '/opt/Fate UI/resources/PRODVER')" = "$version"
           test -x /usr/bin/fate
           xvfb-run -a node scripts/smoke-executable.mjs /usr/bin/fate "$GITHUB_WORKSPACE"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fate-ui-${{ matrix.platform }}-${{ matrix.arch }}
           path: artifacts/
@@ -296,7 +296,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -309,7 +309,7 @@ jobs:
           test -s ".github/release-notes/$GITHUB_REF_NAME.md"
       - name: Prepare artifact directory
         run: rm -rf artifacts && mkdir artifacts
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: fate-ui-*
           path: artifacts
@@ -366,7 +366,7 @@ jobs:
       PROMOTE_RUN_ID: ${{ inputs.promote_run_id }}
       PROMOTE_TAG: ${{ inputs.promote_tag }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -390,7 +390,7 @@ jobs:
           test -s ".github/release-notes/$PROMOTE_TAG.md"
       - name: Prepare artifact directory
         run: rm -rf artifacts && mkdir artifacts
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: fate-ui-*
           path: artifacts
