@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
-import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, FileText, FolderOpen, GitFork, Globe2, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Search, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
+import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, FileText, FolderOpen, GitFork, Globe2, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
 import { type ChangeEvent, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { BrowserAnnotation, FileEntry, PromptInput, QueueMutationInput, SpeechStreamUpdate } from '../../../shared/contracts/ipc';
@@ -206,7 +206,6 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const [forking, setForking] = useState(false);
   const [forkNotice, setForkNotice] = useState<string | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [modelSearch, setModelSearch] = useState('');
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [utilityMenuOpen, setUtilityMenuOpen] = useState(false);
   const [confirmFullAccess, setConfirmFullAccess] = useState(false);
@@ -334,19 +333,15 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const nextModelName = nextModel?.name ?? 'No model';
   const modelLabel = compactModelName(nextModelName);
   const modelTooltip = `Current: ${currentModelName}\nNext: ${nextModelName}`;
-  const modelSearchQuery = modelSearch.trim().toLowerCase();
   const modelOptions = useMemo(() => {
     if (!nextModel) return [{ value: '', label: 'Not connected' }];
-    const matches = modelSearchQuery
-      ? runtime.models.filter((model) =>
-          model.name.toLowerCase().includes(modelSearchQuery) ||
-          model.provider.toLowerCase().includes(modelSearchQuery) ||
-          model.id.toLowerCase().includes(modelSearchQuery))
-      : [...runtime.models];
+    const options = runtime.models.map((model) => ({ value: `${model.provider}/${model.id}`, label: model.name, detail: model.provider }));
     const selectedKey = `${nextModel.provider}/${nextModel.id}`;
-    if (!matches.some((model) => `${model.provider}/${model.id}` === selectedKey)) matches.unshift(nextModel);
-    return matches.map((model) => ({ value: `${model.provider}/${model.id}`, label: model.name, detail: model.provider }));
-  }, [runtime.models, modelSearchQuery, nextModel]);
+    if (!options.some((option) => option.value === selectedKey)) {
+      options.unshift({ value: selectedKey, label: nextModel.name, detail: nextModel.provider });
+    }
+    return options;
+  }, [runtime.models, nextModel]);
   const voiceDownloadProgress = speechDownload?.modelId === speech.modelId
     ? speechDownload.state === 'verifying' ? 100 : Math.min(100, Math.round(speechDownload.downloadedBytes / speechDownload.totalBytes * 100))
     : 0;
@@ -2128,10 +2123,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
               <div className="composer-model-context">
                 <Popover.Root
                   open={modelMenuOpen}
-                  onOpenChange={(nextOpen) => {
-                    setModelMenuOpen(nextOpen);
-                    if (!nextOpen) setModelSearch('');
-                  }}
+                  onOpenChange={setModelMenuOpen}
                 >
                   <AppTooltip content={modelTooltip}>
                     <Popover.Trigger asChild>
@@ -2161,6 +2153,10 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                           value={nextModel ? `${nextModel.provider}/${nextModel.id}` : ''}
                           options={modelOptions}
                           contentClassName="model-select-content"
+                          side="top"
+                          searchable
+                          searchPlaceholder="Filter by name or provider"
+                          searchLabel="Filter models by name or provider"
                           onValueChange={(value) => void changeModel(value)}
                         />
                       </div>
@@ -2175,29 +2171,6 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                           onValueChange={(value) => void changeThinking(value as typeof thinkingLevels[number])}
                         />
                       </div>
-                      <label className="model-search">
-                        <Search size={12} aria-hidden="true" />
-                        <input
-                          type="text"
-                          value={modelSearch}
-                          onChange={(event) => setModelSearch(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Escape' && modelSearch) {
-                              event.stopPropagation();
-                              setModelSearch('');
-                            }
-                          }}
-                          placeholder="Search models"
-                          aria-label="Search models"
-                          spellCheck={false}
-                          disabled={!connected}
-                        />
-                        {modelSearch && (
-                          <button type="button" aria-label="Clear model search" onClick={() => setModelSearch('')}>
-                            <X size={11} aria-hidden="true" />
-                          </button>
-                        )}
-                      </label>
                     </Popover.Content>
                   </Popover.Portal>
                 </Popover.Root>
