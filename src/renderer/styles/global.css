@@ -601,14 +601,14 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .extension-status-popover dd { max-height: 7.2em; margin: 0; overflow: auto; font: 9px/1.45 var(--font-interface); overflow-wrap: anywhere; white-space: pre-wrap; }
 .extension-status-popover-arrow { fill: var(--theme-border-strong); }
 .composer-toolbar { display: flex; min-width: 0; margin-top: auto; align-items: center; justify-content: space-between; gap: 10px; position: relative; }
-.composer-voice-meter { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; align-items: flex-end; gap: 3px; height: 18px; pointer-events: none; z-index: 1; }
-.composer-voice-meter i { width: 3px; height: 100%; border-radius: 2px; background: var(--theme-accent, #89b4fa); opacity: .9; transform-origin: center bottom; animation: composer-voice-meter-pulse 1s ease-in-out infinite; }
+.composer-voice-meter { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 3px; height: 18px; pointer-events: none; z-index: 1; }
+.composer-voice-meter i { width: 3px; height: 100%; border-radius: 2px; background: var(--theme-accent, #89b4fa); opacity: .9; transform-origin: center; animation: composer-voice-meter-pulse 1s ease-in-out infinite; }
 .composer-voice-meter i:nth-child(2) { animation-duration: .82s; animation-delay: -.30s; }
 .composer-voice-meter i:nth-child(3) { animation-duration: 1.18s; animation-delay: -.60s; }
 .composer-voice-meter i:nth-child(4) { animation-duration: .92s; animation-delay: -.15s; }
 .composer-voice-meter i:nth-child(5) { animation-duration: 1.08s; animation-delay: -.45s; }
 .composer-voice-meter[data-live] i { background: var(--theme-accent, #89b4fa); }
-@keyframes composer-voice-meter-pulse { 0%, 100% { transform: scaleY(.22); } 38% { transform: scaleY(1); } 70% { transform: scaleY(.5); } }
+@keyframes composer-voice-meter-pulse { 0%, 100% { transform: scaleY(.22); } 34% { transform: scaleY(.72); } 52% { transform: scaleY(1); } 72% { transform: scaleY(.42); } }
 @media (prefers-reduced-motion: reduce) { .composer-voice-meter i { animation-duration: 1.6s; } }
 .composer-toolbar-leading, .composer-toolbar-trailing { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .composer-toolbar-leading { flex: 0 1 auto; }
