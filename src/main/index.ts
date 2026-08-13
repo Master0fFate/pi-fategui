@@ -416,7 +416,8 @@ function createWindow(options: { initial?: boolean } = {}): BrowserWindow {
     window.webContents.once('did-finish-load', () => {
       void Promise.all([speech.getStatus(), music.getStatus(), settings.loadThemes(), smokeTerminalRuntime(process.cwd())]).then(async ([speechStatus, musicStatus, themes, terminalShell]) => {
         if (!musicStatus.available) throw new Error(musicStatus.message ?? 'Bundled yt-dlp is unavailable.');
-        if (!themes.some((theme) => theme.name === 'Pi · Dark Standard') || !themes.some((theme) => theme.name === 'Pi · Light Standard')) {
+        const piThemes = themes.filter((theme) => theme.name.startsWith('Pi · '));
+        if (!piThemes.some((theme) => theme.tone === 'dark') || !piThemes.some((theme) => theme.tone === 'light')) {
           throw new Error('Standard Pi themes are unavailable.');
         }
         if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1') {
