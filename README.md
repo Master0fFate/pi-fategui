@@ -28,7 +28,7 @@ Run Pi in a focused graphical workspace for durable conversations, transparent a
 
 ## Themes
 
-Fate UI ships with seven built-in themes across dark and light tones — Midnight, Daylight, Graphite, Forest, Ember, and the Catppuccin Mocha/Latte pair — and maps any Pi-compatible theme into the same palette. Pick one under **Settings → Interface → Theme**.
+Fate UI ships with built-in themes across dark and light tones — and maps any Pi-compatible theme into the same palette. Pick one under **Settings → Interface → Theme**.
 
 ### Create your own theme
 
