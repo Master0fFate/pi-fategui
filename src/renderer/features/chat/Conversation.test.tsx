@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GoalMaxState } from '../../../shared/contracts/goalmaxxing';
 import type { BrowserAnnotation, PiDesktopApi, RuntimeState, SubagentRun } from '../../../shared/contracts/ipc';
+import { serializeSessionReference, SESSION_REFERENCE_TRANSFER_TYPE } from '../../../shared/sessionReferences';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
@@ -734,6 +735,60 @@ describe('conversation components', () => {
     await waitFor(() => expect(input).toHaveValue(''));
   });
 
+  it('attaches a dropped saved session as bounded prompt context and allows removal', async () => {
+    const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt } as unknown as PiDesktopApi });
+    useRuntimeStore.getState().setRuntime(ready({
+      sessions: [
+        { id: 's1', title: 'Current work', firstMessage: 'Current prompt', path: '/sessions/current.jsonl', createdAt: '2026-01-01T00:00:00.000Z', modifiedAt: '2026-01-01T00:00:01.000Z', messageCount: 2, active: true },
+        { id: 'saved-1', title: 'Authentication review', firstMessage: 'Review login flow', path: '/sessions/saved-1.jsonl', createdAt: '2026-01-01T00:00:00.000Z', modifiedAt: '2026-01-01T00:02:00.000Z', messageCount: 4, active: false },
+      ],
+    }));
+    render(<Composer onOpenProject={vi.fn()} />);
+    const form = document.querySelector('form.composer')!;
+    const transfer = {
+      getData: (type: string) => type === SESSION_REFERENCE_TRANSFER_TYPE
+        ? serializeSessionReference({ id: 'saved-1', title: 'Authentication review', projectPath: '/trusted-project' })
+        : '',
+    };
+    fireEvent.drop(form, { dataTransfer: transfer });
+
+    expect(screen.getByLabelText('Attached session references')).toHaveTextContent('Authentication review');
+    await userEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(prompt).toHaveBeenCalledWith({
+      text: 'Review the attached session reference.',
+      behavior: 'prompt',
+      sessionReferences: [{ id: 'saved-1', title: 'Authentication review', projectPath: '/trusted-project' }],
+    }));
+
+    fireEvent.drop(form, { dataTransfer: transfer });
+    expect(screen.getByRole('button', { name: 'Remove session reference: Authentication review' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Remove session reference: Authentication review' }));
+    expect(screen.queryByLabelText('Attached session references')).not.toBeInTheDocument();
+  });
+
+  it('keeps session-reference chips with their unfinished session draft', () => {
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {} as PiDesktopApi });
+    const sessions = [
+      { id: 's1', title: 'Current work', firstMessage: 'Current prompt', path: '/sessions/current.jsonl', createdAt: '2026-01-01T00:00:00.000Z', modifiedAt: '2026-01-01T00:00:01.000Z', messageCount: 2, active: true },
+      { id: 'saved-1', title: 'Authentication review', firstMessage: 'Review login flow', path: '/sessions/saved-1.jsonl', createdAt: '2026-01-01T00:00:00.000Z', modifiedAt: '2026-01-01T00:02:00.000Z', messageCount: 4, active: false },
+    ];
+    useRuntimeStore.getState().setRuntime(ready({ sessions }));
+    render(<Composer onOpenProject={vi.fn()} />);
+    const transfer = {
+      getData: (type: string) => type === SESSION_REFERENCE_TRANSFER_TYPE
+        ? serializeSessionReference({ id: 'saved-1', title: 'Authentication review', projectPath: '/project' })
+        : '',
+    };
+    fireEvent.drop(document.querySelector('form.composer')!, { dataTransfer: transfer });
+    expect(screen.getByLabelText('Attached session references')).toBeInTheDocument();
+
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's2', sessions: sessions.map((session) => ({ ...session, active: false })) })));
+    expect(screen.queryByLabelText('Attached session references')).not.toBeInTheDocument();
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessions })));
+    expect(screen.getByLabelText('Attached session references')).toHaveTextContent('Authentication review');
+  });
+
   it('autocompletes stable agent handles and executes only exact stop syntax directly', async () => {
     const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
     const controlSubagent = vi.fn(async () => ready({ subagents: [{ ...childRun, status: 'cancelled', endedAt: 3 }] }));
@@ -761,13 +816,13 @@ describe('conversation components', () => {
     act(() => deferredFrames.splice(0).forEach((callback) => callback(0)));
     await user.type(input, 'ummarize your findings');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    await waitFor(() => expect(prompt).toHaveBeenCalledWith({ text: '@auth-reviewer-1 summarize your findings', behavior: 'prompt' }));
-    expect(controlSubagent).not.toHaveBeenCalled();
+    await waitFor(() => expect(controlSubagent).toHaveBeenCalledWith({ action: 'steer', target: '@auth-reviewer-1', message: '@auth-reviewer-1 summarize your findings' }));
+    expect(prompt).not.toHaveBeenCalled();
 
     await user.type(input, '@stop @auth-reviewer-1');
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(controlSubagent).toHaveBeenCalledWith({ action: 'cancel', target: '@auth-reviewer-1' }));
-    expect(prompt).toHaveBeenCalledOnce();
+    expect(prompt).not.toHaveBeenCalled();
     expect(input).toHaveValue('');
   });
 

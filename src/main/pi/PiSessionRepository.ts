@@ -1,9 +1,11 @@
-import { rm } from 'node:fs/promises';
+import { lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   getAgentDir,
   SessionManager,
   type AgentSession,
+  type FileEntry,
+  type SessionEntry,
   type SessionInfo,
   type SessionTreeNode,
 } from '@earendil-works/pi-coding-agent';
@@ -61,6 +63,78 @@ const MAX_SESSION_SEARCH_TEXT = 64_000;
 const MAX_SESSION_SEARCH_CACHE_CHARACTERS = 20_000_000;
 const SESSION_CACHE_TTL_MS = 2_000;
 const MAX_PROJECT_CACHE_ENTRIES = 4;
+const SESSION_BRANCH_REWRITE_RETRIES = 2;
+const sessionEntryTypes = new Set(['message', 'thinking_level_change', 'model_change', 'compaction', 'branch_summary', 'custom', 'custom_message', 'label', 'session_info']);
+
+function isSessionEntry(value: FileEntry): value is SessionEntry {
+  return value.type !== 'session';
+}
+
+function isValidSessionEntry(value: FileEntry): value is SessionEntry {
+  return isSessionEntry(value)
+    && sessionEntryTypes.has(value.type)
+    && typeof value.id === 'string'
+    && value.id.length > 0
+    && (typeof value.parentId === 'string' || value.parentId === null);
+}
+
+function isDescendantEntry(entryId: string, ancestorId: string, byId: ReadonlyMap<string, SessionEntry>): boolean {
+  let current = byId.get(entryId);
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    if (current.id === ancestorId) return true;
+    seen.add(current.id);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return false;
+}
+
+function parseEntriesForBranchRewrite(source: string): FileEntry[] {
+  const entries: FileEntry[] = [];
+  for (const line of source.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || typeof (parsed as { type?: unknown }).type !== 'string') {
+        throw new Error('invalid entry');
+      }
+      entries.push(parsed as FileEntry);
+    } catch {
+      throw new Error('The saved session is malformed and cannot be safely rewritten.');
+    }
+  }
+  return entries;
+}
+
+function referencedRemovedEntry(entry: SessionEntry, removedIds: ReadonlySet<string>): boolean {
+  if (entry.type === 'label') return removedIds.has(entry.targetId);
+  if (entry.type === 'compaction') return removedIds.has(entry.firstKeptEntryId);
+  if (entry.type === 'branch_summary') return removedIds.has(entry.fromId);
+  return false;
+}
+
+function serializeEntries(entries: readonly FileEntry[]): string {
+  return entries.map((entry) => JSON.stringify(entry)).join('\n').concat(entries.length ? '\n' : '');
+}
+
+async function replaceFileAtomically(temporaryPath: string, destinationPath: string): Promise<void> {
+  try {
+    await rename(temporaryPath, destinationPath);
+    return;
+  } catch (initialError) {
+    const code = (initialError as { code?: unknown }).code;
+    if (code !== 'EPERM' && code !== 'EEXIST' && code !== 'ENOTEMPTY') throw initialError;
+    const backupPath = `${destinationPath}.${process.pid}.${Date.now()}.branch-delete.backup`;
+    await rename(destinationPath, backupPath);
+    try {
+      await rename(temporaryPath, destinationPath);
+    } catch (replacementError) {
+      await rename(backupPath, destinationPath).catch(() => undefined);
+      throw replacementError;
+    }
+    await rm(backupPath, { force: true }).catch(() => undefined);
+  }
+}
 
 function clipTitle(value: string, characterLimit: number, serializedLimit: number): { text: string; truncated: boolean } {
   let text = '';
@@ -233,6 +307,67 @@ export class PiSessionRepository {
     this.assertSafeSessionPaths([session.path]);
     await this.source.remove(session.path);
     this.invalidate(cwd);
+  }
+
+  /**
+   * Rewrites one persisted session file after removing an inactive branch: its
+   * leaf, its descendants, and the ancestors that are not shared with the
+   * active path. The active branch stays intact. This function only accepts a
+   * direct listed session child and validates every JSONL entry before write.
+   */
+  async deleteBranch(cwd: string, sessionId: string, branchId: string, activeLeafId: string | null): Promise<void> {
+    const session = await this.resolve(cwd, sessionId);
+    if (!session) throw new Error('The selected session no longer exists.');
+    const resolvedPath = this.assertSafeSessionPaths([session.path])[0];
+    if (!resolvedPath) throw new Error('The selected session path is unavailable.');
+    const stats = await lstat(resolvedPath);
+    if (!stats.isFile() || stats.isSymbolicLink()) throw new Error('The selected session is not a regular saved session file.');
+    for (let attempt = 0; attempt < SESSION_BRANCH_REWRITE_RETRIES; attempt += 1) {
+      const before = await readFile(resolvedPath, 'utf8');
+      const parsed = parseEntriesForBranchRewrite(before);
+      const header = parsed.find((entry) => entry.type === 'session');
+      if (!header || header.id !== sessionId) throw new Error('The saved session header is invalid.');
+      const entries = parsed.filter(isValidSessionEntry);
+      if (entries.length !== parsed.filter(isSessionEntry).length) throw new Error('The saved session contains an invalid entry.');
+      const byId = new Map(entries.map((entry) => [entry.id, entry]));
+      if (byId.size !== entries.length || !byId.has(branchId)) throw new Error('That conversation path is no longer available.');
+      if (branchId === activeLeafId) throw new Error('Switch to a different conversation path before deleting this fork.');
+      if (activeLeafId && isDescendantEntry(activeLeafId, branchId, byId)) {
+        // The branch sits on the active path (it is the active leaf or one of its ancestors).
+        throw new Error('Switch to a different conversation path before deleting this fork.');
+      }
+      // The fork's own entries are its leaf, its descendants, and the ancestors
+      // that are NOT shared with the active path. Removing only descendants of
+      // the leaf would orphan the fork's parent chain into a stale branch.
+      const activePath = new Set<string>();
+      if (activeLeafId) {
+        let current = byId.get(activeLeafId);
+        while (current && !activePath.has(current.id)) {
+          activePath.add(current.id);
+          current = current.parentId ? byId.get(current.parentId) : undefined;
+        }
+      }
+      const removedIds = new Set<string>();
+      for (const entry of entries) {
+        if (isDescendantEntry(entry.id, branchId, byId)) removedIds.add(entry.id);
+        else if (isDescendantEntry(branchId, entry.id, byId) && !activePath.has(entry.id)) removedIds.add(entry.id);
+      }
+      if (!removedIds.size || (activeLeafId && removedIds.has(activeLeafId))) throw new Error('Switch to a different conversation path before deleting this fork.');
+      const next = parsed.filter((entry) => !isValidSessionEntry(entry) || (!removedIds.has(entry.id) && !referencedRemovedEntry(entry, removedIds)));
+      const latest = await readFile(resolvedPath, 'utf8');
+      if (latest !== before) continue;
+      const temporaryPath = `${resolvedPath}.${process.pid}.${Date.now()}.branch-delete.tmp`;
+      try {
+        await writeFile(temporaryPath, serializeEntries(next), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        if (await readFile(resolvedPath, 'utf8') !== before) continue;
+        await replaceFileAtomically(temporaryPath, resolvedPath);
+        this.invalidate(cwd);
+        return;
+      } finally {
+        await rm(temporaryPath, { force: true }).catch(() => undefined);
+      }
+    }
+    throw new Error('The saved session changed while its fork was being deleted. Try again.');
   }
 
   /**

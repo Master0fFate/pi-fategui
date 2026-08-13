@@ -110,7 +110,7 @@ function redactBrowserMarkup(value: string): string {
     .slice(0, MAX_ANNOTATION_CHARACTERS);
 }
 
-function redactSecretLikeText(value: string): string {
+export function redactSecretLikeText(value: string): string {
   return value
     .replace(/\b(password|passwd|otp|token|secret|api[_ -]?key|verification[_ -]?code|authorization)\s*[:=]\s*\S+/giu, '$1=[redacted]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/giu, 'Bearer [redacted]')

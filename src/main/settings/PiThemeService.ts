@@ -5,7 +5,6 @@ import {
   DefaultPackageManager,
   SettingsManager,
   getAgentDir,
-  getPackageDir,
 } from '@earendil-works/pi-coding-agent';
 import { themeDefinitionSchema, type ThemeDefinition } from '../../shared/themes';
 
@@ -441,7 +440,6 @@ function normalizedPathKey(candidatePath: string): string {
 
 export class PiThemeService {
   private readonly agentDir: string;
-  private readonly packageDir: string;
   private readonly cacheTtlMs: number;
   private readonly now: () => number;
   private readonly settingsManagerFactory: NonNullable<PiThemeServiceOptions['settingsManagerFactory']>;
@@ -451,7 +449,6 @@ export class PiThemeService {
 
   constructor(options: PiThemeServiceOptions = {}) {
     this.agentDir = path.resolve(options.agentDir ?? getAgentDir());
-    this.packageDir = path.resolve(options.packageDir ?? getPackageDir());
     const requestedTtl = options.cacheTtlMs ?? DEFAULT_PI_THEME_CACHE_TTL_MS;
     this.cacheTtlMs = Number.isFinite(requestedTtl) ? Math.max(0, Math.min(MAX_CACHE_TTL_MS, requestedTtl)) : DEFAULT_PI_THEME_CACHE_TTL_MS;
     this.now = options.now ?? Date.now;
@@ -518,8 +515,6 @@ export class PiThemeService {
       seenPaths.add(candidateKey);
       candidates.push(candidate);
     };
-    for (const candidate of await this.builtinCandidates(diagnostics)) addCandidate(candidate);
-
     try {
       const settingsManager = this.settingsManagerFactory(cwd, this.agentDir, projectTrusted);
       for (const settingError of settingsManager.drainErrors()) {
@@ -592,30 +587,4 @@ export class PiThemeService {
     return { themes, diagnostics: diagnostics.values };
   }
 
-  private async builtinCandidates(diagnostics: DiagnosticCollector): Promise<ThemeCandidate[]> {
-    const result: ThemeCandidate[] = [];
-    for (const name of ['dark', 'light'] as const) {
-      const possiblePaths = [
-        path.join(this.packageDir, 'theme', `${name}.json`),
-        path.join(this.packageDir, 'dist', 'modes', 'interactive', 'theme', `${name}.json`),
-        path.join(this.packageDir, 'src', 'modes', 'interactive', 'theme', `${name}.json`),
-        path.join(this.packageDir, 'modes', 'interactive', 'theme', `${name}.json`),
-      ];
-      let found: string | undefined;
-      for (const possiblePath of possiblePaths) {
-        try {
-          const stat = await fs.stat(possiblePath);
-          if (stat.isFile()) {
-            found = possiblePath;
-            break;
-          }
-        } catch {
-          // Try the next public-package layout.
-        }
-      }
-      if (found) result.push({ path: found, identity: `builtin:${name}` });
-      else diagnostics.add('warning', `Bundled Pi theme could not be found: ${name}`);
-    }
-    return result;
-  }
 }

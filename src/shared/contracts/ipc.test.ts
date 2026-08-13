@@ -122,6 +122,12 @@ describe('IPC contracts', () => {
 
   it('rejects malformed runtime commands and oversized event batches', () => {
     expect(promptInputSchema.parse({ text: 'hello', behavior: 'prompt' })).toEqual({ text: 'hello', behavior: 'prompt' });
+    expect(promptInputSchema.parse({ text: 'compare this', sessionReferences: [{ id: 'session-1', title: 'Saved work', projectPath: '/trusted-project' }] })).toMatchObject({
+      sessionReferences: [{ id: 'session-1', title: 'Saved work', projectPath: '/trusted-project' }],
+    });
+    expect(() => promptInputSchema.parse({ text: 'compare this', sessionReferences: [{ id: 'session-1' }] })).toThrow();
+    expect(() => promptInputSchema.parse({ text: 'compare this', sessionReferences: Array.from({ length: 9 }, (_, index) => ({ id: `session-${index}`, title: `Session ${index}`, projectPath: '/trusted-project' })) })).toThrow();
+    expect(() => promptInputSchema.parse({ text: 'compare this', sessionReferences: [{ id: 'session-1', title: 'Saved work', projectPath: '/trusted-project' }, { id: 'session-1', title: 'Saved work', projectPath: '/trusted-project' }] })).toThrow();
     expect(setPermissionInputSchema.parse({ level: 'read-only' })).toEqual({ level: 'read-only' });
     expect(setPermissionInputSchema.parse({ level: 'full-access' })).toEqual({ level: 'full-access' });
     expect(() => setPermissionInputSchema.parse({ level: 'root' })).toThrow();

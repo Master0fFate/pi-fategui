@@ -22,10 +22,11 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type DragEvent as ReactDragEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { useShallow } from 'zustand/react/shallow';
 import type { SessionBranch, SessionSummary } from '../../../shared/contracts/ipc';
+import { serializeSessionReference, SESSION_REFERENCE_TRANSFER_TYPE } from '../../../shared/sessionReferences';
 import { AppTooltip } from '../../components/AppTooltip';
 import { IconButton } from '../../components/IconButton';
 import { SelectControl } from '../../components/SelectControl';
@@ -37,7 +38,7 @@ import { projectPathKey, useProjectStore, type KnownProject } from '../../stores
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { SidebarAutomations } from '../automations/SidebarAutomations';
 import { SidebarResources } from '../resources/SidebarResources';
-import { ConversationPaths, type ForkAction } from './ConversationPaths';
+import { ConversationPaths, conversationPathViews, type ForkAction } from './ConversationPaths';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -109,6 +110,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [actionBusy, setActionBusy] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const [confirmingForkDeleteId, setConfirmingForkDeleteId] = useState<string | null>(null);
+  const [forkActionBranchId, setForkActionBranchId] = useState<string | null>(null);
   const [confirmingDeleteAllPath, setConfirmingDeleteAllPath] = useState<string | null>(null);
   const [navigatingBranchId, setNavigatingBranchId] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState('');
@@ -134,6 +137,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const sessionActionDisabled = (session: SessionSummary) => replacementBusy || sessionIsRunning(session);
   const sessionActionTooltip = (session: SessionSummary, action: string) => operationUnavailableReason
     ?? (sessionIsRunning(session) ? `Wait for “${session.title}” to finish` : action);
+  const beginSessionDrag = (event: ReactDragEvent<Element>, session: SessionSummary, projectPath: string | null | undefined) => {
+    if (!projectPath) { event.preventDefault(); return; }
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('.session-row-actions, .session-rename, .session-delete-confirm, .session-menu-trigger')) { event.preventDefault(); return; }
+    setDraggingSessionId(session.id);
+    event.dataTransfer.effectAllowed = 'copyMove';
+    event.dataTransfer.setData('text/plain', session.id);
+    event.dataTransfer.setData(SESSION_REFERENCE_TRANSFER_TYPE, serializeSessionReference({ id: session.id, title: session.title, projectPath }));
+  };
   const orderStorageKey = runtime.project ? `fate-ui:session-order:${runtime.project.path}` : null;
   const manualRanks = useMemo(() => new Map(manualOrder.map((id, index) => [id, index])), [manualOrder]);
   const sessionTitleByPath = useMemo(() => new Map(sessions.map((session) => [session.path, session.title])), [sessions]);
@@ -532,29 +544,81 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         }
       });
   };
-  // Fork actions: navigate to the fork first (it becomes the active session),
-  // then run rename/compact on it. Clone/fork/worktree are intentionally not
-  // offered (no infinite nesting); delete is omitted because a fork is an
-  // in-session branch and removing it would delete the whole session.
   const runForkAction = (branch: SessionBranch, action: ForkAction) => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.navigateSessionBranch !== 'function' || replacementBusy) return;
+    if (!('piDesktop' in window) || replacementBusy || actionBusyRef.current) return;
+    if (action === 'delete') {
+      if (confirmingForkDeleteId !== branch.id) {
+        setConfirmingForkDeleteId(branch.id);
+        return;
+      }
+      if (typeof window.piDesktop.deleteSessionBranch !== 'function') {
+        showToast({ kind: 'error', title: 'Deleting fork unavailable', message: 'Restart Fate UI to delete saved conversation forks.' });
+        return;
+      }
+      actionBusyRef.current = true;
+      setActionBusy(true);
+      setForkActionBranchId(branch.id);
+      void window.piDesktop.deleteSessionBranch(branch.id)
+        .then((result) => {
+          if (mounted.current) {
+            setRuntime(result.state);
+            setConfirmingForkDeleteId(null);
+            showToast({ kind: 'success', title: 'Fork deleted', message: 'The saved conversation path was removed.' });
+          }
+        })
+        .catch((error: unknown) => {
+          if (mounted.current) showToast({ kind: 'error', title: 'Deleting fork failed', message: sidebarErrorMessage(error, 'That fork could not be deleted.') });
+        })
+        .finally(() => {
+          actionBusyRef.current = false;
+          if (mounted.current) { setActionBusy(false); setForkActionBranchId(null); }
+        });
+      return;
+    }
+    if (typeof window.piDesktop.navigateSessionBranch !== 'function') return;
     actionBusyRef.current = true;
     setActionBusy(true);
-    setNavigatingBranchId(branch.id);
+    setForkActionBranchId(branch.id);
     void window.piDesktop.navigateSessionBranch(branch.id)
-      .then((result) => {
+      .then(async (result) => {
         if (!mounted.current) return;
         useRuntimeStore.getState().hydrateRuntime(result.state);
         const active = result.state.sessions?.find((session) => session.id === result.state.sessionId);
-        if (action === 'rename' && active) beginRename(active);
-        else if (action === 'compact') void window.piDesktop.compact().then((state) => { if (mounted.current) setRuntime(state); }).catch(() => undefined);
+        if (!active) return;
+        if (action === 'rename') {
+          const label = conversationPathViews(result.state.branches ?? []).find((item) => item.branch.id === branch.id)?.label;
+          beginRename({ ...active, ...(label ? { title: label } : {}) });
+        }
+        else if (action === 'compact') {
+          const state = await window.piDesktop.compact();
+          if (mounted.current) setRuntime(state);
+        } else if (action === 'fork') {
+          const forkPoint = result.state.forkPoints?.at(-1);
+          if (!forkPoint) throw new Error('This fork has no user message to branch from.');
+          const forked = await window.piDesktop.forkSession(forkPoint.entryId);
+          if (mounted.current) {
+            setRuntime(forked.state);
+            requestComposerDraft(forked.selectedText ?? forkPoint.text, true, `This new session branches from this fork. Edit the selected prompt, then send to continue.`);
+          }
+        } else if (action === 'worktree') {
+          const forkPoint = result.state.forkPoints?.at(-1);
+          if (!forkPoint) throw new Error('This fork has no user message to branch from.');
+          const isolated = await window.piDesktop.createWorktreeSession(forkPoint.entryId);
+          if (mounted.current) {
+            setRuntime(isolated.state);
+            requestComposerDraft(isolated.selectedText, true, `Isolated worktree ready on ${isolated.worktree.branch}. Edit the selected prompt, then send to begin.`);
+          }
+        } else if (action === 'clone') {
+          const cloned = await window.piDesktop.cloneSession();
+          if (mounted.current) setRuntime(cloned);
+        }
       })
       .catch((error: unknown) => {
         if (mounted.current) showToast({ kind: 'error', title: 'Fork action failed', message: sidebarErrorMessage(error, 'That fork action could not run.') });
       })
       .finally(() => {
         actionBusyRef.current = false;
-        if (mounted.current) { setActionBusy(false); setNavigatingBranchId(null); }
+        if (mounted.current) { setActionBusy(false); setForkActionBranchId(null); }
       });
   };
   const reorderSession = (targetId: string) => {
@@ -889,13 +953,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           key={session.id}
           className={`session-row session-row--compact${session.active ? ' active' : ''}${draggingSessionId === session.id ? ' dragging' : ''}${dragOverSessionId === session.id ? ' drag-over' : ''}`}
           draggable={!query}
-          onDragStart={(event) => {
-            const target = event.target instanceof Element ? event.target : null;
-            if (target?.closest('.session-row-actions, .session-rename, .session-delete-confirm, .session-menu-trigger')) { event.preventDefault(); return; }
-            setDraggingSessionId(session.id);
-            event.dataTransfer.effectAllowed = 'move';
-            event.dataTransfer.setData('text/plain', session.id);
-          }}
+          onDragStart={(event) => beginSessionDrag(event, session, runtime.project?.path)}
           onDragEnter={() => { if (draggingSessionId !== session.id) setDragOverSessionId(session.id); }}
           onDragOver={(event) => { if (!query) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } }}
           onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOverSessionId(null); }}
@@ -932,13 +990,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         key={session.id}
         className={`session-row${session.active ? ' active' : ''}${draggingSessionId === session.id ? ' dragging' : ''}${dragOverSessionId === session.id ? ' drag-over' : ''}`}
         draggable={!query}
-        onDragStart={(event) => {
-          const target = event.target instanceof Element ? event.target : null;
-          if (target?.closest('.session-row-actions, .session-rename, .session-delete-confirm, .session-menu-trigger')) { event.preventDefault(); return; }
-          setDraggingSessionId(session.id);
-          event.dataTransfer.effectAllowed = 'move';
-          event.dataTransfer.setData('text/plain', session.id);
-        }}
+        onDragStart={(event) => beginSessionDrag(event, session, runtime.project?.path)}
         onDragEnter={() => { if (draggingSessionId !== session.id) setDragOverSessionId(session.id); }}
         onDragOver={(event) => { if (!query) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } }}
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOverSessionId(null); }}
@@ -976,9 +1028,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         <ConversationPaths
           branches={branches}
           busy={replacementBusy}
-          pendingId={navigatingBranchId}
+          pendingId={forkActionBranchId ?? navigatingBranchId}
           onSelect={navigateConversationPath}
           onAction={runForkAction}
+          confirmingDeleteId={confirmingForkDeleteId}
+          onCancelDelete={() => setConfirmingForkDeleteId(null)}
           compact={compactSessions}
         />
       </div>
@@ -1018,19 +1072,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <div
         key={session.id}
         className={`session-row session-row--preview${session.active ? ' active' : ''}${asActiveFolder && draggingSessionId === session.id ? ' dragging' : ''}${asActiveFolder && dragOverSessionId === session.id ? ' drag-over' : ''}`}
+        draggable={!query}
+        onDragStart={(event) => beginSessionDrag(event, session, project.path)}
+        onDragEnd={() => { setDraggingSessionId(null); setDragOverSessionId(null); }}
         {...(asActiveFolder ? {
-          draggable: !query,
-          onDragStart: (event: React.DragEvent) => {
-            const target = event.target instanceof Element ? event.target : null;
-            if (target?.closest('.session-menu-trigger')) { event.preventDefault(); return; }
-            setDraggingSessionId(session.id);
-            event.dataTransfer.effectAllowed = 'move';
-            event.dataTransfer.setData('text/plain', session.id);
-          },
           onDragEnter: () => { if (draggingSessionId !== session.id) setDragOverSessionId(session.id); },
           onDragOver: (event: React.DragEvent) => { if (!query) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } },
           onDragLeave: (event: React.DragEvent) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOverSessionId(null); },
-          onDragEnd: () => { setDraggingSessionId(null); setDragOverSessionId(null); },
           onDrop: (event: React.DragEvent) => { event.preventDefault(); reorderSession(session.id); setDragOverSessionId(null); },
         } : {})}
       >
@@ -1180,9 +1228,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <ConversationPaths
             branches={branches}
             busy={replacementBusy}
-            pendingId={navigatingBranchId}
+            pendingId={forkActionBranchId ?? navigatingBranchId}
             onSelect={navigateConversationPath}
             onAction={runForkAction}
+            confirmingDeleteId={confirmingForkDeleteId}
+            onCancelDelete={() => setConfirmingForkDeleteId(null)}
             compact
           />
         </div>

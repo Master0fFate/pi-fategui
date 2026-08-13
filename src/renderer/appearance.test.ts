@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AppSettings } from '../shared/contracts/ipc';
-import { applyVisualSettings } from './appearance';
-import { fallbackThemes } from './theme';
+import { applyNonThemeVisualSettings, applyVisualSettings } from './appearance';
+import { fallbackThemes, resolveTheme } from './theme';
 
 type VisualSettings = Pick<AppSettings, 'appearance' | 'codeFont' | 'holyShitMode' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'themeId'>;
 
@@ -41,5 +41,19 @@ describe('applyVisualSettings', () => {
     expect(document.documentElement.dataset.holyShitMode).toBe('false');
     expect(document.documentElement.dataset.performanceMode).toBe('false');
     expect(document.documentElement.dataset.reduceMotion).toBe('false');
+  });
+
+  it('applies non-theme settings without repainting the theme', () => {
+    applyVisualSettings(visualSettings({ themeId: 'midnight' }), fallbackThemes);
+    const midnight = resolveTheme(fallbackThemes, 'midnight');
+    expect(document.documentElement.dataset.theme).toBe('midnight');
+    expect(document.documentElement.style.getPropertyValue('--theme-canvas')).toBe(midnight.colors.canvas);
+
+    applyNonThemeVisualSettings(visualSettings({ themeId: 'daylight', reduceMotion: true }));
+
+    // The theme stays exactly as painted; only motion/font attributes changed.
+    expect(document.documentElement.dataset.theme).toBe('midnight');
+    expect(document.documentElement.dataset.reduceMotion).toBe('true');
+    expect(document.documentElement.style.getPropertyValue('--theme-canvas')).toBe(midnight.colors.canvas);
   });
 });

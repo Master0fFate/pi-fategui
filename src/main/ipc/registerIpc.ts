@@ -58,8 +58,10 @@ import {
   sessionEntryInputSchema,
   sessionIdInputSchema,
   sessionRenameInputSchema,
+  sessionDirectMessageInputSchema,
   forkSessionResultSchema,
   navigateSessionBranchResultSchema,
+  deleteSessionBranchResultSchema,
   sessionListSchema,
   sessionSearchInputSchema,
   projectPathInputSchema,
@@ -202,6 +204,8 @@ export interface IpcServices {
   updates: Pick<UpdateService, 'check' | 'openDownload' | 'downloadAndInstall'>;
   browser: Pick<BrowserHost, 'ensure' | 'current' | 'setAppOverlay' | 'respondToConfirmation' | 'reset'>;
   automations: Pick<AutomationRepository, 'list' | 'create' | 'update' | 'remove' | 'recordLaunch'>;
+  /** Open another Fate UI window in this same process so it shares the live runtime. */
+  newWindow?: () => void;
   rendererPolicy: TrustedRendererPolicy;
 }
 
@@ -390,7 +394,7 @@ function register(channel: string, rendererPolicy: TrustedRendererPolicy, handle
   });
 }
 
-export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser, automations, rendererPolicy }: IpcServices) {
+export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser, automations, newWindow, rendererPolicy }: IpcServices) {
   runtime.setEventSink((events) => {
     const batch = piEventBatchSchema.parse(events);
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeEvents, batch);
@@ -489,6 +493,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     }
     else owner.close();
     return windowState(owner);
+  });
+  handle(ipcChannels.windowNew, () => {
+    newWindow?.();
+    return null;
   });
   const activeBrowser = async (event: Electron.IpcMainInvokeEvent) => browser.ensure(ownerWindow(event));
   const activeBrowserTab = async (event: Electron.IpcMainInvokeEvent) => {
@@ -797,7 +805,14 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     return runtimeStateSchema.parse(runtime.getHydrationState());
   });
   handle(ipcChannels.runtimePrompt, async (_event, input) => runRuntimeMutation('sending a prompt', async () => {
-    const accepted = await runtime.prompt(promptInputSchema.parse(input));
+    const parsed = promptInputSchema.parse(input);
+    const sessionReferences = parsed.sessionReferences
+      ? await Promise.all(parsed.sessionReferences.map(async (reference) => ({
+        ...reference,
+        projectPath: await projects.prepareSessionListPath(reference.projectPath),
+      })))
+      : undefined;
+    const accepted = await runtime.prompt({ ...parsed, ...(sessionReferences ? { sessionReferences } : {}) });
     return promptAcceptanceSchema.parse(accepted);
   }));
   handle(ipcChannels.runtimeAbort, async (_event, input) => {
@@ -888,6 +903,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     const parsed = sessionIdInputSchema.parse(input);
     return runRuntimeMutation('switching sessions', async () => runtimeStateSchema.parse(await runtime.switchSession(parsed.sessionId)));
   });
+  handle(ipcChannels.runtimeSendSessionMessage, async (_event, input) => {
+    const parsed = sessionDirectMessageInputSchema.parse(input);
+    return runRuntimeMutation('sending a direct session message', async () => runtimeStateSchema.parse(await runtime.sendSessionMessage(parsed.sessionId, parsed.text, parsed.behavior)));
+  });
   handle(ipcChannels.runtimeRenameSession, async (_event, input) => {
     const parsed = sessionRenameInputSchema.parse(input);
     return runRuntimeMutation('renaming a session', async () => runtimeStateSchema.parse(await runtime.renameSession(parsed.sessionId, parsed.name)));
@@ -903,6 +922,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.runtimeNavigateSessionBranch, async (_event, input) => {
     const parsed = sessionEntryInputSchema.parse(input);
     return runRuntimeMutation('switching conversation paths', async () => navigateSessionBranchResultSchema.parse(await runtime.navigateSessionBranch(parsed.entryId)));
+  });
+  handle(ipcChannels.runtimeDeleteSessionBranch, async (_event, input) => {
+    const parsed = sessionEntryInputSchema.parse(input);
+    return runRuntimeMutation('deleting a conversation path', async () => deleteSessionBranchResultSchema.parse(await runtime.deleteSessionBranch(parsed.entryId)));
   });
   handle(ipcChannels.runtimeCloneSession, async (_event, input) => {
     emptyInputSchema.parse(input);

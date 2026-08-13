@@ -221,12 +221,12 @@ export class AgentTeamCoordinator {
     }
   }
 
-  sendMessage(callerNodeId: string, target: string, content: string, operationId: string, delivery: AgentTeamEnvelopeDelivery = 'queue') {
+  sendMessage(callerNodeId: string, target: string, content: string, operationId: string, delivery: AgentTeamEnvelopeDelivery = 'queue', modelRuntime?: ModelRuntime, directReply = false) {
     const runtime = this.runtimeForCaller(callerNodeId);
-    return this.serializeMutation(runtime, () => this.sendMessageInternal(callerNodeId, target, content, operationId, delivery));
+    return this.serializeMutation(runtime, () => this.sendMessageInternal(callerNodeId, target, content, operationId, delivery, modelRuntime, directReply));
   }
 
-  private async sendMessageInternal(callerNodeId: string, target: string, content: string, operationId: string, delivery: AgentTeamEnvelopeDelivery) {
+  private async sendMessageInternal(callerNodeId: string, target: string, content: string, operationId: string, delivery: AgentTeamEnvelopeDelivery, modelRuntime?: ModelRuntime, directReply = false) {
     const runtime = this.runtimeForCaller(callerNodeId);
     const key = operationKey(callerNodeId, operationId);
     const previous = runtime.operationReceipts.get(key) as AgentTeam['operationReceipts'][number] | undefined;
@@ -236,10 +236,32 @@ export class AgentTeamCoordinator {
     }
     const recipient = this.resolveTarget(runtime, target);
     if (recipient.id === callerNodeId) throw new Error('Agents cannot message themselves.');
-    const envelope = addEnvelope(runtime, { kind: 'MESSAGE', authorNodeId: callerNodeId, recipientNodeId: recipient.id, content, triggerTurn: false, delivery });
+    const rootDirectMessage = callerNodeId === runtime.state.rootNodeId && directReply;
+    const envelope = addEnvelope(runtime, {
+      kind: 'MESSAGE',
+      authorNodeId: callerNodeId,
+      recipientNodeId: recipient.id,
+      content,
+      triggerTurn: rootDirectMessage,
+      delivery,
+    });
     runtime.operationReceipts.set(key, { key, operation: 'message', entityId: envelope.id, createdAt: Date.now() });
     this.persist(runtime, 'envelope.created');
-    await this.deliverMessage(runtime, envelope, delivery);
+    if (rootDirectMessage && modelRuntime && recipient.status !== 'active' && recipient.status !== 'creating') {
+      await this.startDirectMessageTurn(runtime, recipient, envelope, modelRuntime);
+    } else {
+      if (rootDirectMessage) {
+        const nodeRuntime = runtime.nodeRuntime.get(recipient.id);
+        if (nodeRuntime) nodeRuntime.liveMessageReplies.push({
+          sourceEnvelopeId: envelope.id,
+          sourceAuthorNodeId: callerNodeId,
+          sourceRecipientNodeId: recipient.id,
+          sourceContent: content,
+          createdAt: Date.now(),
+        });
+      }
+      await this.deliverMessage(runtime, envelope, delivery);
+    }
     this.changed(runtime, `${this.requireNode(runtime, callerNodeId).path} messaged ${recipient.path} via ${delivery}.`);
     return { envelopeId: envelope.id, state: envelope.state };
   }
@@ -257,6 +279,43 @@ export class AgentTeamCoordinator {
     await this.deliverEnvelope(runtime, envelope, false, delivery === 'steer');
   }
 
+  private async startDirectMessageTurn(runtime: AgentTeamRuntime, node: AgentTeamNode, envelope: AgentTeamEnvelope, modelRuntime: ModelRuntime, directReply = true): Promise<void> {
+    if (node.status === 'closed' || node.status === 'released' || node.status === 'failed' || this.hasLiveCurrentTask(runtime, node)) return;
+    const existingTask = [...runtime.tasks.values()].find((task) => task.assigneeNodeId === node.id && task.inputEnvelopeId === envelope.id);
+    if (existingTask) return;
+    const lease = this.acquireLease(runtime, node.id, node.permissionLevel);
+    this.syncScheduler(runtime);
+    try {
+      const nodeRuntime = await this.ensureNodeSession(runtime, node, modelRuntime);
+      if (nodeRuntime.retentionTimer) clearTimeout(nodeRuntime.retentionTimer);
+      delete nodeRuntime.retentionTimer;
+      nodeRuntime.lease = lease;
+      const task = addTask(runtime, {
+        assigneeNodeId: node.id,
+        requesterNodeId: runtime.state.rootNodeId,
+        inputEnvelopeId: envelope.id,
+        directReply,
+        summary: taskSummary(envelope.content),
+        status: 'running',
+        startedAt: Date.now(),
+      });
+      node.currentTaskId = task.id;
+      node.status = 'active';
+      node.updatedAt = Date.now();
+      envelope.triggerTurn = true;
+      envelope.state = 'delivered';
+      envelope.deliveredAt = node.updatedAt;
+      const prompt = `[Direct message from ${this.requireNode(runtime, envelope.authorNodeId).path}; envelope ${envelope.id}]\n${envelope.content}`;
+      assertContextTransfer('Agent Team V2 direct message', nodeRuntime.session!.model ?? this.requireParentModel(runtime), prompt, nodeRuntime.session!);
+      this.changed(runtime, `${node.path} started a direct message turn.`);
+      nodeRuntime.turn = this.runTurn(runtime, node, task, prompt);
+    } catch (error) {
+      lease.release();
+      this.syncScheduler(runtime);
+      throw error;
+    }
+  }
+
   private hasLiveCurrentTask(runtime: AgentTeamRuntime, node: AgentTeamNode): boolean {
     if (!node.currentTaskId) return false;
     const task = runtime.tasks.get(node.currentTaskId);
@@ -264,12 +323,12 @@ export class AgentTeamCoordinator {
     return !settledTaskStatuses.has(task.status);
   }
 
-  followUp(callerNodeId: string, target: string, content: string, operationId: string, modelRuntime: ModelRuntime, signal?: AbortSignal) {
+  followUp(callerNodeId: string, target: string, content: string, operationId: string, modelRuntime: ModelRuntime, signal?: AbortSignal, directReply = false) {
     const runtime = this.runtimeForCaller(callerNodeId);
-    return this.serializeMutation(runtime, () => this.followUpInternal(callerNodeId, target, content, operationId, modelRuntime, signal));
+    return this.serializeMutation(runtime, () => this.followUpInternal(callerNodeId, target, content, operationId, modelRuntime, signal, directReply));
   }
 
-  private async followUpInternal(callerNodeId: string, target: string, content: string, operationId: string, modelRuntime: ModelRuntime, signal?: AbortSignal) {
+  private async followUpInternal(callerNodeId: string, target: string, content: string, operationId: string, modelRuntime: ModelRuntime, signal?: AbortSignal, directReply = false) {
     const runtime = this.runtimeForCaller(callerNodeId);
     const key = operationKey(callerNodeId, operationId);
     const previous = runtime.operationReceipts.get(key) as AgentTeam['operationReceipts'][number] | undefined;
@@ -284,7 +343,7 @@ export class AgentTeamCoordinator {
     if (runtime.state.status !== 'active' && runtime.state.status !== 'restored-interrupted') throw new Error(`Agent team ${runtime.state.id} is ${runtime.state.status} and cannot accept follow-up work.`);
     if (node.status === 'closed' || node.status === 'released' || node.status === 'failed') throw new Error(`${node.path} is ${node.status} and cannot receive follow-up work.`);
     const envelope = addEnvelope(runtime, { kind: 'NEW_TASK', authorNodeId: caller.id, recipientNodeId: node.id, content, triggerTurn: true });
-    const task = addTask(runtime, { assigneeNodeId: node.id, requesterNodeId: caller.id, inputEnvelopeId: envelope.id, summary: taskSummary(content), status: 'queued' });
+    const task = addTask(runtime, { assigneeNodeId: node.id, requesterNodeId: caller.id, inputEnvelopeId: envelope.id, directReply, summary: taskSummary(content), status: 'queued' });
     envelope.taskId = task.id;
     runtime.operationReceipts.set(key, { key, operation: 'followup', entityId: task.id, createdAt: Date.now() });
     if (node.status === 'active' || node.status === 'creating') {
@@ -642,8 +701,8 @@ export class AgentTeamCoordinator {
     else {
       const runtime = this.ensureTeam(rootSessionId, input.teamId);
       const root = runtime.state.rootNodeId;
-      if (input.action === 'message') await this.sendMessage(root, input.target, input.message, operationId, input.delivery);
-      else if (input.action === 'followUp' || input.action === 'resume') await this.followUp(root, input.target, input.message, operationId, modelRuntime);
+      if (input.action === 'message') await this.sendMessage(root, input.target, input.message, operationId, input.delivery, modelRuntime, input.replyToUser === true);
+      else if (input.action === 'followUp' || input.action === 'resume') await this.followUp(root, input.target, input.message, operationId, modelRuntime, undefined, input.action === 'followUp' && input.replyToUser === true);
       else if (input.action === 'interrupt') await this.interrupt(root, input.target, input.reason);
       else {
         const node = this.resolveTarget(runtime, input.target);
@@ -967,6 +1026,7 @@ export class AgentTeamCoordinator {
       ...(prepared.instructions ? { instructions: prepared.instructions } : {}),
       selectedSkills: prepared.selectedSkills,
       skillMode: prepared.skillMode,
+      liveMessageReplies: [],
     };
   }
 
@@ -1028,6 +1088,7 @@ export class AgentTeamCoordinator {
       ...(existing?.instructions ? { instructions: existing.instructions } : {}),
       selectedSkills: existing?.selectedSkills ?? [],
       skillMode: existing?.skillMode ?? 'all',
+      liveMessageReplies: existing?.liveMessageReplies ?? [],
     };
     runtime.nodeRuntime.set(node.id, reopened);
     this.attachNodeRecorder(runtime, node, reopened);
@@ -1125,6 +1186,7 @@ export class AgentTeamCoordinator {
         task.status = failed ? 'failed' : final.stopReason === 'aborted' ? 'interrupted' : 'completed';
         task.endedAt = Date.now();
         if (failed) task.error = final.error || final.text || 'The child model failed.';
+        if (task.directReply || nodeRuntime.liveMessageReplies.length > 0) await this.forwardLiveMessageReplies(runtime, node, nodeRuntime, final.text || task.error || '(no text output)');
         node.status = task.status === 'completed' ? 'ready' : task.status === 'interrupted' ? 'interrupted' : 'failed';
         node.lastError = task.error;
         if (task.status === 'interrupted') {
@@ -1144,6 +1206,7 @@ export class AgentTeamCoordinator {
       if (node.status === 'closing' || node.status === 'closed' || node.status === 'released') return;
       task.status = signal?.aborted ? 'interrupted' : 'failed';
       task.error = error instanceof Error ? error.message : String(error);
+      if (task.directReply || nodeRuntime.liveMessageReplies.length > 0) await this.forwardLiveMessageReplies(runtime, node, nodeRuntime, task.error);
       task.endedAt = Date.now();
       node.status = task.status === 'interrupted' ? 'interrupted' : 'failed';
       node.lastError = task.error;
@@ -1163,6 +1226,23 @@ export class AgentTeamCoordinator {
     }
   }
 
+  private async forwardLiveMessageReplies(runtime: AgentTeamRuntime, node: AgentTeamNode, nodeRuntime: AgentNodeRuntime, response: string): Promise<void> {
+    const pending = nodeRuntime.liveMessageReplies.splice(0);
+    for (const source of pending) {
+      const root = this.requireNode(runtime, runtime.state.rootNodeId);
+      const payload = `[Direct reply from ${node.path} to ${root.path}; message ${source.sourceEnvelopeId}]\n${response}`;
+      const reply = addEnvelope(runtime, {
+        kind: 'FINAL_ANSWER',
+        authorNodeId: node.id,
+        recipientNodeId: root.id,
+        content: payload,
+        triggerTurn: false,
+      });
+      this.persist(runtime, 'envelope.created');
+      await this.deliverEnvelope(runtime, reply, true);
+    }
+  }
+
   private async deliverEnvelope(runtime: AgentTeamRuntime, envelope: AgentTeamEnvelope, finalAnswer: boolean, allowSteer = true): Promise<void> {
     const target = this.requireNode(runtime, envelope.recipientNodeId);
     const session = this.sessionForNode(runtime, target.id);
@@ -1172,15 +1252,20 @@ export class AgentTeamCoordinator {
       return;
     }
     const sender = this.requireNode(runtime, envelope.authorNodeId);
-    const payload = `[Agent Team V2 ${envelope.kind} from ${sender.path}; envelope ${envelope.id}]\n${envelope.content}`;
+    const directReply = envelope.kind === 'FINAL_ANSWER' && envelope.content.startsWith('[Direct reply from ');
+    const payload = directReply
+      ? envelope.content
+      : `[Agent Team V2 ${envelope.kind} from ${sender.path}; envelope ${envelope.id}]\n${envelope.content}`;
     assertContextTransfer(`Agent Team V2 ${envelope.kind}`, session.model, payload, session);
     const message = {
-      customType: 'fate-agent-team-envelope',
+      customType: directReply ? 'fate-live-agent-reply' : 'fate-agent-team-envelope',
       content: [{ type: 'text' as const, text: payload }],
-      display: false,
+      display: directReply,
       details: { envelopeId: envelope.id, kind: envelope.kind, authorNodeId: sender.id, taskId: envelope.taskId },
     };
-    if (target.id === runtime.state.rootNodeId && this.host.sendRootMessage) {
+    if (target.id === runtime.state.rootNodeId && directReply) {
+      await this.host.sendRootMessage?.(runtime.state.rootSessionId, message, 'steer', false);
+    } else if (target.id === runtime.state.rootNodeId && this.host.sendRootMessage) {
       await this.host.sendRootMessage(runtime.state.rootSessionId, message, 'steer', false);
     } else {
       await session.sendCustomMessage(message, allowSteer && session.isStreaming ? { triggerTurn: false, deliverAs: 'steer' } : { triggerTurn: false });

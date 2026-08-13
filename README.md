@@ -11,7 +11,7 @@ Run Pi in a focused graphical workspace for durable conversations, transparent a
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-252a38.svg)](#installation)
 [![Electron](https://img.shields.io/badge/Electron-43-47848f.svg)](https://www.electronjs.org/)
 
-[Latest beta: v0.9.0-beta2](https://github.com/Master0fFate/pi-fategui/releases/tag/v0.9.0-beta2) · [Installation](#installation) · [Capabilities](#what-fate-ui-provides) · [Themes](#themes) · [Development](#local-development) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
+[Latest beta: v0.9.1-beta1](https://github.com/Master0fFate/pi-fategui/releases/tag/v0.9.1-beta1) · [Installation](#installation) · [Capabilities](#what-fate-ui-provides) · [Themes](#themes) · [Development](#local-development) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -71,6 +71,18 @@ Themes Pi already knows about are picked up automatically too, including any a p
 > Fate UI is currently beta software (`0.x` releases). Expect rough edges, and back up important work before relying on it.
 >
 > Fate UI embeds `@earendil-works/pi-coding-agent`. It does not scrape Pi's terminal UI, and production never substitutes mocked agent responses. Fate UI is an independent community project and is not an official Pi distribution.
+
+## Beyond the terminal Pi Agent
+
+Fate UI wraps the same Pi SDK the terminal agent uses, then adds what a terminal cannot give you:
+
+- **Multiple synced windows.** Open several windows on one session from **File → New Window** (`Ctrl/Cmd+Shift+N`). They share one live Pi runtime and stay in sync — no second process, no stale chat.
+- **A visual Flight Deck.** Activity Pulse, Flight Recorder, and Review Runway surface runtime, queue, context, history, and reviewable diffs the terminal only scrolls past.
+- **Agent Teams and subagent inspectors.** A live tree with per-child model, tools, skills, permissions, usage, and message controls.
+- **First-class Git and files.** Status, history, commits, Monaco diffs, and project-confined file browsing without leaving the app.
+- **A manual terminal and an embedded browser** alongside agent activity.
+- **Session references and direct session messages.** Attach saved sessions as read-only context, or message a saved session without switching away from your current one.
+- **Native media.** Local voice transcription, ambient audio, image generation, and custom themes — desktop features with real installers and auto-update.
 
 ## What Fate UI provides
 
@@ -137,6 +149,8 @@ fate /path/to/project
 ```
 
 Fate UI opens the canonical directory and displays its normal trust prompt. Every invocation opens an independent window and runtime, even when another installed Fate UI instance is already running. Concurrent processes use separate persistent Electron profile slots while sharing Pi credentials and the session catalog.
+
+Want two views of the same conversation? Use **File → New Window** (`Ctrl/Cmd+Shift+N`) instead of a second `fate` process. New windows share one Pi runtime and stay live-synced; separate `fate` processes are meant for isolated accounts, not for viewing the same session.
 
 ## Authenticate Pi
 

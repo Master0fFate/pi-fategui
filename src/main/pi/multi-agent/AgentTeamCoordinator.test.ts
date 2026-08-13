@@ -140,6 +140,29 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(persisted.length).toBeGreaterThan(0);
   });
 
+  it('projects a direct root message reply into the root timeline without waking its model', async () => {
+    let releasePrompt: () => void = () => undefined;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const sendRootMessage = vi.fn(async () => undefined);
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      sendRootMessage,
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'review', name: 'reviewer' }, 'direct-message-spawn', runtime());
+    await coordinator.sendMessage(rootId, child.nodeId, 'Reply with the result.', 'direct-message', 'steer', runtime(), true);
+    releasePrompt();
+    promptBarrier = null;
+    await settle();
+    expect(sendRootMessage).toHaveBeenCalledWith('root-session', expect.objectContaining({
+      customType: 'fate-live-agent-reply',
+      display: true,
+      content: [expect.objectContaining({ text: expect.stringContaining('Direct reply from /root/reviewer') })],
+    }), 'steer', false);
+  });
+
   it('grants an explicitly requested bash tool when the effective permission allows it', async () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),

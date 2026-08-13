@@ -136,7 +136,11 @@ const emitVoiceHotkey = (action: 'start' | 'stop') => {
 };
 const hotkey = new GlobalHotkeyService(logs, () => emitVoiceHotkey('start'), () => emitVoiceHotkey('stop'));
 const terminal = new TerminalService(files, runtime, settings, logs);
-let mainWindow: BrowserWindow | null = null;
+// Fate UI supports more than one window in the same process. Every window
+// shares one Pi runtime, and runtime events are broadcast to all of them, so
+// two windows open on the same session stay in sync without a second process.
+const openWindows = new Set<BrowserWindow>();
+let focusedWindow: BrowserWindow | null = null;
 let rendererReady = false;
 let quitReady = false;
 let shutdown: Promise<void> | null = null;
@@ -145,14 +149,21 @@ let pendingProjectPath = initialProjectPath;
 const rendererPath = path.join(currentDirectory, '../renderer/index.html');
 const rendererPolicy = createTrustedRendererPolicy(rendererPath, process.env.VITE_DEV_SERVER_URL);
 
+function activeWindow(): BrowserWindow | null {
+  if (focusedWindow && !focusedWindow.isDestroyed() && openWindows.has(focusedWindow)) return focusedWindow;
+  for (const window of openWindows) if (!window.isDestroyed()) return window;
+  return null;
+}
+
 function sendCommand(command: AppCommand): void {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(ipcChannels.appCommand, appCommandSchema.parse(command));
+  const window = activeWindow();
+  if (window) window.webContents.send(ipcChannels.appCommand, appCommandSchema.parse(command));
 }
 
 function reportLaunchError(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   logs.write('error', 'launcher', `Could not open the requested project: ${message}`);
-  const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  const owner = activeWindow() ?? undefined;
   const options = {
     type: 'error' as const,
     title: 'Fate UI could not open this project',
@@ -164,11 +175,12 @@ function reportLaunchError(error: unknown): void {
 }
 
 function dispatchProjectPath(projectPath: string): void {
-  if (!projectPathOpener || !rendererReady || !mainWindow || mainWindow.isDestroyed()) {
+  const owner = activeWindow();
+  if (!projectPathOpener || !rendererReady || !owner) {
     pendingProjectPath = projectPath;
     return;
   }
-  void projectPathOpener(projectPath, mainWindow).catch(reportLaunchError);
+  void projectPathOpener(projectPath, owner).catch(reportLaunchError);
 }
 
 // Installs a downloaded updater for this platform, then relaunches and quits.
@@ -228,9 +240,10 @@ async function installDownloadedUpdate(filePath: string, _version: string): Prom
 // the latest project pending until the renderer can accept it.
 if (instanceProfile.mode === 'single' && instancePrimaryApp) {
   app.on('second-instance', (_event, commandLine, workingDirectory) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
+    const window = activeWindow();
+    if (window) {
+      if (window.isMinimized()) window.restore();
+      window.focus();
     }
     try {
       const forwardedProjectPath = parseLaunchProjectPath(commandLine, workingDirectory);
@@ -246,6 +259,7 @@ function installMenu(): void {
     { label: 'File', submenu: [
       { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: () => sendCommand('open-project') },
       { label: 'New Session', accelerator: 'CmdOrCtrl+N', click: () => sendCommand('new-session') },
+      { label: 'New Window', accelerator: 'CmdOrCtrl+Shift+N', click: () => createWindow() },
       { type: 'separator' },
       { role: 'quit' },
     ] },
@@ -305,12 +319,15 @@ function rememberWindowPlacement(window: BrowserWindow | null): void {
   windowState.save(placement);
 }
 
-function createWindow(): BrowserWindow {
-  rendererReady = false;
+function createWindow(options: { initial?: boolean } = {}): BrowserWindow {
   const preload = path.join(currentDirectory, '../preload/index.cjs');
   const placement = windowState.resolve(screen.getAllDisplays(), screen.getPrimaryDisplay());
+  // Additional windows cascade so they do not stack exactly on top of the
+  // first one. Every window hydrates from the same shared runtime.
+  const offset = options.initial ? 0 : 28 * ((openWindows.size % 8) + 1);
+  const bounds = { ...placement.bounds, x: placement.bounds.x + offset, y: placement.bounds.y + offset };
   const window = new BrowserWindow({
-    ...placement.bounds,
+    ...bounds,
     minWidth: MINIMUM_WINDOW_SIZE.width,
     minHeight: MINIMUM_WINDOW_SIZE.height,
     show: false,
@@ -323,6 +340,10 @@ function createWindow(): BrowserWindow {
       devTools: !app.isPackaged,
     },
   });
+
+  openWindows.add(window);
+  if (!focusedWindow) focusedWindow = window;
+  window.on('focus', () => { focusedWindow = window; });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (isExternalHttpsUrl(url)) void shell.openExternal(url);
@@ -364,7 +385,9 @@ function createWindow(): BrowserWindow {
   });
 
   window.webContents.once('did-finish-load', () => {
-    if (mainWindow !== window) return;
+    // Only the first window owns launch-time restore. Extra windows simply
+    // hydrate from the shared runtime like any reconnecting renderer.
+    if (!options.initial) return;
     rendererReady = true;
     if (initialLaunchError) {
       const error = initialLaunchError;
@@ -389,12 +412,12 @@ function createWindow(): BrowserWindow {
     }
   });
 
-  if (process.env.PI_DESKTOP_SMOKE === '1') {
+  if (options.initial && process.env.PI_DESKTOP_SMOKE === '1') {
     window.webContents.once('did-finish-load', () => {
       void Promise.all([speech.getStatus(), music.getStatus(), settings.loadThemes(), smokeTerminalRuntime(process.cwd())]).then(async ([speechStatus, musicStatus, themes, terminalShell]) => {
         if (!musicStatus.available) throw new Error(musicStatus.message ?? 'Bundled yt-dlp is unavailable.');
-        if (!themes.some((theme) => theme.name === 'Pi · dark') || !themes.some((theme) => theme.name === 'Pi · light')) {
-          throw new Error('Bundled Pi themes are unavailable.');
+        if (!themes.some((theme) => theme.name === 'Pi · Dark Standard') || !themes.some((theme) => theme.name === 'Pi · Light Standard')) {
+          throw new Error('Standard Pi themes are unavailable.');
         }
         if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1') {
           await smokeParakeetStream();
@@ -422,11 +445,14 @@ function createWindow(): BrowserWindow {
   window.on('close', () => rememberWindowPlacement(window));
   window.on('closed', () => {
     removeWindowZoomShortcuts();
-    if (mainWindow === window) {
+    openWindows.delete(window);
+    if (focusedWindow === window) focusedWindow = null;
+    // The browser host is shared across every window; only tear it down when
+    // the last window leaves so a remaining window keeps its embedded browser.
+    if (openWindows.size === 0) {
       void browserHost?.reset().catch((error: unknown) => {
         logs.write('warn', 'browser', `Browser shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
       });
-      mainWindow = null;
       rendererReady = false;
     }
   });
@@ -490,15 +516,15 @@ app.whenReady().then(async () => {
       logs.write('warn', 'microphone', `macOS microphone permission could not be requested: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser: browserHost, automations, rendererPolicy });
+  const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser: browserHost, automations, newWindow: () => createWindow(), rendererPolicy });
   projectPathOpener = mainCommands.openProjectPath;
   void hotkey.applySpeechSettings((await settings.load()).speech).then((status) => {
     if (!status.pushToTalkAvailable) logs.write('warn', 'speech', status.reason ?? 'Push-to-talk is unavailable on this platform.');
   });
   installMenu();
-  mainWindow = createWindow();
+  createWindow({ initial: true });
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) createWindow({ initial: true });
   });
 });
 
@@ -506,7 +532,7 @@ app.on('before-quit', (event) => {
   if (quitReady) return;
   event.preventDefault();
   if (shutdown) return;
-  rememberWindowPlacement(mainWindow);
+  rememberWindowPlacement(activeWindow());
   terminal.dispose();
   music.dispose();
   rendererNetworkProxy.dispose();

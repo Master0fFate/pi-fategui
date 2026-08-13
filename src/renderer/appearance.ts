@@ -8,7 +8,7 @@ type VisualSettings = Pick<
   'appearance' | 'codeFont' | 'holyShitMode' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'themeId'
 >;
 
-export function applyVisualSettings(settings: VisualSettings, themes: readonly ThemeDefinition[]): void {
+export function applyNonThemeVisualSettings(settings: VisualSettings): void {
   const root = document.documentElement;
   const performanceMode = settings.performanceMode || settings.reduceMotion || settings.holyShitMode;
   root.dataset.reduceMotion = String(performanceMode);
@@ -16,5 +16,13 @@ export function applyVisualSettings(settings: VisualSettings, themes: readonly T
   root.dataset.holyShitMode = String(settings.holyShitMode);
   root.dataset.appearance = settings.appearance;
   applyFonts(settings.interfaceFont, settings.codeFont);
-  applyTheme(resolveTheme(themes, settings.themeId));
+}
+
+export function applyVisualSettings(
+  settings: VisualSettings,
+  themes: readonly ThemeDefinition[],
+  options: { persistTheme?: boolean } = {},
+): void {
+  applyNonThemeVisualSettings(settings);
+  applyTheme(resolveTheme(themes, settings.themeId), { persist: options.persistTheme });
 }

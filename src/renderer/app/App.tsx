@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { defaultSpeechSettings, type AppCommand, type PiEvent, type RuntimeState } from '../../shared/contracts/ipc';
 import { AppToast } from '../components/AppToast';
-import { applyVisualSettings } from '../appearance';
+import { applyNonThemeVisualSettings, applyVisualSettings } from '../appearance';
 import { useRuntimeStore } from '../stores/runtimeStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useUiStore } from '../stores/uiStore';
@@ -263,7 +263,15 @@ export function App() {
     });
     void settingsPromise.then((settings) => {
       if (!active) return;
-      applyVisualSettings(settings, fallbackThemes);
+      // Built-in themes are safe to paint the moment settings resolve. A custom
+      // or Pi theme is not in the fallback catalog: painting the fallback would
+      // flash the default palette until theme discovery finishes, so apply only
+      // fonts/motion now and let the themesPromise path apply the exact theme.
+      if (fallbackThemes.some((theme) => theme.id === settings.themeId)) {
+        applyVisualSettings(settings, fallbackThemes);
+      } else {
+        applyNonThemeVisualSettings(settings);
+      }
       useUiStore.getState().setMusicPlayerEnabled(settings.musicPlayerEnabled);
       useUiStore.getState().setSendMessageWithModifier(settings.sendMessageWithModifier);
       useUiStore.getState().setCompactSessions(settings.compactSessions);
@@ -277,6 +285,9 @@ export function App() {
       applyVisualSettings(
         { appearance: 'dark', themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', performanceMode: false, reduceMotion: false, holyShitMode: false },
         fallbackThemes,
+        // A corrupt settings file must not overwrite the last good theme
+        // snapshot, or the next launch would boot into the wrong palette.
+        { persistTheme: false },
       );
       console.error('[Fate UI] Failed to load initial settings.', error);
     });

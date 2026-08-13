@@ -1,4 +1,4 @@
-import { GitBranchPlus, GitFork, LoaderCircle, MoreHorizontal } from 'lucide-react';
+import { Copy, GitBranchPlus, GitFork, LoaderCircle, MoreHorizontal, Pencil, Shrink, Trash2 } from 'lucide-react';
 import * as Popover from '@radix-ui/react-popover';
 import { AppTooltip } from '../../components/AppTooltip';
 import type { SessionBranch } from '../../../shared/contracts/ipc';
@@ -40,20 +40,22 @@ export function conversationPathViews(branches: readonly SessionBranch[], limit 
     }));
 }
 
-export type ForkAction = 'rename' | 'compact';
+export type ForkAction = 'fork' | 'worktree' | 'clone' | 'compact' | 'rename' | 'delete';
 
 interface ConversationPathsProps {
   branches: readonly SessionBranch[];
   busy: boolean;
   pendingId: string | null;
   onSelect: (branch: SessionBranch) => void;
-  /** Per-fork actions. The Sidebar navigates to the fork first, then runs the action. */
+  /** Per-fork actions. The Sidebar navigates to a fork before actions that need its live runtime. */
   onAction?: (branch: SessionBranch, action: ForkAction) => void;
   actionDisabled?: boolean;
+  confirmingDeleteId?: string | null;
+  onCancelDelete?: () => void;
   compact?: boolean;
 }
 
-export function ConversationPaths({ branches, busy, pendingId, onSelect, onAction, actionDisabled, compact = false }: ConversationPathsProps) {
+export function ConversationPaths({ branches, busy, pendingId, onSelect, onAction, actionDisabled, confirmingDeleteId, onCancelDelete, compact = false }: ConversationPathsProps) {
   const paths = conversationPathViews(branches);
   const totalForks = branches.filter((branch) => !branch.active).length;
   if (paths.length === 0) return null;
@@ -80,9 +82,15 @@ export function ConversationPaths({ branches, busy, pendingId, onSelect, onActio
                 {label ? <small>{description}</small> : null}
               </span>
             </button>
-            {onAction && (
+            {onAction && (confirmingDeleteId === branch.id ? (
+              <div className="session-path-delete-confirm" role="group" aria-label={`Confirm deleting fork: ${name}`}>
+                <span>Delete fork?</span>
+                <button type="button" className="session-path-delete-confirm-danger" disabled={busy || actionDisabled === true} onClick={() => onAction(branch, 'delete')}>Delete</button>
+                <button type="button" disabled={busy || actionDisabled === true} onClick={onCancelDelete}>Cancel</button>
+              </div>
+            ) : (
               <SessionPathMenu branch={branch} name={name} disabled={busy || actionDisabled === true} onAction={onAction} />
-            )}
+            ))}
           </div>
         );
       })}
@@ -92,9 +100,14 @@ export function ConversationPaths({ branches, busy, pendingId, onSelect, onActio
 }
 
 function SessionPathMenu({ branch, name, disabled, onAction }: { branch: SessionBranch; name: string; disabled: boolean; onAction: (branch: SessionBranch, action: ForkAction) => void }) {
-  // Forks are in-session branches: only rename + compact apply. Clone / fork /
-  // isolated-worktree are intentionally omitted (no infinite nesting), and
-  // delete is omitted because removing a branch would delete the whole session.
+  const actions: Array<{ key: ForkAction; label: string; icon: typeof GitFork; danger?: boolean }> = [
+    { key: 'fork', label: 'Branch from latest prompt', icon: GitFork },
+    { key: 'worktree', label: 'Create isolated Git worktree', icon: GitBranchPlus },
+    { key: 'clone', label: 'Clone session', icon: Copy },
+    { key: 'compact', label: 'Compact session context', icon: Shrink },
+    { key: 'rename', label: 'Rename session', icon: Pencil },
+    { key: 'delete', label: 'Delete fork', icon: Trash2, danger: true },
+  ];
   return (
     <Popover.Root>
       <AppTooltip content="Session actions">
@@ -103,9 +116,17 @@ function SessionPathMenu({ branch, name, disabled, onAction }: { branch: Session
         </Popover.Trigger>
       </AppTooltip>
       <Popover.Portal>
-        <Popover.Content className="session-action-menu" side="top" align="end" sideOffset={6} onOpenAutoFocus={(event) => event.preventDefault()}>
-          <button type="button" role="menuitem" className="folder-action-item" disabled={disabled} onClick={() => onAction(branch, 'rename')}>Rename fork</button>
-          <button type="button" role="menuitem" className="folder-action-item" disabled={disabled} onClick={() => onAction(branch, 'compact')}>Compact fork context</button>
+        <Popover.Content className="session-action-menu session-action-menu--fork" role="menu" aria-label={`Actions for fork: ${name}`} side="top" align="end" sideOffset={6} onOpenAutoFocus={(event) => event.preventDefault()}>
+          <div className="session-row-actions session-row-actions--menu" role="none">
+            {actions.map((action) => {
+              const Icon = action.icon;
+              return (
+                <AppTooltip key={action.key} content={action.label} wrapTrigger>
+                  <button type="button" role="menuitem" className={action.danger ? 'session-delete-button' : undefined} aria-label={`${action.label} for ${name}`} disabled={disabled} onClick={() => onAction(branch, action.key)}><Icon size={12} /></button>
+                </AppTooltip>
+              );
+            })}
+          </div>
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>

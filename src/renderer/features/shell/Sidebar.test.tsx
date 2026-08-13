@@ -230,6 +230,26 @@ describe('Sidebar sessions', () => {
     expect(useUiStore.getState().toast).toMatchObject({ kind: 'success', title: 'Conversation path switched' });
   });
 
+  it('confirms and deletes an inactive conversation fork without selecting it first', async () => {
+    const branches = [
+      { id: 'current-leaf', parentId: 'root', depth: 1, label: 'current', preview: 'Current path', kind: 'message', active: true },
+      { id: 'alternate-leaf', parentId: 'root', depth: 2, label: 'message', preview: 'Forked path', kind: 'custom', active: false },
+    ];
+    useRuntimeStore.getState().hydrateRuntime(ready({ branches }));
+    const deleteSessionBranch = vi.fn(async () => ({ state: ready({ branches: [branches[0]!] }) }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { deleteSessionBranch } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Actions for Forked path' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete fork for Forked path' }));
+    expect(screen.getByRole('group', { name: 'Confirm deleting fork: Forked path' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(deleteSessionBranch).toHaveBeenCalledWith('alternate-leaf'));
+    expect(useUiStore.getState().toast).toMatchObject({ kind: 'success', title: 'Fork deleted' });
+  });
+
   it('uses compact session density for conversation path rows too', () => {
     useUiStore.setState({ compactSessions: true });
     const branches = [

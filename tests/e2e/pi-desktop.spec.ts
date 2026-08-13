@@ -849,6 +849,11 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.screenshot({ path: 'test-results/pi-desktop-final.png' });
 
     const composerInput = page.getByLabel('Message Pi');
+    const secondSessionRow = page.locator('.session-row').filter({ hasText: 'Second session' });
+    await secondSessionRow.dragTo(page.locator('form.composer'));
+    await expect(page.getByLabel('Attached session references')).toContainText('Second session');
+    await page.getByRole('button', { name: 'Remove session reference: Second session' }).click();
+    await expect(page.getByLabel('Attached session references')).toHaveCount(0);
     await composerInput.fill('__FATE_AGENT_FIXTURE__');
     await page.getByRole('button', { name: 'Send message' }).click();
     const subagentTool = page.getByRole('article', { name: 'subagent_start tool running' });

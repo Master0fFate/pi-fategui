@@ -138,6 +138,7 @@ function messageRole(message: unknown): 'user' | 'assistant' | 'system' | 'tool'
   const value = message as { role?: unknown; display?: unknown; customType?: unknown };
   if (value.role === 'user' || value.role === 'assistant') return value.role;
   if (value.role === 'custom') {
+    if (value.customType === 'fate-live-agent-reply') return 'system';
     if (value.customType === 'fate-subagent-notification') return 'hidden';
     return value.display === true ? 'system' : 'hidden';
   }

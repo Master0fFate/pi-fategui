@@ -55,8 +55,10 @@ import {
   sessionEntryInputSchema,
   sessionIdInputSchema,
   sessionRenameInputSchema,
+  sessionDirectMessageInputSchema,
   forkSessionResultSchema,
   navigateSessionBranchResultSchema,
+  deleteSessionBranchResultSchema,
   sessionListSchema,
   sessionSearchInputSchema,
   projectPathInputSchema,
@@ -94,6 +96,7 @@ import {
   type GitOperation,
   type ImageSaveInput,
   type PiDesktopApi,
+  type SessionDirectMessageInput,
   type PiEvent,
   type TerminalEvent,
   type PromptInput,
@@ -199,6 +202,9 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async getWindowState() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.windowGetState, emptyInputSchema.parse({}));
     return windowStateSchema.parse(result);
+  },
+  async newWindow() {
+    await ipcRenderer.invoke(ipcChannels.windowNew, emptyInputSchema.parse({}));
   },
   onWindowState(listener: (state: WindowState) => void) {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(windowStateSchema.parse(payload));
@@ -499,6 +505,10 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeSwitchSession, sessionIdInputSchema.parse({ sessionId }));
     return runtimeStateSchema.parse(result);
   },
+  async sendSessionMessage(input: SessionDirectMessageInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeSendSessionMessage, sessionDirectMessageInputSchema.parse(input));
+    return runtimeStateSchema.parse(result);
+  },
   async renameSession(sessionId: string, name: string) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeRenameSession, sessionRenameInputSchema.parse({ sessionId, name }));
     return runtimeStateSchema.parse(result);
@@ -514,6 +524,10 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async navigateSessionBranch(entryId: string) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeNavigateSessionBranch, sessionEntryInputSchema.parse({ entryId }));
     return navigateSessionBranchResultSchema.parse(result);
+  },
+  async deleteSessionBranch(entryId: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeDeleteSessionBranch, sessionEntryInputSchema.parse({ entryId }));
+    return deleteSessionBranchResultSchema.parse(result);
   },
   async cloneSession() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeCloneSession, emptyInputSchema.parse({}));

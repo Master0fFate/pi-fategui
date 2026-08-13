@@ -5,6 +5,7 @@ import {
   createBashToolDefinition,
   createEditToolDefinition,
   createWriteToolDefinition,
+  SessionManager,
   Theme,
   type AgentSessionRuntime,
   type ModelRuntime,
@@ -13,7 +14,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { activeToolsForPermission, assertOwnedToolDefinitions, PiRuntimeService, isCanonicalPathInside, selectUserExtensionPaths, shouldSyncGoalChildrenForPiEvent, type PiSdkAdapter } from './PiRuntimeService';
 import type { PiEvent } from '../../shared/contracts/ipc';
-import { PiSessionRepository } from './PiSessionRepository';
+import { defaultSessionsRoot, PiSessionRepository } from './PiSessionRepository';
 import type { SessionTitleGenerator } from './PiSessionTitleGenerator';
 import { InMemorySessionPermissionStore } from './SessionPermissionStore';
 
@@ -41,6 +42,9 @@ function fixture(availableModels: typeof model[] = [model]) {
     get sessionName() { return sessionName; },
     sessionManager: {
       getLeafId: vi.fn(() => 'leaf-1'),
+      branch: vi.fn(),
+      buildSessionContext: vi.fn(() => ({ messages: [] })),
+      setSessionFile: vi.fn(),
       getBranch: vi.fn(() => [] as unknown[]),
       getSessionName: vi.fn(() => sessionName),
       appendSessionInfo: vi.fn((name: string) => { sessionName = name; return 'name-entry'; }),
@@ -173,7 +177,7 @@ describe('PiRuntimeService', () => {
   });
 
   it('activates one orchestration protocol surface while registering both for restored sessions', async () => {
-    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'goalmax_status', 'goalmax_report', 'goalmax_complete'];
+    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'message_session', 'goalmax_status', 'goalmax_report', 'goalmax_complete'];
     const legacy = fixture();
     const legacyService = new PiRuntimeService(legacy.adapter);
     await legacyService.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'medium', defaultModel: null, agentTeamMode: 'legacy' });
@@ -332,6 +336,62 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('rejects attaching the current session to itself', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await expect(service.prompt({ text: 'Use this', behavior: 'prompt', sessionReferences: [{ id: 'session-1', title: 'Current session', projectPath: '/project' }] }))
+      .rejects.toMatchObject({ normalized: { code: 'INVALID_REQUEST' } });
+    expect(fake.session.prompt).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  it('adds bounded saved-session context to the transport prompt', async () => {
+    const sessionsRoot = defaultSessionsRoot();
+    mkdirSync(sessionsRoot, { recursive: true });
+    const sessionDir = mkdtempSync(path.join(sessionsRoot, '--pi-desktop-reference-test-'));
+    const referenced = SessionManager.create('/project', sessionDir);
+    referenced.appendMessage({ role: 'user', content: 'Review the authentication boundary.', timestamp: 1 } as never);
+    referenced.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'The boundary needs a CSRF check.' }], timestamp: 2 } as never);
+    const sessionPath = referenced.getSessionFile()!;
+    const source = {
+      list: vi.fn(async () => [{
+        path: sessionPath, id: referenced.getSessionId(), cwd: '/project', name: 'Authentication review',
+        created: new Date('2026-01-01T00:00:00.000Z'), modified: new Date('2026-01-01T00:01:00.000Z'), messageCount: 2,
+        firstMessage: 'Review the authentication boundary.', allMessagesText: '',
+      }]),
+      rename: vi.fn(),
+    };
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter, new PiSessionRepository(source));
+    try {
+      await service.openProject({ path: '/project', name: 'project', trusted: true });
+      await expect(service.prompt({
+        text: 'Use the attached review.', behavior: 'prompt',
+        sessionReferences: [{ id: referenced.getSessionId(), title: 'Authentication review', projectPath: '/project' }],
+      })).resolves.toMatchObject({ accepted: true });
+      expect(fake.session.prompt).toHaveBeenCalledWith(expect.stringContaining('Latest assistant response:\nThe boundary needs a CSRF check.'), expect.any(Object));
+      expect(fake.session.prompt.mock.calls[0]?.[0]).toContain('untrusted reference material');
+      fake.settle();
+    } finally {
+      await service.dispose();
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  it('registers a message_session tool that refuses an untagged session', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const tools = (fake.adapter.createRuntime as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as ToolDefinition[];
+    const messageSession = tools.find((tool) => tool.name === 'message_session')!;
+    expect(messageSession).toBeDefined();
+    const ctx = { sessionManager: { getSessionId: () => 'session-1' } } as never;
+    await expect(messageSession.execute('call', { sessionId: 'untagged', message: 'hi' }, new AbortController().signal, () => undefined, ctx))
+      .rejects.toThrow(/not tagged/i);
+    await service.dispose();
+  });
+
   it('lists sessions for an existing project path without opening that project', async () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'pi-desktop-preview-'));
     try {
@@ -396,6 +456,90 @@ describe('PiRuntimeService', () => {
     const switched = await service.switchSession(saved.id);
     expect(switched.sessions).toEqual([expect.objectContaining({ id: saved.id, active: true })]);
     expect(switched.sessions?.some((session) => session.title === 'Untitled session')).toBe(false);
+    await service.dispose();
+  });
+
+  it('rejects a direct message when the saved session no longer exists', async () => {
+    const fake = fixture();
+    const repository = {
+      list: vi.fn(async () => []), resolve: vi.fn(async () => undefined), branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await expect(service.sendSessionMessage('missing-session', 'hello')).rejects.toThrow(/no longer exists/i);
+    await service.dispose();
+  });
+
+  it('wakes a saved session in a background runtime before delivering a direct message', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'cold-session', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/cold-session.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const repository = {
+      list: vi.fn(async () => [saved]), resolve: vi.fn(async () => saved), branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.runtime.switchSession.mockImplementationOnce(async () => {
+      fake.session.sessionId = saved.id;
+      fake.session.sessionFile = saved.path;
+      return { cancelled: false };
+    });
+
+    await service.sendSessionMessage(saved.id, 'continue the review');
+
+    expect(fake.adapter.createRuntime).toHaveBeenCalledTimes(2);
+    expect(fake.runtime.switchSession).toHaveBeenCalledWith(saved.path, { cwdOverride: '/project' });
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ customType: 'fate-direct-session-message', display: true }),
+      { triggerTurn: true },
+    );
+    await service.dispose();
+  });
+
+  it('rejects a direct message to the active session', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await expect(service.sendSessionMessage('session-1', 'hello')).rejects.toThrow(/active session/i);
+    await service.dispose();
+  });
+
+  it('delivers a direct message to a background live session without switching the view', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'saved', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/saved.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const repository = {
+      list: vi.fn(async () => [saved]), resolve: vi.fn(async () => saved), branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as ((session: typeof fake.session) => Promise<void>) | undefined;
+    // The original slot keeps streaming in the background while a second slot
+    // opens the saved session: switching while streaming creates a new slot.
+    fake.setStreaming(true);
+    fake.runtime.switchSession.mockImplementationOnce(async () => {
+      fake.session.sessionId = saved.id;
+      fake.session.sessionFile = saved.path;
+      fake.session.messages = [];
+      fake.agent.state.messages = fake.session.messages;
+      await rebind?.(fake.session);
+      return { cancelled: false };
+    });
+    await service.switchSession(saved.id);
+    // Both slots share the fixture session object; the first (original) slot is
+    // the background one and the added slot is selected. Drive its turn phase
+    // to 'active' so the steer is delivered instead of deferred.
+    fake.emitSession({ type: 'agent_start', message: { role: 'user', content: 'x' } });
+    const state = await service.sendSessionMessage(saved.id, 'keep going', 'steer');
+    expect(state.sessionId).toBe(saved.id);
+    expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ customType: 'fate-direct-session-message', display: true }),
+      expect.objectContaining({ deliverAs: 'steer' }),
+    );
     await service.dispose();
   });
 
@@ -1924,6 +2068,30 @@ describe('PiRuntimeService', () => {
     expect(fake.session.navigateTree).toHaveBeenCalledWith('alternate-leaf', { summarize: false });
     expect(result.selectedText).toBe('restored branch prompt');
     expect(result.state.sessionId).toBe('session-1');
+    await service.dispose();
+  });
+
+  it('reloads the rewritten session tree and restores its active path after deleting an inactive fork', async () => {
+    const fake = fixture();
+    const safePath = path.join(defaultSessionsRoot(), '--project--', 'session-1.jsonl');
+    fake.session.sessionFile = safePath;
+    const repository = {
+      list: vi.fn(async () => []),
+      branches: vi.fn(() => [
+        { id: 'leaf-1', parentId: 'root', depth: 1, preview: 'Current response', kind: 'message', active: true },
+        { id: 'alternate-leaf', parentId: 'root', depth: 1, preview: 'Alternate response', kind: 'message', active: false },
+      ]),
+      deleteBranch: vi.fn(async () => undefined),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    await service.deleteSessionBranch('alternate-leaf');
+
+    expect(repository.deleteBranch).toHaveBeenCalledWith('/project', 'session-1', 'alternate-leaf', 'leaf-1');
+    expect(fake.session.sessionManager.setSessionFile).toHaveBeenCalledWith(safePath);
+    expect(fake.session.sessionManager.branch).toHaveBeenCalledWith('leaf-1');
+    await expect(service.deleteSessionBranch('leaf-1')).rejects.toThrow('Switch to a different conversation path');
     await service.dispose();
   });
 

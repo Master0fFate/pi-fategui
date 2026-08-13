@@ -1,9 +1,10 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
-import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, FileText, FolderOpen, GitFork, Globe2, Hash, ImagePlus, LoaderCircle, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
+import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, FileText, FolderOpen, GitFork, Globe2, Hash, History, ImagePlus, LoaderCircle, MessageSquarePlus, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
 import { type ChangeEvent, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { BrowserAnnotation, FileEntry, PromptInput, QueueMutationInput, SpeechStreamUpdate } from '../../../shared/contracts/ipc';
+import { readSessionReference, type SessionReferenceAttachment } from '../../../shared/sessionReferences';
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AppTooltip } from '../../components/AppTooltip';
 import { SelectControl } from '../../components/SelectControl';
@@ -15,7 +16,7 @@ import { GoalMaxRail } from '../goalmaxxing/GoalMaxRail';
 import { GoalMaxTaskStrip } from '../goalmaxxing/GoalMaxTaskStrip';
 import { parseGoalMaxCommand } from '../goalmaxxing/parseGoalMaxCommand';
 import { ContextWheel } from './ContextWheel';
-import { agentMentionContext, findAgentMentions, parseAgentStopCommand } from './agentMentions';
+import { agentMentionContext, findLiveAgentMentions, parseAgentStopCommand, sessionMentionHandle, type LiveAgentMention } from './agentMentions';
 import { fileTagContext, fileTagText, findFileTags } from './fileTags';
 import { findSlashCommands, slashCommandContext, slashCommandDescription, slashCommandLabel, type SlashCommand } from './slashCommands';
 import { startVoiceStream, type VoiceStreamController } from './voiceStream';
@@ -35,6 +36,8 @@ interface SessionDraft {
   imagesRevision: number;
   browserAnnotationIds: string[];
   browserAnnotationsRevision: number;
+  sessionReferences: SessionReferenceAttachment[];
+  sessionReferencesRevision: number;
   forkNotice: string | null;
   selectionStart: number;
   selectionEnd: number;
@@ -43,7 +46,8 @@ interface SessionDraft {
 
 const emptySessionDraft = (): SessionDraft => ({
   text: '', textRevision: 0, images: [], imagesRevision: 0,
-  browserAnnotationIds: [], browserAnnotationsRevision: 0, forkNotice: null,
+  browserAnnotationIds: [], browserAnnotationsRevision: 0,
+  sessionReferences: [], sessionReferencesRevision: 0, forkNotice: null,
   selectionStart: 0, selectionEnd: 0, scrollTop: 0,
 });
 
@@ -201,6 +205,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const [draft, setDraft] = useState('');
   const [images, setImages] = useState<Attachment[]>([]);
   const [browserAnnotationIds, setBrowserAnnotationIds] = useState<string[]>([]);
+  const [sessionReferences, setSessionReferences] = useState<SessionReferenceAttachment[]>([]);
+  const [sessionReferenceMenuOpen, setSessionReferenceMenuOpen] = useState(false);
+  const [sessionDropActive, setSessionDropActive] = useState(false);
   const [previewImage, setPreviewImage] = useState<Attachment | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [forking, setForking] = useState(false);
@@ -216,6 +223,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const [goalUpdateBusyId, setGoalUpdateBusyId] = useState<string | null>(null);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [selectedAgentIndex, setSelectedAgentIndex] = useState(0);
+  const [liveAgentTarget, setLiveAgentTarget] = useState<LiveAgentMention | null>(null);
+  const [liveAgentDelivery, setLiveAgentDelivery] = useState<'queue' | 'steer'>('queue');
+  const [liveAgentBusy, setLiveAgentBusy] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [fileSuggestionResult, setFileSuggestionResult] = useState<{ projectPath: string; query: string; entries: FileEntry[] } | null>(null);
   const [fileTagDismissed, setFileTagDismissed] = useState(false);
@@ -237,9 +247,11 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const draftRef = useRef(draft);
   const imagesRef = useRef(images);
   const browserAnnotationIdsRef = useRef(browserAnnotationIds);
+  const sessionReferencesRef = useRef(sessionReferences);
   const draftRevision = useRef(0);
   const imagesRevision = useRef(0);
   const browserAnnotationsRevision = useRef(0);
+  const sessionReferencesRevision = useRef(0);
   const sessionDrafts = useRef(sessionDraftsByIdentity);
   const activeDraftKey = useRef<string | null>(null);
   const pendingDraftSelection = useRef<{ key: string | null; text: string; start: number; end: number; scrollTop: number; focus?: boolean } | null>(null);
@@ -281,6 +293,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     forkPoints: state.runtime.forkPoints,
     sessionCapabilities: state.runtime.sessionCapabilities,
     sessionOperation: state.runtime.sessionOperation,
+    agentTeams: state.runtime.agentTeams,
   })));
   const activeSessionDraftKey = sessionDraftKey(runtime.project?.path ?? null, runtime.sessionId, runtime.sessions);
   const cachedActiveDraft = activeSessionDraftKey === null ? undefined : sessionDraftsByIdentity.get(activeSessionDraftKey);
@@ -345,6 +358,10 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const voiceDownloadProgress = speechDownload?.modelId === speech.modelId
     ? speechDownload.state === 'verifying' ? 100 : Math.min(100, Math.round(speechDownload.downloadedBytes / speechDownload.totalBytes * 100))
     : 0;
+  const attachableSessions = useMemo(() => (runtime.sessions ?? [])
+    .filter((session) => !session.active && !session.path.startsWith('live:'))
+    .slice(0, 50)
+    .map((session) => ({ id: session.id, title: session.title, projectPath: runtime.project?.path ?? '' })), [runtime.project?.path, runtime.sessions]);
   forkNoticeRef.current = forkNotice;
   caretPositionRef.current = caretPosition;
 
@@ -358,6 +375,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       imagesRevision: imagesRevision.current,
       browserAnnotationIds: browserAnnotationIdsRef.current,
       browserAnnotationsRevision: browserAnnotationsRevision.current,
+      sessionReferences: sessionReferencesRef.current,
+      sessionReferencesRevision: sessionReferencesRevision.current,
       forkNotice: forkNoticeRef.current,
       selectionStart: caretPositionRef.current,
       selectionEnd: selectionEndRef.current,
@@ -396,6 +415,18 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const updateBrowserAnnotations = useCallback((update: string[] | ((current: string[]) => string[])) => {
     updateBrowserAnnotationsForKey(activeDraftKey.current, update);
   }, [updateBrowserAnnotationsForKey]);
+  const updateSessionReferencesForKey = useCallback((key: string | null, update: SessionReferenceAttachment[] | ((current: SessionReferenceAttachment[]) => SessionReferenceAttachment[])) => {
+    if (key === null) return;
+    const stored = sessionDrafts.current.get(key) ?? emptySessionDraft();
+    const current = stored.sessionReferences ?? [];
+    const next = typeof update === 'function' ? update(current) : update;
+    const unique = next.filter((reference, index) => next.findIndex((candidate) => candidate.id === reference.id && candidate.projectPath === reference.projectPath) === index).slice(-8);
+    if (unique.length === current.length && unique.every((reference, index) => reference === current[index])) return;
+    cacheSessionDraft(key, { ...stored, sessionReferences: unique, sessionReferencesRevision: (stored.sessionReferencesRevision ?? 0) + 1 });
+  }, []);
+  const updateSessionReferences = useCallback((update: SessionReferenceAttachment[] | ((current: SessionReferenceAttachment[]) => SessionReferenceAttachment[])) => {
+    updateSessionReferencesForKey(activeDraftKey.current, update);
+  }, [updateSessionReferencesForKey]);
   const updateForkNoticeForKey = useCallback((key: string | null, next: string | null) => {
     if (key === null) return;
     const current = sessionDrafts.current.get(key) ?? emptySessionDraft();
@@ -470,11 +501,11 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const agentSuggestions = useMemo(
     () => mentionQuery === null
       ? []
-      : findAgentMentions(subagentOrder.flatMap((id) => {
+      : findLiveAgentMentions(subagentOrder.flatMap((id) => {
         const run = useRuntimeStore.getState().subagentsById[id];
         return run ? [run] : [];
-      }), mentionQuery),
-    [mentionQuery, subagentOrder],
+      }), runtime.agentTeams ?? [], runtime.sessions ?? [], runtime.sessionId, mentionQuery, 8, mentionContext?.symbol),
+    [mentionContext?.symbol, mentionQuery, runtime.agentTeams, runtime.sessionId, runtime.sessions, subagentOrder],
   );
   const mentionMenuOpen = !slashMenuOpen && mentionContext !== null && agentSuggestions.length > 0 && !mentionDismissed;
   const activeAgentIndex = agentSuggestions.length > 0
@@ -500,10 +531,13 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       imagesRevision.current = next.imagesRevision;
       browserAnnotationIdsRef.current = next.browserAnnotationIds;
       browserAnnotationsRevision.current = next.browserAnnotationsRevision;
+      sessionReferencesRef.current = next.sessionReferences ?? [];
+      sessionReferencesRevision.current = next.sessionReferencesRevision ?? 0;
       forkNoticeRef.current = next.forkNotice;
       setDraft(next.text);
       setImages(next.images);
       setBrowserAnnotationIds(next.browserAnnotationIds);
+      setSessionReferences(next.sessionReferences ?? []);
       setForkNotice(next.forkNotice);
     };
     sessionDraftListeners.add(synchronize);
@@ -549,6 +583,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     imagesRevision.current = next.imagesRevision;
     browserAnnotationIdsRef.current = next.browserAnnotationIds;
     browserAnnotationsRevision.current = next.browserAnnotationsRevision;
+    sessionReferencesRef.current = next.sessionReferences ?? [];
+    sessionReferencesRevision.current = next.sessionReferencesRevision ?? 0;
     forkNoticeRef.current = next.forkNotice;
     caretPositionRef.current = next.selectionStart;
     selectionEndRef.current = next.selectionEnd;
@@ -556,12 +592,14 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     setDraft(next.text);
     setImages(next.images);
     setBrowserAnnotationIds(next.browserAnnotationIds);
+    setSessionReferences(next.sessionReferences ?? []);
     setForkNotice(next.forkNotice);
     setCaretPosition(next.selectionStart);
     setPreviewImage(null);
     setComposerError(null);
     setSlashDismissed(false);
     setMentionDismissed(false);
+    setLiveAgentTarget(null);
     setFileTagDismissed(false);
     const start = Math.min(next.text.length, next.selectionStart);
     pendingDraftSelection.current = {
@@ -604,6 +642,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     if (composerDraftRequest.mode === 'replace') {
       updateImages([]);
       updateBrowserAnnotations([]);
+      updateSessionReferences([]);
       updateForkNotice(composerDraftRequest.notice ?? null);
     } else if (composerDraftRequest.notice) {
       updateForkNotice(composerDraftRequest.notice);
@@ -615,7 +654,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       textarea.current?.focus({ preventScroll: true });
       textarea.current?.setSelectionRange(composerDraftRequest.selectAll ? 0 : nextCaret, composerDraftRequest.selectAll ? nextDraft.length : nextCaret);
     });
-  }, [clearComposerDraftRequest, composerDraftRequest, updateBrowserAnnotations, updateDraft, updateForkNotice, updateImages]);
+  }, [clearComposerDraftRequest, composerDraftRequest, updateBrowserAnnotations, updateDraft, updateForkNotice, updateImages, updateSessionReferences]);
 
   useLayoutEffect(() => {
     const element = composer.current;
@@ -827,7 +866,11 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     const submittedImagesRevision = imagesRevision.current;
     const submittedBrowserAnnotationIds = [...browserAnnotationIdsRef.current];
     const submittedBrowserAnnotationsRevision = browserAnnotationsRevision.current;
-    const text = submittedDraft.trim() || (submittedBrowserAnnotationIds.length > 0 ? 'Address the attached browser annotations.' : '');
+    const submittedSessionReferences = [...sessionReferencesRef.current];
+    const submittedSessionReferencesRevision = sessionReferencesRevision.current;
+    const text = submittedDraft.trim()
+      || (submittedSessionReferences.length > 0 ? 'Review the attached session reference.' : '')
+      || (submittedBrowserAnnotationIds.length > 0 ? 'Address the attached browser annotations.' : '');
     if (!text || runtimeNow.status !== 'ready' || submittingRef.current || !('piDesktop' in window)) return;
     submittingRef.current = true;
     if (mounted.current) {
@@ -856,11 +899,17 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         const submittedIds = new Set(submittedBrowserAnnotationIds);
         updateBrowserAnnotationsForKey(originDraftKey, (current) => current.filter((id) => !submittedIds.has(id)));
       }
+      if ((originDraft?.sessionReferencesRevision ?? 0) === submittedSessionReferencesRevision) {
+        updateSessionReferencesForKey(originDraftKey, []);
+      } else if (submittedSessionReferences.length > 0) {
+        const submitted = new Set(submittedSessionReferences.map((reference) => `${reference.projectPath}\u0000${reference.id}`));
+        updateSessionReferencesForKey(originDraftKey, (current) => current.filter((reference) => !submitted.has(`${reference.projectPath}\u0000${reference.id}`)));
+      }
     };
     try {
       const goalCommand = parseGoalMaxCommand(text);
       if (goalCommand) {
-        if (submittedImages.length > 0 || submittedBrowserAnnotationIds.length > 0) throw new Error('Remove image and browser annotation attachments before using GoalMax commands.');
+        if (submittedImages.length > 0 || submittedBrowserAnnotationIds.length > 0 || submittedSessionReferences.length > 0) throw new Error('Remove image, browser annotation, and session attachments before using GoalMax commands.');
         const currentGoal = useGoalMaxStore.getState().goal;
         if (goalCommand.kind === 'view') {
           if (!currentGoal) throw new Error('This thread has no GoalMax objective. Start one with /goalmax followed by an objective.');
@@ -887,7 +936,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         clearSubmittedDraft();
         return;
       }
-      const stopCommand = submittedImages.length === 0 && submittedBrowserAnnotationIds.length === 0 ? parseAgentStopCommand(text) : null;
+      const stopCommand = submittedImages.length === 0 && submittedBrowserAnnotationIds.length === 0 && submittedSessionReferences.length === 0 ? parseAgentStopCommand(text) : null;
       if (stopCommand) {
         if (typeof window.piDesktop.controlSubagent !== 'function') throw new Error('Restart Fate UI to use direct agent controls.');
         const state = await window.piDesktop.controlSubagent({ action: 'cancel', target: stopCommand.target });
@@ -900,11 +949,13 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       }
       const promptImages = submittedImages.map(({ name, mimeType, data }) => ({ name, mimeType, data }));
       const browserAnnotationRefs = submittedBrowserAnnotationIds.map((id) => ({ id }));
+      const promptSessionReferences = submittedSessionReferences.map(({ id, title, projectPath }) => ({ id, title, projectPath }));
       const acceptance = await window.piDesktop.prompt({
         text,
         behavior,
         ...(promptImages.length ? { images: promptImages } : {}),
         ...(browserAnnotationRefs.length ? { browserAnnotations: browserAnnotationRefs } : {}),
+        ...(promptSessionReferences.length ? { sessionReferences: promptSessionReferences } : {}),
       });
       if (!acceptance.accepted) return;
       if (submittedBrowserAnnotationIds.length > 0 && typeof window.piDesktop.dismissBrowserAnnotations === 'function') {
@@ -1024,11 +1075,11 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     setSlashDismissed(true);
   };
 
-  const selectAgentMention = (run: NonNullable<typeof selectedAgent>) => {
+  const selectAgentMention = (agent: NonNullable<typeof selectedAgent>) => {
     if (!mentionContext) return;
     const before = editorDraft.slice(0, mentionContext.start);
     const after = editorDraft.slice(mentionContext.end);
-    const mention = `@${subagentHandle(run)}`;
+    const mention = `${mentionContext.symbol}${agent.handle}`;
     const trailingSpace = after.length === 0 || !/^\s/u.test(after) ? ' ' : '';
     const insertion = `${mention}${trailingSpace}`;
     const nextDraft = `${before}${insertion}${after}`;
@@ -1043,6 +1094,14 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     };
     updateDraft(nextDraft);
     setCaretPosition(nextCaret);
+    if (agent.kind === 'session') {
+      const session = attachableSessions.find((candidate) => candidate.id === agent.id);
+      if (session) updateSessionReferences((current) => [...current, session]);
+      setLiveAgentTarget(null);
+    } else {
+      setLiveAgentTarget(agent);
+      setLiveAgentDelivery(agent.active ? 'steer' : 'queue');
+    }
     setMentionDismissed(true);
   };
 
@@ -1059,12 +1118,111 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     setFileTagDismissed(true);
   };
 
+  const sendLiveAgentMessage = async () => {
+    const target = liveAgentTarget;
+    const message = draftRef.current.trim();
+    if (!target || !message || liveAgentBusy || !('piDesktop' in window)) return;
+    const steerActiveTurn = target.active && liveAgentDelivery === 'steer';
+    const maximum = target.kind === 'team-node' ? 32_768 : target.active ? 20_000 : 200_000;
+    if (new TextEncoder().encode(message).byteLength > maximum) {
+      setComposerError(`Messages to @${target.handle} are limited to ${maximum.toLocaleString()} bytes.`);
+      return;
+    }
+    setLiveAgentBusy(true);
+    setComposerError(null);
+    const origin = useRuntimeStore.getState().runtime;
+    try {
+      let state;
+      if (target.kind === 'team-node') {
+        if (typeof window.piDesktop.controlAgentTeam !== 'function') throw new Error('Restart Fate UI to message Agent Team sessions.');
+        state = await window.piDesktop.controlAgentTeam({
+          action: steerActiveTurn ? 'message' : 'followUp',
+          teamId: target.teamId,
+          target: target.id,
+          message,
+          replyToUser: true,
+          ...(steerActiveTurn ? { delivery: 'steer' as const } : {}),
+          operationId: crypto.randomUUID(),
+        });
+      } else {
+        if (typeof window.piDesktop.controlSubagent !== 'function') throw new Error('Restart Fate UI to message live agent sessions.');
+        if (target.active) {
+          state = await window.piDesktop.controlSubagent({ action: 'steer', target: `@${target.handle}`, message });
+        } else {
+          state = await window.piDesktop.controlSubagent({ action: 'followUp', target: `@${target.handle}`, message });
+        }
+      }
+      const current = useRuntimeStore.getState().runtime;
+      const selectionIsOrigin = current.sessionId === origin.sessionId && current.project?.path === origin.project?.path;
+      const resultIsCurrent = current.sessionId === state.sessionId && current.project?.path === state.project?.path;
+      if (selectionIsOrigin || resultIsCurrent) useRuntimeStore.getState().setRuntime(state);
+      updateDraft('');
+      setLiveAgentTarget(null);
+      showToast({ kind: 'success', title: 'Message delivered', message: `Sent to @${target.handle}${steerActiveTurn ? ' in its active turn.' : '.'}` });
+    } catch (error) {
+      if (mounted.current) setComposerError(error instanceof Error ? error.message : 'The live agent message could not be delivered.');
+    } finally {
+      if (mounted.current) setLiveAgentBusy(false);
+    }
+  };
+
+  const selectSessionTarget = (session: (typeof attachableSessions)[number]) => {
+    const handle = sessionMentionHandle(session.title, session.id);
+    const caret = Math.max(0, Math.min(editorDraft.length, caretPosition));
+    const before = editorDraft.slice(0, caret);
+    const after = editorDraft.slice(caret);
+    const prefix = before && !/\s$/u.test(before) ? ' ' : '';
+    const suffix = after.length === 0 || !/^\s/u.test(after) ? ' ' : '';
+    const insertion = `${prefix}~${handle}${suffix}`;
+    const nextDraft = `${before}${insertion}${after}`;
+    const nextCaret = before.length + insertion.length;
+    pendingDraftSelection.current = {
+      key: activeDraftKey.current,
+      text: nextDraft,
+      start: nextCaret,
+      end: nextCaret,
+      scrollTop: Math.max(0, textarea.current?.scrollTop ?? 0),
+      focus: true,
+    };
+    updateDraft(nextDraft);
+    setCaretPosition(nextCaret);
+    updateSessionReferences((current) => [...current, session]);
+    setLiveAgentTarget(null);
+    setSessionReferenceMenuOpen(false);
+  };
+
+  const attachSessionReference = (reference: SessionReferenceAttachment) => {
+    if (!connected || !reference.projectPath) return;
+    if (reference.id === runtime.sessionId && reference.projectPath === runtime.project?.path) {
+      setComposerError('The current session is already in context. Choose a different session.');
+      return;
+    }
+    if (sessionReferencesRef.current.some((current) => current.id === reference.id && current.projectPath === reference.projectPath)) {
+      setSessionReferenceMenuOpen(false);
+      textarea.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (sessionReferencesRef.current.length >= 8) {
+      setComposerError('You can attach up to eight sessions to one message.');
+      return;
+    }
+    updateSessionReferences((current) => [...current, reference]);
+    setComposerError(null);
+    setSessionReferenceMenuOpen(false);
+    textarea.current?.focus({ preventScroll: true });
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return;
     const modifierPressed = event.metaKey || event.ctrlKey;
     const shouldSend = sendMessageWithModifier
       ? modifierPressed
       : !event.shiftKey && !event.altKey;
+    if (event.key === 'Enter' && shouldSend && liveAgentTarget && liveAgentTarget.kind !== 'session') {
+      event.preventDefault();
+      void sendLiveAgentMessage();
+      return;
+    }
     if (event.key === 'Enter' && shouldSend && parseAgentStopCommand(editorDraft)) {
       event.preventDefault();
       void submit(runtime.streaming || runtime.activeSessionRunning ? 'followUp' : 'prompt');
@@ -1574,7 +1732,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
 
   const mutateQueuedMessage = async (id: string, action: QueueMutationInput['action']) => {
     if (!('piDesktop' in window) || queueBusyRef.current) return;
-    if (action === 'edit' && (draftRef.current.trim() || imagesRef.current.length > 0 || browserAnnotationIdsRef.current.length > 0)) {
+    if (action === 'edit' && (draftRef.current.trim() || imagesRef.current.length > 0 || browserAnnotationIdsRef.current.length > 0 || sessionReferencesRef.current.length > 0)) {
       setComposerError('Finish or clear the current draft and attachments before editing a queued message.');
       textarea.current?.focus({ preventScroll: true });
       return;
@@ -1605,6 +1763,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
           pixels: 0,
         })));
         updateBrowserAnnotations((result.restored.browserAnnotations ?? []).map(({ id: annotationId }) => annotationId));
+        updateSessionReferences((result.restored.sessionReferences ?? []).map((reference) => ({ ...reference })));
         requestAnimationFrame(() => {
           if (!mounted.current) return;
           textarea.current?.focus({ preventScroll: true });
@@ -1792,8 +1951,8 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       {mentionMenuOpen && mentionContext && (
         <div className="slash-suggestions agent-suggestions" role="listbox" aria-label="Agent mentions" id="agent-suggestions">
           <div className="slash-suggestions-heading">
-            <span>Agents</span>
-            <code>@{mentionQuery}</code>
+            <span>{mentionContext.symbol === '~' ? 'Sessions' : 'Agents'}</span>
+            <code>{mentionContext.symbol}{mentionQuery}</code>
           </div>
           <div ref={agentList} className="slash-suggestions-list">
             {agentSuggestions.map((run, index) => (
@@ -1808,12 +1967,12 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => selectAgentMention(run)}
               >
-                <AtSign size={14} aria-hidden="true" />
+                {run.kind === 'session' ? <History size={14} aria-hidden="true" /> : <AtSign size={14} aria-hidden="true" />}
                 <span className="slash-suggestion-copy agent-suggestion-copy icon-label">
-                  <strong>@{subagentHandle(run)}</strong>
-                  <small>{subagentDisplayName(run)} · {run.status} · {run.task}</small>
+                  <strong>{run.kind === 'session' ? '~' : '@'}{run.handle}</strong>
+                  <small>{run.displayName} · {run.status} · {run.task}</small>
                 </span>
-                <em>{run.status === 'running' || run.status === 'queued' ? 'live' : 'history'}</em>
+                <em>{run.active ? 'live' : 'ready'}</em>
               </button>
             ))}
           </div>
@@ -1896,6 +2055,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 <div className="queued-message-actions">
                   {item.images?.length ? <span className="queued-message-attachments">{item.images.length} image{item.images.length === 1 ? '' : 's'}</span> : null}
                   {item.browserAnnotations?.length ? <span className="queued-message-attachments">{item.browserAnnotations.length} page note{item.browserAnnotations.length === 1 ? '' : 's'}</span> : null}
+                  {item.sessionReferences?.length ? <span className="queued-message-attachments">{item.sessionReferences.length} session{item.sessionReferences.length === 1 ? '' : 's'}</span> : null}
                   <AppTooltip content={item.behavior === 'steer' ? 'Steer mode · switch to follow-up' : 'Follow-up mode · switch to steer'} wrapTrigger>
                     <button
                       className="queued-message-behavior"
@@ -1930,8 +2090,30 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         ref={composer}
         className="composer"
         data-compact-toolbar={compactToolbar ? 'true' : 'false'}
+        data-session-drop={sessionDropActive || undefined}
         style={{ '--composer-input-height': `${inputHeight}px` } as CSSProperties}
-        onSubmit={(event) => { event.preventDefault(); void submit(runtime.streaming || runtime.activeSessionRunning ? 'followUp' : 'prompt'); }}
+        onDragEnter={(event) => {
+          if (!readSessionReference(event.dataTransfer)) return;
+          event.preventDefault();
+          setSessionDropActive(true);
+        }}
+        onDragOver={(event) => {
+          if (!readSessionReference(event.dataTransfer)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'copy';
+          setSessionDropActive(true);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setSessionDropActive(false);
+        }}
+        onDrop={(event) => {
+          const reference = readSessionReference(event.dataTransfer);
+          if (!reference) return;
+          event.preventDefault();
+          setSessionDropActive(false);
+          attachSessionReference(reference);
+        }}
+        onSubmit={(event) => { event.preventDefault(); if (liveAgentTarget && liveAgentTarget.kind !== 'session') void sendLiveAgentMessage(); else void submit(runtime.streaming || runtime.activeSessionRunning ? 'followUp' : 'prompt'); }}
       >
         <AppTooltip content={'Drag upward to enlarge the message input\nUse ↑ or ↓ while focused'}>
           <div
@@ -1947,6 +2129,18 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
             onKeyDown={resizeComposerWithKeyboard}
           />
         </AppTooltip>
+        {liveAgentTarget && liveAgentTarget.kind !== 'session' && (
+          <div className="composer-live-agent-target" role="status" aria-label={`Live message target: @${liveAgentTarget.handle}`}>
+            <MessageSquarePlus size={14} aria-hidden="true" />
+            <span><strong>Message @{liveAgentTarget.handle}</strong><small>{liveAgentTarget.displayName} · {liveAgentTarget.active ? 'active session' : 'ready session'}</small></span>
+            {liveAgentTarget.kind === 'team-node' && liveAgentTarget.active ? (
+              <button type="button" className="composer-live-agent-delivery" aria-label={`Delivery: ${liveAgentDelivery === 'steer' ? 'Steer active turn' : 'Queue after active turn'}`} onClick={() => setLiveAgentDelivery((current) => current === 'steer' ? 'queue' : 'steer')}>
+                {liveAgentDelivery === 'steer' ? 'Steer' : 'Queue'}
+              </button>
+            ) : null}
+            <button type="button" aria-label={`Clear live message target: @${liveAgentTarget.handle}`} onClick={() => setLiveAgentTarget(null)}><X size={12} /></button>
+          </div>
+        )}
         {forkNotice && (
           <div className="composer-fork-notice" role="status">
             <GitFork size={14} aria-hidden="true" />
@@ -1963,6 +2157,17 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 index={index + 1}
                 onRemove={() => updateBrowserAnnotations((current) => current.filter((id) => id !== annotation.id))}
               />
+            ))}
+          </div>
+        )}
+        {sessionReferences.length > 0 && (
+          <div className="composer-session-references" aria-label="Attached session references" aria-live="polite">
+            {sessionReferences.map((reference) => (
+              <span key={`${reference.projectPath}\u0000${reference.id}`}>
+                <History size={13} aria-hidden="true" />
+                <span><strong>{reference.title}</strong><small>{reference.projectPath === runtime.project?.path ? 'Current project' : 'Trusted project'}</small></span>
+                <button type="button" aria-label={`Remove session reference: ${reference.title}`} onClick={() => updateSessionReferences((current) => current.filter((item) => item.id !== reference.id || item.projectPath !== reference.projectPath))}><X size={12} /></button>
+              </span>
             ))}
           </div>
         )}
@@ -1984,6 +2189,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 : slashMenuOpen && commandSuggestions.length > 0 ? `slash-option-${activeCommandIndex}` : undefined}
             value={editorDraft}
             onChange={(event) => {
+              if (liveAgentTarget && !event.target.value.trim()) setLiveAgentTarget(null);
               updateDraft(event.target.value);
               caretPositionRef.current = event.target.selectionStart;
               selectionEndRef.current = event.target.selectionEnd;
@@ -2116,6 +2322,47 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 <AppTooltip content="Tag a project file or folder with #" wrapTrigger><button className="composer-icon-action" type="button" aria-label="Tag project file or folder" disabled={!connected} onClick={startResourceTag}><Hash size={15} aria-hidden="true" /></button></AppTooltip>
                 <AppTooltip content={imageCapable ? 'Attach up to four images' : 'The model selected for the next message does not support images'} wrapTrigger><button className="composer-icon-action" type="button" aria-label="Attach image" disabled={!imageCapable || images.length >= 4} onClick={() => fileInput.current?.click()}><ImagePlus size={15} aria-hidden="true" /></button></AppTooltip>
                 {runtime.sessionCapabilities?.fork && forkPoint && <AppTooltip content={forkTooltip} wrapTrigger><button className="composer-icon-action" type="button" aria-label="Create new session from latest prompt" disabled={!canFork || forking} onClick={() => void forkConversation()}>{forking ? <LoaderCircle className="tool-spinner" size={15} aria-label="Creating session" /> : <GitFork size={15} aria-hidden="true" />}</button></AppTooltip>}
+                <Popover.Root
+                  open={sessionReferenceMenuOpen}
+                  onOpenChange={(nextOpen) => {
+                    setSessionReferenceMenuOpen(nextOpen);
+                    if (nextOpen) {
+                      setUtilityMenuOpen(false);
+                      setPermissionMenuOpen(false);
+                    }
+                  }}
+                >
+                  <AppTooltip content="Message a saved session with ~" wrapTrigger>
+                    <Popover.Trigger asChild>
+                      <button className="composer-icon-action" type="button" aria-label="Message saved session" disabled={!connected}>
+                        <History size={15} aria-hidden="true" />
+                      </button>
+                    </Popover.Trigger>
+                  </AppTooltip>
+                  <Popover.Portal>
+                    <Popover.Content className="session-reference-popover" role="dialog" aria-label="Message saved session" side="top" align="start" sideOffset={9} collisionPadding={12}>
+                      <div className="session-reference-popover-heading">
+                        <div><strong>Message saved session</strong><span>Select a session to insert its ~ tag.</span></div>
+                        <History size={15} aria-hidden="true" />
+                      </div>
+                      {attachableSessions.length > 0 ? (
+                        <div className="session-reference-options" role="listbox" aria-label="Saved sessions">
+                          {attachableSessions.map((session) => {
+                            return (
+                              <button key={session.id} type="button" role="option" onClick={() => selectSessionTarget(session)}>
+                                <History size={14} aria-hidden="true" />
+                                <span><strong>{session.title}</strong><small>Insert ~{sessionMentionHandle(session.title, session.id)}</small></span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="session-reference-empty">No other saved sessions are available in this project.</p>
+                      )}
+                      <p className="session-reference-popover-note">You can also type ~ in the message box to find a saved session.</p>
+                    </Popover.Content>
+                  </Popover.Portal>
+                </Popover.Root>
               </>
             )}
           </div>
@@ -2196,21 +2443,26 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 </AppTooltip>
               )}
               {(runtime.streaming || goalCancelable) && <span id="streaming-send-instructions" className="visually-hidden">Hold continuously for two seconds to {goalCancelable ? 'cancel the persistent goal and stop its work' : 'stop Pi without queuing the draft'}.</span>}
-              <AppTooltip content={runtime.streaming || runtime.activeSessionRunning ? `Click queues the message · Hold for 2 seconds to ${goalCancelable ? 'cancel goal' : 'stop Pi'}` : goalCancelable ? 'Send · Hold for 2 seconds to cancel goal' : sendMessageWithModifier ? 'Send · Ctrl/⌘ Enter' : 'Send · Enter'}>
+              <AppTooltip content={liveAgentTarget && liveAgentTarget.kind !== 'session' ? `Send directly to @${liveAgentTarget.handle}` : runtime.streaming || runtime.activeSessionRunning ? `Click queues the message · Hold for 2 seconds to ${goalCancelable ? 'cancel goal' : 'stop Pi'}` : goalCancelable ? 'Send · Hold for 2 seconds to cancel goal' : sendMessageWithModifier ? 'Send · Ctrl/⌘ Enter' : 'Send · Enter'}>
                 <span className="send-tooltip-trigger">
                   <button
                     className="send-button"
                     type="submit"
                     aria-label={runtime.streaming || runtime.activeSessionRunning ? 'Queue follow-up message' : goalCancelable && !draft.trim() ? 'Goal control; hold to cancel goal' : 'Send message'}
                     aria-describedby={runtime.streaming || goalCancelable ? 'streaming-send-instructions' : undefined}
-                    aria-busy={submitting}
-                    disabled={!connected || (!runtime.streaming && submitting) || (!runtime.streaming && !goalCancelable && !draft.trim() && browserAnnotationIds.length === 0)}
+                    aria-busy={submitting || liveAgentBusy}
+                    disabled={!connected || liveAgentBusy || (!runtime.streaming && submitting) || (!(liveAgentTarget && liveAgentTarget.kind !== 'session') && !runtime.streaming && !goalCancelable && !draft.trim() && browserAnnotationIds.length === 0 && sessionReferences.length === 0)}
                     onPointerDown={startSendHold}
                     onPointerUp={(event) => finishSendHold(normalizedPointerId(event.pointerId))}
                     onPointerCancel={(event) => cancelSendHold(normalizedPointerId(event.pointerId))}
                     onLostPointerCapture={(event) => cancelSendHold(normalizedPointerId(event.pointerId))}
                     onContextMenu={(event) => { if (runtime.streaming) event.preventDefault(); }}
                     onClick={(event) => {
+                      if (liveAgentTarget && liveAgentTarget.kind !== 'session') {
+                        event.preventDefault();
+                        void sendLiveAgentMessage();
+                        return;
+                      }
                       const outcome = sendClickOutcome.current;
                       if (!outcome) return;
                       sendClickOutcome.current = null;

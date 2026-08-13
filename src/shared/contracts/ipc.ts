@@ -57,6 +57,7 @@ export const ipcChannels = {
   systemGetInfo: 'system:get-info',
   windowControl: 'window:control',
   windowGetState: 'window:get-state',
+  windowNew: 'window:new',
   windowState: 'window:state',
   projectSelect: 'project:select',
   projectSelectFile: 'project:select-file',
@@ -107,6 +108,7 @@ export const ipcChannels = {
   runtimeAbort: 'runtime:abort',
   runtimeControlSubagent: 'runtime:control-subagent',
   runtimeControlAgentTeam: 'runtime:control-agent-team',
+  runtimeSendSessionMessage: 'runtime:send-session-message',
   runtimeSetModel: 'runtime:set-model',
   runtimeSetThinking: 'runtime:set-thinking',
   runtimeSetPermission: 'runtime:set-permission',
@@ -133,6 +135,7 @@ export const ipcChannels = {
   runtimeDeleteSession: 'runtime:delete-session',
   runtimeForkSession: 'runtime:fork-session',
   runtimeNavigateSessionBranch: 'runtime:navigate-session-branch',
+  runtimeDeleteSessionBranch: 'runtime:delete-session-branch',
   runtimeCloneSession: 'runtime:clone-session',
   runtimeImportSession: 'runtime:import-session',
   runtimeCompact: 'runtime:compact',
@@ -702,6 +705,19 @@ export const sessionSummarySchema = z.object({
   attention: sessionAttentionSchema.nullable().optional(),
 });
 
+/** A saved session selected as read-only context for the next Pi prompt. */
+export const sessionReferenceSchema = z.object({
+  id: z.string().min(1).max(500),
+  title: z.string().min(1).max(200),
+  projectPath: z.string().min(1).max(32_768),
+}).strict();
+const promptSessionReferencesSchema = z.array(sessionReferenceSchema).max(8).superRefine((references, context) => {
+  const keys = new Set(references.map((reference) => `${reference.projectPath}\u0000${reference.id}`));
+  if (keys.size !== references.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Session references must be unique.' });
+  }
+});
+
 export const sessionBranchSchema = z.object({
   id: z.string().min(1).max(500),
   parentId: z.string().max(500).nullable(),
@@ -738,6 +754,7 @@ export const queuedMessageSchema = z.object({
   text: z.string().min(1).max(200_000),
   images: promptImagesSchema.optional(),
   browserAnnotations: z.array(browserAnnotationReferenceSchema).max(24).optional(),
+  sessionReferences: promptSessionReferencesSchema.optional(),
   createdAt: z.number().finite(),
 });
 export const runtimeQueueSchema = z.object({
@@ -874,6 +891,7 @@ export const promptInputSchema = z.object({
   behavior: z.enum(['prompt', 'steer', 'followUp']).default('prompt'),
   images: promptImagesSchema.optional(),
   browserAnnotations: z.array(browserAnnotationReferenceSchema).max(24).optional(),
+  sessionReferences: promptSessionReferencesSchema.optional(),
 }).strict();
 export const promptAcceptanceSchema = z.object({ accepted: z.boolean(), runId: z.string().min(1) });
 export const abortResultSchema = z.object({ aborted: z.boolean() });
@@ -899,9 +917,19 @@ export const queueMutationResultSchema = z.object({
     text: z.string().min(1).max(200_000),
     images: promptImagesSchema.optional(),
     browserAnnotations: z.array(browserAnnotationReferenceSchema).max(24).optional(),
+    sessionReferences: promptSessionReferencesSchema.optional(),
   }).optional(),
 }).strict();
 export const sessionSearchInputSchema = z.object({ query: z.string().max(500).default('') }).strict();
+// Direct message to a saved session, delivered without switching the active
+// view. A cold session is resumed first. steer injects into a running turn;
+// followUp starts a new turn when the session is idle.
+export const sessionDirectMessageInputSchema = z.object({
+  sessionId: z.string().min(1).max(500),
+  text: z.string().trim().min(1).max(200_000),
+  behavior: z.enum(['steer', 'followUp']).default('followUp'),
+}).strict();
+export type SessionDirectMessageInput = z.infer<typeof sessionDirectMessageInputSchema>;
 export const projectPathInputSchema = z.object({ projectPath: z.string().min(1).max(32_768) }).strict();
 export const projectSessionListInputSchema = z.object({ projectPath: z.string().min(1).max(32_768), query: z.string().max(500).default('') }).strict();
 export const projectDeleteSessionsResultSchema = z.object({ deleted: z.number().int().nonnegative().max(100_000), skipped: z.number().int().nonnegative().max(100_000) }).strict();
@@ -915,6 +943,7 @@ export const compactInputSchema = z.object({ instructions: z.string().trim().max
 export const sessionListSchema = z.array(sessionSummarySchema).max(1_000);
 export const forkSessionResultSchema = z.object({ state: runtimeStateSchema, selectedText: z.string().optional() }).strict();
 export const navigateSessionBranchResultSchema = z.object({ state: runtimeStateSchema, selectedText: z.string().max(200_000).optional() }).strict();
+export const deleteSessionBranchResultSchema = z.object({ state: runtimeStateSchema }).strict();
 
 export const terminalIdSchema = z.string().uuid();
 export const terminalCreateInputSchema = z.object({ cols: z.number().int().min(2).max(400), rows: z.number().int().min(1).max(200) }).strict();
@@ -1144,7 +1173,9 @@ export type SubagentChildEvent = z.infer<typeof subagentChildEventSchema>;
 export type ExtensionUiState = z.infer<typeof extensionUiStateSchema>;
 export type SessionAttention = z.infer<typeof sessionAttentionSchema>;
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
+export type SessionReference = z.infer<typeof sessionReferenceSchema>;
 export type SessionBranch = z.infer<typeof sessionBranchSchema>;
+export type DeleteSessionBranchResult = z.infer<typeof deleteSessionBranchResultSchema>;
 export type PiEvent = z.infer<typeof piEventSchema>;
 export type PromptInput = z.infer<typeof promptInputSchema>;
 export type PromptAcceptance = z.infer<typeof promptAcceptanceSchema>;
@@ -1185,6 +1216,7 @@ export interface PiDesktopApi {
   getAppInfo: () => Promise<AppInfo>;
   controlWindow: (action: WindowControlAction) => Promise<WindowState>;
   getWindowState: () => Promise<WindowState>;
+  newWindow: () => Promise<void>;
   onWindowState: (listener: (state: WindowState) => void) => () => void;
   selectProject: () => Promise<RuntimeState>;
   openProject: (projectPath: string) => Promise<RuntimeState>;
@@ -1257,10 +1289,12 @@ export interface PiDesktopApi {
   listProjectSessions: (projectPath: string, query?: string) => Promise<SessionSummary[]>;
   deleteProjectSessions: (projectPath: string) => Promise<z.infer<typeof projectDeleteSessionsResultSchema>>;
   switchSession: (sessionId: string) => Promise<RuntimeState>;
+  sendSessionMessage: (input: SessionDirectMessageInput) => Promise<RuntimeState>;
   renameSession: (sessionId: string, name: string) => Promise<RuntimeState>;
   deleteSession: (sessionId: string) => Promise<RuntimeState>;
   forkSession: (entryId: string) => Promise<z.infer<typeof forkSessionResultSchema>>;
   navigateSessionBranch: (entryId: string) => Promise<z.infer<typeof navigateSessionBranchResultSchema>>;
+  deleteSessionBranch: (entryId: string) => Promise<z.infer<typeof deleteSessionBranchResultSchema>>;
   cloneSession: () => Promise<RuntimeState>;
   importSession: () => Promise<RuntimeState | null>;
   compact: (instructions?: string) => Promise<RuntimeState>;

@@ -133,6 +133,10 @@ describe('PiEventNormalizer', () => {
     const legacyChildNotice = { ...visible, customType: 'fate-subagent-notification', content: 'Child session settled.', display: true };
     expect(normalizer.normalize(event({ type: 'message_start', message: legacyChildNotice }))).toEqual([]);
     expect(normalizer.normalize(event({ type: 'message_end', message: legacyChildNotice }))).toEqual([]);
+
+    const directReply = { ...visible, customType: 'fate-live-agent-reply', content: 'Direct reply', display: false };
+    expect(normalizer.normalize(event({ type: 'message_start', message: directReply }))[0]).toMatchObject({ type: 'message.started', role: 'system' });
+    expect(normalizer.normalize(event({ type: 'message_end', message: directReply }))[0]).toMatchObject({ type: 'message.completed', role: 'system', text: 'Direct reply' });
   });
 
   it('preserves compaction failure instead of reporting false success', () => {

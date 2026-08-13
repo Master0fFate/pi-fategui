@@ -9,6 +9,7 @@ import {
   type ToolDefinition,
   DefaultPackageManager,
   ModelRuntime,
+  defineTool,
   SessionManager,
   SettingsManager,
   createAgentSessionFromServices,
@@ -20,6 +21,7 @@ import {
   getReadmePath,
   initTheme,
 } from '@earendil-works/pi-coding-agent';
+import { Type } from 'typebox';
 import type {
   AppError,
   ExtensionUiState,
@@ -37,6 +39,7 @@ import type {
   RuntimeTokenTelemetry,
   RuntimeTool,
   SessionAttention,
+  SessionReference,
   SessionSummary,
   SubagentControlInput,
   SubagentParentLivenessReport,
@@ -60,7 +63,8 @@ import { createToolProvenance } from './ToolProvenance';
 import { expandMultipleSkillCommands, promoteInlineResourceCommand } from './PiInlineCommands';
 import { createPiExtensionUiBridge, emptyExtensionUiState, type ExtensionNoticeLevel, type PiExtensionUiBridge } from './PiExtensionUi';
 import { PiDesktopError, authRequiredError, normalizeError } from './errors';
-import { PiSessionRepository, sessionDisplayTitle } from './PiSessionRepository';
+import { defaultSessionsRoot, isSafeSessionPath, PiSessionRepository, sessionDisplayTitle } from './PiSessionRepository';
+import { buildSessionReferenceContext } from './SessionReferenceContext';
 import { PiSessionTitleGenerator, type SessionTitleGenerator } from './PiSessionTitleGenerator';
 import { activeToolsForPermission, createProjectConfinedTools, type ProjectToolAccess } from './PiToolPolicy';
 import { validatePromptImages } from './PiPromptImages';
@@ -184,6 +188,8 @@ interface RuntimeSlot {
   runFailed: boolean;
   sessionTurnPhase: SessionTurnPhase;
   deferredChildMessages: DeferredChildMessage[];
+  /** One-turn grants issued only for sessions tagged by the current user message. */
+  sessionMessageTargets: Map<string, SessionReference>;
   /** Messages held by the strict GoalMax/task gate until verification passes. */
   heldGoalMessages: QueuedMessageRecord[];
   /** Messages accepted while Pi is compacting; released when compaction settles. */
@@ -784,6 +790,9 @@ export class PiRuntimeService {
       sendRootMessage: (rootSessionId, message, activeDelivery, triggerWhenIdle) => {
         const slot = this.findLiveSlot(rootSessionId);
         if (!slot || slot.disposed) return Promise.resolve();
+        if ((message as { customType?: unknown }).customType === 'fate-live-agent-reply') {
+          return slot.runtime.session.sendCustomMessage(message, { triggerTurn: false });
+        }
         return this.sendChildGeneratedMessage(slot, slot.runtime.session, message, activeDelivery, triggerWhenIdle);
       },
       emit: (rootSessionId, team) => {
@@ -852,12 +861,17 @@ export class PiRuntimeService {
         const slot = this.findLiveSlot(parentSessionId);
         if (!slot || slot.disposed || mode === 'never') return;
         const session = slot.runtime.session;
+        const directReply = text.startsWith('[Direct reply from @');
         const message = {
-          customType: 'fate-subagent-notification',
+          customType: directReply ? 'fate-live-agent-reply' : 'fate-subagent-notification',
           content: [{ type: 'text' as const, text }],
-          display: false,
+          display: directReply,
           details: { runIds, ...(workflowId ? { workflowId } : {}) },
         };
+        if (directReply) {
+          await session.sendCustomMessage(message, { triggerTurn: false });
+          return;
+        }
         if (mode === 'next-turn') {
           await session.sendCustomMessage(message, { triggerTurn: false, deliverAs: 'nextTurn' });
           return;
@@ -1183,8 +1197,8 @@ export class PiRuntimeService {
     const activeGoal = this.project ? this.goalMax.get(this.project.path, session.sessionId) : null;
     const goalAcceptsUpdate = Boolean(activeGoal && !skipCommandExpansion && activeGoal.status !== 'completed' && activeGoal.status !== 'cancelled');
     if (goalAcceptsUpdate) {
-      if (input.images?.length || input.browserAnnotations?.length) {
-        throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'GoalMax updates are text-only. Remove image and page-note attachments, then send the update again.', retryable: true });
+      if (input.images?.length || input.browserAnnotations?.length || input.sessionReferences?.length) {
+        throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'GoalMax updates are text-only. Remove image, page-note, and session attachments, then send the update again.', retryable: true });
       }
       // Every GoalMax update is delivered as steering into the running root
       // turn (or the next idle continuation) — never as a queued follow-up.
@@ -1205,15 +1219,25 @@ export class PiRuntimeService {
     const resourcePromptText = includesProjectResources
       ? await appendProjectResourceContext(commandPrompt, this.project?.path ?? null, input.text)
       : commandPrompt;
+    const includesSessionReferences = Boolean(input.sessionReferences?.length);
+    // Each user turn re-issues its own one-turn grants. Clear any stale grant
+    // from the previous turn before re-populating from this prompt.
+    slot.sessionMessageTargets.clear();
+    if (includesSessionReferences) {
+      for (const reference of input.sessionReferences!) slot.sessionMessageTargets.set(reference.id, reference);
+    }
+    const sessionReferencePrompt = includesSessionReferences
+      ? await this.appendSessionReferenceContext(resourcePromptText, input.sessionReferences!, session)
+      : resourcePromptText;
     const includesBrowserAnnotations = Boolean(input.browserAnnotations?.length);
     if (includesBrowserAnnotations && !this.browserIntegration) {
       throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Browser annotation attachments are unavailable. Restart Fate UI and try again.', retryable: true });
     }
     const promptText = includesBrowserAnnotations
-      ? await this.browserIntegration!.appendAnnotationContext(resourcePromptText, input.browserAnnotations!.map(({ id }) => id))
-      : resourcePromptText;
+      ? await this.browserIntegration!.appendAnnotationContext(sessionReferencePrompt, input.browserAnnotations!.map(({ id }) => id))
+      : sessionReferencePrompt;
     if (
-      (includesProjectResources || includesBrowserAnnotations)
+      (includesProjectResources || includesSessionReferences || includesBrowserAnnotations)
       && (initialization !== this.initialization || slot.disposed || this.selectedSlot !== slot || slot.runtime.session !== session)
     ) throw this.replacementSuperseded();
     validatePromptImages(input.images);
@@ -1252,6 +1276,7 @@ export class PiRuntimeService {
         ...(stagedThinkingLevel ? { boundThinkingLevel: stagedThinkingLevel } : {}),
         ...(input.images?.length ? { images: input.images.map((image) => ({ ...image })) } : {}),
         ...(input.browserAnnotations?.length ? { browserAnnotations: input.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
+        ...(input.sessionReferences?.length ? { sessionReferences: input.sessionReferences.map((reference) => ({ ...reference })) } : {}),
         createdAt: Date.now(),
       };
       slot.heldCompactionMessages.push(heldRecord);
@@ -1338,6 +1363,7 @@ export class PiRuntimeService {
           ...(stagedThinkingLevel ? { boundThinkingLevel: stagedThinkingLevel } : {}),
           ...(input.images?.length ? { images: input.images.map((image) => ({ ...image })) } : {}),
           ...(input.browserAnnotations?.length ? { browserAnnotations: input.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
+          ...(input.sessionReferences?.length ? { sessionReferences: input.sessionReferences.map((reference) => ({ ...reference })) } : {}),
           createdAt: Date.now(),
         }
       : null;
@@ -1450,6 +1476,32 @@ export class PiRuntimeService {
         if (ownsSlot() && this.selectedSlot === slot) this.emitState();
       });
     });
+  }
+
+  private async appendSessionReferenceContext(
+    promptText: string,
+    references: readonly SessionReference[],
+    currentSession: AgentSession,
+  ): Promise<string> {
+    const activeProjectPath = this.project?.path;
+    if (!activeProjectPath) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before attaching a session.', retryable: true });
+    const referenceContexts: string[] = [];
+    for (const reference of references) {
+      if (reference.id === currentSession.sessionId && reference.projectPath === activeProjectPath) {
+        throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The current session is already in context. Attach a different saved session.', retryable: true });
+      }
+      const summary = await this.sessionRepository.resolve(reference.projectPath, reference.id);
+      if (!summary || summary.path.startsWith('live:') || !isSafeSessionPath(defaultSessionsRoot(), summary.path)) {
+        throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The selected session is unavailable. Remove it and choose a saved session from a trusted project.', retryable: true });
+      }
+      try {
+        referenceContexts.push(buildSessionReferenceContext(summary));
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : 'The saved session could not be read.';
+        throw new PiDesktopError({ code: 'INVALID_REQUEST', message: `Could not attach “${summary.title}”: ${detail}`, retryable: true });
+      }
+    }
+    return referenceContexts.length > 0 ? `${promptText}\n\n${referenceContexts.join('\n\n')}` : promptText;
   }
 
   private async generateFirstPromptTitle(
@@ -1795,6 +1847,48 @@ export class PiRuntimeService {
     }, false);
   }
 
+  /**
+   * Deliver a direct message without switching the active view. A saved target
+   * is resumed in a background Pi runtime before the message is delivered.
+   * `steer` injects into a running turn; `followUp` starts a turn when idle.
+   * The active session cannot be targeted — the composer already sends to it.
+   */
+  async sendSessionMessage(sessionId: string, text: string, behavior: 'steer' | 'followUp' = 'followUp'): Promise<RuntimeState> {
+    const projectPath = this.project?.path;
+    if (!projectPath) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before messaging a session.', retryable: true });
+    let slot = this.findLiveSlot(sessionId);
+    if (!slot || slot.disposed) {
+      const target = this.summaryForSessionId(sessionId) ?? await this.sessionRepository.resolve(projectPath, sessionId);
+      if (this.project?.path !== projectPath) throw this.replacementSuperseded();
+      if (!target || target.path.startsWith('live:')) {
+        throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The selected saved session no longer exists.', retryable: true });
+      }
+      slot = await this.createAdditionalSlot(target.path);
+    }
+    const session = slot.runtime.session;
+    if (this.selectedSlot === slot) {
+      throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'This is the active session. Send the message here instead of mentioning it.', retryable: true });
+    }
+    const message: SessionCustomMessage = {
+      customType: 'fate-direct-session-message',
+      content: [{ type: 'text', text }],
+      display: true,
+      details: { kind: 'direct-session-message', createdAt: Date.now() },
+    };
+    const ownsSlot = () => this.initialization === slot.projectGeneration && !slot.disposed && this.liveSlots.has(slot);
+    await this.sendChildGeneratedMessage(slot, session, message, behavior === 'steer' ? 'steer' : 'followUp', true);
+    // The message has been handed to Pi. A background rebind or replacement
+    // after this point does not undo delivery, so report success rather than
+    // failing a send that already went out.
+    if (ownsSlot()) {
+      slot.modifiedAt = new Date().toISOString();
+      this.setSessionAttention(slot, 'running');
+      this.mergeLiveSessionSummaries();
+      this.emitState();
+    }
+    return this.getState(false);
+  }
+
   async renameSession(sessionId: string, name: string): Promise<RuntimeState> {
     this.requireRuntimeSession();
     const projectPath = this.project?.path;
@@ -1938,6 +2032,53 @@ export class PiRuntimeService {
     return { state, ...(selectedText === undefined ? {} : { selectedText }) };
   }
 
+  async deleteSessionBranch(entryId: string): Promise<{ state: RuntimeState }> {
+    const session = this.requireIdleSession('deleting a conversation path');
+    const slot = this.selectedSlot!;
+    const projectPath = this.project?.path;
+    if (!projectPath) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before deleting a conversation path.', retryable: true });
+    if (this.subagents.hasOwnedWork(session.sessionId) || this.agentTeams.hasOwnedWork(session.sessionId) || this.goalMax.hasRunnableGoal(session.sessionId)) {
+      throw this.activeOperationError('deleting a conversation path');
+    }
+    const sessionFile = session.sessionFile;
+    const activeLeafId = session.sessionManager?.getLeafId?.() ?? null;
+    const target = this.sessionRepository.branches(session).find((branch) => branch.id === entryId);
+    if (!sessionFile || sessionFile.startsWith('live:') || !isSafeSessionPath(defaultSessionsRoot(), sessionFile)) {
+      throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Only saved conversation forks can be deleted.', retryable: true });
+    }
+    if (!target || target.active || entryId === activeLeafId || !activeLeafId) {
+      throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Switch to a different conversation path before deleting this fork.', retryable: true });
+    }
+    const manager = session.sessionManager;
+    if (!manager?.setSessionFile || !manager.branch || !manager.buildSessionContext) throw this.unsupported('Conversation fork deletion');
+    const initialization = this.initialization;
+    const sessionGeneration = slot.sessionGeneration;
+    const ownsSession = () => initialization === this.initialization
+      && sessionGeneration === slot.sessionGeneration
+      && !slot.disposed
+      && this.selectedSlot === slot
+      && slot.runtime.session === session;
+    try {
+      await this.sessionRepository.deleteBranch(projectPath, session.sessionId, entryId, activeLeafId);
+      if (!ownsSession()) throw this.replacementSuperseded();
+      // SessionManager only loads the rewritten tree through its public file
+      // setter. Restore the prior active leaf because loading picks the final
+      // JSONL entry, which may belong to another retained branch.
+      manager.setSessionFile(sessionFile);
+      manager.branch(activeLeafId);
+      session.agent.state.messages = manager.buildSessionContext().messages;
+      if (!ownsSession()) throw this.replacementSuperseded();
+      this.emitSystemMessage('Deleted the inactive conversation fork. The active path remains in this session.', 'info');
+      await this.refreshSessions(true);
+      if (!ownsSession()) throw this.replacementSuperseded();
+      this.emitState();
+      return { state: this.getState(true) };
+    } catch (error) {
+      if (error instanceof PiDesktopError) throw error;
+      throw new PiDesktopError({ code: 'INVALID_REQUEST', message: error instanceof Error ? error.message : 'The conversation path could not be deleted.', retryable: true });
+    }
+  }
+
   cloneSession(): Promise<RuntimeState> {
     return this.runReplacement(async (runtime) => {
       if (this.sessionHasActiveWork(runtime.session) || this.subagents.hasOwnedWork(runtime.session.sessionId) || this.agentTeams.hasOwnedWork(runtime.session.sessionId) || this.goalMax.hasRunnableGoal(runtime.session.sessionId)) throw this.activeOperationError('cloning this session');
@@ -2041,6 +2182,7 @@ export class PiRuntimeService {
       runFailed: false,
       sessionTurnPhase: 'idle',
       deferredChildMessages: [],
+      sessionMessageTargets: new Map(),
       heldGoalMessages: [],
       heldCompactionMessages: [],
       lengthContinuationCount: 0,
@@ -2398,6 +2540,7 @@ export class PiRuntimeService {
     if (event.type === 'agent_start') slot.sessionTurnPhase = 'active';
     else if (event.type === 'agent_end') slot.sessionTurnPhase = 'ending';
     else if (event.type === 'agent_settled') {
+      slot.sessionMessageTargets.clear();
       slot.sessionTurnPhase = 'idle';
       if (slot.heldGoalMessages.length > 0) this.reconcileHeldGoalMessages(slot);
     }
@@ -2732,6 +2875,7 @@ export class PiRuntimeService {
             text: target.text,
             ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}),
             ...(target.browserAnnotations?.length ? { browserAnnotations: target.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
+            ...(target.sessionReferences?.length ? { sessionReferences: target.sessionReferences.map((reference) => ({ ...reference })) } : {}),
           }
         : undefined;
       const current = heldCollection === 'compaction' ? slot.heldCompactionMessages : slot.heldGoalMessages;
@@ -2768,6 +2912,7 @@ export class PiRuntimeService {
           text: target.text,
           ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}),
           ...(target.browserAnnotations?.length ? { browserAnnotations: target.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
+          ...(target.sessionReferences?.length ? { sessionReferences: target.sessionReferences.map((reference) => ({ ...reference })) } : {}),
         }
       : undefined;
 
@@ -3282,7 +3427,36 @@ export class PiRuntimeService {
     const legacy = this.subagents.createTools(modelRuntime);
     const v2 = this.agentTeams.createRootTools(modelRuntime);
     const browser = this.browserIntegration?.createTools() ?? [];
-    return [...legacy, ...v2, ...this.goalMax.createTools(), ...browser];
+    return [...legacy, ...v2, ...this.createSessionMessagingTools(), ...this.goalMax.createTools(), ...browser];
+  }
+
+  /**
+   * This is deliberately not a session tracker or a general agent tool. A
+   * call only works while the current user turn has granted a tagged session.
+   */
+  private createSessionMessagingTools(): ToolDefinition[] {
+    return [defineTool({
+      name: 'message_session',
+      label: 'Message tagged session',
+      promptSnippet: 'Send a user-requested message to a session tagged in the current user prompt',
+      description: 'Send one message to a saved session that the user explicitly tagged in the current prompt. Use only when the user directly asks you to contact that tagged session. This does not create, track, or manage a subagent.',
+      parameters: Type.Object({
+        sessionId: Type.String({ minLength: 1, maxLength: 500 }),
+        message: Type.String({ minLength: 1, maxLength: 200_000 }),
+      }, { additionalProperties: false }),
+      executionMode: 'sequential',
+      execute: async (_id, params, _signal, _update, ctx) => {
+        const slot = this.findLiveSlot(ctx.sessionManager.getSessionId());
+        const target = slot?.sessionMessageTargets.get(params.sessionId);
+        if (!slot || !target) throw new Error('This session was not tagged in the current user message. Ask the user to tag the exact saved session before messaging it.');
+        if (!this.project || target.projectPath !== this.project.path) throw new Error('Only a saved session in the active project can receive a direct message.');
+        await this.sendSessionMessage(target.id, params.message, 'followUp');
+        return {
+          content: [{ type: 'text' as const, text: `Message sent to tagged session “${target.title}”.` }],
+          details: { sessionId: target.id },
+        };
+      },
+    })];
   }
 
   private syncBrowserRoot(): void {

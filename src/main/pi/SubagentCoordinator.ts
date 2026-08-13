@@ -151,6 +151,7 @@ interface RunContext {
   idleTimeoutMs?: number;
   mailboxTtlMs: number;
   notification: SubagentNotification;
+  directMessageReplies: Array<{ content: string; createdAt: number }>;
   budget?: SubagentRun['budget'];
   maxAttempts: number;
   attempt: number;
@@ -567,8 +568,14 @@ export class SubagentCoordinator {
       this.persistRun(updated);
       return [updated];
     }
-    if (input.action === 'steer') return [await this.steerRun(parentSessionId, run.id, input.message)];
+    if (input.action === 'steer') {
+      const context = this.requireContext(parentSessionId, run.id);
+      context.directMessageReplies.push({ content: input.message, createdAt: Date.now() });
+      return [await this.steerRun(parentSessionId, run.id, input.message)];
+    }
     if (input.action === 'followUp') {
+      const context = this.requireContext(parentSessionId, run.id);
+      context.directMessageReplies.push({ content: input.message, createdAt: Date.now() });
       return [await this.followUpRun(parentSessionId, run.id, input.message, modelRuntime, undefined, { action: 'followup' })];
     }
     if (input.action === 'close') {
@@ -861,6 +868,7 @@ export class SubagentCoordinator {
           ...(request.idleTimeoutMs ? { idleTimeoutMs: request.idleTimeoutMs } : {}),
           mailboxTtlMs: executionMode === 'blocking' ? 0 : request.mailboxTtlMs,
           notification,
+          directMessageReplies: [],
           ...(request.budget ? { budget: request.budget } : {}),
           maxAttempts: request.maxAttempts,
           attempt: 1,
@@ -1169,6 +1177,7 @@ export class SubagentCoordinator {
       await this.closeContext(context, status === 'completed' ? 'disabled' : 'closed', false);
     }
     this.completeRun(run);
+    await this.notifyDirectMessageReplies(context, run);
     if (notifyParent) await this.notifyRun(run);
     this.host.settled?.(context.parentSessionId);
     return run;
@@ -1194,9 +1203,25 @@ export class SubagentCoordinator {
     context.removeParentAbort?.();
     await this.closeContext(context, context.mailboxTtlMs ? 'closed' : 'disabled', false);
     this.completeRun(run);
+    await this.notifyDirectMessageReplies(context, run);
     if (notifyParent) await this.notifyRun(run);
     this.host.settled?.(context.parentSessionId);
     return run;
+  }
+
+  private async notifyDirectMessageReplies(context: RunContext, run: SubagentRun): Promise<void> {
+    const messages = context.directMessageReplies.splice(0);
+    if (!messages.length) return;
+    const response = run.result ?? run.error ?? '(no text output)';
+    const label = subagentHandle(run);
+    for (const message of messages) {
+      await this.notifyParent(
+        context.parentSessionId,
+        'immediate',
+        `[Direct reply from @${label}; message at ${new Date(message.createdAt).toISOString()}]\n${response}`,
+        [run.id],
+      );
+    }
   }
 
   private async retainMailbox(context: RunContext, run: SubagentRun): Promise<SubagentRun> {

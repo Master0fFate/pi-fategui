@@ -11,8 +11,28 @@ if "%~1"=="" goto run
 set "CURRENT=%~1"
 
 REM Skip flags. --new-instance requests a fully isolated second process.
-if not "%CURRENT:~0,2%"=="--" goto positional
+if /i "%CURRENT%"=="--project" goto project_option
+if /i "%CURRENT:~0,10%"=="--project=" goto project_equals
 if /i "%CURRENT%"=="--new-instance" set "FATE_NEW_INSTANCE=1"
+if "%CURRENT:~0,2%"=="--" goto nextarg
+goto positional
+
+:project_option
+shift
+if "%~1"=="" goto run
+set "CURRENT=%~1"
+if "%CURRENT:~0,2%"=="--" goto parse
+if not defined PROJECT_SET (
+  set "FATE_PROJECT=%~f1"
+  set "PROJECT_SET=1"
+)
+goto nextarg
+
+:project_equals
+if not defined PROJECT_SET (
+  set "FATE_PROJECT=%CURRENT:~10%"
+  set "PROJECT_SET=1"
+)
 goto nextarg
 
 :positional

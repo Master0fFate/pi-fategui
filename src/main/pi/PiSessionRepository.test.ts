@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { AgentSession, SessionInfo } from '@earendil-works/pi-coding-agent';
@@ -91,6 +91,45 @@ describe('PiSessionRepository', () => {
     expect(new PiSessionRepository().branches(session)).toEqual([
       expect.objectContaining({ id: 'deep-9999', depth: 9_999 }),
     ]);
+  });
+
+  it('removes an inactive branch subtree without leaving label references behind', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'branch.jsonl');
+    try {
+      writeFileSync(sessionPath, [
+        { type: 'session', version: 3, id: 'branch-session', timestamp: '2025-01-01T00:00:00.000Z', cwd: '/project' },
+        { type: 'message', id: 'root', parentId: null, timestamp: '2025-01-01T00:00:01.000Z', message: { role: 'user', content: 'Root' } },
+        { type: 'message', id: 'keep', parentId: 'root', timestamp: '2025-01-01T00:00:02.000Z', message: { role: 'assistant', content: 'Keep' } },
+        { type: 'message', id: 'remove', parentId: 'root', timestamp: '2025-01-01T00:00:03.000Z', message: { role: 'assistant', content: 'Remove' } },
+        { type: 'label', id: 'label-remove', parentId: 'remove', timestamp: '2025-01-01T00:00:04.000Z', targetId: 'remove', label: 'Discarded' },
+      ].map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
+      const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => [info(sessionDir, { id: 'branch-session', path: sessionPath })]) }, sessionsRoot);
+      await repository.deleteBranch('/project', 'branch-session', 'remove', 'keep');
+      const retained = readFileSync(sessionPath, 'utf8');
+      expect(retained).toContain('"keep"');
+      expect(retained).not.toContain('"remove"');
+      expect(retained).not.toContain('label-remove');
+    } finally {
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to delete the active path or its ancestors', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'active.jsonl');
+    try {
+      writeFileSync(sessionPath, [
+        { type: 'session', version: 3, id: 'active-session', timestamp: '2025-01-01T00:00:00.000Z', cwd: '/project' },
+        { type: 'message', id: 'root', parentId: null, timestamp: '2025-01-01T00:00:01.000Z', message: { role: 'user', content: 'Root' } },
+        { type: 'message', id: 'leaf', parentId: 'root', timestamp: '2025-01-01T00:00:02.000Z', message: { role: 'assistant', content: 'Leaf' } },
+      ].map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
+      const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => [info(sessionDir, { id: 'active-session', path: sessionPath })]) }, sessionsRoot);
+      await expect(repository.deleteBranch('/project', 'active-session', 'root', 'leaf')).rejects.toThrow('Switch to a different conversation path');
+      expect(readFileSync(sessionPath, 'utf8')).toContain('"leaf"');
+    } finally {
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
   });
 
   it('flattens the SDK session tree and identifies the active branch', () => {

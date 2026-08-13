@@ -6,6 +6,14 @@ import type { ChildToolName } from '../SubagentProtocol';
 import type { SelectedSubagentSkill } from '../SubagentSkills';
 import type { TurnLease } from './AgentTeamScheduler';
 
+export interface LiveMessageReply {
+  sourceEnvelopeId: string;
+  sourceAuthorNodeId: string;
+  sourceRecipientNodeId: string;
+  sourceContent: string;
+  createdAt: number;
+}
+
 export interface AgentNodeRuntime {
   session: AgentSession | null;
   sessionFile?: string;
@@ -22,6 +30,7 @@ export interface AgentNodeRuntime {
   instructions?: string;
   selectedSkills: SelectedSubagentSkill[];
   skillMode: 'all' | 'selected' | 'none';
+  liveMessageReplies: LiveMessageReply[];
 }
 
 export interface AgentTeamRuntime {
