@@ -171,7 +171,7 @@ describe('PiThemeService', () => {
     });
 
     const untrusted = await service.discover({ cwd: projectDir, projectTrusted: false });
-    expect(untrusted.themes.map((theme) => theme.name)).toEqual(['Pi · Global']);
+    expect(untrusted.themes.map((theme) => theme.name)).toEqual(['Pi · dark', 'Pi · Global', 'Pi · light']);
     expect(untrusted.themes.some((theme) => theme.name === 'Pi · Project')).toBe(false);
     expect(untrusted.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: expect.stringContaining('was not installed') }),
@@ -210,7 +210,7 @@ describe('PiThemeService', () => {
     const service = new PiThemeService({ agentDir, packageDir, cacheTtlMs: 0 });
     const untrusted = await service.loadThemes({ cwd: projectDir, projectTrusted: false });
     expect(untrusted.map((theme) => theme.name)).toEqual(expect.arrayContaining([
-      'Pi · Global auto', 'Pi · Global configured', 'Pi · Package theme',
+      'Pi · dark', 'Pi · light', 'Pi · Global auto', 'Pi · Global configured', 'Pi · Package theme',
     ]));
     expect(untrusted.map((theme) => theme.name)).not.toEqual(expect.arrayContaining(['Pi · Project auto', 'Pi · Project configured']));
 
@@ -222,17 +222,12 @@ describe('PiThemeService', () => {
     const root = await temporaryRoot();
     const packageDir = path.join(root, 'pi-package');
     await writeBundledThemes(packageDir);
-    const cachedThemePath = path.join(root, 'agent', 'themes', 'cached.json');
-    await writeTheme(cachedThemePath, {
-      ...themeJson('Cached', '#30323a'),
-      export: { pageBg: '#101218', cardBg: '#171b28' },
-    });
     let now = 0;
     let resolutions = 0;
     const resolveGate = vi.fn(async () => {
       resolutions += 1;
       await Promise.resolve();
-      return { themes: [{ path: cachedThemePath, enabled: true, metadata: { scope: 'user' } }] };
+      return { themes: [] };
     });
     const service = new PiThemeService({
       agentDir: path.join(root, 'agent'),
