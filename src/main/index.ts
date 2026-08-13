@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, Menu, protocol, screen, session, shell, systemPreferences } from 'electron';
 import { existsSync, readdirSync } from 'node:fs';
 import { spawn, execFile } from 'node:child_process';
-import { copyFile, rm } from 'node:fs/promises';
+import { copyFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +28,7 @@ import { SettingsService } from './settings/SettingsService';
 import { SpeechService } from './speech/SpeechService';
 import { GlobalHotkeyService } from './speech/GlobalHotkeyService';
 import { smokeTerminalRuntime, TerminalService } from './terminal/TerminalService';
-import { UpdateService } from './updates/UpdateService';
+import { MACOS_APP_BUNDLE_NAME, MACOS_INSTALL_DIR, UpdateService, resolveMacOSUpdateBundle, type MacOSBundleDirEntry } from './updates/UpdateService';
 import { MINIMUM_WINDOW_SIZE, WindowStateService, type WindowPlacement } from './windowState';
 import { installWindowZoomShortcuts } from './windowZoom';
 import { appCommandSchema, ipcChannels, windowStateSchema, type AppCommand } from '../shared/contracts/ipc';
@@ -53,8 +53,8 @@ function configurePackagedSpeechLibrary(): void {
 }
 
 /** Opt-in packaged-runtime check for native Parakeet streaming. Six seconds of
- *  silence are sufficient to exercise the buffered window, worker-thread feed
- *  queue, finalize path, and CPU fallback without a microphone or Max model. */
+ *  silence exercise the buffered window, bounded worker feed queue, finalize
+ *  path, and CPU fallback without a microphone. */
 async function smokeParakeetStream(): Promise<void> {
   await speech.download('balanced');
   await speech.streamStart('balanced', 'en');
@@ -66,6 +66,14 @@ async function smokeParakeetStream(): Promise<void> {
     await speech.streamCancel().catch(() => undefined);
     throw error;
   }
+}
+
+/** Exercise the non-streaming native path with the small batch model. This
+ *  covers model load, session.run(), and its normal accelerator selection
+ *  without requiring user audio or a large model. */
+async function smokeBatchSpeech(): Promise<void> {
+  await speech.download('mini');
+  await speech.transcribe('mini', new Float32Array(16_000 * 6).buffer, 'en');
 }
 
 let initialProjectPath: string | null = null;
@@ -187,11 +195,14 @@ function dispatchProjectPath(projectPath: string): void {
 // Windows: runs the NSIS installer (silent) which replaces the app.
 // macOS: mounts the DMG, copies the .app over /Applications, then relaunches.
 // Linux: replaces the running AppImage at its path, then relaunches it.
-const MACOS_APP_NAME = 'Fate UI.app';
-const MACOS_INSTALL_DIR = '/Applications';
 function relaunchDetached(command: string, args: readonly string[] = []): void {
   const child = spawn(command, [...args], { detached: true, stdio: 'ignore' });
   child.unref();
+}
+
+async function readMacOSBundleDir(directoryPath: string): Promise<readonly MacOSBundleDirEntry[]> {
+  const entries = await readdir(directoryPath, { withFileTypes: true });
+  return entries.map((entry) => ({ name: entry.name, isDirectory: entry.isDirectory(), isFile: entry.isFile() }));
 }
 async function installDownloadedUpdate(filePath: string, _version: string): Promise<void> {
   if (process.platform === 'win32') {
@@ -206,8 +217,9 @@ async function installDownloadedUpdate(filePath: string, _version: string): Prom
       execFile('hdiutil', ['attach', filePath, '-nobrowse', '-mountpoint', mountPoint], (error) => error ? reject(error) : resolve());
     });
     try {
-      const sourceApp = path.join(mountPoint, MACOS_APP_NAME);
-      const targetApp = path.join(MACOS_INSTALL_DIR, MACOS_APP_NAME);
+      // The staged bundle name is not guaranteed to match the product name,
+      // so discover and validate the actual .app instead of assuming a path.
+      const { sourceApp, targetApp } = await resolveMacOSUpdateBundle(mountPoint, readMacOSBundleDir);
       // Replace the installed bundle (a running app keeps its old inode).
       await rm(targetApp, { recursive: true, force: true }).catch(() => undefined);
       await new Promise<void>((resolve, reject) => {
@@ -217,7 +229,7 @@ async function installDownloadedUpdate(filePath: string, _version: string): Prom
     } finally {
       await new Promise<void>((resolve) => execFile('hdiutil', ['detach', mountPoint], () => resolve()));
     }
-    relaunchDetached(path.join(MACOS_INSTALL_DIR, MACOS_APP_NAME, 'Contents', 'MacOS', 'fate-ui'));
+    relaunchDetached(path.join(MACOS_INSTALL_DIR, MACOS_APP_BUNDLE_NAME, 'Contents', 'MacOS', 'fate-ui'));
     setTimeout(() => app.quit(), 800);
     return;
   }
@@ -421,8 +433,12 @@ function createWindow(options: { initial?: boolean } = {}): BrowserWindow {
           throw new Error('Standard Pi themes are unavailable.');
         }
         if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1') {
+          const streamStartedAt = performance.now();
           await smokeParakeetStream();
-          console.log('PI_DESKTOP_PARAKEET_STREAM_OK');
+          console.log(`PI_DESKTOP_PARAKEET_STREAM_OK ${Math.round(performance.now() - streamStartedAt)}ms`);
+          const batchStartedAt = performance.now();
+          await smokeBatchSpeech();
+          console.log(`PI_DESKTOP_BATCH_SPEECH_OK ${Math.round(performance.now() - batchStartedAt)}ms`);
         }
         console.log(`PI_DESKTOP_SPEECH_OK ${speechStatus.backend}`);
         console.log(`PI_DESKTOP_YT_DLP_OK ${musicStatus.version}`);

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { compareSemanticVersions, parseSemanticVersion, RELEASES_URL, UpdateService, updateMessages } from './UpdateService';
+import { compareSemanticVersions, parseSemanticVersion, RELEASES_URL, UpdateService, resolveMacOSUpdateBundle, updateMessages } from './UpdateService';
 
 const parsed = (value: string) => {
   const version = parseSemanticVersion(value);
@@ -145,5 +145,61 @@ describe('UpdateService download and install', () => {
     const fetchAsset = vi.fn(async () => ({ ok: false, status: 404, total: 0, body: (async function* () { /* empty */ })() }));
     const updates = new UpdateService('/p', { fetchAsset, launchInstaller: vi.fn(async () => undefined), removeFile: vi.fn(async () => undefined), downloadDir: tmp, platform: 'win32', arch: 'x64' });
     await expect(updates.downloadAndInstall('1.0.0')).rejects.toThrow(/could not start/i);
+  });
+});
+
+describe('resolveMacOSUpdateBundle', () => {
+  const entry = (name: string, kind: 'file' | 'dir') => ({ name, isDirectory: kind === 'dir', isFile: kind === 'file' });
+
+  it('prefers the canonical bundle name when it is present in the disk image', async () => {
+    const readDir = vi.fn(async (directoryPath: string) => {
+      if (directoryPath === '/mount') return [entry('Fate UI.app', 'dir'), entry('Applications', 'dir')];
+      return [entry('fate-ui', 'file')];
+    });
+    await expect(resolveMacOSUpdateBundle('/mount', readDir)).resolves.toEqual({
+      sourceApp: '/mount/Fate UI.app',
+      targetApp: '/Applications/Fate UI.app',
+    });
+  });
+
+  it('selects the actual staged bundle when its name differs from the expected name', async () => {
+    // Models the reported failure: the DMG ships a differently-named bundle,
+    // so the old hardcoded /mount/Fate UI.app path did not exist.
+    const readDir = vi.fn(async (directoryPath: string) => {
+      if (directoryPath === '/mount') return [entry('Fate GUI.app', 'dir')];
+      return [entry('fate-ui', 'file')];
+    });
+    const result = await resolveMacOSUpdateBundle('/mount', readDir);
+    expect(result.sourceApp).toBe('/mount/Fate GUI.app');
+    // Installed under the canonical name so the relaunch path stays stable.
+    expect(result.targetApp).toBe('/Applications/Fate UI.app');
+  });
+
+  it('rejects an ambiguous disk image that contains multiple unknown bundles', async () => {
+    const readDir = vi.fn(async () => [entry('Alpha.app', 'dir'), entry('Beta.app', 'dir')]);
+    await expect(resolveMacOSUpdateBundle('/mount', readDir)).rejects.toThrow(/no application bundle/i);
+    // Nothing past discovery runs, so no copy of an arbitrary bundle happens.
+    expect(readDir.mock.calls).toHaveLength(1);
+  });
+
+  it('refuses to copy a staged entry that is not a valid application bundle', async () => {
+    const readDir = vi.fn(async (directoryPath: string) => {
+      if (directoryPath === '/mount') return [entry('Fate UI.app', 'dir')];
+      return []; // Contents/MacOS is empty, so this is not a real bundle.
+    });
+    await expect(resolveMacOSUpdateBundle('/mount', readDir)).rejects.toThrow(/not a valid macOS application/i);
+  });
+
+  it('refuses a staged .app whose Contents/MacOS directory is missing', async () => {
+    const readDir = vi.fn(async (directoryPath: string) => {
+      if (directoryPath === '/mount') return [entry('Fate UI.app', 'dir')];
+      throw new Error('ENOENT');
+    });
+    await expect(resolveMacOSUpdateBundle('/mount', readDir)).rejects.toThrow(/not a valid macOS application/i);
+  });
+
+  it('rejects a disk image that has no bundle at all', async () => {
+    const readDir = vi.fn(async () => [entry('readme.txt', 'file')]);
+    await expect(resolveMacOSUpdateBundle('/mount', readDir)).rejects.toThrow(/no application bundle/i);
   });
 });

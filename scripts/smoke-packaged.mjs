@@ -75,7 +75,7 @@ const child = spawn(executable, applicationArguments, {
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 const requiredMarkers = ['PI_DESKTOP_SPEECH_OK', 'PI_DESKTOP_YT_DLP_OK', 'PI_DESKTOP_THEMES_OK', 'PI_DESKTOP_TERMINAL_OK', 'PI_DESKTOP_SMOKE_OK'];
-if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1') requiredMarkers.push('PI_DESKTOP_PARAKEET_STREAM_OK');
+if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1') requiredMarkers.push('PI_DESKTOP_PARAKEET_STREAM_OK', 'PI_DESKTOP_BATCH_SPEECH_OK');
 const seenMarkers = new Set();
 let output = '';
 let timedOut = false;
@@ -105,6 +105,9 @@ if (!seenMarkers.has('PI_DESKTOP_TERMINAL_OK')) throw new Error(`Packaged manual
 if (!seenMarkers.has('PI_DESKTOP_SMOKE_OK')) throw new Error(`Packaged smoke marker was not observed (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
 if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1' && !seenMarkers.has('PI_DESKTOP_PARAKEET_STREAM_OK')) {
   throw new Error(`Packaged Parakeet streaming smoke did not complete (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
+}
+if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1' && !seenMarkers.has('PI_DESKTOP_BATCH_SPEECH_OK')) {
+  throw new Error(`Packaged batch speech smoke did not complete (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
 }
 if (exitCode !== 0 || exitSignal) throw new Error(`Packaged application exited unexpectedly (exit ${exitCode}, signal ${exitSignal ?? 'none'}).`);
 console.log('PI_DESKTOP_PACKAGED_SMOKE_OK');

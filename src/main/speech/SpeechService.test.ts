@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppLogService } from '../logging/AppLogService';
+import { MAX_SPEECH_STREAM_BACKLOG_SAMPLES, MAX_SPEECH_STREAM_FEED_SAMPLES } from '../../shared/speech';
 import { SpeechService } from './SpeechService';
 import type { SpeechModelDefinition } from './speechModels';
 
@@ -328,10 +329,123 @@ describe('SpeechService live streaming', () => {
     // must queue behind those feeds rather than finalize early or race a read.
     const stopping = service.streamStop();
     await expect(Promise.all([...feeds, stopping])).resolves.toHaveLength(4);
-    expect(stream.feed).toHaveBeenCalledTimes(3);
-    expect(updates.filter((update) => update.state === 'active' && update.committed === 'hello world')).toHaveLength(3);
+    // The first feed starts immediately; later captures that arrive while it
+    // computes share one ordered native batch.
+    expect(stream.feed).toHaveBeenCalledTimes(2);
+    expect(updates.filter((update) => update.state === 'active' && update.committed === 'hello world')).toHaveLength(2);
     expect(stream.finalize).toHaveBeenCalledOnce();
     expect(updates.at(-1)).toMatchObject({ state: 'final' });
+    await service.dispose();
+  });
+
+  it('fails a sustained native backlog instead of retaining unlimited audio', async () => {
+    await installTestModel();
+    await writeFile(path.join(directory, 'balanced.gguf'), bytes);
+    await writeFile(path.join(directory, 'balanced.gguf.verified'), `${checksum}\n`);
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'balanced', fileName: 'balanced.gguf', streaming: true };
+    const definitions: readonly SpeechModelDefinition[] = [streamingModel];
+    let releaseFirstFeed!: () => void;
+    const firstFeed = new Promise<void>((resolve) => { releaseFirstFeed = resolve; });
+    const stream = {
+      feed: vi.fn(async () => {
+        await firstFeed;
+        return { resultChanged: true, isFinal: false, revision: 1, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false };
+      }),
+      finalize: vi.fn(),
+      get text() { return { committed: '', tentative: '' }; },
+      reset: vi.fn(),
+    };
+    const session = { stream: vi.fn(async () => stream), dispose: vi.fn() };
+    const loaded = {
+      backend: 'cpu',
+      device: { name: 'CPU', description: 'CPU', deviceType: 'cpu' },
+      createSession: vi.fn(() => session),
+      dispose: vi.fn(),
+    };
+    const runtime = {
+      getAvailableBackends: vi.fn(() => [{ name: 'CPU', description: 'CPU', kind: 'cpu', deviceType: 'cpu' }]),
+      TranscribeModel: { load: vi.fn(async () => loaded) },
+    } as unknown as typeof import('transcribe-cpp');
+    const updates: { state: string; error: string | undefined }[] = [];
+    const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime);
+    service.setStreamSink((update) => updates.push({ state: update.state, error: update.error }));
+
+    await service.streamStart('balanced', 'en');
+    const feed = (value: number) => service.streamFeed(new Float32Array(MAX_SPEECH_STREAM_FEED_SAMPLES).fill(value).buffer);
+    const first = feed(1);
+    await vi.waitFor(() => expect(stream.feed).toHaveBeenCalledOnce());
+    const accepted = Array.from(
+      { length: MAX_SPEECH_STREAM_BACKLOG_SAMPLES / MAX_SPEECH_STREAM_FEED_SAMPLES - 1 },
+      (_, index) => feed(index + 2),
+    );
+    const acceptedSettled = Promise.allSettled(accepted);
+
+    await expect(feed(99)).rejects.toThrow('cannot keep up');
+    await expect(acceptedSettled).resolves.toEqual(Array.from({ length: accepted.length }, () => expect.objectContaining({ status: 'rejected' })));
+    expect(session.dispose).toHaveBeenCalledOnce();
+    expect(updates).toContainEqual(expect.objectContaining({ state: 'error', error: expect.stringContaining('cannot keep up') }));
+
+    releaseFirstFeed();
+    await expect(first).resolves.toBeUndefined();
+    expect(stream.feed).toHaveBeenCalledOnce();
+    await service.dispose();
+  });
+
+  it('coalesces a slow CPU backlog without dropping audio before finalizing', async () => {
+    await installTestModel();
+    await writeFile(path.join(directory, 'balanced.gguf'), bytes);
+    await writeFile(path.join(directory, 'balanced.gguf.verified'), `${checksum}\n`);
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'balanced', fileName: 'balanced.gguf', streaming: true };
+    const definitions: readonly SpeechModelDefinition[] = [streamingModel];
+    let releaseFirstFeed!: () => void;
+    const firstFeed = new Promise<void>((resolve) => { releaseFirstFeed = resolve; });
+    const nativeBatches: Float32Array[] = [];
+    let feedCount = 0;
+    const stream = {
+      feed: vi.fn(async (pcm: Float32Array) => {
+        nativeBatches.push(pcm.slice());
+        feedCount += 1;
+        if (feedCount === 1) await firstFeed;
+        return { resultChanged: true, isFinal: false, revision: feedCount, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false };
+      }),
+      finalize: vi.fn(async () => ({ resultChanged: true, isFinal: true, revision: 9, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false })),
+      get text() { return { committed: 'queued audio', tentative: '' }; },
+      reset: vi.fn(),
+    };
+    const session = { stream: vi.fn(async () => stream), dispose: vi.fn() };
+    const loaded = {
+      backend: 'cpu',
+      device: { name: 'CPU', description: 'CPU', deviceType: 'cpu' },
+      createSession: vi.fn(() => session),
+      dispose: vi.fn(),
+    };
+    const runtime = {
+      getAvailableBackends: vi.fn(() => [{ name: 'CPU', description: 'CPU', kind: 'cpu', deviceType: 'cpu' }]),
+      TranscribeModel: { load: vi.fn(async () => loaded) },
+    } as unknown as typeof import('transcribe-cpp');
+    const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime);
+
+    await service.streamStart('balanced', 'en');
+    const chunkSamples = 4_800;
+    const feeds = Array.from({ length: 8 }, (_, index) => service.streamFeed(new Float32Array(chunkSamples).fill(index + 1).buffer));
+    await vi.waitFor(() => expect(stream.feed).toHaveBeenCalledOnce());
+    const stopping = service.streamStop();
+    expect(stream.finalize).not.toHaveBeenCalled();
+
+    releaseFirstFeed();
+    await Promise.all([...feeds, stopping]);
+
+    expect(stream.feed).toHaveBeenCalledTimes(3);
+    expect(nativeBatches.map((batch) => batch.length)).toEqual([chunkSamples, chunkSamples * 6, chunkSamples]);
+    const pcm = new Float32Array(nativeBatches.reduce((total, batch) => total + batch.length, 0));
+    let offset = 0;
+    for (const batch of nativeBatches) {
+      pcm.set(batch, offset);
+      offset += batch.length;
+    }
+    expect(pcm).toHaveLength(chunkSamples * 8);
+    expect(Array.from({ length: 8 }, (_, index) => pcm[index * chunkSamples]!)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(stream.finalize).toHaveBeenCalledOnce();
     await service.dispose();
   });
 });

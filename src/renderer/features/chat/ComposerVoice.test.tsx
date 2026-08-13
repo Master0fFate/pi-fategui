@@ -1,11 +1,17 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PiDesktopApi, RuntimeState } from '../../../shared/contracts/ipc';
+import type { PiDesktopApi, RuntimeState, SpeechStatus } from '../../../shared/contracts/ipc';
 import { AppToast } from '../../components/AppToast';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { clearComposerSessionDrafts, Composer } from './Composer';
+
+const voiceStream = vi.hoisted(() => ({ startVoiceStream: vi.fn() }));
+vi.mock('./voiceStream', async () => {
+  const actual = await vi.importActual<typeof import('./voiceStream')>('./voiceStream');
+  return { ...actual, startVoiceStream: voiceStream.startVoiceStream };
+});
 
 const runtime: RuntimeState = {
   status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
@@ -29,7 +35,8 @@ class FakeRecorder extends EventTarget {
 describe('Composer voice input', () => {
   beforeEach(() => {
     useRuntimeStore.getState().setRuntime(runtime);
-    useUiStore.setState({ speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' }, speechDownload: null, toast: null });
+    voiceStream.startVoiceStream.mockReset();
+    useUiStore.setState({ speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' }, speechDownload: null, speechStatus: null, toast: null });
     const stop = vi.fn();
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop }] })) } });
     Object.defineProperty(Blob.prototype, 'arrayBuffer', { configurable: true, value: async () => new ArrayBuffer(8) });
@@ -169,5 +176,43 @@ describe('Composer voice input', () => {
 
     expect(window.piDesktop.cancelSpeechTranscription).toHaveBeenCalledOnce();
     expect(window.piDesktop.transcribeSpeech).not.toHaveBeenCalled();
+  });
+
+  it('drains accepted live audio before it finalizes the stream', async () => {
+    let emitChunk!: (pcm: Float32Array) => void;
+    const controllerStop = vi.fn();
+    voiceStream.startVoiceStream.mockImplementation(async (_deviceId: string | null, _chunkSamples: number, onChunk: (pcm: Float32Array) => void) => {
+      emitChunk = onChunk;
+      return { stop: controllerStop };
+    });
+    let releaseFeed!: () => void;
+    const pendingFeed = new Promise<void>((resolve) => { releaseFeed = resolve; });
+    const feedSpeechStream = vi.fn(() => pendingFeed);
+    const stopSpeechStream = vi.fn(async () => undefined);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {
+      ensureSpeechModel: vi.fn(async () => undefined),
+      startSpeechStream: vi.fn(async () => undefined),
+      feedSpeechStream,
+      stopSpeechStream,
+      cancelSpeechStream: vi.fn(async () => undefined),
+    } as unknown as PiDesktopApi });
+    useUiStore.setState({
+      speech: { enabled: true, modelId: 'balanced', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' },
+      speechStatus: { models: [{ id: 'balanced', streaming: true }], backend: 'CPU', accelerated: false } as unknown as SpeechStatus,
+    });
+
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: 'Start voice recording' }));
+    await screen.findByRole('button', { name: 'Stop voice recording' });
+    act(() => emitChunk(new Float32Array(4_800).fill(0.25)));
+    await waitFor(() => expect(feedSpeechStream).toHaveBeenCalledOnce());
+
+    await user.click(screen.getByRole('button', { name: 'Stop voice recording' }));
+    expect(controllerStop).toHaveBeenCalledOnce();
+    expect(stopSpeechStream).not.toHaveBeenCalled();
+
+    releaseFeed();
+    await waitFor(() => expect(stopSpeechStream).toHaveBeenCalledOnce());
   });
 });

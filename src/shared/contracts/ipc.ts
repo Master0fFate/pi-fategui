@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_SPEECH_STREAM_FEED_SAMPLES, SPEECH_PCM_BYTES_PER_SAMPLE } from '../speech';
 import {
   SUBAGENT_DISPLAY_NAME_MAX_LENGTH,
   SUBAGENT_HANDLE_MAX_LENGTH,
@@ -1020,7 +1021,7 @@ export const speechStreamStartInputSchema = z.object({
   language: z.string().trim().min(2).max(16).optional(),
 }).strict();
 export const speechStreamFeedInputSchema = z.object({
-  audio: arrayBufferSchema.refine((value) => value.byteLength > 0 && value.byteLength <= 16_000 * 4 * 2 && value.byteLength % 4 === 0, 'Audio must be bounded 16 kHz Float32 PCM.'),
+  audio: arrayBufferSchema.refine((value) => value.byteLength > 0 && value.byteLength <= MAX_SPEECH_STREAM_FEED_SAMPLES * SPEECH_PCM_BYTES_PER_SAMPLE && value.byteLength % SPEECH_PCM_BYTES_PER_SAMPLE === 0, 'Audio must be bounded 16 kHz Float32 PCM.'),
 }).strict();
 export const speechStreamUpdateSchema = z.object({
   state: speechStreamStateSchema,

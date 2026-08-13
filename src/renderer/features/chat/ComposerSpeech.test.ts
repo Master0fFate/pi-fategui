@@ -25,7 +25,19 @@ describe('voice audio preparation', () => {
     expect(output[4]).toBeCloseTo(-0.5);
   });
 
-  it('uses the asynchronous native Web Audio resampler when available', async () => {
+  it('reuses decoded PCM when it is already 16 kHz mono', () => {
+    const samples = new Float32Array([0.25, -0.25]);
+    const buffer = {
+      length: samples.length,
+      numberOfChannels: 1,
+      sampleRate: 16_000,
+      getChannelData: () => samples,
+    } as unknown as AudioBuffer;
+
+    expect(resampleVoiceAudio(buffer)).toBe(samples);
+  });
+
+  it('uses the asynchronous native Web Audio resampler when available without a second PCM copy', async () => {
     const rendered = new Float32Array([0.25, -0.25]);
     const startRendering = vi.fn(async () => ({ getChannelData: () => rendered }));
     vi.stubGlobal('OfflineAudioContext', class {
@@ -38,7 +50,6 @@ describe('voice audio preparation', () => {
     const output = await resampleVoiceAudioOptimized(buffer);
 
     expect(startRendering).toHaveBeenCalledOnce();
-    expect(output).toEqual(rendered);
-    expect(output).not.toBe(rendered);
+    expect(output).toBe(rendered);
   });
 });

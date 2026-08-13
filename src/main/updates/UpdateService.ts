@@ -39,6 +39,73 @@ export function releaseDownloadUrl(version: string, platform: string = process.p
   return `${RELEASE_DOWNLOAD_BASE}/v${version}/${platformAssetName(version, platform, arch)}`;
 }
 
+/** Canonical macOS application bundle name and install location. */
+export const MACOS_APP_BUNDLE_NAME = 'Fate UI.app';
+export const MACOS_INSTALL_DIR = '/Applications';
+
+export interface MacOSBundleDirEntry {
+  readonly name: string;
+  readonly isDirectory: boolean;
+  readonly isFile: boolean;
+}
+
+/** Lists a directory's entries with their type, mirroring fs.Dirent. */
+export type ReadMacOSBundleDir = (directoryPath: string) => Promise<readonly MacOSBundleDirEntry[]>;
+
+export interface MacOSBundleResolution {
+  /** Absolute path of the staged .app bundle inside the mount point. */
+  readonly sourceApp: string;
+  /** Canonical install destination under the install directory. */
+  readonly targetApp: string;
+}
+
+export interface ResolveMacOSBundleOptions {
+  /** Expected bundle basename; defaults to the canonical product name. */
+  readonly expectedName?: string;
+  /** Install directory; defaults to /Applications. */
+  readonly installDir?: string;
+}
+
+/**
+ * Resolve the staged application bundle inside a mounted macOS disk image.
+ *
+ * The bundle name shipped inside an update DMG is not guaranteed to match the
+ * canonical product name, so the staged .app directory is discovered instead
+ * of assuming a fixed path. Anything that is not a genuine application bundle
+ * (no Contents/MacOS executable) is rejected, so an update never copies an
+ * arbitrary file or folder. The bundle is always installed under the canonical
+ * name so the relaunch path and desktop integration stay stable.
+ */
+export async function resolveMacOSUpdateBundle(
+  mountPoint: string,
+  readDir: ReadMacOSBundleDir,
+  options: ResolveMacOSBundleOptions = {},
+): Promise<MacOSBundleResolution> {
+  const expectedName = options.expectedName ?? MACOS_APP_BUNDLE_NAME;
+  const installDir = options.installDir ?? MACOS_INSTALL_DIR;
+  const entries = await readDir(mountPoint);
+  const candidates = entries.filter((entry) => entry.isDirectory && entry.name.toLowerCase().endsWith('.app'));
+  const expected = candidates.find((entry) => entry.name === expectedName);
+  // If the canonical bundle is absent, accept exactly one alternative bundle.
+  // More than one unknown bundle is ambiguous and must be rejected by hand.
+  const chosen = expected ?? (candidates.length === 1 ? candidates[0] : undefined);
+  if (!chosen) {
+    const found = candidates.map((entry) => entry.name).join(', ') || 'none';
+    throw new Error(`The macOS update disk image has no application bundle to install (found: ${found}).`);
+  }
+  const sourceApp = path.posix.join(mountPoint, chosen.name);
+  let executables: readonly MacOSBundleDirEntry[];
+  try {
+    executables = await readDir(path.posix.join(sourceApp, 'Contents', 'MacOS'));
+  } catch {
+    throw new Error(`The staged bundle "${chosen.name}" is not a valid macOS application.`);
+  }
+  if (!executables.some((entry) => entry.isFile)) {
+    throw new Error(`The staged bundle "${chosen.name}" is not a valid macOS application.`);
+  }
+  return { sourceApp, targetApp: path.posix.join(installDir, expectedName) };
+}
+
 export const updateMessages = {
   localUnreadable: 'Cannot read local version. Please reinstall FateGUI.',
   localInvalid: 'The local version information is invalid. Please reinstall FateGUI.',

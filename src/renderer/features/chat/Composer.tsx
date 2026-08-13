@@ -19,7 +19,7 @@ import { ContextWheel } from './ContextWheel';
 import { agentMentionContext, findLiveAgentMentions, parseAgentStopCommand, sessionMentionHandle, type LiveAgentMention } from './agentMentions';
 import { fileTagContext, fileTagText, findFileTags } from './fileTags';
 import { findSlashCommands, slashCommandContext, slashCommandDescription, slashCommandLabel, type SlashCommand } from './slashCommands';
-import { startVoiceStream, type VoiceStreamController } from './voiceStream';
+import { VoiceStreamFeedQueue, startVoiceStream, type VoiceStreamController } from './voiceStream';
 
 interface Attachment {
   name: string;
@@ -166,6 +166,9 @@ export function uniqueAttachmentName(name: string, existingNames: readonly strin
 }
 
 export function resampleVoiceAudio(buffer: AudioBuffer, targetRate = 16_000): Float32Array {
+  // The IPC hand-off below makes its own ArrayBuffer copy. Reuse already-mono
+  // 16 kHz decoded PCM here instead of allocating another full recording.
+  if (buffer.sampleRate === targetRate && buffer.numberOfChannels === 1) return buffer.getChannelData(0);
   const sourceLength = buffer.length;
   const mono = new Float32Array(sourceLength);
   for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
@@ -195,7 +198,9 @@ export async function resampleVoiceAudioOptimized(buffer: AudioBuffer, targetRat
     source.connect(context.destination);
     source.start();
     const rendered = await context.startRendering();
-    return rendered.getChannelData(0).slice();
+    // The renderer-to-main IPC hand-off copies this PCM after resampling, so a
+    // second renderer-side copy here only adds latency and peak memory.
+    return rendered.getChannelData(0);
   } catch {
     return resampleVoiceAudio(buffer, targetRate);
   }
@@ -271,7 +276,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const voiceAttempt = useRef(0);
   const voiceStateRef = useRef<VoiceState>('idle');
   const voiceSelectionKey = useRef<string | null>(null);
-  const liveRecording = useRef<{ controller: VoiceStreamController; attempt: number } | null>(null);
+  const liveRecording = useRef<{ controller: VoiceStreamController; feedQueue: VoiceStreamFeedQueue; attempt: number } | null>(null);
   const liveAnchorRef = useRef<number | null>(null);
   const liveSpanLenRef = useRef(0);
   const mounted = useRef(true);
@@ -465,6 +470,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     const recording = liveRecording.current;
     if (recording) {
       liveRecording.current = null;
+      recording.feedQueue.cancel();
       try { recording.controller.stop(); } catch { /* best-effort teardown */ }
     }
     liveAnchorRef.current = null;
@@ -1484,6 +1490,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     liveSpanLenRef.current = 0;
     updateVoiceState('preparing');
     setComposerError(null);
+    let feedQueue: VoiceStreamFeedQueue | null = null;
     try {
       if (typeof window.piDesktop.startSpeechStream !== 'function') throw new Error('Restart Fate UI to activate live transcription.');
       await afterNextPaint();
@@ -1494,16 +1501,31 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       updateVoiceState('preparing');
       await window.piDesktop.startSpeechStream(speech.modelId, speech.language === 'auto' ? undefined : speech.language);
       if (!isCurrentVoiceAttempt(attempt)) { await window.piDesktop.cancelSpeechStream().catch(() => undefined); return; }
-      const controller = await startVoiceStream(speech.inputDeviceId, STREAM_CHUNK_SAMPLES, async (pcm) => {
+      feedQueue = new VoiceStreamFeedQueue(
+        (audio) => window.piDesktop.feedSpeechStream(audio),
+        (error) => {
+          if (!isCurrentVoiceAttempt(attempt)) return;
+          feedQueue?.cancel();
+          teardownLiveRecording();
+          void window.piDesktop.cancelSpeechStream().catch(() => undefined);
+          setComposerError(error instanceof Error ? error.message : 'Live transcription failed.');
+          updateVoiceState('idle');
+        },
+      );
+      const controller = await startVoiceStream(speech.inputDeviceId, STREAM_CHUNK_SAMPLES, (pcm) => {
         if (!isCurrentVoiceAttempt(attempt) || voiceStateRef.current !== 'recording') return;
-        const audio = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer;
-        try { await window.piDesktop.feedSpeechStream(audio); }
-        catch (error) { if (isCurrentVoiceAttempt(attempt)) setComposerError(error instanceof Error ? error.message : 'Live transcription stalled.'); }
+        feedQueue?.push(pcm);
       });
-      if (!isCurrentVoiceAttempt(attempt)) { controller.stop(); await window.piDesktop.cancelSpeechStream().catch(() => undefined); return; }
-      liveRecording.current = { controller, attempt };
+      if (!isCurrentVoiceAttempt(attempt)) {
+        feedQueue.cancel();
+        controller.stop();
+        await window.piDesktop.cancelSpeechStream().catch(() => undefined);
+        return;
+      }
+      liveRecording.current = { controller, feedQueue, attempt };
       updateVoiceState('recording');
     } catch (error) {
+      feedQueue?.cancel();
       teardownLiveRecording();
       await window.piDesktop.cancelSpeechStream().catch(() => undefined);
       if (isCurrentVoiceAttempt(attempt)) {
@@ -1520,6 +1542,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     if (voiceStateRef.current === 'recording') updateVoiceState('transcribing');
     try { recording.controller.stop(); } catch { /* best-effort teardown */ }
     try {
+      await recording.feedQueue.closeAndDrain();
       await window.piDesktop.stopSpeechStream();
     } catch (error) {
       if (isCurrentVoiceAttempt(recording.attempt)) setComposerError(error instanceof Error ? error.message : 'Live transcription failed to finalize.');

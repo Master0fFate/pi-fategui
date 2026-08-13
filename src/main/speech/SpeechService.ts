@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import type { SpeechDownloadProgress, SpeechModelId, SpeechStatus, SpeechStreamUpdate, SpeechTranscription } from '../../shared/contracts/ipc';
+import { MAX_SPEECH_STREAM_BACKLOG_SAMPLES, MAX_SPEECH_STREAM_FEED_SAMPLES, SPEECH_PCM_BYTES_PER_SAMPLE } from '../../shared/speech';
 import type { AppLogService } from '../logging/AppLogService';
 import type { Backend } from 'transcribe-cpp';
 import { speechModels, type SpeechModelDefinition } from './speechModels';
@@ -12,7 +13,7 @@ import { speechModels, type SpeechModelDefinition } from './speechModels';
 const MODEL_IDLE_TIMEOUT_MS = 5 * 60_000;
 const MAX_AUDIO_SAMPLES = 16_000 * 180;
 const CPU_THREADS = Math.max(1, Math.min(8, Math.ceil(os.availableParallelism() / 2)));
-const MAX_STREAM_CHUNK_BYTES = 16_000 * 4 * 2;
+const MAX_STREAM_CHUNK_BYTES = MAX_SPEECH_STREAM_FEED_SAMPLES * SPEECH_PCM_BYTES_PER_SAMPLE;
 const LEGACY_MODEL_FILES = [
   'parakeet-tdt_ctc-110m-Q5_K_M.gguf',
   'parakeet-tdt-0.6b-v2-Q4_K_M.gguf',
@@ -22,6 +23,21 @@ type TranscribeModule = typeof import('transcribe-cpp');
 type LoadedModel = Awaited<ReturnType<TranscribeModule['TranscribeModel']['load']>>;
 type SpeechSession = ReturnType<LoadedModel['createSession']>;
 type SpeechStream = Awaited<ReturnType<SpeechSession['stream']>>;
+type QueuedStreamFeed = { pcm: Float32Array; resolve: () => void; reject: (error: unknown) => void };
+type ActiveSpeechStream = {
+  definition: SpeechModelDefinition;
+  session: SpeechSession;
+  stream: SpeechStream;
+  settled: Promise<void>;
+  resolveSettled: () => void;
+  accepting: boolean;
+  pendingFeeds: QueuedStreamFeed[];
+  pendingSamples: number;
+  inFlightSamples: number;
+  draining: Promise<void> | null;
+  stopping: Promise<void> | null;
+  failure: unknown | null;
+};
 
 export class SpeechService {
   private readonly downloads = new Map<SpeechModelId, Promise<void>>();
@@ -34,13 +50,7 @@ export class SpeechService {
   private resolveActiveSettled: (() => void) | null = null;
   private eventSink: ((progress: SpeechDownloadProgress) => void) | null = null;
   private streamSink: ((update: SpeechStreamUpdate) => void) | null = null;
-  private activeStream: { definition: SpeechModelDefinition; session: SpeechSession; stream: SpeechStream; settled: Promise<void>; resolveSettled: () => void } | null = null;
-  /** Serializes live-stream operations (feed/read/finalize). transcribe.cpp runs
-   *  each feed()/finalize() on a worker thread and rejects text reads while one
-   *  is in flight, and the renderer can dispatch several feed IPC calls before
-   *  the first one settles — so every feed→read pair (and finalize→read) must
-   *  run atomically, one after another. */
-  private streamOps: Promise<void> = Promise.resolve();
+  private activeStream: ActiveSpeechStream | null = null;
   private modulePromise: Promise<TranscribeModule> | null = null;
   private backendProbe: Promise<Pick<SpeechStatus, 'backend' | 'accelerated'>> | null = null;
   private legacyCleanup: Promise<void> | null = null;
@@ -193,43 +203,55 @@ export class SpeechService {
     }
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
-    this.activeStream = { definition, session, stream, settled, resolveSettled };
+    this.activeStream = { definition, session, stream, settled, resolveSettled, accepting: true, pendingFeeds: [], pendingSamples: 0, inFlightSamples: 0, draining: null, stopping: null, failure: null };
     this.logs.write('info', 'speech', `${definition.model} live transcription started.`);
     this.emitStream({ state: 'active', committed: '', tentative: '' });
   }
 
-  /** Feed one PCM chunk to the active stream and emit the new committed/tentative
-   *  text. The chunk is copied before the native call because transcribe.cpp
-   *  borrows the buffer and reads it on a worker thread. */
+  /** Accept a PCM capture for the live stream. The buffer is copied before it
+   *  crosses into native code, because transcribe.cpp borrows that buffer until
+   *  feed() settles. When CPU inference falls behind, pending 300 ms captures
+   *  are merged in original order into bounded two-second native feeds. */
   async streamFeed(audio: ArrayBuffer): Promise<void> {
     if (audio.byteLength === 0 || audio.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) throw new Error('The captured audio is malformed.');
     if (audio.byteLength > MAX_STREAM_CHUNK_BYTES) throw new Error('The live audio chunk is too large.');
     const active = this.activeStream;
-    if (!active) throw new Error('No live transcription is running.');
+    if (!active || !active.accepting) throw new Error('No live transcription is running.');
+    const samples = audio.byteLength / SPEECH_PCM_BYTES_PER_SAMPLE;
+    if (active.pendingSamples + active.inFlightSamples + samples > MAX_SPEECH_STREAM_BACKLOG_SAMPLES) {
+      const error = new Error('Live transcription cannot keep up with this computer. Try a shorter recording or a faster voice model.');
+      this.failStreamCapacity(active, error);
+      throw error;
+    }
     const pcm = new Float32Array(audio.slice(0));
-    await this.enqueueStreamOp(async () => {
-      if (this.activeStream !== active) return; // cancelled/stopped while queued
-      await active.stream.feed(pcm);
-      if (this.activeStream !== active) return; // cancelled while the feed was in flight
-      const { committed, tentative } = active.stream.text;
-      this.emitStream({ state: 'active', committed, tentative });
+    return new Promise<void>((resolve, reject) => {
+      active.pendingFeeds.push({ pcm, resolve, reject });
+      active.pendingSamples += pcm.length;
+      this.startStreamDrain(active);
     });
   }
 
-  /** Flush remaining audio, commit the final text, and release the stream. */
+  /** Stop accepting input, drain every accepted PCM capture, then finalize. */
   async streamStop(): Promise<void> {
     const active = this.activeStream;
     if (!active) throw new Error('No live transcription is running.');
+    if (active.stopping) return active.stopping;
+    active.accepting = false;
+    active.stopping = this.finishStreamStop(active);
+    return active.stopping;
+  }
+
+  private async finishStreamStop(active: ActiveSpeechStream): Promise<void> {
     try {
-      await this.enqueueStreamOp(async () => {
-        if (this.activeStream !== active) return; // cancelled while queued
-        await active.stream.finalize();
-        if (this.activeStream === active) {
-          const { committed } = active.stream.text;
-          this.logs.write('info', 'speech', `${active.definition.model} live transcription finalized.`);
-          this.emitStream({ state: 'final', committed, tentative: '' });
-        }
-      });
+      await this.waitForStreamDrain(active);
+      if (active.failure) throw active.failure;
+      if (this.activeStream !== active) return; // cancelled while draining
+      await active.stream.finalize();
+      if (this.activeStream === active) {
+        const { committed } = active.stream.text;
+        this.logs.write('info', 'speech', `${active.definition.model} live transcription finalized.`);
+        this.emitStream({ state: 'final', committed, tentative: '' });
+      }
     } catch (error) {
       this.emitStream({ state: 'error', committed: '', tentative: '', error: this.message(error) });
       throw error;
@@ -246,19 +268,108 @@ export class SpeechService {
     this.emitStream({ state: 'cancelled', committed: '', tentative: '' });
   }
 
-  private endStream(active: NonNullable<SpeechService['activeStream']>): void {
+  private startStreamDrain(active: ActiveSpeechStream): void {
+    if (active.draining || active.failure) return;
+    active.draining = this.drainStreamFeeds(active).finally(() => {
+      active.draining = null;
+      // A normal stop closes input before it waits. Keep draining captures that
+      // were already accepted, even if they arrive at this drain boundary.
+      if (this.activeStream === active && !active.failure && active.pendingFeeds.length > 0) this.startStreamDrain(active);
+    });
+  }
+
+  /** Feed complete, ordered batches. This is the only code path that touches a
+   *  live session, so text reads cannot overlap native feed/finalize work. */
+  private async drainStreamFeeds(active: ActiveSpeechStream): Promise<void> {
+    while (this.activeStream === active && active.pendingFeeds.length > 0) {
+      const batch = this.takeStreamBatch(active);
+      const pcm = this.combineStreamBatch(batch);
+      active.inFlightSamples = pcm.length;
+      try {
+        await active.stream.feed(pcm);
+        if (this.activeStream !== active) {
+          for (const queued of batch) queued.resolve(); // cancellation intentionally abandons the stream
+          return;
+        }
+        const { committed, tentative } = active.stream.text;
+        this.emitStream({ state: 'active', committed, tentative });
+        for (const queued of batch) queued.resolve();
+      } catch (error) {
+        if (this.activeStream !== active) {
+          for (const queued of batch) queued.resolve(); // disposal is safe during a native call
+          return;
+        }
+        active.accepting = false;
+        active.failure = error;
+        for (const queued of batch) queued.reject(error);
+        for (const queued of active.pendingFeeds.splice(0)) queued.reject(error);
+        active.pendingSamples = 0;
+        return;
+      } finally {
+        active.inFlightSamples = 0;
+      }
+    }
+  }
+
+  private takeStreamBatch(active: ActiveSpeechStream): QueuedStreamFeed[] {
+    const batch: QueuedStreamFeed[] = [];
+    let samples = 0;
+    while (active.pendingFeeds.length > 0) {
+      const next = active.pendingFeeds[0]!;
+      if (batch.length > 0 && samples + next.pcm.length > MAX_SPEECH_STREAM_FEED_SAMPLES) break;
+      active.pendingFeeds.shift();
+      active.pendingSamples -= next.pcm.length;
+      batch.push(next);
+      samples += next.pcm.length;
+    }
+    return batch;
+  }
+
+  private combineStreamBatch(batch: readonly QueuedStreamFeed[]): Float32Array {
+    if (batch.length === 1) return batch[0]!.pcm;
+    const samples = batch.reduce((total, queued) => total + queued.pcm.length, 0);
+    const pcm = new Float32Array(samples);
+    let offset = 0;
+    for (const queued of batch) {
+      pcm.set(queued.pcm, offset);
+      offset += queued.pcm.length;
+    }
+    return pcm;
+  }
+
+  private async waitForStreamDrain(active: ActiveSpeechStream): Promise<void> {
+    while (this.activeStream === active) {
+      if (!active.draining && !active.failure && active.pendingFeeds.length > 0) this.startStreamDrain(active);
+      const draining = active.draining;
+      if (!draining) return;
+      await draining;
+    }
+  }
+
+  /** A sustained native deficit cannot be repaired without keeping unlimited
+   *  PCM. Fail explicitly and tear down safely; normal stop never reaches here
+   *  and still drains every capture it accepted. */
+  private failStreamCapacity(active: ActiveSpeechStream, error: Error): void {
+    if (this.activeStream !== active) return;
+    active.accepting = false;
+    active.failure = error;
+    for (const queued of active.pendingFeeds.splice(0)) queued.reject(error);
+    active.pendingSamples = 0;
+    this.emitStream({ state: 'error', committed: '', tentative: '', error: error.message });
+    this.endStream(active);
+    // The native feed can still be in flight. Its queued promise already has a
+    // handler, so it must not become an unhandled rejection after teardown.
+    void active.draining?.catch(() => undefined);
+  }
+
+  private endStream(active: ActiveSpeechStream): void {
+    active.accepting = false;
+    for (const queued of active.pendingFeeds.splice(0)) queued.resolve();
+    active.pendingSamples = 0;
     if (this.activeStream === active) this.activeStream = null;
     try { active.session.dispose(); } catch { /* teardown is best-effort */ }
     if (this.loaded?.id === active.definition.id) this.scheduleUnload();
     active.resolveSettled();
-  }
-
-  /** Queue one atomic live-stream operation behind all earlier ones. Errors from
-   *  an operation reject its own promise but never block later operations. */
-  private enqueueStreamOp<T>(op: () => Promise<T>): Promise<T> {
-    const run = this.streamOps.then(op, op);
-    this.streamOps = run.then(() => undefined, () => undefined);
-    return run;
   }
 
   private emitStream(update: SpeechStreamUpdate): void {
