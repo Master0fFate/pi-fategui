@@ -2059,7 +2059,7 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 .voice-model-row:last-child { border-bottom: 0; }
 .voice-model-row:hover { background: color-mix(in srgb, var(--theme-raised) 55%, transparent); }
 .voice-model-row[data-selected="true"] { background: var(--theme-raised); }
-.voice-model-choice { display: grid; min-width: 0; grid-template-columns: 52px minmax(0, 1fr); align-items: start; gap: 10px; padding: 14px 12px; color: var(--theme-text); background: transparent; cursor: pointer; text-align: left; }
+.voice-model-choice { display: grid; min-width: 0; grid-template-columns: max-content minmax(0, 1fr); align-items: start; gap: 10px; padding: 14px 12px; color: var(--theme-text); background: transparent; cursor: pointer; text-align: left; }
 .voice-model-choice:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: -3px; }
 .voice-model-tier { display: inline-flex; width: fit-content; min-width: 44px; justify-content: center; padding: 4px 6px; border-radius: 5px; color: var(--theme-muted); background: var(--theme-border); font-size: 9px; font-weight: 650; }
 .voice-model-row[data-selected="true"] .voice-model-tier { color: var(--theme-on-accent); background: var(--theme-accent); }
