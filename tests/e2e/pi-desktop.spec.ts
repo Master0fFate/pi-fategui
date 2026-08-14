@@ -1018,7 +1018,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await runway.press('Home');
     await runway.press('End');
     await expect(page.locator('.change-row.selected')).toContainText('src/example.ts');
-    await expect(page.getByLabel('Recorded origins')).toContainText('Team agent e2e-team-reviewer');
+    await expect(page.getByLabel('Related activity', { exact: true })).toContainText('Team agent e2e-team-reviewer');
     await runway.press('o');
     await expect(page.getByRole('tab', { name: /Subagent sessions/u })).toHaveAttribute('data-state', 'active');
     const reviewerTeamRow = agents.getByLabel('Reviewer Agent Team node closed').locator('xpath=..');

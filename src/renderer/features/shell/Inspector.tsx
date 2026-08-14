@@ -1,5 +1,6 @@
 import * as Tabs from '@radix-ui/react-tabs';
 import {
+  Activity,
   Files,
   GitCompareArrows,
   Info,
@@ -17,6 +18,7 @@ import { ChangesPanel } from '../diffs/ChangesPanel';
 import { FilesPanel } from '../files/FilesPanel';
 import { ResourcesPanel } from '../resources/ResourcesPanel';
 import { ContextPanel } from './ContextPanel';
+import { ActivityPanel } from './ActivityPanel';
 import { SubagentSessionsPanel } from './SubagentSessionsPanel';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { inspectorDestinationForTab, useUiStore } from '../../stores/uiStore';
@@ -43,6 +45,7 @@ const destinations = [
       { value: 'goal', label: 'Goal', icon: Target },
       { value: 'sessions', label: 'Agents', icon: MessagesSquare },
       { value: 'tools', label: 'Tools', icon: ListChecks },
+      { value: 'activity', label: 'Activity', icon: Activity },
     ],
   },
   {
@@ -159,6 +162,7 @@ export function Inspector(_props: InspectorProps = {}) {
         <Tabs.Content value="sessions" className="tab-content"><SubagentSessionsPanel /></Tabs.Content>
         <Tabs.Content value="goal" className="tab-content"><GoalMaxInspector /></Tabs.Content>
         <Tabs.Content value="tools" className="tab-content"><ToolsPanel /></Tabs.Content>
+        <Tabs.Content value="activity" className="tab-content"><ActivityPanel /></Tabs.Content>
         <Tabs.Content value="resources" className="tab-content"><ResourcesPanel /></Tabs.Content>
         <Tabs.Content value="context" className="tab-content"><RuntimeContextPanel /></Tabs.Content>
       </Tabs.Root>

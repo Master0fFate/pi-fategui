@@ -6,13 +6,16 @@ import { createServer, type Server } from 'node:http';
 import { BlockList, connect as connectTcp, isIP, type Socket } from 'node:net';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import type { MusicQueue, MusicStatus, MusicStream, MusicTrack } from '../../shared/contracts/ipc';
+import type { MusicDurationUpdate, MusicQueue, MusicStatus, MusicStream, MusicTrack } from '../../shared/contracts/ipc';
 
 const MAX_TRACKS = 200;
 const METADATA_TIMEOUT_MS = 45_000;
 const STREAM_TIMEOUT_MS = 30_000;
 const DNS_TIMEOUT_MS = 5_000;
 const JSON_BUFFER_BYTES = 8 * 1024 * 1024;
+const DURATION_BATCH_SIZE = 8;
+const DURATION_BACKOFF_MS = 150;
+const DURATION_MAX_FAILURES = 2;
 const COMMON_ARGS = [
   '--ignore-config',
   '--no-plugin-dirs',
@@ -400,6 +403,10 @@ export class MusicService {
   private generation = 0;
   private activeDnsController: AbortController | null = null;
   private activeProxy: PublicHttpsProxy | null = null;
+  private durationSink: ((updates: readonly MusicDurationUpdate[]) => void) | null = null;
+  private durationAttempted = new Set<string>();
+  private enrichmentPromise: Promise<void> | null = null;
+  private enrichmentCancelled = true;
 
   constructor(
     private readonly runner: MusicProcessRunner = new YtDlpProcessRunner(),
@@ -411,9 +418,13 @@ export class MusicService {
     return this.statusPromise;
   }
 
+  setDurationSink(sink: (updates: readonly MusicDurationUpdate[]) => void): void {
+    this.durationSink = sink;
+  }
+
   async load(rawUrl: string): Promise<MusicQueue> {
     await this.requireAvailable();
-    return this.exclusive(async () => {
+    const queue = await this.exclusive(async () => {
       const generation = this.generation;
       const sourceUrl = await this.validateUrl(rawUrl.trim(), 2_048, generation);
       const stdout = await this.runExtractor([
@@ -447,6 +458,8 @@ export class MusicService {
         tracks: [...nextTracks.values()].map(({ sourceUrl: _sourceUrl, ...track }) => track),
       };
     });
+    this.scheduleDurationEnrichment();
+    return queue;
   }
 
   async resolveTrack(trackId: string): Promise<MusicStream> {
@@ -469,10 +482,15 @@ export class MusicService {
       const direct = typeof requested?.url === 'string' ? requested.url : typeof metadata.url === 'string' ? metadata.url : null;
       if (!direct) throw new Error('yt-dlp could not find a browser-playable audio stream.');
       const streamUrl = await this.validateUrl(direct, 16_384, generation);
+      const learnedDuration = durationOf(metadata.duration);
+      if (learnedDuration !== null && track.duration == null) {
+        track.duration = learnedDuration;
+        this.emitDurations([{ trackId, duration: learnedDuration }]);
+      }
       return {
         trackId,
         title: cleanText(metadata.title, track.title),
-        duration: durationOf(metadata.duration) ?? track.duration,
+        duration: learnedDuration ?? track.duration,
         url: streamUrl,
       };
     });
@@ -480,6 +498,8 @@ export class MusicService {
 
   clearQueue(): void {
     this.generation += 1;
+    this.enrichmentCancelled = true;
+    this.durationAttempted.clear();
     this.tracks.clear();
     this.activeDnsController?.abort();
     this.activeDnsController = null;
@@ -559,12 +579,141 @@ export class MusicService {
   }
 
   private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.operationActive) throw new Error('Another music link is still being resolved.');
+    if (this.operationActive) {
+      if (!this.enrichmentPromise) throw new Error('Another music link is still being resolved.');
+      // Background duration lookups must always yield to explicit user actions.
+      this.enrichmentCancelled = true;
+      this.activeProxy?.dispose();
+      await this.enrichmentPromise.catch(() => undefined);
+      if (this.operationActive) throw new Error('Another music link is still being resolved.');
+    }
     this.operationActive = true;
     try {
       return await operation();
     } finally {
       this.operationActive = false;
+      this.scheduleDurationEnrichment();
+    }
+  }
+
+  private scheduleDurationEnrichment(): void {
+    if (this.enrichmentPromise || !this.durationSink || this.pendingDurationTracks().length === 0) return;
+    this.enrichmentCancelled = false;
+    this.enrichmentPromise = this.enrichDurations().finally(() => { this.enrichmentPromise = null; });
+  }
+
+  private pendingDurationTracks(): StoredTrack[] {
+    const pending: StoredTrack[] = [];
+    for (const track of this.tracks.values()) {
+      if (track.duration != null || this.durationAttempted.has(track.id)) continue;
+      pending.push(track);
+      if (pending.length >= DURATION_BATCH_SIZE) break;
+    }
+    return pending;
+  }
+
+  private async enrichDurations(): Promise<void> {
+    let failures = 0;
+    while (!this.enrichmentCancelled) {
+      const chunk = this.pendingDurationTracks();
+      if (chunk.length === 0) return;
+      const generation = this.generation;
+      for (const track of chunk) this.durationAttempted.add(track.id);
+      try {
+        this.publishDurations(await this.acquireForBackground(() => this.fetchDurations(chunk, generation)));
+        failures = 0;
+      } catch {
+        failures += 1;
+        if (failures >= DURATION_MAX_FAILURES) return;
+      }
+      if (generation !== this.generation) return;
+    }
+  }
+
+  private async acquireForBackground<T>(operation: () => Promise<T>): Promise<T> {
+    while (this.operationActive) {
+      if (this.enrichmentCancelled) throw new Error('Background duration lookup cancelled.');
+      await new Promise((resolve) => { setTimeout(resolve, DURATION_BACKOFF_MS); });
+    }
+    if (this.enrichmentCancelled) throw new Error('Background duration lookup cancelled.');
+    this.operationActive = true;
+    try {
+      return await operation();
+    } finally {
+      this.operationActive = false;
+    }
+  }
+
+  private async fetchDurations(chunk: readonly StoredTrack[], generation: number): Promise<readonly MusicDurationUpdate[]> {
+    const urlToTrackId = new Map<string, string>();
+    for (const track of chunk) {
+      try {
+        urlToTrackId.set(await this.validateUrl(track.sourceUrl, 2_048, generation), track.id);
+      } catch {
+        // Skip tracks whose source no longer validates; playback will report them.
+      }
+    }
+    if (urlToTrackId.size === 0) return [];
+    const stdout = await this.runExtractor([
+      '--skip-download',
+      '--no-playlist',
+      '--flat-playlist',
+      '--ignore-errors',
+      '--dump-json',
+      '--',
+      ...urlToTrackId.keys(),
+    ], { timeoutMs: METADATA_TIMEOUT_MS, maxBuffer: JSON_BUFFER_BYTES });
+    if (generation !== this.generation) return [];
+    const updates: MusicDurationUpdate[] = [];
+    for (const line of stdout.split(/\r?\n/u)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let entry: Record<string, unknown> | null;
+      try {
+        entry = recordOf(JSON.parse(trimmed));
+      } catch {
+        continue;
+      }
+      if (!entry) continue;
+      const duration = durationOf(entry.duration);
+      if (duration === null) continue;
+      const trackId = this.trackIdOfEntry(entry, urlToTrackId);
+      if (trackId) updates.push({ trackId, duration });
+    }
+    return updates;
+  }
+
+  private trackIdOfEntry(entry: Record<string, unknown>, urlToTrackId: ReadonlyMap<string, string>): string | null {
+    for (const key of ['webpage_url', 'original_url', 'url'] as const) {
+      const raw = entry[key];
+      if (typeof raw !== 'string') continue;
+      try {
+        const trackId = urlToTrackId.get(parseHttpsUrl(raw, 2_048).toString());
+        if (trackId) return trackId;
+      } catch {
+        // Try the next URL field.
+      }
+    }
+    return null;
+  }
+
+  private publishDurations(updates: readonly MusicDurationUpdate[]): void {
+    const applied: MusicDurationUpdate[] = [];
+    for (const update of updates) {
+      const track = this.tracks.get(update.trackId);
+      if (!track || track.duration != null) continue;
+      track.duration = update.duration;
+      applied.push(update);
+    }
+    this.emitDurations(applied);
+  }
+
+  private emitDurations(updates: readonly MusicDurationUpdate[]): void {
+    if (updates.length === 0 || !this.durationSink) return;
+    try {
+      this.durationSink(updates);
+    } catch {
+      // Duration updates are advisory; the renderer keeps its own fallback.
     }
   }
 }

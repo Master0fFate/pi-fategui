@@ -4,14 +4,14 @@
 
 ### A local-first desktop workspace for Pi Agent
 
-Run Pi in a focused graphical workspace for durable conversations, transparent agent activity, project files, Git, terminals, and explicit trust controls.
+Run the real Pi coding agent in a focused graphical workspace for durable conversations, transparent agent activity, project files, Git, terminals, and explicit trust controls.
 
 [![Cross-platform](https://github.com/Master0fFate/pi-fategui/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/Master0fFate/pi-fategui/actions/workflows/cross-platform.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-6f63ff.svg)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-252a38.svg)](#installation)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-252a38.svg)](#get-started-in-60-seconds)
 [![Electron](https://img.shields.io/badge/Electron-43-47848f.svg)](https://www.electronjs.org/)
 
-[Latest beta: v0.9.1-beta2](https://github.com/Master0fFate/pi-fategui/releases/tag/v0.9.1-beta2) · [Installation](#installation) · [Capabilities](#what-fate-ui-provides) · [Themes](#themes) · [Development](#local-development) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
+[Latest beta](https://github.com/Master0fFate/pi-fategui/releases) · [Get started](#get-started-in-60-seconds) · [Capabilities](#capabilities) · [Stay safe](#stay-safe) · [Docs](docs/README.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -26,251 +26,88 @@ Run Pi in a focused graphical workspace for durable conversations, transparent a
   </tr>
 </table>
 
-## Themes
+## What Fate UI is
 
-Fate UI ships with built-in themes across dark and light tones — and maps any Pi-compatible theme into the same palette. Pick one under **Settings → Interface → Theme**.
+Fate UI is a local-first **Electron desktop** workspace for the real Pi coding agent. It embeds `@earendil-works/pi-coding-agent` in the main process — it does not scrape Pi's terminal UI, and production never substitutes mocked agent responses. Repositories, sessions, Git, terminals, settings, and credentials stay on your machine.
 
-### Create your own theme
-
-A custom theme is just a small JSON file that Fate UI validates and loads next to the built-ins.
-
-1. Put a `themes.json` in your Fate UI data folder. Fate UI drops a filled-in `themes.example.json` there on first launch, so you can copy that to get going.
-
-   - **Windows:** `%USERPROFILE%\.pi\fateGUI\themes.json`
-   - **macOS / Linux:** `~/.pi/fateGUI/themes.json`
-
-2. Define one or more themes. Each one needs a lowercase `id`, a display `name`, a `tone`, and all 18 color tokens as six-digit hex:
-
-   ```json
-   {
-     "themes": [
-       {
-         "id": "storm",
-         "name": "Storm",
-         "tone": "dark",
-         "colors": {
-           "canvas": "#101218", "panel": "#151821", "raised": "#1c202b",
-           "raisedHover": "#252b38", "border": "#303746", "borderStrong": "#444d60",
-           "text": "#f0f2f7", "textSoft": "#c5cad5", "muted": "#8d96a8",
-           "subtle": "#657084", "accent": "#6f8cff", "accentHover": "#8ca2ff",
-           "accentSoft": "#222b49", "onAccent": "#ffffff", "success": "#55c78a",
-           "warning": "#d2a94b", "danger": "#e35d6a", "shadow": "#020308"
-         }
-       }
-     ]
-   }
-   ```
-
-3. Reopen Settings (or restart Fate UI). Your theme shows up in the dropdown, tagged dark or light.
-
-The `id` is lowercase letters, digits, and hyphens (`[a-z0-9][a-z0-9-]`, 2–48 characters), `tone` is `dark` or `light`, and every one of the 18 tokens is required — together they cover the whole surface Fate UI paints, from canvas and panels down to syntax and tool-output color. Up to 24 custom themes load from a single file.
-
-Themes Pi already knows about are picked up automatically too, including any a project keeps under its own `.pi` resources once you trust it, so the palette you run in the terminal Pi carries over.
+Fate UI is an independent community project and is **not** an official Pi distribution.
 
 > [!IMPORTANT]
-> Fate UI is currently beta software (`0.x` releases). Expect rough edges, and back up important work before relying on it.
->
-> Fate UI embeds `@earendil-works/pi-coding-agent`. It does not scrape Pi's terminal UI, and production never substitutes mocked agent responses. Fate UI is an independent community project and is not an official Pi distribution.
+> Fate UI is beta software (`0.x` releases). Expect rough edges, and **back up important work before relying on it.** Public beta installers are currently unsigned — verify downloads against `SHA256SUMS` before installation.
 
-## Beyond the terminal Pi Agent
+## Get started in 60 seconds
 
-Fate UI wraps the same Pi SDK the terminal agent uses, then adds what a terminal cannot give you:
+### 1. Install
 
-- **Multiple synced windows.** Open several windows on one session from **File → New Window** (`Ctrl/Cmd+Shift+N`). They share one live Pi runtime and stay in sync — no second process, no stale chat.
-- **A visual Flight Deck.** Activity Pulse, Flight Recorder, and Review Runway surface runtime, queue, context, history, and reviewable diffs the terminal only scrolls past.
-- **Agent Teams and subagent inspectors.** A live tree with per-child model, tools, skills, permissions, usage, and message controls.
-- **First-class Git and files.** Status, history, commits, Monaco diffs, and project-confined file browsing without leaving the app.
-- **A manual terminal and an embedded browser** alongside agent activity.
-- **Session references and direct session messages.** Attach saved sessions as read-only context, or message a saved session without switching away from your current one.
-- **Native media.** Local voice transcription, ambient audio, image generation, and custom themes — desktop features with real installers and auto-update.
+Download installers and `SHA256SUMS` from the [GitHub Releases page](https://github.com/Master0fFate/pi-fategui/releases). Builds cover Windows x64, macOS Apple Silicon and Intel, and Linux x64.
 
-## What Fate UI provides
+**Windows** — run `Fate-UI-<version>-Windows-x64.exe` and keep **Add Fate UI to PATH** selected for the `fate` command. Open a **new** terminal afterward.
 
-- **The real Pi runtime.** No scraping. Streamed text, reasoning, tools, sessions, models, skills, and prompts all come from the embedded Pi SDK.
-- **Stays on your machine.** Repos, sessions, Git, terminals, settings, and credentials never leave. Every project — opened from the terminal or picked by hand — gets the same Trust and open, Open without Pi, or Cancel choice.
-- **Fate Flight Deck.** See what's running at a glance: Activity Pulse tracks runtime, queue, context, and changes. Flight Recorder keeps a navigable history of root, legacy, and team activity. Review Runway pairs diffs with review status and direct-file provenance.
-- **A workspace that stays out of your way.** Durable sessions, branches and worktrees, project-confined files, Monaco previews and diffs, Git status and history, and a manual terminal in one resizable window. Virtualized timelines, queued messages, guarded project switching, and stop/steer controls keep long work responsive.
-- **Agent orchestration.** Recursive Agent Teams V2 or isolated legacy subagents, with per-child control over model, tools, skills, and permissions.
-- **Yours, not the cloud's.** Built-in, Pi-compatible, or custom themes; interface and code fonts; local voice transcription; optional ambient audio; and an image-generation model when you want one.
-- **Real installers.** See [Installation](#installation) for builds, checksums, and per-platform setup.
+**macOS** — pick the `arm64` (Apple Silicon) or `x64` (Intel) build. Run `Fate-UI-<version>-macOS-<arch>.pkg` to install under `/Applications` and add `fate` under `/usr/local/bin`, or open the `.dmg` and copy the app to Applications.
 
-## Installation
-
-Download installers and `SHA256SUMS` for published versions from the [GitHub Releases page](https://github.com/Master0fFate/pi-fategui/releases). Published releases include Windows x64, macOS Apple Silicon and Intel, and Linux x64 packages.
-
-> [!NOTE]
-> Public beta installers are currently unsigned. Windows SmartScreen or macOS Gatekeeper may display an unknown-publisher warning. Verify the download against `SHA256SUMS` before installation.
-
-### Install on Windows
-
-1. Download `Fate-UI-<version>-Windows-x64.exe`.
-2. Run the assisted installer.
-3. Keep **Add Fate UI to PATH** selected if you want the `fate` terminal command.
-4. Open a **new** terminal after installation.
-
-### Install on macOS
-
-1. Download the `arm64` build for Apple Silicon or the `x64` build for an Intel Mac.
-2. Choose either `Fate-UI-<version>-macOS-<arch>.pkg` or `.dmg`.
-3. Run the PKG to install Fate UI under `/Applications` and add `fate` under `/usr/local/bin`, or open the DMG and copy the app to Applications.
-
-### Install on Linux
-
-Download `Fate-UI-<version>-Linux-x64.deb` for Debian-based distributions, or the portable `Fate-UI-<version>-Linux-x64.AppImage`.
-
-Install the Debian package with:
+**Linux** — install the Debian package or run the portable AppImage:
 
 ```bash
-sudo apt install ./Fate-UI-<version>-Linux-x64.deb
+sudo apt install ./Fate-UI-<version>-Linux-x64.deb      # or:
+chmod +x Fate-UI-<version>-Linux-x64.AppImage && ./Fate-UI-<version>-Linux-x64.AppImage
 ```
 
-Or run the AppImage:
+Building an installer from source is covered in [Development and release](docs/development.md).
 
-```bash
-chmod +x Fate-UI-<version>-Linux-x64.AppImage
-./Fate-UI-<version>-Linux-x64.AppImage
-```
-
-To build an installer from source instead, install the platform prerequisites listed under [Local development](#local-development), check out the desired tag, run `pnpm install --frozen-lockfile`, and then run `pnpm dist` on the target operating system.
-
-## Open a project from the terminal
-
-With the Windows PATH option, a macOS PKG, or a Linux DEB installed:
-
-```bash
-cd /path/to/project
-fate
-```
-
-You can also provide a directory explicitly:
-
-```bash
-fate /path/to/project
-```
-
-Fate UI opens the canonical directory and displays its normal trust prompt. Every invocation opens an independent window and runtime, even when another installed Fate UI instance is already running. Concurrent processes use separate persistent Electron profile slots while sharing Pi credentials and the session catalog.
-
-Want two views of the same conversation? Use **File → New Window** (`Ctrl/Cmd+Shift+N`) instead of a second `fate` process. New windows share one Pi runtime and stay live-synced; separate `fate` processes are meant for isolated accounts, not for viewing the same session.
-
-## Authenticate Pi
+### 2. Authenticate Pi
 
 Fate UI reuses Pi's existing provider configuration, OAuth sessions, supported environment credentials, and `~/.pi/agent/auth.json`. Raw API keys are never exposed to renderer state.
 
 1. Install the [Pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) if you do not already use it.
-2. Start Pi in a terminal:
+2. Start Pi in a terminal, run `pi`, then `/login`, and authenticate a supported provider.
+3. Open or restart Fate UI.
 
-   ```bash
-   pi
-   ```
+Runtime diagnostics load without credentials, but prompting is unavailable until Pi reports an authenticated model.
 
-3. Run `/login` and authenticate a supported provider.
-4. Open or restart Fate UI.
-
-Runtime diagnostics still load without credentials, but prompting remains unavailable until Pi reports an authenticated model.
-
-## Permission model
-
-Fate UI starts Pi in project-confined **Edit files** mode.
-
-- **Read only** removes project and host mutation tools. If image generation is enabled, `generate_image` can still make a billable provider request and save its output under `~/.pi/agent/generated-images/`; it never writes into the project.
-- **Edit files** confines Pi file operations to the active project.
-- **Full access** is intentionally unsandboxed and requires explicit confirmation. Pi can then run shell commands and access host paths with your user account's permissions.
-
-Opening another project resets the active Pi permission level. The manual terminal remains visibly separate from Pi-generated tool activity.
-
-## Agent orchestration
-
-Choose one surface under **Settings > Agent**, then reopen the project. A model sees only the selected surface.
-
-### Agent Teams V2 (beta)
-
-Agent Teams V2 is the recursive, provider-neutral option. A root can create children and children can create grandchildren. The **Agents** inspector shows the tree, task state, profile/model, usage, messages, and writer ownership. It also lets you message, follow up with, interrupt, or close agents. Conversations and events persist under `~/.pi/fateGUI/agent-teams/`; after restart, in-flight work is marked interrupted and retained context can be resumed with a follow-up.
-
-Teams limit depth to 2, non-root nodes to 16, concurrent non-root turns to 3, and write-capable child turns to 1. All agents share the project working tree, so parallel writers are unavailable. Descendant permissions and ordinary tools can only narrow the direct caller's authority.
-
-### Legacy subagents
-
-Legacy mode keeps `subagent`, `subagent_start`, `subagent_manage`, `subagent_workflow`, and `subagent_catalog`. Each child uses an isolated Pi SDK session with its own model, thinking level, profile, permissions, tools, skills, and limits. It cannot launch child agents. Historical snapshots stay readable as direct root children.
-
-Reusable Markdown profiles load from `~/.pi/agent/agents/*.md` and, in trusted projects, `.pi/agents/*.md`. Their frontmatter can define fields such as name, description, role, tools, and model.
-
-## Local development
-
-### Prerequisites
-
-- Node.js **22.19.0 or newer**
-- pnpm **11.17.0**
-- Git on `PATH`
-- A Windows, macOS, or Linux desktop environment
-- Build tools for native modules on Linux (`build-essential` and Python 3)
-
-### Setup
+### 3. Launch, trust, and prompt
 
 ```bash
-git clone https://github.com/Master0fFate/pi-fategui.git
-cd pi-fategui
-corepack enable
-pnpm install --frozen-lockfile
-pnpm dev
+cd /path/to/project
+fate                       # or: fate /path/to/project
 ```
 
-The development launcher uses an isolated Electron profile, so it can run alongside an installed Fate UI without activating the installed process. The profile is stable per checkout under the operating system's temporary directory. Set `PI_DESKTOP_DEV_PROFILE` to override its location; an explicit `FATE_GUI_DATA_DIR` still overrides Fate's development data directory.
+Fate UI opens the canonical directory and shows its trust prompt — choose **Trust**, **Open without Pi**, or **Cancel**. Fate UI is **single-instance by default**: a later `fate /path/to/project` launch forwards that folder to the already-running app (opening or focusing it) and exits instead of starting a second process. For multiple synced views of one session, use **File → New Window** (`Ctrl/Cmd+Shift+N`); it reuses the same live runtime. To start a fully isolated second process with its own persistent Chromium profile slot, add `--new-instance` (or set `FATE_NEW_INSTANCE=1`). Pi provider auth and the session catalog stay shared unless separately configured. See [Sessions and processes](docs/sessions-and-processes.md). Then type your first prompt.
 
-### Verification
+## Capabilities
 
-```bash
-pnpm typecheck       # strict TypeScript
-pnpm test            # Vitest unit/integration suite
-pnpm test:e2e        # Playwright Electron suite
-pnpm verify          # typecheck + tests + E2E
-pnpm build           # production main/preload/renderer bundles
-pnpm smoke           # production-entry smoke test
-pnpm package         # target-native unpacked package + packaged smoke
-pnpm dist            # target-native installer artifacts
-```
+- **The real Pi runtime.** Streamed text, reasoning, tools, sessions, models, skills, and prompts all come from the embedded Pi SDK — no scraping.
+- **Flight Deck observability.** **Activity Pulse** tracks live runtime, queue, context, and changes. The **Activity** timeline joins a live, bounded history of root, legacy, and Agent Team activity (**not a durable audit log**) with the project's direct-write ledger rows. **Review Runway** pairs working-tree diffs with review status and **related direct-file activity**. See [Features](docs/features.md).
+- **Agent orchestration.** Recursive Agent Teams V2 or isolated legacy subagents, with per-child model, tools, skills, and permissions. See [Agent orchestration](docs/agent-orchestration.md).
+- **First-class Git and files.** Status, history, commits, Monaco diffs, and project-confined file browsing without leaving the app.
+- **A manual terminal and an embedded browser** alongside agent activity.
+- **Session references and direct session messages.** Attach saved sessions as read-only context, or message a saved session without switching away from your current one.
+- **Native media.** Local voice transcription, ambient audio, image generation, and custom themes. See [Features](docs/features.md) and [Themes](docs/themes.md).
 
-`node-pty`, transcription libraries, and other native dependencies are built or selected on the target operating system. Do not treat cross-compilation as equivalent to a native build.
+## Stay safe
 
-## Release process
+- **Beta.** Fate UI is `0.x` beta software. Back up important work before relying on it.
+- **Unsigned installers.** Public beta installers are unsigned; Windows SmartScreen or macOS Gatekeeper may warn. Verify every download against `SHA256SUMS` before installation.
+- **Permission model.** Fate UI starts Pi in project-confined **Edit files** mode. **Read only** removes mutation tools. **Full access** is intentionally unsandboxed, requires explicit confirmation, and lets Pi run shell commands and reach host paths with your account's permissions. Opening another project resets the active permission level.
+- **Explicit trust.** Every project gets a **Trust / Open without Pi / Cancel** choice. The manual terminal stays visibly separate from Pi-generated tool activity.
+- **Credentials stay local.** Pi authentication is reused; raw API keys are never stored or displayed in renderer state.
 
-The cross-platform GitHub Actions package matrix runs for pull requests, pushes to `main`, version tags, and non-promotion manual dispatches.
+Full trust, boundary, and hardening detail lives in [Architecture and security](docs/architecture.md) and [SECURITY.md](SECURITY.md).
 
-- Native hosted runners build, install or mount, and smoke-test Windows x64, macOS Apple Silicon and Intel, and Linux x64 packages: Windows NSIS, macOS DMG and PKG, Linux AppImage and DEB.
-- A release tag must be `v<package.json version>` and point to history contained in `main`.
-- After every native job passes, a version tag publishes seven installers and `SHA256SUMS` to its GitHub Release.
+## Documentation
 
-## Architecture and security
+| If you want to… | Read |
+| --- | --- |
+| Understand the whole doc set | [Docs index](docs/README.md) |
+| Get oriented and open your first project | [Get started](#get-started-in-60-seconds) · [Sessions and processes](docs/sessions-and-processes.md) |
+| See what agents are doing | [Features (Flight Deck)](docs/features.md) |
+| Author a theme | [Themes](docs/themes.md) |
+| Drive Agent Teams or subagents | [Agent orchestration](docs/agent-orchestration.md) |
+| Review trust, permissions, and isolation | [Architecture and security](docs/architecture.md) · [SECURITY.md](SECURITY.md) |
+| Build, package, or release | [Development and release](docs/development.md) |
+| Contribute | [Contributing](CONTRIBUTING.md) |
 
-```mermaid
-flowchart LR
-  R[React renderer] -->|validated named IPC| P[Preload bridge]
-  P --> M[Electron main process]
-  M --> PI[Embedded Pi SDK]
-  M --> FS[Filesystem and Git]
-  M --> PTY[Terminal PTYs]
-  M --> CFG[Local settings and logs]
-```
+## Contributing and license
 
-The renderer has no Node.js, Electron, filesystem, credential, shell, or child-process access. Electron runs with context isolation, sandboxing, web security, denied popups/permissions, and main-frame-only IPC. Project paths are canonicalized and containment-checked in the main process.
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), keep changes narrow, and preserve the main/renderer security boundary.
 
-Please report vulnerabilities privately according to [SECURITY.md](SECURITY.md). Do not open a public issue for an unpatched security vulnerability.
-
-## Optional media features
-
-- **Voice transcription:** local, settings-controlled models with bounded and verified downloads.
-- **Ambient audio:** disabled by default; resolved through a bundled, pinned `yt-dlp` runtime and streamed without saving media into the project.
-- **Generated images:** select an image model independently of the active chat model. Fate UI supports authenticated OpenAI, Google, OpenRouter, and ChatGPT OAuth routes, plus compatible custom Pi providers. Custom endpoints require HTTPS except on loopback addresses. Generated raster output is validated, rendered inline, and stored under `~/.pi/agent/generated-images/<session-id>/`.
-
-See [FONT_LICENSES.md](FONT_LICENSES.md) for bundled font redistribution notices.
-
-## Contributing
-
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), keep changes narrow, preserve the main/renderer security boundary, and include verification evidence with pull requests.
-
-## License, attribution, and project identity
-
-Fate UI is licensed under the [Apache License 2.0](LICENSE). You may use, modify, and redistribute it, including commercially, subject to the license conditions. Distributed modifications must retain applicable copyright, license, trademark, and attribution notices, include the project's [NOTICE](NOTICE), and identify changed files as required by Apache-2.0.
-
-The license does **not** grant permission to use project names, logos, or marks in a way that implies an unmodified official build or endorsement. See [TRADEMARKS.md](TRADEMARKS.md).
-
-Fate UI includes and interoperates with third-party software under its own licenses, including the MIT-licensed Pi coding agent. Required upstream terms are reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Fate UI remains an independent project.
+Fate UI is licensed under the [Apache License 2.0](LICENSE). Distributed modifications must retain applicable copyright, license, trademark, and attribution notices, include the project's [NOTICE](NOTICE), and identify changed files as required by Apache-2.0. The license does **not** grant permission to use project names, logos, or marks in a way that implies an unmodified official build or endorsement — see [TRADEMARKS.md](TRADEMARKS.md). Third-party terms, including the MIT-licensed Pi coding agent, are reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

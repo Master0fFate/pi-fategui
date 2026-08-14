@@ -6,6 +6,7 @@ import type { GoalMaxPersistence } from './goalmaxxing/GoalMaxRepository';
 import type { ImageGenerationSettingsResolver } from './PiImageTool';
 import { MultiProjectRuntimeManager } from './MultiProjectRuntimeManager';
 import { createDefaultModelRuntime, PiRuntimeService, type ModelRuntimeProvider, type PiSdkAdapter, type SessionDefaults } from './PiRuntimeService';
+import type { MutationRecorder } from './provenance/mutationRecorder';
 import type { SessionPermissionPersistence } from './SessionPermissionStore';
 
 const noopEventSink = (_events: PiEvent[]) => undefined;
@@ -40,6 +41,8 @@ export interface MultiProjectPiRuntimeDeps {
   createGoalPersistence: () => GoalMaxPersistence;
   browserIntegration: PiBrowserRuntimeIntegration | null;
   defaults: () => Promise<SessionDefaults>;
+  /** Optional mutation-attestation recorder threaded to root and child confined tools. */
+  recordAttestation?: MutationRecorder;
 }
 
 export class MultiProjectPiRuntime {
@@ -289,6 +292,7 @@ export class MultiProjectPiRuntime {
       this.deps.createGoalPersistence(),
       this.deps.browserIntegration,
       modelRuntimeProvider,
+      this.deps.recordAttestation ?? null,
     );
   }
 

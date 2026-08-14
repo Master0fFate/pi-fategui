@@ -4,7 +4,7 @@
 
 ## Platform
 
-web
+desktop (Electron)
 
 ## Users
 
@@ -12,13 +12,13 @@ Software developers working in local repositories who want Pi’s real coding-ag
 
 ## Product Purpose
 
-Pi Desktop is a local-first Electron interface for the real Pi coding agent. It lets a developer select and trust a repository, initialize Pi through `@earendil-works/pi-coding-agent`, converse with streamed output, inspect tool activity and code changes, manage durable sessions and branches, browse files, and use a separate integrated terminal.
+Fate UI is a local-first Electron desktop interface for the real Pi coding agent. It lets a developer select and trust a repository, initialize Pi through `@earendil-works/pi-coding-agent`, converse with streamed output, inspect tool activity and code changes, manage durable sessions and branches, browse files, and use a separate integrated terminal.
 
 Success means the GUI remains responsive and trustworthy during real agent work without wrapping Pi’s terminal UI or substituting mocked production responses.
 
 ## Positioning
 
-Pi Desktop embeds Pi’s SDK in the Electron main process and translates its runtime into an application-owned, typed event model. The renderer stays presentation-only: it receives normalized state through a narrow validated preload bridge while Pi, credentials, files, Git, and shell processes stay outside the renderer.
+Fate UI embeds Pi’s SDK in the Electron main process and translates its runtime into an application-owned, typed event model. The renderer stays presentation-only: it receives normalized state through a narrow validated preload bridge while Pi, credentials, files, Git, and shell processes stay outside the renderer.
 
 ## Operating Context
 
@@ -26,7 +26,7 @@ The product runs as a native desktop window beside a developer’s editor and re
 
 ## Capabilities and Constraints
 
-- Product name: **Pi Desktop**.
+- Product name: **Fate UI**.
 - Required stack: Electron, strict TypeScript, React, Vite, Tailwind CSS, Radix UI, Lucide, Zustand, TanStack Query where cached async state is useful, xterm.js, Monaco, react-virtuoso, electron-builder, Vitest, React Testing Library, and Playwright.
 - The Electron main process owns Pi, sessions, project selection, filesystem, Git, terminal processes, settings, credential references, dialogs, and menus.
 - The preload exposes named, Zod-validated commands and events only. The renderer has no Node, Electron, filesystem, shell, or child-process access.

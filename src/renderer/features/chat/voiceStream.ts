@@ -10,10 +10,11 @@
  */
 
 import { MAX_SPEECH_STREAM_BACKLOG_SAMPLES, MAX_SPEECH_STREAM_FEED_SAMPLES, SPEECH_SAMPLE_RATE } from '../../../shared/speech';
+import { combineSampleBatch, takeSampleBatch } from '../../../shared/speechQueue';
 
 export interface VoiceStreamController {
-  /** Stop the mic, tear down the audio graph, and close the context. */
-  stop: () => void;
+  /** Flush the final partial PCM capture, then stop the mic and close the graph. */
+  stop: () => Promise<void>;
 }
 
 const PROCESSOR_NAME = 'fate-voice-downsample';
@@ -26,7 +27,41 @@ export const MAX_VOICE_STREAM_BACKLOG_SAMPLES = MAX_SPEECH_STREAM_BACKLOG_SAMPLE
 /** Serializes renderer-to-main audio sends. AudioWorklet messages cannot await
  *  IPC, so this queues them while a slow CPU feed is in flight, then sends a
  *  bounded PCM batch in capture order. closeAndDrain() is the stop barrier: all
- *  accepted audio reaches main before stream finalization starts. */
+ *  accepted audio reaches main before stream finalization starts.
+ *  A speech gate (Handy-style) drops silence before it is ever queued: the
+ *  decode engine only ever sees speech, so pauses cost no CPU. */
+export interface SpeechGateConfig {
+  /** Frame RMS at or above this counts as speech. Conservative so quiet
+   *  speech passes; Chromium's noise suppression keeps the floor well below. */
+  readonly rmsThreshold: number;
+  /** Silence following speech keeps flowing for this long, so word tails are
+   *  never clipped and short mid-word pauses stay in context. */
+  readonly hangoverSamples: number;
+}
+export const defaultSpeechGateConfig: SpeechGateConfig = {
+  rmsThreshold: 0.006,
+  hangoverSamples: SPEECH_SAMPLE_RATE * 0.8,
+};
+
+/** Decides, per captured chunk, whether the decode engine should see it.
+ *  Pure and synchronous so it can be unit-tested without audio hardware. */
+export class SpeechGate {
+  private silentSamples = 0;
+  constructor(private readonly config: SpeechGateConfig = defaultSpeechGateConfig) {}
+  /** Record one chunk; true when it must be forwarded for inference. */
+  push(pcm: Float32Array): boolean {
+    let sumSquares = 0;
+    for (let i = 0; i < pcm.length; i += 1) sumSquares += pcm[i]! * pcm[i]!;
+    const rms = Math.sqrt(sumSquares / pcm.length);
+    if (rms >= this.config.rmsThreshold) {
+      this.silentSamples = 0;
+      return true;
+    }
+    this.silentSamples += pcm.length;
+    return this.silentSamples <= this.config.hangoverSamples;
+  }
+}
+
 export class VoiceStreamFeedQueue {
   private readonly pending: Float32Array[] = [];
   private pendingSamples = 0;
@@ -39,10 +74,14 @@ export class VoiceStreamFeedQueue {
   constructor(
     private readonly send: (audio: ArrayBuffer) => Promise<void>,
     private readonly onError: (error: unknown) => void,
+    private readonly gate: SpeechGate = new SpeechGate(),
   ) {}
 
   push(pcm: Float32Array): boolean {
     if (this.closed || this.failure || pcm.length === 0) return false;
+    // Silence never reaches the engine: pauses in dictation cost no CPU, and
+    // silence-driven hallucinations cannot start.
+    if (!this.gate.push(pcm)) return false;
     if (this.pendingSamples + this.inFlightSamples + pcm.length > MAX_VOICE_STREAM_BACKLOG_SAMPLES) {
       this.fail(new Error('Live transcription cannot keep up with this computer. Try a shorter recording or a faster voice model.'));
       return false;
@@ -93,24 +132,13 @@ export class VoiceStreamFeedQueue {
   }
 
   private takeBatch(): Float32Array {
-    const chunks: Float32Array[] = [];
-    let samples = 0;
-    while (this.pending.length > 0) {
-      const next = this.pending[0]!;
-      if (chunks.length > 0 && samples + next.length > MAX_VOICE_STREAM_BATCH_SAMPLES) break;
-      this.pending.shift();
-      this.pendingSamples -= next.length;
-      chunks.push(next);
-      samples += next.length;
-    }
-    if (chunks.length === 1) return chunks[0]!;
-    const batch = new Float32Array(samples);
-    let offset = 0;
-    for (const chunk of chunks) {
-      batch.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return batch;
+    const chunks = takeSampleBatch(
+      this.pending,
+      MAX_VOICE_STREAM_BATCH_SAMPLES,
+      (chunk) => chunk.length,
+      (chunk) => { this.pendingSamples -= chunk.length; },
+    );
+    return combineSampleBatch(chunks, (chunk) => chunk);
   }
 
   private fail(error: unknown): void {
@@ -132,22 +160,39 @@ class DownsampleProcessor extends AudioWorkletProcessor {
     this.leftover = [];
     this.fraction = 0;
     this.ratio = ${TARGET_RATE} / sampleRate;
+    this.stopped = false;
+    this.port.onmessage = (event) => {
+      if (event.data && event.data.type === 'flush' && !this.stopped) {
+        this.stopped = true;
+        if (this.out.length > 0) {
+          const buffer = new Float32Array(this.out);
+          this.out = [];
+          this.port.postMessage(buffer, [buffer.buffer]);
+        }
+        this.port.postMessage({ type: 'flushed' });
+      }
+    };
   }
   process(inputs) {
+    if (this.stopped) return false;
     const channel = inputs[0] && inputs[0][0];
     if (!channel || channel.length === 0) return true;
-    const combined = this.leftover;
-    for (let i = 0; i < channel.length; i++) combined.push(channel[i]);
-    let pos = this.fraction;
-    while (pos + 1 < combined.length) {
-      const i0 = pos | 0;
-      const frac = pos - i0;
-      this.out.push(combined[i0] + (combined[i0 + 1] - combined[i0]) * frac);
-      pos += 1 / this.ratio;
+    if (sampleRate === ${TARGET_RATE}) {
+      for (let i = 0; i < channel.length; i++) this.out.push(channel[i]);
+    } else {
+      const combined = this.leftover;
+      for (let i = 0; i < channel.length; i++) combined.push(channel[i]);
+      let pos = this.fraction;
+      while (pos + 1 < combined.length) {
+        const i0 = pos | 0;
+        const frac = pos - i0;
+        this.out.push(combined[i0] + (combined[i0 + 1] - combined[i0]) * frac);
+        pos += 1 / this.ratio;
+      }
+      const consumed = pos | 0;
+      this.leftover = combined.slice(consumed);
+      this.fraction = pos - consumed;
     }
-    const consumed = pos | 0;
-    this.leftover = combined.slice(consumed);
-    this.fraction = pos - consumed;
     while (this.out.length >= this.chunkSamples) {
       const chunk = this.out.splice(0, this.chunkSamples);
       const buffer = new Float32Array(chunk);
@@ -183,10 +228,19 @@ export async function startVoiceStream(
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
   }
 
-  const context = new AudioContext();
+  let context: AudioContext;
+  try {
+    // Let Chromium perform its native, band-limited conversion when the device
+    // supports a 16 kHz graph. The worklet keeps its resampler as a fallback.
+    context = new AudioContext({ sampleRate: TARGET_RATE });
+  } catch {
+    context = new AudioContext();
+  }
   let source: MediaStreamAudioSourceNode;
   let node: AudioWorkletNode;
   let mute: GainNode;
+  let resolveFlush: (() => void) | null = null;
+  let processorFailed = false;
   try {
     await context.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: 'application/javascript' })));
     source = context.createMediaStreamSource(stream);
@@ -196,7 +250,18 @@ export async function startVoiceStream(
       channelCount: 1,
       processorOptions: { chunkSamples },
     });
-    node.port.onmessage = (event: MessageEvent) => onChunk(event.data as Float32Array);
+    node.port.onmessage = (event: MessageEvent) => {
+      if ((event.data as { type?: string } | null)?.type === 'flushed') {
+        resolveFlush?.();
+        resolveFlush = null;
+        return;
+      }
+      if (event.data instanceof Float32Array) onChunk(event.data);
+    };
+    node.onprocessorerror = () => {
+      processorFailed = true;
+      resolveFlush?.();
+    };
     mute = context.createGain();
     mute.gain.value = 0;
     source.connect(node);
@@ -208,12 +273,23 @@ export async function startVoiceStream(
     throw error;
   }
 
+  let stopping: Promise<void> | null = null;
   return {
     stop: () => {
-      node.port.onmessage = null;
-      try { source.disconnect(); node.disconnect(); mute.disconnect(); } catch { /* graph already torn down */ }
-      stream.getTracks().forEach((track) => track.stop());
-      void context.close().catch(() => undefined);
+      stopping ??= (async () => {
+        if (!processorFailed) {
+          await new Promise<void>((resolve) => {
+            resolveFlush = resolve;
+            try { node.port.postMessage({ type: 'flush' }); } catch { resolve(); }
+          });
+        }
+        node.port.onmessage = null;
+        node.onprocessorerror = null;
+        try { source.disconnect(); node.disconnect(); mute.disconnect(); } catch { /* graph already torn down */ }
+        stream.getTracks().forEach((track) => track.stop());
+        await context.close().catch(() => undefined);
+      })();
+      return stopping;
     },
   };
 }

@@ -119,7 +119,7 @@ describe('subagent session inspector', () => {
 
     expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Changes', 'Files']);
     await user.click(screen.getByRole('button', { name: 'Run' }));
-    expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Goal', 'Subagent sessions', 'Tools']);
+    expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Goal', 'Subagent sessions', 'Tools', 'Activity']);
     expect(screen.queryByRole('tab', { name: 'Changes' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Resources' })).not.toBeInTheDocument();
   });

@@ -12,13 +12,13 @@ let directory = '';
 const bytes = Buffer.from('verified-model');
 const checksum = createHash('sha256').update(bytes).digest('hex');
 const model: SpeechModelDefinition = {
-  id: 'mini', tier: 'mini', name: 'Mini', model: 'Test model', description: 'Test', detail: '14 B', bytes: bytes.length,
+  id: 'canary-flash', tier: 'mini', name: 'Mini', model: 'Test model', description: 'Test', detail: '14 B', bytes: bytes.length,
   fileName: 'mini.gguf', url: 'https://example.test/mini.gguf', sha256: checksum, streaming: false,
 };
 const definitions: readonly SpeechModelDefinition[] = [
   model,
-  { ...model, id: 'balanced', tier: 'balanced', name: 'Medium', fileName: 'medium.gguf' },
-  { ...model, id: 'max', tier: 'max', name: 'Max', fileName: 'max.gguf' },
+  { ...model, id: 'parakeet-unified', tier: 'balanced', name: 'Medium', fileName: 'medium.gguf' },
+  { ...model, id: 'cohere-transcribe', tier: 'max', name: 'Max', fileName: 'max.gguf' },
 ];
 
 beforeEach(async () => { directory = await mkdtemp(path.join(os.tmpdir(), 'fate-speech-')); });
@@ -60,12 +60,12 @@ describe('SpeechService model downloads', () => {
     const service = new SpeechService(new AppLogService(), directory, fetcher, definitions);
     service.setEventSink(progress);
 
-    await service.download('mini');
+    await service.download('canary-flash');
 
     expect(await readFile(path.join(directory, 'mini.gguf'))).toEqual(bytes);
     expect((await readFile(path.join(directory, 'mini.gguf.verified'), 'utf8')).trim()).toBe(checksum);
     await expect(stat(path.join(directory, 'mini.gguf.partial'))).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'mini', state: 'installed' }));
+    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'canary-flash', state: 'installed' }));
   });
 
   it('never installs a model whose checksum does not match', async () => {
@@ -73,7 +73,7 @@ describe('SpeechService model downloads', () => {
     const fetcher = vi.fn(async () => new Response(corrupted, { status: 200 })) as unknown as typeof fetch;
     const service = new SpeechService(new AppLogService(), directory, fetcher, definitions);
 
-    await expect(service.download('mini')).rejects.toThrow('checksum');
+    await expect(service.download('canary-flash')).rejects.toThrow('checksum');
     await expect(stat(path.join(directory, 'mini.gguf'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readFile(path.join(directory, 'mini.gguf.partial'))).toEqual(corrupted);
   });
@@ -86,11 +86,11 @@ describe('SpeechService model downloads', () => {
     const service = new SpeechService(new AppLogService(), directory, fetcher, definitions);
     service.setEventSink(progress);
 
-    const operation = service.download('mini');
+    const operation = service.download('canary-flash');
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
-    expect(service.cancelDownload('mini')).toBe(true);
+    expect(service.cancelDownload('canary-flash')).toBe(true);
     await expect(operation).rejects.toThrow('cancelled');
-    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'mini', state: 'cancelled' }));
+    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'canary-flash', state: 'cancelled' }));
   });
 
   it('coalesces concurrent requests for the same model', async () => {
@@ -99,8 +99,8 @@ describe('SpeechService model downloads', () => {
     const fetcher = vi.fn(async () => { await wait; return new Response(bytes, { status: 200 }); }) as unknown as typeof fetch;
     const service = new SpeechService(new AppLogService(), directory, fetcher, definitions);
 
-    const first = service.download('mini');
-    const second = service.download('mini');
+    const first = service.download('canary-flash');
+    const second = service.download('canary-flash');
     resolveResponse();
     await Promise.all([first, second]);
 
@@ -113,7 +113,7 @@ describe('SpeechService model downloads', () => {
     })) as unknown as typeof fetch;
     const service = new SpeechService(new AppLogService(), directory, fetcher, definitions);
 
-    const operation = service.download('mini');
+    const operation = service.download('canary-flash');
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
     await service.dispose();
 
@@ -125,8 +125,8 @@ describe('SpeechService backend selection', () => {
   it('forces CPU for streaming models on the macOS Metal backend but keeps batch models accelerated', async () => {
     await installTestModel();
     await mkdir(directory, { recursive: true });
-    const streamingModel: SpeechModelDefinition = { ...model, id: 'balanced', fileName: 'streaming.gguf', streaming: true };
-    const batchModel: SpeechModelDefinition = { ...model, id: 'mini', fileName: 'mini.gguf' };
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'parakeet-unified', fileName: 'streaming.gguf', streaming: true, streamFamily: { kind: 'parakeet_buffered' as const } };
+    const batchModel: SpeechModelDefinition = { ...model, id: 'canary-flash', fileName: 'mini.gguf' };
     const definitions: readonly SpeechModelDefinition[] = [batchModel, streamingModel];
     await writeFile(path.join(directory, 'streaming.gguf'), bytes);
     await writeFile(path.join(directory, 'streaming.gguf.verified'), `${checksum}\n`);
@@ -148,8 +148,8 @@ describe('SpeechService backend selection', () => {
     };
     const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime as unknown as typeof import('transcribe-cpp'));
 
-    await service.transcribe('balanced', new Float32Array([0]).buffer); // streaming -> CPU (Metal avoided)
-    await service.transcribe('mini', new Float32Array([0]).buffer);     // batch -> auto (Metal allowed)
+    await service.transcribe('parakeet-unified', new Float32Array([0]).buffer); // streaming -> CPU (Metal avoided)
+    await service.transcribe('canary-flash', new Float32Array([0]).buffer);     // batch -> auto (Metal allowed)
 
     expect(loadCalls[0]).toMatchObject({ backend: 'cpu' });
     expect(loadCalls[1]).toMatchObject({ backend: 'auto' });
@@ -175,9 +175,9 @@ describe('SpeechService model lifecycle', () => {
     const fake = fakeRuntime();
     const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => fake.runtime);
 
-    await service.transcribe('mini', new Float32Array([0]).buffer);
+    await service.transcribe('canary-flash', new Float32Array([0]).buffer);
     await vi.advanceTimersByTimeAsync(4 * 60_000);
-    await service.transcribe('mini', new Float32Array([0]).buffer);
+    await service.transcribe('canary-flash', new Float32Array([0]).buffer);
     expect(fake.runtime.TranscribeModel.load).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(2 * 60_000);
@@ -192,7 +192,7 @@ describe('SpeechService model lifecycle', () => {
     const fake = fakeRuntime();
     const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => fake.runtime);
 
-    await service.transcribe('mini', new Float32Array([0]).buffer);
+    await service.transcribe('canary-flash', new Float32Array([0]).buffer);
     const disposing = service.dispose();
 
     expect(fake.disposeModel).toHaveBeenCalledOnce();
@@ -207,7 +207,7 @@ describe('SpeechService model lifecycle', () => {
     }));
     const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => fake.runtime);
 
-    const transcription = service.transcribe('mini', new Float32Array([0]).buffer);
+    const transcription = service.transcribe('canary-flash', new Float32Array([0]).buffer);
     await vi.waitFor(() => expect(fake.run).toHaveBeenCalledOnce());
     const disposing = service.dispose();
     expect(fake.disposeModel).not.toHaveBeenCalled();
@@ -222,7 +222,7 @@ describe('SpeechService live streaming', () => {
     await installTestModel();
     await writeFile(path.join(directory, 'balanced.gguf'), bytes);
     await writeFile(path.join(directory, 'balanced.gguf.verified'), `${checksum}\n`);
-    const streamingModel: SpeechModelDefinition = { ...model, id: 'balanced', fileName: 'balanced.gguf', streaming: true };
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'parakeet-unified', fileName: 'balanced.gguf', streaming: true, streamFamily: { kind: 'parakeet_buffered' as const } };
     const definitions: readonly SpeechModelDefinition[] = [streamingModel];
 
     const stream = {
@@ -231,7 +231,8 @@ describe('SpeechService live streaming', () => {
       get text() { return { committed: 'hello world', tentative: '' }; },
       reset: vi.fn(),
     };
-    const session = { stream: vi.fn(async () => stream), dispose: vi.fn() };
+    const run = vi.fn(async (_pcm: Float32Array) => ({ text: 'hello from the full recording', language: 'en' }));
+    const session = { stream: vi.fn(async () => stream), run, dispose: vi.fn() };
     const loaded = {
       backend: 'cpu',
       device: { name: 'CPU', description: 'CPU', deviceType: 'cpu' },
@@ -247,7 +248,9 @@ describe('SpeechService live streaming', () => {
     const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime);
     service.setStreamSink((update) => updates.push({ state: update.state, committed: update.committed }));
 
-    await service.streamStart('balanced', 'en');
+    // refine=true keeps the legacy behavior for this test: a full-recording
+    // accuracy pass at stop. Default is now opt-in (CPU calm).
+    await service.streamStart('parakeet-unified', 'en', true);
     // Performance regression: use transcribe.cpp's trained Parakeet defaults.
     // The old 5.6 s / 160 ms override forced frequent CPU decode calls, which
     // fell behind live audio after only a few words.
@@ -260,19 +263,21 @@ describe('SpeechService live streaming', () => {
 
     await service.streamStop();
     expect(stream.finalize).toHaveBeenCalledOnce();
+    expect(run).toHaveBeenCalledWith(new Float32Array([0, 0, 0, 0]), expect.objectContaining({ language: 'en', timestamps: 'none', signal: expect.any(AbortSignal) }));
+    expect(stream.finalize.mock.invocationCallOrder[0]).toBeLessThan(run.mock.invocationCallOrder[0]!);
     expect(session.dispose).toHaveBeenCalled();
-    expect(updates.at(-1)).toMatchObject({ state: 'final' });
+    expect(updates.at(-1)).toMatchObject({ state: 'final', committed: 'hello from the full recording' });
     await service.dispose();
   });
 
   it('refuses streaming on a batch-only model', async () => {
     await installTestModel();
-    const batchModel: SpeechModelDefinition = { ...model, id: 'mini', fileName: 'mini.gguf', streaming: false };
+    const batchModel: SpeechModelDefinition = { ...model, id: 'canary-flash', fileName: 'mini.gguf', streaming: false };
     const service = new SpeechService(new AppLogService(), directory, fetch, [batchModel], async () => ({
       getAvailableBackends: () => [{ name: 'CPU', description: 'CPU', kind: 'cpu', deviceType: 'cpu' }],
       TranscribeModel: { load: vi.fn() },
     } as unknown as typeof import('transcribe-cpp')));
-    await expect(service.streamStart('mini', 'en')).rejects.toThrow('streaming');
+    await expect(service.streamStart('canary-flash', 'en')).rejects.toThrow('streaming');
     await service.dispose();
   });
 
@@ -280,7 +285,7 @@ describe('SpeechService live streaming', () => {
     await installTestModel();
     await writeFile(path.join(directory, 'balanced.gguf'), bytes);
     await writeFile(path.join(directory, 'balanced.gguf.verified'), `${checksum}\n`);
-    const streamingModel: SpeechModelDefinition = { ...model, id: 'balanced', fileName: 'balanced.gguf', streaming: true };
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'parakeet-unified', fileName: 'balanced.gguf', streaming: true, streamFamily: { kind: 'parakeet_buffered' as const } };
     const definitions: readonly SpeechModelDefinition[] = [streamingModel];
 
     // Model the transcribe.cpp stream contract: a feed()/finalize() computes on
@@ -302,7 +307,7 @@ describe('SpeechService live streaming', () => {
       },
       reset: vi.fn(),
     };
-    const session = { stream: vi.fn(async () => stream), dispose: vi.fn() };
+    const session = { stream: vi.fn(async () => stream), run: vi.fn(async () => ({ text: 'hello world', language: 'en' })), dispose: vi.fn() };
     const loaded = {
       backend: 'cpu',
       device: { name: 'CPU', description: 'CPU', deviceType: 'cpu' },
@@ -318,7 +323,7 @@ describe('SpeechService live streaming', () => {
     const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime);
     service.setStreamSink((update) => updates.push({ state: update.state, committed: update.committed }));
 
-    await service.streamStart('balanced', 'en');
+    await service.streamStart('parakeet-unified', 'en');
     const chunk = new Float32Array([0, 0, 0, 0]).buffer;
     const feeds = [
       service.streamFeed(chunk),
@@ -342,7 +347,7 @@ describe('SpeechService live streaming', () => {
     await installTestModel();
     await writeFile(path.join(directory, 'balanced.gguf'), bytes);
     await writeFile(path.join(directory, 'balanced.gguf.verified'), `${checksum}\n`);
-    const streamingModel: SpeechModelDefinition = { ...model, id: 'balanced', fileName: 'balanced.gguf', streaming: true };
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'parakeet-unified', fileName: 'balanced.gguf', streaming: true, streamFamily: { kind: 'parakeet_buffered' as const } };
     const definitions: readonly SpeechModelDefinition[] = [streamingModel];
     let releaseFirstFeed!: () => void;
     const firstFeed = new Promise<void>((resolve) => { releaseFirstFeed = resolve; });
@@ -370,7 +375,7 @@ describe('SpeechService live streaming', () => {
     const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime);
     service.setStreamSink((update) => updates.push({ state: update.state, error: update.error }));
 
-    await service.streamStart('balanced', 'en');
+    await service.streamStart('parakeet-unified', 'en');
     const feed = (value: number) => service.streamFeed(new Float32Array(MAX_SPEECH_STREAM_FEED_SAMPLES).fill(value).buffer);
     const first = feed(1);
     await vi.waitFor(() => expect(stream.feed).toHaveBeenCalledOnce());
@@ -395,7 +400,7 @@ describe('SpeechService live streaming', () => {
     await installTestModel();
     await writeFile(path.join(directory, 'balanced.gguf'), bytes);
     await writeFile(path.join(directory, 'balanced.gguf.verified'), `${checksum}\n`);
-    const streamingModel: SpeechModelDefinition = { ...model, id: 'balanced', fileName: 'balanced.gguf', streaming: true };
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'parakeet-unified', fileName: 'balanced.gguf', streaming: true, streamFamily: { kind: 'parakeet_buffered' as const } };
     const definitions: readonly SpeechModelDefinition[] = [streamingModel];
     let releaseFirstFeed!: () => void;
     const firstFeed = new Promise<void>((resolve) => { releaseFirstFeed = resolve; });
@@ -412,7 +417,7 @@ describe('SpeechService live streaming', () => {
       get text() { return { committed: 'queued audio', tentative: '' }; },
       reset: vi.fn(),
     };
-    const session = { stream: vi.fn(async () => stream), dispose: vi.fn() };
+    const session = { stream: vi.fn(async () => stream), run: vi.fn(async () => ({ text: 'queued audio', language: 'en' })), dispose: vi.fn() };
     const loaded = {
       backend: 'cpu',
       device: { name: 'CPU', description: 'CPU', deviceType: 'cpu' },
@@ -425,7 +430,7 @@ describe('SpeechService live streaming', () => {
     } as unknown as typeof import('transcribe-cpp');
     const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime);
 
-    await service.streamStart('balanced', 'en');
+    await service.streamStart('parakeet-unified', 'en');
     const chunkSamples = 4_800;
     const feeds = Array.from({ length: 8 }, (_, index) => service.streamFeed(new Float32Array(chunkSamples).fill(index + 1).buffer));
     await vi.waitFor(() => expect(stream.feed).toHaveBeenCalledOnce());
@@ -446,6 +451,154 @@ describe('SpeechService live streaming', () => {
     expect(pcm).toHaveLength(chunkSamples * 8);
     expect(Array.from({ length: 8 }, (_, index) => pcm[index * chunkSamples]!)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(stream.finalize).toHaveBeenCalledOnce();
+    await service.dispose();
+  });
+
+  it('seals and finalizes at the three-minute limit instead of failing the stream', async () => {
+    await installTestModel();
+    await writeFile(path.join(directory, 'balanced.gguf'), bytes);
+    await writeFile(path.join(directory, 'balanced.gguf.verified'), `${checksum}\n`);
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'parakeet-unified', fileName: 'balanced.gguf', streaming: true, streamFamily: { kind: 'parakeet_buffered' as const } };
+    const definitions: readonly SpeechModelDefinition[] = [streamingModel];
+    const runLengths: number[] = [];
+    const stream = {
+      feed: vi.fn(async () => ({ resultChanged: true, isFinal: false, revision: 1, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false })),
+      finalize: vi.fn(async () => ({ resultChanged: true, isFinal: true, revision: 2, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false })),
+      get text() { return { committed: 'ninety nine captures', tentative: '' }; },
+      reset: vi.fn(),
+    };
+    const session = {
+      stream: vi.fn(async () => stream),
+      run: vi.fn(async (pcm: Float32Array) => { runLengths.push(pcm.length); return { text: 'full recording text', language: 'en' }; }),
+      dispose: vi.fn(),
+    };
+    const loaded = {
+      backend: 'cpu', device: { name: 'CPU', description: 'CPU', deviceType: 'cpu' },
+      createSession: vi.fn(() => session), dispose: vi.fn(),
+    };
+    const runtime = {
+      getAvailableBackends: vi.fn(() => [{ name: 'CPU', description: 'CPU', kind: 'cpu', deviceType: 'cpu' }]),
+      TranscribeModel: { load: vi.fn(async () => loaded) },
+    } as unknown as typeof import('transcribe-cpp');
+    const updates: { state: string; committed: string }[] = [];
+    const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime);
+    service.setStreamSink((update) => updates.push({ state: update.state, committed: update.committed }));
+
+    await service.streamStart('parakeet-unified', 'en', true);
+    const chunkSamples = MAX_SPEECH_STREAM_FEED_SAMPLES * 0.9; // 1.8 s captures
+    for (let index = 0; index < 99; index += 1) {
+      await service.streamFeed(new Float32Array(chunkSamples).buffer);
+    }
+    // The next capture exceeds the 180 s cap. The part that still fits is kept
+    // and the stream seals and finalizes; nothing is rejected.
+    await expect(service.streamFeed(new Float32Array(chunkSamples + 1_600).buffer)).resolves.toBeUndefined();
+    await vi.waitFor(() => expect(updates.at(-1)).toMatchObject({ state: 'final', committed: 'full recording text' }));
+    expect(updates).toContainEqual(expect.objectContaining({ state: 'finalizing' }));
+    expect(stream.finalize).toHaveBeenCalledOnce();
+    expect(runLengths).toEqual([16_000 * 180]);
+    // Audio that arrives after the seal is dropped silently, never an error.
+    await expect(service.streamFeed(new Float32Array(4).buffer)).resolves.toBeUndefined();
+    // A delayed renderer stop for the already-finished stream resolves quietly.
+    await expect(service.streamStop()).resolves.toBeUndefined();
+    await service.dispose();
+  });
+
+  it('keeps the streamed text when the final accuracy pass exceeds its time budget', async () => {
+    await installTestModel();
+    await writeFile(path.join(directory, 'balanced.gguf'), bytes);
+    await writeFile(path.join(directory, 'balanced.gguf.verified'), `${checksum}\n`);
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'parakeet-unified', fileName: 'balanced.gguf', streaming: true, streamFamily: { kind: 'parakeet_buffered' as const } };
+    const definitions: readonly SpeechModelDefinition[] = [streamingModel];
+    const stream = {
+      feed: vi.fn(async () => ({ resultChanged: true, isFinal: false, revision: 1, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false })),
+      finalize: vi.fn(async () => ({ resultChanged: true, isFinal: true, revision: 2, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false })),
+      get text() { return { committed: 'streamed words', tentative: '' }; },
+      reset: vi.fn(),
+    };
+    // The refinement run hangs until aborted, like a CPU pass that cannot keep up.
+    const run = vi.fn((_pcm: Float32Array, options: { signal: AbortSignal }) => new Promise<never>((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+    }));
+    const session = { stream: vi.fn(async () => stream), run, dispose: vi.fn() };
+    const loaded = {
+      backend: 'cpu', device: { name: 'CPU', description: 'CPU', deviceType: 'cpu' },
+      createSession: vi.fn(() => session), dispose: vi.fn(),
+    };
+    const runtime = {
+      getAvailableBackends: vi.fn(() => [{ name: 'CPU', description: 'CPU', kind: 'cpu', deviceType: 'cpu' }]),
+      TranscribeModel: { load: vi.fn(async () => loaded) },
+    } as unknown as typeof import('transcribe-cpp');
+    const updates: { state: string; committed: string }[] = [];
+    const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime);
+    service.setStreamSink((update) => updates.push({ state: update.state, committed: update.committed }));
+
+    await service.streamStart('parakeet-unified', 'en', true);
+    await service.streamFeed(new Float32Array(4).buffer);
+    vi.useFakeTimers();
+    const stopping = service.streamStop();
+    // The 20 s floor is the budget for this tiny recording; the timeout aborts
+    // the pass and the streamed text is kept instead of hanging the stop.
+    await vi.advanceTimersByTimeAsync(21_000);
+    await expect(stopping).resolves.toBeUndefined();
+    expect(updates).toContainEqual(expect.objectContaining({ state: 'finalizing', committed: 'streamed words' }));
+    expect(updates.at(-1)).toMatchObject({ state: 'final', committed: 'streamed words' });
+    await service.dispose();
+  });
+
+  it('carries the last committed text on backlog failure and cancellation events', async () => {
+    await installTestModel();
+    await writeFile(path.join(directory, 'balanced.gguf'), bytes);
+    await writeFile(path.join(directory, 'balanced.gguf.verified'), `${checksum}\n`);
+    const streamingModel: SpeechModelDefinition = { ...model, id: 'parakeet-unified', fileName: 'balanced.gguf', streaming: true, streamFamily: { kind: 'parakeet_buffered' as const } };
+    const definitions: readonly SpeechModelDefinition[] = [streamingModel];
+    let feedGate: Promise<void> | null = null;
+    const stream = {
+      feed: vi.fn(async () => {
+        if (feedGate) await feedGate;
+        return { resultChanged: true, isFinal: false, revision: 1, inputReceivedMs: 0, audioCommittedMs: 0, bufferedMs: 0, committedChanged: true, tentativeChanged: false };
+      }),
+      finalize: vi.fn(),
+      get text() { return { committed: 'partial words', tentative: '' }; },
+      reset: vi.fn(),
+    };
+    const session = { stream: vi.fn(async () => stream), run: vi.fn(), dispose: vi.fn() };
+    const loaded = {
+      backend: 'cpu', device: { name: 'CPU', description: 'CPU', deviceType: 'cpu' },
+      createSession: vi.fn(() => session), dispose: vi.fn(),
+    };
+    const runtime = {
+      getAvailableBackends: vi.fn(() => [{ name: 'CPU', description: 'CPU', kind: 'cpu', deviceType: 'cpu' }]),
+      TranscribeModel: { load: vi.fn(async () => loaded) },
+    } as unknown as typeof import('transcribe-cpp');
+    const updates: { state: string; committed: string; error?: string | undefined }[] = [];
+    const service = new SpeechService(new AppLogService(), directory, fetch, definitions, async () => runtime);
+    service.setStreamSink((update) => updates.push({ state: update.state, committed: update.committed, error: update.error }));
+
+    // Failure path: the error event keeps the text the user already saw.
+    await service.streamStart('parakeet-unified', 'en');
+    // One ungated feed first, so committed text is read and recorded.
+    await service.streamFeed(new Float32Array(4).buffer);
+    let releaseGate!: () => void;
+    feedGate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const blocked = service.streamFeed(new Float32Array(MAX_SPEECH_STREAM_FEED_SAMPLES).buffer);
+    await vi.waitFor(() => expect(stream.feed).toHaveBeenCalledTimes(2));
+    const oversubscribed = Array.from(
+      { length: MAX_SPEECH_STREAM_BACKLOG_SAMPLES / MAX_SPEECH_STREAM_FEED_SAMPLES },
+      () => service.streamFeed(new Float32Array(MAX_SPEECH_STREAM_FEED_SAMPLES).buffer).catch(() => undefined),
+    );
+    await Promise.all(oversubscribed);
+    expect(updates).toContainEqual(expect.objectContaining({ state: 'error', committed: 'partial words', error: expect.stringContaining('cannot keep up') }));
+    // The in-flight capture settles quietly once the native feed returns.
+    releaseGate();
+    await expect(blocked).resolves.toBeUndefined();
+
+    // Cancellation path: the cancelled event keeps the committed text too.
+    feedGate = null;
+    releaseGate = () => undefined;
+    await service.streamStart('parakeet-unified', 'en');
+    await service.streamFeed(new Float32Array(4).buffer);
+    await service.streamCancel();
+    expect(updates).toContainEqual(expect.objectContaining({ state: 'cancelled', committed: 'partial words' }));
     await service.dispose();
   });
 });

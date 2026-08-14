@@ -10,6 +10,7 @@ import { agentTeamSchema, agentTeamControlInputSchema, type AgentTeamControlInpu
 
 const AGENT_TEAM_MAX_RETAINED_TEAMS = 32;
 import { toolProvenanceSchema } from './provenance';
+import { type AttestationQueryRequestInput, type AttestationQueryResult } from './mutationAttestation';
 import {
   browserAnnotationReferenceSchema,
   type BrowserAnnotation,
@@ -106,6 +107,7 @@ export const ipcChannels = {
   automationsPrepareSession: 'automations:prepare-session',
   runtimeGetState: 'runtime:get-state',
   runtimePrompt: 'runtime:prompt',
+  runtimeOptimizePrompt: 'runtime:optimize-prompt',
   runtimeAbort: 'runtime:abort',
   runtimeControlSubagent: 'runtime:control-subagent',
   runtimeControlAgentTeam: 'runtime:control-agent-team',
@@ -173,8 +175,10 @@ export const ipcChannels = {
   musicLoad: 'music:load',
   musicResolveTrack: 'music:resolve-track',
   musicClearQueue: 'music:clear-queue',
+  musicDurations: 'music:durations',
   diagnosticsGet: 'diagnostics:get',
   logsGet: 'logs:get',
+  attestationsQuery: 'attestations:query',
   appCommand: 'app:command',
   filesList: 'files:list',
   filesSearch: 'files:search',
@@ -227,7 +231,26 @@ export const thinkingLevelSchema = z.enum(['off', 'minimal', 'low', 'medium', 'h
 export const permissionLevelSchema = z.enum(['read-only', 'edit', 'full-access']);
 export const interfaceFontSchema = z.enum(['noto-sans', 'system', 'inter', 'poppins', 'montserrat', 'jetbrains-mono']);
 export const codeFontSchema = z.enum(['jetbrains-mono', 'noto-sans-mono', 'system-mono']);
-export const speechModelIdSchema = z.enum(['mini', 'balanced', 'max']);
+export const speechTierSchema = z.enum(['mini', 'balanced', 'max']);
+/** Every downloadable local voice model. Stored settings with the legacy
+ *  tier-as-id values are migrated by `speechModelIdSchema`. */
+export const speechModelIdSchema = z.enum([
+  'canary-flash',
+  'parakeet-unified',
+  'nemotron-stream',
+  'parakeet-tdt-v3',
+  'cohere-transcribe',
+  'whisper-turbo',
+]);
+/** Map settings saved before model ids were decoupled from tiers. */
+const legacySpeechModelIds: Record<string, z.infer<typeof speechModelIdSchema>> = {
+  mini: 'canary-flash',
+  balanced: 'parakeet-unified',
+  max: 'cohere-transcribe',
+};
+export function migrateSpeechModelId(value: string): z.infer<typeof speechModelIdSchema> {
+  return legacySpeechModelIds[value] ?? (value as z.infer<typeof speechModelIdSchema>);
+}
 
 export const modelInfoSchema = z.object({
   provider: z.string().min(1).max(200),
@@ -895,6 +918,8 @@ export const promptInputSchema = z.object({
   sessionReferences: promptSessionReferencesSchema.optional(),
 }).strict();
 export const promptAcceptanceSchema = z.object({ accepted: z.boolean(), runId: z.string().min(1) });
+export const promptOptimizationInputSchema = z.object({ text: z.string().trim().min(1).max(200_000) }).strict();
+export const promptOptimizationResultSchema = z.object({ text: z.string().trim().min(1).max(200_000) }).strict();
 export const abortResultSchema = z.object({ aborted: z.boolean() });
 const subagentControlTargetSchema = z.string().trim().min(1).max(100).refine((target) => !/[\u0000-\u001f\u007f]/u.test(target), 'Subagent targets cannot contain control characters.');
 const individualSubagentTargetSchema = subagentControlTargetSchema.refine((target) => target.toLocaleLowerCase().replace(/^@/u, '') !== 'all', 'This action requires one agent handle.');
@@ -960,25 +985,33 @@ export const terminalEventSchema = z.discriminatedUnion('type', [
 export const voiceHotkeyModeSchema = z.enum(['toggle', 'push-to-talk']);
 export const defaultSpeechSettings = {
   enabled: true,
-  modelId: 'mini' as const,
+  modelId: 'canary-flash' as const,
   language: 'auto',
   inputDeviceId: null,
   liveTranscription: true,
+  finalAccuracyPass: false,
   voiceHotkey: null,
   voiceHotkeyMode: 'toggle' as const,
 };
 export const speechSettingsSchema = z.object({
   enabled: z.boolean().default(true),
-  modelId: speechModelIdSchema.default('mini'),
+  modelId: z.preprocess(
+    (value) => (typeof value === 'string' ? migrateSpeechModelId(value) : value),
+    speechModelIdSchema.default('canary-flash'),
+  ),
   language: z.string().trim().min(2).max(16).default('auto'),
   inputDeviceId: z.string().max(1_024).nullable().default(null),
   liveTranscription: z.boolean().default(true),
+  /** Re-runs the full recording once at stop for a final accuracy pass.
+   *  Off by default: it doubles decode work, which is why long dictations
+   *  used to max out the CPU (Handy makes the same pass opt-in). */
+  finalAccuracyPass: z.boolean().default(false),
   voiceHotkey: z.string().trim().min(1).max(64).nullable().default(null),
   voiceHotkeyMode: voiceHotkeyModeSchema.default('toggle'),
 }).strict();
 export const speechModelInfoSchema = z.object({
   id: speechModelIdSchema,
-  tier: speechModelIdSchema,
+  tier: speechTierSchema,
   name: z.string().min(1).max(100),
   model: z.string().min(1).max(200),
   description: z.string().min(1).max(500),
@@ -990,7 +1023,7 @@ export const speechModelInfoSchema = z.object({
   streaming: z.boolean(),
 }).strict();
 export const speechStatusSchema = z.object({
-  models: z.array(speechModelInfoSchema).length(3),
+  models: z.array(speechModelInfoSchema).min(1).max(12),
   backend: z.string().min(1).max(300),
   accelerated: z.boolean(),
 }).strict();
@@ -1015,10 +1048,13 @@ export const speechDownloadProgressSchema = z.object({
   error: z.string().min(1).max(1_000).optional(),
 }).strict();
 export const speechCancelResultSchema = z.object({ cancelled: z.boolean() }).strict();
-export const speechStreamStateSchema = z.enum(['active', 'final', 'error', 'cancelled']);
+export const speechStreamStateSchema = z.enum(['active', 'finalizing', 'final', 'error', 'cancelled']);
 export const speechStreamStartInputSchema = z.object({
   modelId: speechModelIdSchema,
   language: z.string().trim().min(2).max(16).optional(),
+  /** Run the full-recording accuracy pass at stop. Off by default — the pass
+   *  doubles decode work and is the main CPU spike on long dictations. */
+  refine: z.boolean().default(false),
 }).strict();
 export const speechStreamFeedInputSchema = z.object({
   audio: arrayBufferSchema.refine((value) => value.byteLength > 0 && value.byteLength <= MAX_SPEECH_STREAM_FEED_SAMPLES * SPEECH_PCM_BYTES_PER_SAMPLE && value.byteLength % SPEECH_PCM_BYTES_PER_SAMPLE === 0, 'Audio must be bounded 16 kHz Float32 PCM.'),
@@ -1028,6 +1064,10 @@ export const speechStreamUpdateSchema = z.object({
   committed: z.string().max(200_000),
   tentative: z.string().max(200_000),
   error: z.string().min(1).max(1_000).optional(),
+  /** Seconds of accepted audio still waiting for native inference, present on
+   *  `active` updates. A growing value warns that the machine cannot keep up
+   *  and the stream may fail; the UI can surface this before the hard limit. */
+  backlogSeconds: z.number().min(0).max(600).optional(),
 }).strict();
 export const voiceHotkeyEventSchema = z.object({
   action: z.enum(['start', 'stop']),
@@ -1113,6 +1153,13 @@ export const musicClearResultSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true) }).strict(),
   z.object({ ok: z.literal(false), error: appErrorSchema }).strict(),
 ]);
+export const musicDurationUpdateSchema = z.object({
+  trackId: z.string().uuid(),
+  duration: z.number().finite().positive(),
+}).strict();
+export const musicDurationsEventSchema = z.object({
+  updates: z.array(musicDurationUpdateSchema).min(1).max(200),
+}).strict();
 export { themeCatalogSchema };
 export const diagnosticsSchema = z.object({
   appVersion: z.string(), electronVersion: z.string(), nodeVersion: z.string(), chromeVersion: z.string(),
@@ -1130,6 +1177,7 @@ export type PermissionLevel = z.infer<typeof permissionLevelSchema>;
 export type InterfaceFont = z.infer<typeof interfaceFontSchema>;
 export type CodeFont = z.infer<typeof codeFontSchema>;
 export type SpeechModelId = z.infer<typeof speechModelIdSchema>;
+export type SpeechTier = z.infer<typeof speechTierSchema>;
 export type SpeechSettings = z.infer<typeof speechSettingsSchema>;
 export type SpeechModelInfo = z.infer<typeof speechModelInfoSchema>;
 export type SpeechStatus = z.infer<typeof speechStatusSchema>;
@@ -1180,6 +1228,8 @@ export type DeleteSessionBranchResult = z.infer<typeof deleteSessionBranchResult
 export type PiEvent = z.infer<typeof piEventSchema>;
 export type PromptInput = z.infer<typeof promptInputSchema>;
 export type PromptAcceptance = z.infer<typeof promptAcceptanceSchema>;
+export type PromptOptimizationInput = z.infer<typeof promptOptimizationInputSchema>;
+export type PromptOptimizationResult = z.infer<typeof promptOptimizationResultSchema>;
 export type SubagentControlInput = z.infer<typeof subagentControlInputSchema>;
 export type QueuedMessage = z.infer<typeof queuedMessageSchema>;
 export type QueueMutationInput = z.infer<typeof queueMutationInputSchema>;
@@ -1207,6 +1257,8 @@ export type MusicStatus = z.infer<typeof musicStatusSchema>;
 export type MusicTrack = z.infer<typeof musicTrackSchema>;
 export type MusicQueue = z.infer<typeof musicQueueSchema>;
 export type MusicStream = z.infer<typeof musicStreamSchema>;
+export type MusicDurationUpdate = z.infer<typeof musicDurationUpdateSchema>;
+export type MusicDurationsEvent = z.infer<typeof musicDurationsEventSchema>;
 export type Diagnostics = z.infer<typeof diagnosticsSchema>;
 export type LogEntry = z.infer<typeof logEntrySchema>;
 export type AppCommand = z.infer<typeof appCommandSchema>;
@@ -1263,6 +1315,7 @@ export interface PiDesktopApi {
   prepareAutomationSession: (id: string) => Promise<AutomationSessionPreparationResult>;
   getRuntimeState: () => Promise<RuntimeState>;
   prompt: (input: PromptInput) => Promise<PromptAcceptance>;
+  optimizePrompt: (text: string) => Promise<PromptOptimizationResult>;
   abort: () => Promise<{ aborted: boolean }>;
   controlSubagent: (input: SubagentControlInput) => Promise<RuntimeState>;
   controlAgentTeam: (input: AgentTeamControlInput) => Promise<RuntimeState>;
@@ -1331,7 +1384,7 @@ export interface PiDesktopApi {
   removeSpeechModel: (modelId: SpeechModelId) => Promise<SpeechStatus>;
   transcribeSpeech: (modelId: SpeechModelId, audio: ArrayBuffer, language?: string) => Promise<SpeechTranscription>;
   cancelSpeechTranscription: () => Promise<boolean>;
-  startSpeechStream: (modelId: SpeechModelId, language?: string) => Promise<void>;
+  startSpeechStream: (modelId: SpeechModelId, language?: string, refine?: boolean) => Promise<void>;
   feedSpeechStream: (audio: ArrayBuffer) => Promise<void>;
   stopSpeechStream: () => Promise<void>;
   cancelSpeechStream: () => Promise<void>;
@@ -1343,8 +1396,10 @@ export interface PiDesktopApi {
   loadMusic: (url: string) => Promise<MusicQueue>;
   resolveMusicTrack: (trackId: string) => Promise<MusicStream>;
   clearMusicQueue: () => Promise<void>;
+  onMusicDurations: (handler: (event: MusicDurationsEvent) => void) => () => void;
   getDiagnostics: () => Promise<Diagnostics>;
   getLogs: () => Promise<LogEntry[]>;
+  queryAttestations: (request?: AttestationQueryRequestInput) => Promise<AttestationQueryResult>;
   onEvents: (listener: (events: PiEvent[]) => void) => () => void;
   onTerminalEvent: (listener: (event: TerminalEvent) => void) => () => void;
   onAppCommand: (listener: (command: AppCommand) => void) => () => void;

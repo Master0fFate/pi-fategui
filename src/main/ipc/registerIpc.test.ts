@@ -12,8 +12,9 @@ vi.mock('electron', () => ({
 }));
 
 import type { ProjectState } from '../../shared/contracts/ipc';
+import type { MutationAttestationLedger } from '../pi/provenance/MutationAttestationLedger';
 import type { ProjectActivation } from '../projects/ProjectService';
-import { activatePreparedProject, assertProjectActivationIdle, createProjectActivationQueue, createProjectPathFocuser, createProjectPathOpener, discardCreatedWorktreeAfterFailure } from './registerIpc';
+import { activatePreparedProject, assertProjectActivationIdle, createProjectActivationQueue, createProjectPathFocuser, createProjectPathOpener, discardCreatedWorktreeAfterFailure, resolveAttestationQuery } from './registerIpc';
 
 const previousProject: ProjectState = { path: '/previous', name: 'previous', trusted: true };
 const nextProject: ProjectState = { path: '/next', name: 'next', trusted: true };
@@ -359,5 +360,39 @@ describe('transactional project activation', () => {
       new Error('activation failed'),
       async () => { throw new Error('discard failed'); },
     )).rejects.toThrow(/activation failed.*discard failed/u);
+  });
+});
+
+describe('attestation query resolves the main-owned current project', () => {
+  const project = { path: '/project', name: 'project', trusted: true } as ProjectState;
+
+  it('queries the ledger with the current trusted project path and renderer request', async () => {
+    const runtime = { getState: vi.fn(() => ({ project })) } as never;
+    const ledger = { query: vi.fn(async () => ({ rows: [], truncated: false })) } as Pick<MutationAttestationLedger, 'query'>;
+    await resolveAttestationQuery(runtime, ledger, { limit: 10, pathPrefix: 'src' });
+    expect(ledger.query).toHaveBeenCalledWith({ projectPath: '/project', limit: 10, pathPrefix: 'src' });
+  });
+
+  it('forwards the renderer limit and omits an absent pathPrefix', async () => {
+    const runtime = { getState: vi.fn(() => ({ project })) } as never;
+    const ledger = { query: vi.fn(async () => ({ rows: [], truncated: false })) } as Pick<MutationAttestationLedger, 'query'>;
+    await resolveAttestationQuery(runtime, ledger, { limit: 256 });
+    expect(ledger.query).toHaveBeenCalledWith({ projectPath: '/project', limit: 256 });
+    expect(ledger.query).not.toHaveBeenCalledWith(expect.objectContaining({ pathPrefix: expect.anything() }));
+  });
+
+  it('returns an empty result without touching the ledger when no project is open', async () => {
+    const runtime = { getState: vi.fn(() => ({ project: null })) } as never;
+    const ledger = { query: vi.fn(async () => ({ rows: [], truncated: false })) } as Pick<MutationAttestationLedger, 'query'>;
+    await expect(resolveAttestationQuery(runtime, ledger, { limit: 256 })).resolves.toEqual({ rows: [], truncated: false });
+    expect(ledger.query).not.toHaveBeenCalled();
+  });
+
+  it('returns an empty result without touching the ledger for an untrusted project', async () => {
+    const untrusted = { ...project, trusted: false } as ProjectState;
+    const runtime = { getState: vi.fn(() => ({ project: untrusted })) } as never;
+    const ledger = { query: vi.fn(async () => ({ rows: [], truncated: false })) } as Pick<MutationAttestationLedger, 'query'>;
+    await expect(resolveAttestationQuery(runtime, ledger, { limit: 256 })).resolves.toEqual({ rows: [], truncated: false });
+    expect(ledger.query).not.toHaveBeenCalled();
   });
 });

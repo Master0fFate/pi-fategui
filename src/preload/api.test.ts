@@ -52,6 +52,14 @@ describe('preload desktop bridge', () => {
     expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.clipboardWriteText, { text: 'Copied response' });
   });
 
+  it('improves a draft through the validated runtime bridge', async () => {
+    electron.invoke.mockResolvedValueOnce({ text: 'Write a focused test plan.' });
+
+    await expect(piDesktopApi.optimizePrompt('  Write tests  ')).resolves.toEqual({ text: 'Write a focused test plan.' });
+
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.runtimeOptimizePrompt, { text: 'Write tests' });
+  });
+
   it('routes link context actions through the validated browser bridge', async () => {
     electron.invoke.mockResolvedValueOnce({ shown: true });
 
@@ -170,5 +178,28 @@ describe('preload desktop bridge', () => {
 
     electron.invoke.mockResolvedValueOnce([{ ...sessions[0], messageCount: 'lots' }]);
     await expect(piDesktopApi.listProjectSessions('/other')).rejects.toThrow();
+  });
+
+  it('validates the attestation request and response without forwarding a projectPath', async () => {
+    const result = { rows: [], truncated: false };
+    electron.invoke.mockResolvedValueOnce(result);
+
+    await expect(piDesktopApi.queryAttestations({ limit: 10, pathPrefix: 'src' })).resolves.toEqual(result);
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.attestationsQuery, { limit: 10, pathPrefix: 'src' });
+
+    // A missing request defaults the limit and never injects a projectPath.
+    electron.invoke.mockResolvedValueOnce(result);
+    await expect(piDesktopApi.queryAttestations()).resolves.toEqual(result);
+    expect(electron.invoke).toHaveBeenLastCalledWith(ipcChannels.attestationsQuery, { limit: 256 });
+  });
+
+  it('rejects an unsafe attestation prefix before it reaches main', async () => {
+    await expect(piDesktopApi.queryAttestations({ pathPrefix: '../secret' })).rejects.toThrow();
+    expect(electron.invoke).not.toHaveBeenCalledWith(ipcChannels.attestationsQuery, expect.anything());
+  });
+
+  it('rejects a malformed attestation response instead of surfacing untrusted rows', async () => {
+    electron.invoke.mockResolvedValueOnce({ rows: [{ bogus: true }], truncated: false });
+    await expect(piDesktopApi.queryAttestations()).rejects.toThrow();
   });
 });

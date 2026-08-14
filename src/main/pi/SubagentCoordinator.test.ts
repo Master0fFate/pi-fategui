@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PiEvent, SubagentLivenessReport, SubagentRun, SubagentToolDetails, SubagentWorkflowLivenessReport } from '../../shared/contracts/ipc';
 import { subagentToolDetailsSchema } from '../../shared/contracts/ipc';
 import { SubagentCoordinator, type SubagentChildSessionFactory } from './SubagentCoordinator';
+import type { ChildSessionInput } from './SubagentSessionFactory';
 
 const model = {
   provider: 'test', id: 'model', name: 'Test Model', reasoning: true, contextWindow: 100_000,
@@ -143,6 +144,8 @@ function childFactory(options: { delay?: number; waitForAbort?: boolean; failPro
       steer: vi.fn(async () => undefined),
       setModel: vi.fn(async (nextModel: typeof selectedModel) => { selectedModel = nextModel; }),
       setThinkingLevel: vi.fn((level: typeof selectedThinking) => { selectedThinking = level; }),
+      getActiveToolNames: vi.fn(() => [...input.toolNames]),
+      setActiveToolsByName: vi.fn(),
       abort: vi.fn(async () => { aborted = true; releaseAbort?.(); }),
       dispose: vi.fn(),
     } as unknown as AgentSession;
@@ -179,6 +182,19 @@ function executeNamedTool(
 }
 
 describe('SubagentCoordinator', () => {
+  it('threads legacy runId and parentToolCallId into the child session input', async () => {
+    const parent = parentSession();
+    const captured: ChildSessionInput[] = [];
+    const inner = childFactory();
+    const factory: SubagentChildSessionFactory = async (input) => { captured.push(input); return inner.factory(input); };
+    const coordinator = new SubagentCoordinator({
+      resolveParent: () => ({ projectPath: '/project', session: parent, permissionLevel: 'edit' }),
+      emit: () => undefined,
+    }, factory);
+    await executeTool(coordinator, { task: 'inspect', role: 'scout', permission: 'read-only' }, undefined, undefined, runtime());
+    expect(captured[0]?.parentToolCallId).toBe('delegate-1');
+    expect(captured[0]?.runId).toBeTruthy();
+  });
   it('runs isolated children concurrently with capped permissions, streamed events, and durable details', async () => {
     const parent = parentSession();
     const emitted: PiEvent[] = [];
@@ -212,6 +228,34 @@ describe('SubagentCoordinator', () => {
     expect(emitted.filter((event) => event.type === 'subagent.completed')).toHaveLength(4);
     expect(updates.length).toBeGreaterThan(1);
     expect(result.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('4/4 completed') });
+  });
+
+  it('resolves the current legacy child permission dynamically and undefined for a missing context', async () => {
+    const parent = parentSession();
+    const children = childFactory({ waitForAbort: true });
+    const coordinator = new SubagentCoordinator({
+      resolveParent: () => ({ projectPath: '/project', session: parent, permissionLevel: 'full-access' }),
+      emit: () => undefined,
+    }, children.factory);
+    const modelRuntime = runtime();
+
+    const launched = await executeNamedTool(coordinator, modelRuntime, 'subagent_start', 'start-perm', {
+      task: 'Investigate', role: 'worker', permission: 'edit',
+    });
+    const runId = (launched.details as SubagentToolDetails).runIds[0]!;
+    expect(coordinator.currentPermissionForRun(runId)).toBe('edit');
+
+    // A goal-policy cap lowers the live permission and is reflected at write time.
+    coordinator.capDelegationPermission('parent-1', 'read-only');
+    expect(coordinator.currentPermissionForRun(runId)).toBe('read-only');
+
+    // A run whose context is gone (closed or never launched) resolves no permission.
+    expect(coordinator.currentPermissionForRun('never-launched')).toBeUndefined();
+
+    // Wait until the child is actually running, then cancel; the retained context is removed.
+    await vi.waitFor(() => expect(children.maximumConcurrent()).toBe(1));
+    await coordinator.cancelParent('parent-1');
+    expect(coordinator.currentPermissionForRun(runId)).toBeUndefined();
   });
 
   it('enforces GoalMax delegation strategy without weakening read-only child work', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, defaultSpeechSettings, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, openUpdateDownloadResultSchema, piEventBatchSchema, piEventSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, runtimeTokenTelemetrySchema, runtimeToolSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, speechStreamFeedInputSchema, subagentControlInputSchema, subagentRunSchema, subagentToolDetailsSchema, subagentWorkflowSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, updateCheckResultSchema, windowStateSchema } from './ipc';
+import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, defaultSpeechSettings, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicDurationsEventSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, openUpdateDownloadResultSchema, piEventBatchSchema, piEventSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, runtimeTokenTelemetrySchema, runtimeToolSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, speechStreamFeedInputSchema, subagentControlInputSchema, subagentRunSchema, subagentToolDetailsSchema, subagentWorkflowSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, updateCheckResultSchema, windowStateSchema } from './ipc';
 
 describe('IPC contracts', () => {
   it('accepts only an empty object for system info input', () => {
@@ -210,6 +210,10 @@ describe('IPC contracts', () => {
     expect(musicQueueResultSchema.parse({ ok: true, value: { title: 'Queue', tracks: [track] } })).toMatchObject({ ok: true });
     expect(musicQueueResultSchema.parse({ ok: false, error: { code: 'INVALID_REQUEST', message: 'Bad link', retryable: true } })).toMatchObject({ ok: false });
     expect(musicStreamResultSchema.parse({ ok: false, error: { code: 'PI_RUNTIME_ERROR', message: 'Unavailable', retryable: true } })).toMatchObject({ ok: false });
+
+    expect(musicDurationsEventSchema.parse({ updates: [{ trackId: track.id, duration: 61 }] })).toMatchObject({ updates: [{ trackId: track.id, duration: 61 }] });
+    expect(() => musicDurationsEventSchema.parse({ updates: [] })).toThrow();
+    expect(() => musicDurationsEventSchema.parse({ updates: [{ trackId: track.id, duration: 0 }] })).toThrow();
     expect(musicClearResultSchema.parse({ ok: true })).toEqual({ ok: true });
   });
 
@@ -302,10 +306,10 @@ describe('IPC contracts', () => {
     expect(defaults.interfaceFont).toBe('noto-sans');
     expect(defaults.codeFont).toBe('jetbrains-mono');
     expect(defaults.speech).toEqual(defaultSpeechSettings);
-    expect(speechModelInputSchema.parse({ modelId: 'max' })).toEqual({ modelId: 'max' });
+    expect(speechModelInputSchema.parse({ modelId: 'cohere-transcribe' })).toEqual({ modelId: 'cohere-transcribe' });
     expect(() => speechModelInputSchema.parse({ modelId: 'huge' })).toThrow();
-    expect(speechTranscribeInputSchema.parse({ modelId: 'mini', audio: new ArrayBuffer(16) }).audio.byteLength).toBe(16);
-    expect(() => speechTranscribeInputSchema.parse({ modelId: 'mini', audio: new ArrayBuffer(3) })).toThrow();
+    expect(speechTranscribeInputSchema.parse({ modelId: 'canary-flash', audio: new ArrayBuffer(16) }).audio.byteLength).toBe(16);
+    expect(() => speechTranscribeInputSchema.parse({ modelId: 'canary-flash', audio: new ArrayBuffer(3) })).toThrow();
     expect(speechStreamFeedInputSchema.parse({ audio: new ArrayBuffer(16_000 * 4 * 2) }).audio.byteLength).toBe(16_000 * 4 * 2);
     expect(() => speechStreamFeedInputSchema.parse({ audio: new ArrayBuffer(16_000 * 4 * 2 + 4) })).toThrow();
     expect(() => appSettingsSchema.parse({ ...defaults, interfaceFont: 'comic-sans' })).toThrow();

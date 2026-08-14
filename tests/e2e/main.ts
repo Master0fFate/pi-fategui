@@ -53,7 +53,7 @@ const projects = {
   selectFile: async () => 'src/example.ts',
 } as unknown as ProjectService;
 const profileVisualMode = process.env.FATE_GUI_PROFILE_VISUAL_MODE;
-let settingsValue: AppSettings = { appearance: 'dark', defaultModel: 'test/deterministic', thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' } };
+let settingsValue: AppSettings = { appearance: 'dark', defaultModel: 'test/deterministic', thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } };
 const e2ePiTheme = { ...builtInThemes[4]!, id: 'pi-e2e-theme-0123456789ab', name: 'Pi · E2E Theme' };
 const settings = {
   load: async () => settingsValue,
@@ -69,6 +69,7 @@ const music = {
   resolveTrack: async () => { throw new Error('Music loading is disabled in the E2E harness.'); },
   clearQueue: () => undefined,
   reset: () => undefined,
+  setDurationSink: () => undefined,
 } as unknown as MusicService;
 const speechModels = [
   { id: 'mini', tier: 'mini', name: 'Mini', model: 'Test Mini', description: 'Test model', detail: '1 MB', bytes: 1, installed: true, downloadedBytes: 1, streaming: true },
@@ -144,6 +145,7 @@ app.whenReady().then(() => {
     updates,
     browser,
     automations,
+    attestations: { query: async () => ({ rows: [], truncated: false }) },
     rendererPolicy: createTrustedRendererPolicy(rendererPath),
   });
   window = new BrowserWindow({

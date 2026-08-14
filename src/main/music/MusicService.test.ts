@@ -167,4 +167,95 @@ describe('MusicService', () => {
     release?.();
     await expect(first).resolves.toMatchObject({ tracks: [expect.objectContaining({ title: 'One' })] });
   });
+
+  it('backfills missing playlist durations in the background and reports them', async () => {
+    const sink = vi.fn<(updates: ReadonlyArray<{ trackId: string; duration: number }>) => void>();
+    const process = runner([
+      JSON.stringify({
+        title: 'Quiet queue',
+        entries: [
+          { title: 'One', webpage_url: 'https://media.example/one' },
+          { title: 'Two', webpage_url: 'https://media.example/two', duration: 120 },
+        ],
+      }),
+      `${JSON.stringify({ title: 'One', duration: 61, webpage_url: 'https://media.example/one' })}\n`,
+    ]);
+    const service = new MusicService(process, publicDns);
+    service.setDurationSink(sink);
+
+    const queue = await service.load('https://media.example/playlist');
+    expect(queue.tracks.map((track) => track.duration)).toEqual([null, 120]);
+
+    await vi.waitFor(() => expect(sink).toHaveBeenCalledWith([{ trackId: queue.tracks[0]!.id, duration: 61 }]));
+    expect(process.run.mock.calls[1]?.[0]).toEqual(expect.arrayContaining([
+      '--no-playlist', '--flat-playlist', '--ignore-errors', '--dump-json', 'https://media.example/one',
+    ]));
+  });
+
+  it('stops background duration work when the queue is cleared', async () => {
+    const sink = vi.fn();
+    const process = runner([
+      JSON.stringify({
+        title: 'Quiet queue',
+        entries: [
+          { title: 'One', webpage_url: 'https://media.example/one' },
+          { title: 'Two', webpage_url: 'https://media.example/two' },
+        ],
+      }),
+    ]);
+    const service = new MusicService(process, publicDns);
+    service.setDurationSink(sink);
+
+    await service.load('https://media.example/playlist');
+    service.clearQueue();
+    await new Promise((resolve) => { setTimeout(resolve, 60); });
+    expect(process.run).toHaveBeenCalledTimes(1);
+    expect(sink).not.toHaveBeenCalled();
+  });
+
+  it('gives up after unreadable duration batches instead of retrying forever', async () => {
+    const sink = vi.fn();
+    const process = runner([
+      JSON.stringify({
+        title: 'Quiet queue',
+        entries: [{ title: 'One', webpage_url: 'https://media.example/one' }],
+      }),
+      'not json at all\n',
+    ]);
+    const service = new MusicService(process, publicDns);
+    service.setDurationSink(sink);
+
+    await service.load('https://media.example/playlist');
+    await vi.waitFor(() => expect(process.run).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => { setTimeout(resolve, 60); });
+    expect(process.run).toHaveBeenCalledTimes(2);
+    expect(sink).not.toHaveBeenCalled();
+  });
+
+  it('pre-empts background duration work when the user plays a track', async () => {
+    const sink = vi.fn();
+    let releaseChunk!: (value: string) => void;
+    const run = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify({
+        title: 'Quiet queue',
+        entries: [{ title: 'One', webpage_url: 'https://media.example/one' }],
+      }))
+      .mockImplementationOnce(() => new Promise<string>((resolve) => { releaseChunk = resolve; }))
+      .mockResolvedValueOnce(JSON.stringify({ title: 'One', duration: 61, url: 'https://cdn.example/one.m4a' }));
+    const process: MusicProcessRunner = { getVersion: vi.fn(async () => '2026.03.17'), run, dispose: vi.fn() };
+    const service = new MusicService(process, publicDns);
+    service.setDurationSink(sink);
+
+    const queue = await service.load('https://media.example/playlist');
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+
+    const streamPromise = service.resolveTrack(queue.tracks[0]!.id);
+    releaseChunk(`${JSON.stringify({ title: 'One', duration: 61, webpage_url: 'https://media.example/one' })}\n`);
+    await expect(streamPromise).resolves.toMatchObject({ duration: 61, url: 'https://cdn.example/one.m4a' });
+    expect(run.mock.calls[2]?.[0]).toEqual(expect.arrayContaining(['--no-playlist', '--format']));
+
+    await vi.waitFor(() => expect(sink).toHaveBeenCalledWith([{ trackId: queue.tracks[0]!.id, duration: 61 }]));
+    await new Promise((resolve) => { setTimeout(resolve, 60); });
+    expect(run).toHaveBeenCalledTimes(3);
+  });
 });

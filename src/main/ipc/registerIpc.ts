@@ -36,6 +36,7 @@ import {
   diagnosticsSchema,
   logListSchema,
   musicClearResultSchema,
+  musicDurationsEventSchema,
   musicLoadInputSchema,
   musicQueueResultSchema,
   musicQueueSchema,
@@ -50,6 +51,8 @@ import {
   revealProjectResultSchema,
   promptAcceptanceSchema,
   promptInputSchema,
+  promptOptimizationInputSchema,
+  promptOptimizationResultSchema,
   queueMutationInputSchema,
   queueMutationResultSchema,
   runtimeImageSchema,
@@ -144,6 +147,13 @@ import type { GlobalHotkeyService } from '../speech/GlobalHotkeyService';
 import type { UpdateService } from '../updates/UpdateService';
 import { isTrustedRendererUrl, type TrustedRendererPolicy } from '../security/trustedRenderer';
 import type { BrowserHost } from '../browser/BrowserHost';
+import type { MutationAttestationLedger } from '../pi/provenance/MutationAttestationLedger';
+import {
+  attestationQueryRequestSchema,
+  attestationQueryResultSchema,
+  type AttestationQueryRequest,
+  type AttestationQueryResult,
+} from '../../shared/contracts/mutationAttestation';
 import type { AutomationRepository } from '../automations/AutomationRepository';
 import {
   browserAnnotationCreateInputSchema,
@@ -198,12 +208,14 @@ export interface IpcServices {
   settings: SettingsService;
   terminal: TerminalService;
   logs: AppLogService;
-  music: Pick<MusicService, 'getStatus' | 'load' | 'resolveTrack' | 'clearQueue' | 'reset'>;
+  music: Pick<MusicService, 'getStatus' | 'load' | 'resolveTrack' | 'clearQueue' | 'reset' | 'setDurationSink'>;
   speech: Pick<SpeechService, 'setEventSink' | 'setStreamSink' | 'getStatus' | 'download' | 'cancelDownload' | 'remove' | 'transcribe' | 'cancel' | 'streamStart' | 'streamFeed' | 'streamStop' | 'streamCancel'>;
   hotkey: GlobalHotkeyService;
   updates: Pick<UpdateService, 'check' | 'openDownload' | 'downloadAndInstall'>;
   browser: Pick<BrowserHost, 'ensure' | 'current' | 'setAppOverlay' | 'respondToConfirmation' | 'reset'>;
   automations: Pick<AutomationRepository, 'list' | 'create' | 'update' | 'remove' | 'recordLaunch'>;
+  /** Read-only per-project attestation ledger; resolves only the current trusted project. */
+  attestations: Pick<MutationAttestationLedger, 'query'>;
   /** Open another Fate UI window in this same process so it shares the live runtime. */
   newWindow?: () => void;
   rendererPolicy: TrustedRendererPolicy;
@@ -379,6 +391,23 @@ export async function activatePreparedProject(
   return activatedState;
 }
 
+/**
+ * Resolve a renderer attestation query against the current TRUSTED project. The
+ * project path is owned main-side; the renderer request never carries one. With
+ * no trusted project the result is empty (truthful: nothing to report) so the
+ * renderer has a single success path and an untrusted project never exposes its
+ * ledger through this surface.
+ */
+export async function resolveAttestationQuery(
+  runtime: Pick<PiRuntimeService, 'getState'>,
+  ledger: Pick<MutationAttestationLedger, 'query'>,
+  request: AttestationQueryRequest,
+): Promise<AttestationQueryResult> {
+  const project = runtime.getState(false).project;
+  if (!project?.trusted) return { rows: [], truncated: false };
+  return ledger.query({ projectPath: project.path, limit: request.limit, ...(request.pathPrefix ? { pathPrefix: request.pathPrefix } : {}) });
+}
+
 function register(channel: string, rendererPolicy: TrustedRendererPolicy, handler: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown | Promise<unknown>): void {
   ipcMain.handle(channel, async (event, input: unknown) => {
     try {
@@ -394,7 +423,7 @@ function register(channel: string, rendererPolicy: TrustedRendererPolicy, handle
   });
 }
 
-export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser, automations, newWindow, rendererPolicy }: IpcServices) {
+export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser, automations, attestations, newWindow, rendererPolicy }: IpcServices) {
   runtime.setEventSink((events) => {
     const batch = piEventBatchSchema.parse(events);
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeEvents, batch);
@@ -452,6 +481,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   speech.setStreamSink((update) => {
     const payload = speechStreamUpdateSchema.parse(update);
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.speechStreamEvents, payload);
+  });
+  music.setDurationSink((updates) => {
+    const payload = musicDurationsEventSchema.parse({ updates });
+    for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.musicDurations, payload);
   });
 
   const handle = (channel: string, handler: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown | Promise<unknown>) => register(channel, rendererPolicy, handler);
@@ -815,6 +848,9 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     const accepted = await runtime.prompt({ ...parsed, ...(sessionReferences ? { sessionReferences } : {}) });
     return promptAcceptanceSchema.parse(accepted);
   }));
+  handle(ipcChannels.runtimeOptimizePrompt, async (_event, input) => runRuntimeMutation('improving a prompt', async () => (
+    promptOptimizationResultSchema.parse(await runtime.optimizePrompt(promptOptimizationInputSchema.parse(input).text))
+  )));
   handle(ipcChannels.runtimeAbort, async (_event, input) => {
     emptyInputSchema.parse(input);
     return abortResultSchema.parse(await runtime.abort());
@@ -1098,8 +1134,8 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     return speechCancelResultSchema.parse({ cancelled: speech.cancel() });
   });
   handle(ipcChannels.speechStreamStart, async (_event, input) => {
-    const { modelId, language } = speechStreamStartInputSchema.parse(input);
-    await speech.streamStart(modelId, language);
+    const { modelId, language, refine } = speechStreamStartInputSchema.parse(input);
+    await speech.streamStart(modelId, language, refine);
   });
   handle(ipcChannels.speechStreamFeed, async (_event, input) => {
     const { audio } = speechStreamFeedInputSchema.parse(input);
@@ -1173,6 +1209,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.logsGet, (_event, input) => {
     emptyInputSchema.parse(input);
     return logListSchema.parse(logs.list());
+  });
+  handle(ipcChannels.attestationsQuery, async (_event, input) => {
+    const request = attestationQueryRequestSchema.parse(input);
+    return attestationQueryResultSchema.parse(await resolveAttestationQuery(runtime, attestations, request));
   });
 
   return { openProjectPath, focusProjectPath };

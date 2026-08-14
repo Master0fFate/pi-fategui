@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
@@ -12,6 +13,12 @@ import {
 import type { PermissionLevel } from '../../shared/contracts/ipc';
 import { PiDesktopError } from './errors';
 import { createConfiguredImageGenerator, createGenerateImageTool, type ImageGenerationSettingsResolver } from './PiImageTool';
+import {
+  MAX_PRE_HASH_BYTES,
+  type AttestationContext,
+  type AttestationRecordInput,
+  type AttestationSink,
+} from './provenance/attestationRecord';
 
 const MAX_PI_READ_BYTES = 8 * 1024 * 1024;
 
@@ -150,44 +157,97 @@ export class ProjectPathPolicy {
   }
 }
 
-export async function createProjectConfinedTools(
-  cwd: string,
-  access: ProjectToolAccess = { fullAccess: false },
-  readableRoots: ReadableRoots = [],
-  options: { searchTools?: boolean; getImageGenerationSettings?: ImageGenerationSettingsResolver } = {},
-) {
-  const canonicalCwd = path.normalize(await fs.realpath(cwd));
-  const policy = await ProjectPathPolicy.create(canonicalCwd, access, readableRoots);
-  const withReadable = async (filePath: string, read: boolean): Promise<Buffer | undefined> => {
-    const target = await policy.readable(filePath);
-    const handle = await fs.open(target, 'r');
-    try {
-      const stat = await handle.stat();
-      if (!stat.isFile() || stat.size > MAX_PI_READ_BYTES) {
-        throw new PiDesktopError({
-          code: 'INVALID_PROJECT',
-          message: `Pi reads are limited to regular project files smaller than ${MAX_PI_READ_BYTES / 1024 / 1024} MiB.`,
-          retryable: false,
-        });
-      }
-      const verifiedTarget = await policy.readable(target);
-      if (path.relative(target, verifiedTarget) !== '') throw new PiDesktopError({ code: 'INVALID_PROJECT', message: 'Pi refused a concurrently replaced project or skill file.', retryable: true });
-      return read ? await handle.readFile() : undefined;
-    } finally {
-      await handle.close();
-    }
-  };
-  const readOperations = {
-    readFile: async (filePath: string) => (await withReadable(filePath, true))!,
-    access: async (filePath: string) => { await withReadable(filePath, false); },
-  };
-  const secureWriteFile = async (filePath: string, content: string) => {
-    const target = await policy.writable(filePath);
-    if (access.fullAccess) {
-      await fs.writeFile(target, content);
-      return;
-    }
+/** Minimal handle surface for a seek-safe positioned write loop. */
+export interface PositionedFileHandle {
+  write(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesWritten: number }>;
+}
 
+/**
+ * Seek-safe positioned write loop. Never assumes a single `handle.write` writes
+ * all bytes: it advances the offset and position until the whole buffer is
+ * flushed. Exposed so partial-write behavior can be unit-tested directly.
+ */
+export async function writeAllPositioned(handle: PositionedFileHandle, buffer: Buffer): Promise<void> {
+  let written = 0;
+  while (written < buffer.length) {
+    const { bytesWritten } = await handle.write(buffer, written, buffer.length - written, written);
+    if (bytesWritten <= 0) throw new Error('Unable to write the complete file content.');
+    written += bytesWritten;
+  }
+}
+
+export interface SecureWriteDeps {
+  policy: ProjectPathPolicy;
+  access: ProjectToolAccess;
+  canonicalCwd: string;
+  /** When provided, successful controlled write/edit operations are attested. */
+  attestations?: AttestationSink;
+  /** Maximum prior-state bytes hashed in memory before recording oversize. */
+  maxPreHashBytes?: number;
+}
+
+/**
+ * Builds the controlled write function used by the write and edit tools. On
+ * success it attests the exact hash transition; on refusal it throws and emits
+ * nothing. Full-access writes outside the active project are written but not
+ * attested (a project-relative path cannot truthfully represent them).
+ */
+export function createSecureWriteFile(deps: SecureWriteDeps): (filePath: string, content: string, operation: 'write' | 'edit') => Promise<void> {
+  const { policy, access, canonicalCwd } = deps;
+  const attestations = deps.attestations;
+  const maxPreHashBytes = deps.maxPreHashBytes ?? MAX_PRE_HASH_BYTES;
+
+  // Emits an attestation only for project-confined paths. Full-access writes
+  // outside the active project are skipped: a project-relative path cannot
+  // truthfully represent them.
+  const attest = (operation: 'write' | 'edit', target: string, content: string, preHash: string | null, preState: 'missing' | 'hashed' | 'oversize'): void => {
+    if (!attestations) return;
+    const context: AttestationContext | null = attestations.resolveContext();
+    if (!context) return;
+    const input: AttestationRecordInput = {
+      operation,
+      projectRoot: canonicalCwd,
+      targetPath: target,
+      content,
+      preHash,
+      preState,
+      actor: context.actor,
+      sessionId: context.sessionId,
+      permissionLevel: context.permissionLevel,
+    };
+    attestations.record(input);
+  };
+
+  // For full-access writes, follow symlinks and require the REAL path inside the
+  // project. A symlink that lives inside the project but escapes it must not be
+  // attested, because its project-relative path would be untruthful.
+  const resolveProjectTarget = async (target: string): Promise<string | null> => {
+    try {
+      const real = path.normalize(await fs.realpath(target));
+      return isContained(canonicalCwd, real) ? real : null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    // New target: the nearest existing ancestor must resolve inside the project.
+    let ancestor = path.dirname(target);
+    while (true) {
+      try {
+        const realAncestor = path.normalize(await fs.realpath(ancestor));
+        if (!isContained(canonicalCwd, realAncestor)) return null;
+        const resolved = path.normalize(path.resolve(realAncestor, path.relative(ancestor, target)));
+        return isContained(canonicalCwd, resolved) ? resolved : null;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        const parent = path.dirname(ancestor);
+        if (parent === ancestor) return null;
+        ancestor = parent;
+      }
+    }
+  };
+
+  // Original controlled write with no attestation: O_WRONLY, no prior-state read.
+  // Preserved exactly so write-only project files do not regress when no sink is wired.
+  const writeWithoutAttestation = async (target: string, content: string): Promise<void> => {
     let create = false;
     try {
       await fs.lstat(target);
@@ -213,9 +273,170 @@ export async function createProjectConfinedTools(
       await handle.close();
     }
   };
+
+  // Attested controlled write. O_RDWR lets the same handle that truncates also
+  // hash the prior state, eliminating the window between hashing and truncating.
+  // After the write, the path is re-stated and compared by dev/ino: if the inode
+  // was replaced, the attestation is skipped so no false row is recorded.
+  //
+  // When the attested write cannot proceed safely, it falls back to the original
+  // write without emitting an attestation: a write-only file that rejects O_RDWR
+  // (EACCES/EPERM), or — in full-access mode only — a linked/replaced in-project
+  // file the old flow wrote plainly. Project-confined mode keeps refusing those.
+  const writeWithAttestation = async (args: {
+    target: string;
+    content: string;
+    operation: 'write' | 'edit';
+    attestTarget: string;
+    enforceContainment: boolean;
+    /** Original (non-attesting) write used when the attested write cannot proceed safely. */
+    fallback: () => Promise<void>;
+  }): Promise<void> => {
+    const { target, content, operation, attestTarget, enforceContainment, fallback } = args;
+    let create = false;
+    try {
+      await fs.lstat(target);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      create = true;
+    }
+    const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
+    const flags = constants.O_RDWR | noFollow | (create ? constants.O_CREAT | constants.O_EXCL : 0);
+    let handle: Awaited<ReturnType<typeof fs.open>>;
+    try {
+      handle = await fs.open(target, flags, 0o600);
+    } catch (error) {
+      // A write-only file cannot be opened read-write. If the original write can
+      // still succeed, preserve that behavior without emitting an attestation.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EACCES' || code === 'EPERM') {
+        await fallback();
+        return;
+      }
+      throw error;
+    }
+    let fallbackInstead = false;
+    try {
+      const [stat, verifiedTarget] = await Promise.all([
+        handle.stat(),
+        enforceContainment ? policy.existing(target) : Promise.resolve(target),
+      ]);
+      if (!stat.isFile() || stat.nlink > 1 || (enforceContainment && path.relative(target, verifiedTarget) !== '')) {
+        if (enforceContainment) {
+          throw new PiDesktopError({
+            code: 'INVALID_PROJECT',
+            message: 'Pi refused to write a linked or concurrently replaced project file.',
+            retryable: true,
+          });
+        }
+        // Full-access: the original flow wrote linked/replaced in-project files
+        // plainly. Defer to the plain write (after this handle closes) and emit
+        // no attestation, preserving the previously allowed operation.
+        fallbackInstead = true;
+      }
+      if (!fallbackInstead) {
+        let preHash: string | null = null;
+        let preState: 'missing' | 'hashed' | 'oversize' = 'missing';
+        if (!create) {
+          if (stat.size > maxPreHashBytes) {
+            preState = 'oversize';
+          } else {
+            preHash = createHash('sha256').update(await handle.readFile()).digest('hex');
+            preState = 'hashed';
+          }
+        }
+        await handle.truncate(0);
+        // Seek-safe positioned write loop: do not assume one handle.write writes
+        // all bytes, and do not depend on the cursor advanced by readFile.
+        await writeAllPositioned(handle, Buffer.from(content, 'utf8'));
+        // Confirm the path still resolves to the inode we wrote; otherwise skip the row.
+        const afterStat = await fs.stat(target).catch(() => null);
+        if (afterStat && afterStat.dev === stat.dev && afterStat.ino === stat.ino) {
+          attest(operation, attestTarget, content, preHash, preState);
+        }
+      }
+    } finally {
+      await handle.close();
+    }
+    if (fallbackInstead) await fallback();
+  };
+
+  return async (filePath: string, content: string, operation: 'write' | 'edit'): Promise<void> => {
+    const target = await policy.writable(filePath);
+    if (access.fullAccess) {
+      // No sink, or a target whose real path is outside the project: plain write, no attestation.
+      if (!attestations) {
+        await fs.writeFile(target, content);
+        return;
+      }
+      const projectTarget = await resolveProjectTarget(target);
+      if (!projectTarget) {
+        await fs.writeFile(target, content);
+        return;
+      }
+      // Same-handle attested write against the resolved inside-project path.
+      await writeWithAttestation({ target: projectTarget, content, operation, attestTarget: projectTarget, enforceContainment: false, fallback: () => fs.writeFile(projectTarget, content) });
+      return;
+    }
+    if (!attestations) {
+      await writeWithoutAttestation(target, content);
+      return;
+    }
+    await writeWithAttestation({ target, content, operation, attestTarget: target, enforceContainment: true, fallback: () => writeWithoutAttestation(target, content) });
+  };
+}
+
+export interface ProjectConfinedToolsOptions {
+  searchTools?: boolean;
+  getImageGenerationSettings?: ImageGenerationSettingsResolver;
+  /** When provided, successful controlled write/edit operations are attested. */
+  attestations?: AttestationSink;
+  /** Maximum prior-state bytes hashed in memory before recording oversize. */
+  maxPreHashBytes?: number;
+}
+
+export async function createProjectConfinedTools(
+  cwd: string,
+  access: ProjectToolAccess = { fullAccess: false },
+  readableRoots: ReadableRoots = [],
+  options: ProjectConfinedToolsOptions = {},
+) {
+  const canonicalCwd = path.normalize(await fs.realpath(cwd));
+  const { attestations, maxPreHashBytes = MAX_PRE_HASH_BYTES } = options;
+  const policy = await ProjectPathPolicy.create(canonicalCwd, access, readableRoots);
+  const withReadable = async (filePath: string, read: boolean): Promise<Buffer | undefined> => {
+    const target = await policy.readable(filePath);
+    const handle = await fs.open(target, 'r');
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > MAX_PI_READ_BYTES) {
+        throw new PiDesktopError({
+          code: 'INVALID_PROJECT',
+          message: `Pi reads are limited to regular project files smaller than ${MAX_PI_READ_BYTES / 1024 / 1024} MiB.`,
+          retryable: false,
+        });
+      }
+      const verifiedTarget = await policy.readable(target);
+      if (path.relative(target, verifiedTarget) !== '') throw new PiDesktopError({ code: 'INVALID_PROJECT', message: 'Pi refused a concurrently replaced project or skill file.', retryable: true });
+      return read ? await handle.readFile() : undefined;
+    } finally {
+      await handle.close();
+    }
+  };
+  const readOperations = {
+    readFile: async (filePath: string) => (await withReadable(filePath, true))!,
+    access: async (filePath: string) => { await withReadable(filePath, false); },
+  };
+  const secureWriteFile = createSecureWriteFile({
+    policy,
+    access,
+    canonicalCwd,
+    ...(attestations ? { attestations } : {}),
+    maxPreHashBytes,
+  });
   const writeOperations = {
     mkdir: async (directoryPath: string) => { await fs.mkdir(await policy.writable(directoryPath), { recursive: true }); },
-    writeFile: secureWriteFile,
+    writeFile: (filePath: string, content: string) => secureWriteFile(filePath, content, 'write'),
   };
   const searchTools = options.searchTools ? [
     createGrepToolDefinition(canonicalCwd, {
@@ -263,7 +484,7 @@ export async function createProjectConfinedTools(
     createBashToolDefinition(canonicalCwd),
     createReadToolDefinition(canonicalCwd, { operations: readOperations }),
     createWriteToolDefinition(canonicalCwd, { operations: writeOperations }),
-    createEditToolDefinition(canonicalCwd, { operations: { ...readOperations, writeFile: writeOperations.writeFile } }),
+    createEditToolDefinition(canonicalCwd, { operations: { ...readOperations, writeFile: (filePath: string, content: string) => secureWriteFile(filePath, content, 'edit') } }),
     createGenerateImageTool(createConfiguredImageGenerator(options.getImageGenerationSettings)),
     ...searchTools,
   ];

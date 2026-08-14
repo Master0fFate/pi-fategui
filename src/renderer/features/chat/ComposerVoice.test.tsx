@@ -36,7 +36,7 @@ describe('Composer voice input', () => {
   beforeEach(() => {
     useRuntimeStore.getState().setRuntime(runtime);
     voiceStream.startVoiceStream.mockReset();
-    useUiStore.setState({ speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' }, speechDownload: null, speechStatus: null, toast: null });
+    useUiStore.setState({ speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' }, speechDownload: null, speechStatus: null, toast: null });
     const stop = vi.fn();
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop }] })) } });
     Object.defineProperty(Blob.prototype, 'arrayBuffer', { configurable: true, value: async () => new ArrayBuffer(8) });
@@ -79,8 +79,8 @@ describe('Composer voice input', () => {
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false,
     });
-    expect(window.piDesktop.ensureSpeechModel).toHaveBeenCalledWith('mini');
-    expect(window.piDesktop.transcribeSpeech).toHaveBeenCalledWith('mini', expect.any(ArrayBuffer), undefined);
+    expect(window.piDesktop.ensureSpeechModel).toHaveBeenCalledWith('canary-flash');
+    expect(window.piDesktop.transcribeSpeech).toHaveBeenCalledWith('canary-flash', expect.any(ArrayBuffer), undefined);
   });
 
   it('inserts at the initiation selection and restores its scroll viewport after asynchronous transcription', async () => {
@@ -128,7 +128,7 @@ describe('Composer voice input', () => {
       .mockRejectedValueOnce(new DOMException('Missing device', 'NotFoundError'))
       .mockResolvedValueOnce({ getTracks: () => [{ stop }] });
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
-    useUiStore.setState({ speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: 'missing-device', liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' } });
+    useUiStore.setState({ speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: 'missing-device', liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } });
 
     const { container } = render(<><Composer onOpenProject={vi.fn()} /><AppToast /></>);
     await user.click(screen.getByRole('button', { name: 'Start voice recording' }));
@@ -180,14 +180,17 @@ describe('Composer voice input', () => {
 
   it('drains accepted live audio before it finalizes the stream', async () => {
     let emitChunk!: (pcm: Float32Array) => void;
-    const controllerStop = vi.fn();
+    const controllerStop = vi.fn(async () => {
+      emitChunk(new Float32Array([0.5, -0.5]));
+    });
     voiceStream.startVoiceStream.mockImplementation(async (_deviceId: string | null, _chunkSamples: number, onChunk: (pcm: Float32Array) => void) => {
       emitChunk = onChunk;
       return { stop: controllerStop };
     });
     let releaseFeed!: () => void;
     const pendingFeed = new Promise<void>((resolve) => { releaseFeed = resolve; });
-    const feedSpeechStream = vi.fn(() => pendingFeed);
+    let feedCount = 0;
+    const feedSpeechStream = vi.fn((_audio: ArrayBuffer): Promise<void> => ++feedCount === 1 ? pendingFeed : Promise.resolve());
     const stopSpeechStream = vi.fn(async () => undefined);
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: {
       ensureSpeechModel: vi.fn(async () => undefined),
@@ -197,8 +200,8 @@ describe('Composer voice input', () => {
       cancelSpeechStream: vi.fn(async () => undefined),
     } as unknown as PiDesktopApi });
     useUiStore.setState({
-      speech: { enabled: true, modelId: 'balanced', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' },
-      speechStatus: { models: [{ id: 'balanced', streaming: true }], backend: 'CPU', accelerated: false } as unknown as SpeechStatus,
+      speech: { enabled: true, modelId: 'parakeet-unified', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' },
+      speechStatus: { models: [{ id: 'parakeet-unified', streaming: true }], backend: 'CPU', accelerated: false } as unknown as SpeechStatus,
     });
 
     const user = userEvent.setup();
@@ -213,6 +216,8 @@ describe('Composer voice input', () => {
     expect(stopSpeechStream).not.toHaveBeenCalled();
 
     releaseFeed();
+    await waitFor(() => expect(feedSpeechStream).toHaveBeenCalledTimes(2));
+    expect(Array.from(new Float32Array(feedSpeechStream.mock.calls[1]![0]))).toEqual([0.5, -0.5]);
     await waitFor(() => expect(stopSpeechStream).toHaveBeenCalledOnce());
   });
 });

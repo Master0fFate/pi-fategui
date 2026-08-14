@@ -1,93 +1,74 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_VOICE_STREAM_BACKLOG_SAMPLES, MAX_VOICE_STREAM_BATCH_SAMPLES, VoiceStreamFeedQueue } from './voiceStream';
+import { SPEECH_SAMPLE_RATE } from '../../../shared/speech';
+import { SpeechGate, VoiceStreamFeedQueue, defaultSpeechGateConfig } from './voiceStream';
 
-const CHUNK_SAMPLES = 4_800;
+const chunk = (seconds: number, amplitude: number): Float32Array =>
+  new Float32Array(Math.round(SPEECH_SAMPLE_RATE * seconds)).fill(amplitude);
 
-const chunk = (value: number) => new Float32Array(CHUNK_SAMPLES).fill(value);
-
-function joinedBatches(batches: readonly Float32Array[]): Float32Array {
-  const output = new Float32Array(batches.reduce((total, batch) => total + batch.length, 0));
-  let offset = 0;
-  for (const batch of batches) {
-    output.set(batch, offset);
-    offset += batch.length;
-  }
-  return output;
-}
-
-describe('VoiceStreamFeedQueue', () => {
-  it('batches delayed worklet captures in order and drains them before normal stop', async () => {
-    let releaseFirstSend!: () => void;
-    const firstSend = new Promise<void>((resolve) => { releaseFirstSend = resolve; });
-    const sent: Float32Array[] = [];
-    const send = vi.fn((audio: ArrayBuffer): Promise<void> => {
-      sent.push(new Float32Array(audio.slice(0)));
-      return sent.length === 1 ? firstSend : Promise.resolve();
-    });
-    const onError = vi.fn();
-    const queue = new VoiceStreamFeedQueue(send, onError);
-
-    expect(queue.push(chunk(1))).toBe(true);
-    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
-    for (let value = 2; value <= 8; value += 1) expect(queue.push(chunk(value))).toBe(true);
-
-    const stopping = queue.closeAndDrain();
-    expect(queue.push(chunk(9))).toBe(false);
-    expect(sent).toHaveLength(1);
-
-    releaseFirstSend();
-    await stopping;
-
-    expect(onError).not.toHaveBeenCalled();
-    expect(sent.map((batch) => batch.length)).toEqual([CHUNK_SAMPLES, CHUNK_SAMPLES * 6, CHUNK_SAMPLES]);
-    expect(sent[1]!.length).toBeLessThanOrEqual(MAX_VOICE_STREAM_BATCH_SAMPLES);
-    const pcm = joinedBatches(sent);
-    expect(pcm).toHaveLength(CHUNK_SAMPLES * 8);
-    expect(Array.from({ length: 8 }, (_, index) => pcm[index * CHUNK_SAMPLES]!)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+describe('SpeechGate', () => {
+  it('drops sustained silence', () => {
+    const gate = new SpeechGate();
+    expect(gate.push(chunk(0.3, 0))).toBe(true); // 0.3 s: hangover open
+    expect(gate.push(chunk(0.3, 0))).toBe(true); // 0.6 s: hangover open
+    expect(gate.push(chunk(0.3, 0))).toBe(false); // 0.9 s: past 0.8 s hangover
+    expect(gate.push(chunk(0.3, 0))).toBe(false);
   });
 
-  it('fails explicitly when a slow IPC send reaches the bounded backlog', async () => {
-    let releaseFirstSend!: () => void;
-    const firstSend = new Promise<void>((resolve) => { releaseFirstSend = resolve; });
-    const send = vi.fn(() => firstSend);
-    const onError = vi.fn();
-    const queue = new VoiceStreamFeedQueue(send, onError);
-    const fullFeed = (value: number) => new Float32Array(MAX_VOICE_STREAM_BATCH_SAMPLES).fill(value);
-
-    expect(queue.push(fullFeed(1))).toBe(true);
-    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
-    const acceptedFeeds = MAX_VOICE_STREAM_BACKLOG_SAMPLES / MAX_VOICE_STREAM_BATCH_SAMPLES;
-    for (let value = 2; value <= acceptedFeeds; value += 1) expect(queue.push(fullFeed(value))).toBe(true);
-
-    expect(queue.push(fullFeed(99))).toBe(false);
-    expect(onError).toHaveBeenCalledOnce();
-    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('cannot keep up') }));
-    expect(send).toHaveBeenCalledOnce();
-
-    releaseFirstSend();
-    await expect(queue.closeAndDrain()).rejects.toThrow('cannot keep up');
-    expect(send).toHaveBeenCalledOnce();
+  it('always passes speech and resets the hangover', () => {
+    const gate = new SpeechGate();
+    expect(gate.push(chunk(0.3, 0.5))).toBe(true);
+    expect(gate.push(chunk(0.3, 0.5))).toBe(true);
+    expect(gate.push(chunk(0.3, 0))).toBe(true); // tail
+    expect(gate.push(chunk(0.3, 0.5))).toBe(true); // speech again resets silence
+    expect(gate.push(chunk(0.3, 0))).toBe(true); // 0.3 s of silence
+    expect(gate.push(chunk(0.3, 0))).toBe(true); // 0.6 s, still in tail
+    expect(gate.push(chunk(0.3, 0))).toBe(false); // 0.9 s, past the 0.8 s tail
   });
 
-  it('drops only unsent captures when cancelled', async () => {
-    let releaseFirstSend!: () => void;
-    const firstSend = new Promise<void>((resolve) => { releaseFirstSend = resolve; });
-    let sendCount = 0;
-    const send = vi.fn((_audio: ArrayBuffer): Promise<void> => {
-      sendCount += 1;
-      return sendCount === 1 ? firstSend : Promise.resolve();
-    });
-    const onError = vi.fn();
-    const queue = new VoiceStreamFeedQueue(send, onError);
+  it('reopens after a long pause when speech returns', () => {
+    const gate = new SpeechGate();
+    gate.push(chunk(0.3, 0.5));
+    for (let i = 0; i < 10; i += 1) gate.push(chunk(0.3, 0)); // long silence
+    expect(gate.push(chunk(0.3, 0.5))).toBe(true);
+  });
 
-    queue.push(chunk(1));
-    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
-    queue.push(chunk(2));
-    queue.cancel();
-    releaseFirstSend();
+  it('uses RMS, so a quiet sine below the threshold is gated', () => {
+    const gate = new SpeechGate({ rmsThreshold: 0.1, hangoverSamples: 0 });
+    const quiet = new Float32Array(4_800);
+    for (let i = 0; i < quiet.length; i += 1) quiet[i] = 0.05 * Math.sin((i / 4_800) * Math.PI * 2 * 40);
+    expect(gate.push(quiet)).toBe(false);
+    expect(gate.push(new Float32Array(4_800).fill(0.4))).toBe(true);
+  });
+});
+
+describe('VoiceStreamFeedQueue speech gating', () => {
+  it('never sends sustained silence to the main process', async () => {
+    const send = vi.fn(async (_audio: ArrayBuffer) => undefined);
+    const queue = new VoiceStreamFeedQueue(send, () => undefined);
+    for (let i = 0; i < 5; i += 1) queue.push(chunk(0.3, 0)); // 1.5 s of silence
     await queue.closeAndDrain();
+    // Only the opening hangover window (≤ 0.8 s) can pass before the gate closes.
+    const sentSamples = send.mock.calls.reduce((total, [audio]) => total + (audio as ArrayBuffer).byteLength / 4, 0);
+    expect(sentSamples).toBeLessThanOrEqual(SPEECH_SAMPLE_RATE * 0.8);
+    expect(send.mock.calls.length).toBeLessThanOrEqual(2);
+  });
 
-    expect(send).toHaveBeenCalledOnce();
-    expect(onError).not.toHaveBeenCalled();
+  it('sends speech and its tail', async () => {
+    const send = vi.fn(async (_audio: ArrayBuffer) => undefined);
+    const queue = new VoiceStreamFeedQueue(send, () => undefined);
+    queue.push(chunk(0.3, 0.5));
+    queue.push(chunk(0.3, 0.5));
+    queue.push(chunk(0.3, 0)); // hangover tail
+    queue.push(chunk(0.3, 0)); // still within 0.8 s tail
+    queue.push(chunk(0.3, 0)); // gated
+    await queue.closeAndDrain();
+    const sentSamples = send.mock.calls.reduce((total, [audio]) => total + (audio as ArrayBuffer).byteLength / 4, 0);
+    expect(sentSamples).toBeGreaterThan(0);
+    expect(sentSamples).toBeLessThanOrEqual(SPEECH_SAMPLE_RATE * 1.2);
+  });
+
+  it('default config keeps an 0.8 s hangover at a conservative threshold', () => {
+    expect(defaultSpeechGateConfig.hangoverSamples).toBe(SPEECH_SAMPLE_RATE * 0.8);
+    expect(defaultSpeechGateConfig.rmsThreshold).toBeLessThan(0.01);
   });
 });

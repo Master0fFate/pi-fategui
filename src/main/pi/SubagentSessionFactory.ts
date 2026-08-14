@@ -23,6 +23,8 @@ import type { ImageGenerationSettingsResolver } from './PiImageTool';
 import { messageText } from './PiEventNormalizer';
 import { filterSkillsForChild, type SelectedSubagentSkill } from './SubagentSkills';
 import type { ChildToolName, ParentModel } from './SubagentProtocol';
+import type { AttestationSink } from './provenance/attestationRecord';
+import type { ChildAttestationHandle } from './provenance/mutationRecorder';
 
 const SUBAGENT_TOOL_NAMES = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_catalog', 'subagent_workflow'] as const;
 
@@ -42,8 +44,15 @@ export interface ChildSessionInput {
   sessionDirectory?: string;
   sessionFile?: string;
   collaborationTools?: ToolDefinition[];
-  teamIdentity?: { path: string; parentPath: string; depth: number; maxDepth: number };
+  teamIdentity?: { path: string; parentPath: string; depth: number; maxDepth: number; teamId?: string; nodeId?: string };
   getImageGenerationSettings?: ImageGenerationSettingsResolver;
+  /** Legacy subagent identity, when truthfully known at child construction. */
+  runId?: string;
+  parentToolCallId?: string;
+  /** When provided, successful controlled write/edit operations in this child are attested. */
+  attestationSink?: AttestationSink;
+  /** Bound to the child AgentSession id once the session exists. */
+  attestationSessionHandle?: ChildAttestationHandle;
 }
 
 export type SubagentChildSessionFactory = (input: ChildSessionInput) => Promise<AgentSession>;
@@ -126,7 +135,7 @@ export async function createSdkChildSession(input: ChildSessionInput): Promise<A
       getExamplesPath(),
       ...services.resourceLoader.getSkills().skills.map((skill) => skill.baseDir),
     ],
-    { searchTools: true, ...(input.getImageGenerationSettings ? { getImageGenerationSettings: input.getImageGenerationSettings } : {}) },
+    { searchTools: true, ...(input.attestationSink ? { attestations: input.attestationSink } : {}), ...(input.getImageGenerationSettings ? { getImageGenerationSettings: input.getImageGenerationSettings } : {}) },
   );
   const sessionManager = input.sessionFile
     ? SessionManager.open(input.sessionFile, input.sessionDirectory, input.projectPath)
@@ -144,6 +153,7 @@ export async function createSdkChildSession(input: ChildSessionInput): Promise<A
     customTools: [...confinedTools, ...collaborationTools] as unknown as NonNullable<Parameters<typeof createAgentSessionFromServices>[0]['customTools']>,
   });
   created.session.setActiveToolsByName([...input.toolNames, ...collaborationTools.map((tool) => tool.name)]);
+  if (input.attestationSessionHandle) input.attestationSessionHandle.sessionId = created.session.sessionId;
   for (const tool of collaborationTools) {
     if (created.session.getToolDefinition(tool.name) === tool) continue;
     try { created.session.dispose(); } catch { /* Fail closed even if cleanup is partial. */ }

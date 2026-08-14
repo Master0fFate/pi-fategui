@@ -97,6 +97,47 @@ async function settle() {
 }
 
 describe('AgentTeamCoordinator vertical slice', () => {
+  it('threads team identity into the child factory and resolves current task/permission dynamically', async () => {
+    const root = rootSession();
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' }),
+      sendRootMessage: vi.fn(async () => undefined),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const modelRuntime = runtime();
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'investigate', name: 'reviewer', permission: 'read-only' }, 'attest-spawn', modelRuntime);
+    const team = coordinator.getTeams('root-session')[0]!;
+    const input = createdInputs.at(-1)!;
+    expect(input.teamIdentity?.teamId).toBe(team.id);
+    expect(input.teamIdentity?.nodeId).toBe(child.nodeId);
+    expect(coordinator.currentPermissionForNode(team.id, child.nodeId)).toBe('read-only');
+    expect(coordinator.currentTaskIdForNode(team.id, child.nodeId)).toBe(team.tasks[0]?.id);
+  });
+
+  it('returns undefined for the current permission/task of a closed node, not stale state', async () => {
+    const root = rootSession();
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' }),
+      sendRootMessage: vi.fn(async () => undefined),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const modelRuntime = runtime();
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'investigate', name: 'reviewer', permission: 'edit' }, 'close-spawn', modelRuntime);
+    const team = coordinator.getTeams('root-session')[0]!;
+    expect(coordinator.currentPermissionForNode(team.id, child.nodeId)).toBe('edit');
+    expect(coordinator.currentTaskIdForNode(team.id, child.nodeId)).toBe(team.tasks[0]?.id);
+
+    await settle();
+    await coordinator.close(rootId, child.nodeId);
+
+    // A closed node is gone: its writes must not be attributed to stale authority/task state.
+    expect(coordinator.currentPermissionForNode(team.id, child.nodeId)).toBeUndefined();
+    expect(coordinator.currentTaskIdForNode(team.id, child.nodeId)).toBeUndefined();
+  });
   it('runs a child and grandchild with caller-scoped tools and direct-parent result routing', async () => {
     const root = rootSession();
     const emitted: unknown[] = [];

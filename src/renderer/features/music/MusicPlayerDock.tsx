@@ -126,6 +126,28 @@ export function MusicPlayerDock() {
   }, [clearLocalAudio, enabled, setPlaying]);
 
   useEffect(() => {
+    if (!enabled || !('piDesktop' in window) || typeof window.piDesktop.onMusicDurations !== 'function') return;
+    return window.piDesktop.onMusicDurations((event) => {
+      setQueue((current) => {
+        if (!current) return current;
+        const durations = new Map(event.updates.map((update) => [update.trackId, update.duration]));
+        let changed = false;
+        const tracks = current.tracks.map((track) => {
+          if (track.duration != null) return track;
+          const duration = durations.get(track.id);
+          if (duration === undefined) return track;
+          changed = true;
+          return { ...track, duration };
+        });
+        if (!changed) return current;
+        const next = { ...current, tracks };
+        queueRef.current = next;
+        return next;
+      });
+    });
+  }, [enabled]);
+
+  useEffect(() => {
     if (panelRef.current) panelRef.current.inert = !open;
     if (playlistRef.current) playlistRef.current.inert = !open || !playlistOpen;
     if (open && !queue) requestAnimationFrame(() => sourceRef.current?.focus());
@@ -458,7 +480,7 @@ export function MusicPlayerDock() {
                   <span className="music-queue-index">{String(index + 1).padStart(2, '0')}</span>
                   <span className="music-queue-copy">
                     <AppTooltip content={track.title}><strong>{track.title}</strong></AppTooltip>
-                    <small>{formatTime(track.duration ?? 0)}</small>
+                    <small>{track.duration == null ? '–' : formatTime(track.duration)}</small>
                   </span>
                   {index === trackIndex && <span className="music-queue-state">{playing ? 'Playing' : 'Current'}</span>}
                 </button>

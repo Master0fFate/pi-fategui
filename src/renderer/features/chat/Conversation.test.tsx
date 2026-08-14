@@ -489,6 +489,26 @@ describe('conversation components', () => {
     await waitFor(() => expect(composer).toHaveProperty('selectionStart', 13));
   });
 
+  it('improves the draft with the selected session model and keeps the action loading until replacement', async () => {
+    let resolveOptimization: ((value: { text: string }) => void) | undefined;
+    const optimizePrompt = vi.fn(() => new Promise<{ text: string }>((resolve) => { resolveOptimization = resolve; }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { optimizePrompt } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    await user.type(screen.getByLabelText('Message Pi'), 'make it better');
+    await user.click(screen.getByRole('button', { name: 'Improve prompt' }));
+
+    expect(optimizePrompt).toHaveBeenCalledWith('make it better');
+    expect(screen.getByRole('button', { name: 'Improving prompt' })).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByLabelText('Message Pi')).toBeDisabled();
+
+    resolveOptimization?.({ text: 'Improve this draft without changing its intent.' });
+
+    await waitFor(() => expect(screen.getByLabelText('Message Pi')).toHaveValue('Improve this draft without changing its intent.'));
+    expect(screen.getByRole('button', { name: 'Improve prompt' })).toHaveAttribute('aria-busy', 'false');
+  });
+
   it('shows actual Pi context usage beside the send action', () => {
     useRuntimeStore.setState({ runtime: ready({ contextUsage: { tokens: 42_000, contextWindow: 100_000, percent: 42 } }) });
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: {} as PiDesktopApi });

@@ -40,7 +40,7 @@ export const BROWSER_PANE_MIN = 360;
 export const BROWSER_PANE_MAX = 2400;
 
 export type SidebarTab = 'sessions' | 'resources' | 'automations';
-export type InspectorTab = 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context' | 'goal';
+export type InspectorTab = 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context' | 'goal' | 'activity';
 export type InspectorDestination = 'work' | 'run' | 'system';
 export type InspectorLastViews = Record<InspectorDestination, InspectorTab>;
 export type SelectedAgent =
@@ -55,7 +55,7 @@ export const INSPECTOR_DEFAULT_VIEWS: Record<InspectorDestination, InspectorTab>
 
 export function inspectorDestinationForTab(tab: InspectorTab): InspectorDestination {
   if (tab === 'changes' || tab === 'files') return 'work';
-  if (tab === 'goal' || tab === 'sessions' || tab === 'tools') return 'run';
+  if (tab === 'goal' || tab === 'sessions' || tab === 'tools' || tab === 'activity') return 'run';
   return 'system';
 }
 
@@ -133,6 +133,23 @@ function selectInspectorTab(state: Pick<UiState, 'inspectorLastViews'>, inspecto
   return {
     inspectorTab,
     inspectorLastViews: { ...state.inspectorLastViews, [destination]: inspectorTab },
+  };
+}
+
+const INSPECTOR_TABS: readonly InspectorTab[] = ['changes', 'files', 'tools', 'sessions', 'resources', 'context', 'goal', 'activity'];
+
+/** Legacy tabs merged into the single Activity tab (v1 storage had 'recorder' and 'attestations'). */
+function normalizeInspectorTab(tab: unknown): InspectorTab {
+  if (tab === 'recorder' || tab === 'attestations') return 'activity';
+  return INSPECTOR_TABS.includes(tab as InspectorTab) ? (tab as InspectorTab) : 'changes';
+}
+
+function normalizeInspectorLastViews(views: unknown): InspectorLastViews {
+  const record = (views ?? {}) as Partial<Record<InspectorDestination, unknown>>;
+  return {
+    work: normalizeInspectorTab(record.work ?? INSPECTOR_DEFAULT_VIEWS.work),
+    run: normalizeInspectorTab(record.run ?? INSPECTOR_DEFAULT_VIEWS.run),
+    system: normalizeInspectorTab(record.system ?? INSPECTOR_DEFAULT_VIEWS.system),
   };
 }
 
@@ -225,6 +242,15 @@ export const useUiStore = create<UiState>()(
     }),
     {
       name: 'pi-desktop-ui-v1',
+      version: 1,
+      migrate: (persisted) => {
+        const state = (persisted ?? {}) as Partial<Pick<UiState, 'inspectorTab' | 'inspectorLastViews'>>;
+        return {
+          ...state,
+          inspectorTab: normalizeInspectorTab(state.inspectorTab),
+          inspectorLastViews: normalizeInspectorLastViews(state.inspectorLastViews),
+        };
+      },
       partialize: ({
         leftWidth,
         rightWidth,

@@ -228,8 +228,11 @@ function teamTarget(team: AgentTeam, event: AgentTeamTimelineEvent): FlightDeckT
 function teamRecorderRows(sources: RecorderSources): { rows: FlightRecorderRow[]; omitted: boolean } {
   const rows: FlightRecorderRow[] = [];
   let sourceIndex = 0;
-  const omitted = false;
+  // A team-only timeline longer than its visible limit must report omission even
+  // when no other source overflows: those events were dropped before merging.
+  let omitted = false;
   for (const team of sources.teams) {
+    if (team.timeline.length > FLIGHT_RECORDER_LIMIT) omitted = true;
     for (const event of team.timeline.slice(-FLIGHT_RECORDER_LIMIT)) {
       rows.push({
         id: `team:${team.id}:${event.id}`,

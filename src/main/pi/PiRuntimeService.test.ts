@@ -146,6 +146,31 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('improves a prompt through the selected model without starting or persisting a Pi turn', async () => {
+    const fake = fixture();
+    const completeSimple = vi.fn(async () => ({
+      stopReason: 'stop',
+      content: [{ type: 'text', text: 'Review the current changes and report only regressions.' }],
+    }));
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    await expect(service.optimizePrompt('review the current changes')).resolves.toEqual({ text: 'Review the current changes and report only regressions.' });
+
+    expect(completeSimple).toHaveBeenCalledWith(
+      model,
+      expect.objectContaining({
+        systemPrompt: expect.stringContaining('prompt-rewriting specialist'),
+        messages: [expect.objectContaining({ content: 'review the current changes\n</draft>' })],
+      }),
+      expect.objectContaining({ reasoning: 'medium' }),
+    );
+    expect(fake.session.prompt).not.toHaveBeenCalled();
+    expect(fake.session.messages).toEqual([]);
+    await service.dispose();
+  });
+
   it('keeps GoalMax reconciliation off child token deltas while retaining lifecycle and tool evidence', () => {
     const childEvent = (type: 'assistant.text' | 'assistant.reasoning' | 'tool.updated' | 'tool.completed') => ({
       type: 'subagent.event', runId: 'child-1', timestamp: 1,
@@ -2700,5 +2725,74 @@ describe('PiRuntimeService', () => {
     expect(service.getState(false).queue?.held ?? []).toEqual([]);
     expect(service.getState(false).queue?.items?.map((item) => item.text) ?? []).not.toContain('also include C in this goal');
     await service.dispose();
+  });
+
+  it('attributes root writes per-runtime and never to the selected slot', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'saved', title: 'Saved work', firstMessage: 'Saved work', path: '/sessions/saved.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 2, active: false,
+    };
+    const repository = {
+      list: vi.fn(async () => [saved]), resolve: vi.fn(async () => saved), branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const record = vi.fn();
+    const service = new PiRuntimeService(fake.adapter, repository, undefined, undefined, undefined, undefined, undefined, undefined, record);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    const createRuntime = fake.adapter.createRuntime as ReturnType<typeof vi.fn>;
+    const sink1 = createRuntime.mock.calls[0]?.[5];
+    expect(sink1).toBeDefined();
+    expect(sink1.record).toBe(record);
+    // After openProject the root sink reads its own bound slot.
+    expect(sink1.resolveContext()).toMatchObject({ actor: { kind: 'root' }, sessionId: 'session-1', permissionLevel: 'full-access' });
+
+    // setPermissionLevel updates the same slot's sink dynamically.
+    await service.setPermissionLevel('read-only');
+    expect(sink1.resolveContext()?.permissionLevel).toBe('read-only');
+
+    // Open a second live slot while the first streams; the first becomes background.
+    const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as ((session: typeof fake.session) => Promise<void>) | undefined;
+    fake.setStreaming(true);
+    fake.runtime.switchSession.mockImplementationOnce(async () => {
+      fake.session.sessionId = saved.id;
+      fake.session.sessionFile = saved.path;
+      fake.session.messages = [];
+      fake.agent.state.messages = fake.session.messages;
+      await rebind?.(fake.session);
+      return { cancelled: false };
+    });
+    await service.switchSession(saved.id);
+    fake.setStreaming(false); // the newly selected slot is idle
+
+    const sink2 = createRuntime.mock.calls[1]?.[5];
+    expect(sink2).toBeDefined();
+    expect(sink2).not.toBe(sink1);
+
+    // The selected slot is now the second; capture each sink's current permission.
+    const slot1Permission = sink1.resolveContext()?.permissionLevel;
+    // Lowering the selected slot's permission must not move the background slot's sink.
+    await service.setPermissionLevel('edit');
+    expect(sink2.resolveContext()?.permissionLevel).toBe('edit');
+    expect(sink1.resolveContext()?.permissionLevel).toBe(slot1Permission);
+    expect(sink1.resolveContext()?.permissionLevel).not.toBe(sink2.resolveContext()?.permissionLevel);
+    await service.dispose();
+  });
+
+  it('clears the root attestation slot handle on disposal so a late write is not attributed to a disposed run', async () => {
+    const fake = fixture();
+    const record = vi.fn();
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, record);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    const createRuntime = fake.adapter.createRuntime as ReturnType<typeof vi.fn>;
+    const sink = createRuntime.mock.calls[0]?.[5];
+    expect(sink).toBeDefined();
+    expect(sink.resolveContext()).toMatchObject({ actor: { kind: 'root' }, sessionId: 'session-1' });
+
+    await service.dispose();
+    // The root attestation handle is cleared during that slot's disposal: a late
+    // tool write resolves no context and cannot be attributed to the disposed run.
+    expect(sink.resolveContext()).toBeNull();
   });
 });

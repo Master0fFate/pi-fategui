@@ -1,5 +1,5 @@
 ---
-name: Pi Desktop
+name: Fate UI
 description: A calm, local-first graphical workbench for the real Pi coding agent.
 colors:
   canvas: "#090b12"
@@ -55,13 +55,13 @@ components:
     height: "34px"
 ---
 
-# Design System: Pi Desktop
+# Design System: Fate UI
 
 ## Overview
 
 **Creative North Star: “The Focused Workbench”**
 
-Pi Desktop is a purpose-built instrument for sustained coding work: quiet when idle, precise when active, and transparent when Pi uses tools. A continuous blue-charcoal shell joins navigation, conversation, inspector, and terminal rather than presenting a dashboard of floating cards.
+Fate UI is a purpose-built instrument for sustained coding work: quiet when idle, precise when active, and transparent when Pi uses tools. A continuous blue-charcoal shell joins navigation, conversation, inspector, and terminal rather than presenting a dashboard of floating cards.
 
 The shipped interface governs atmosphere and first-launch hierarchy; the maintained product screenshots are available at `screenshots/fate-ui-dark.png` and `screenshots/fate-ui-light.png`. Operational states become denser without losing calm, and expression never obscures state or familiar desktop affordances.
 

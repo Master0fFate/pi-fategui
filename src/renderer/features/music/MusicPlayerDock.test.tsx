@@ -281,6 +281,45 @@ describe('MusicPlayerDock', () => {
     await waitFor(() => expect(screen.getByRole('complementary', { name: 'Playlist' })).toHaveTextContent('Nothing queued'));
   });
 
+  it('fills playlist durations from background events without touching known rows', async () => {
+    let durationsHandler: ((event: { updates: Array<{ trackId: string; duration: number }> }) => void) | undefined;
+    const onMusicDurations = vi.fn((handler: (event: { updates: Array<{ trackId: string; duration: number }> }) => void) => {
+      durationsHandler = handler;
+      return () => undefined;
+    });
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getMusicStatus: vi.fn(async () => ({ available: true, version: '2026.03.17', message: undefined })),
+        loadMusic: vi.fn(async () => ({
+          title: 'Quiet queue',
+          tracks: [
+            { id: firstId, title: 'First track', duration: null },
+            { id: secondId, title: 'Second track', duration: null },
+          ],
+        })),
+        resolveMusicTrack: vi.fn(async (trackId: string) => ({
+          trackId, title: 'First track', duration: 61, url: `https://cdn.example/${trackId}.m4a`,
+        })),
+        onMusicDurations,
+      } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    render(<MusicPlayerDock />);
+    await user.click(screen.getByRole('button', { name: 'Open music player' }));
+    await user.type(screen.getByLabelText('Media or playlist link'), 'https://media.example/playlist');
+    await user.click(screen.getByRole('button', { name: 'Load music link' }));
+    await user.click(screen.getByRole('button', { name: 'Show playlist' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Play First track' })).toBeInTheDocument());
+
+    expect(screen.getAllByText('–')).toHaveLength(2);
+
+    durationsHandler?.({ updates: [{ trackId: firstId, duration: 61 }, { trackId: secondId, duration: 122 }] });
+    await waitFor(() => expect(screen.getByText('1:01')).toBeInTheDocument());
+    expect(screen.getByText('2:02')).toBeInTheDocument();
+    expect(screen.queryByText('–')).not.toBeInTheDocument();
+  });
+
   it('offers play, pause, progress seeking, and an honest unavailable state', async () => {
     Object.defineProperty(window, 'piDesktop', {
       configurable: true,

@@ -24,7 +24,7 @@ const settings: AppSettings = {
   interfaceFont: 'noto-sans',
   codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
-  speech: { enabled: true, modelId: 'mini', language: 'auto', inputDeviceId: null, liveTranscription: true, voiceHotkey: null, voiceHotkeyMode: 'toggle' },
+  speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' },
 };
 
 let speechListener: ((progress: SpeechDownloadProgress) => void) | null = null;
@@ -32,9 +32,9 @@ let speechListener: ((progress: SpeechDownloadProgress) => void) | null = null;
 const speechStatus: SpeechStatus = {
   backend: 'Test Vulkan GPU', accelerated: true,
   models: [
-    { id: 'mini', tier: 'mini', name: 'Mini', model: 'Parakeet 110M', description: 'Light', detail: '101 MB', bytes: 101, installed: true, downloadedBytes: 101, streaming: false },
-    { id: 'balanced', tier: 'balanced', name: 'Medium', model: 'Parakeet 0.6B', description: 'Balanced', detail: '475 MB', bytes: 475, installed: false, downloadedBytes: 0, streaming: true },
-    { id: 'max', tier: 'max', name: 'Max', model: 'Whisper Turbo', description: 'Maximum', detail: '536 MB', bytes: 536, installed: false, downloadedBytes: 0, streaming: false },
+    { id: 'canary-flash', tier: 'mini', name: 'Mini', model: 'Canary 180M', description: 'Light', detail: '101 MB', bytes: 101, installed: true, downloadedBytes: 101, streaming: false },
+    { id: 'parakeet-unified', tier: 'balanced', name: 'English Live', model: 'Parakeet Unified', description: 'Balanced', detail: '475 MB', bytes: 475, installed: false, downloadedBytes: 0, streaming: true },
+    { id: 'cohere-transcribe', tier: 'max', name: 'Max Accuracy', model: 'Cohere Transcribe', description: 'Maximum', detail: '536 MB', bytes: 536, installed: false, downloadedBytes: 0, streaming: false },
   ],
 };
 
@@ -272,16 +272,16 @@ describe('SettingsDialog feedback', () => {
     await user.click(await screen.findByRole('tab', { name: /Voice/ }));
     expect(await screen.findByText('GPU acceleration active')).toBeInTheDocument();
     expect(screen.getByLabelText('Voice transcription models').querySelectorAll('.voice-model-row')).toHaveLength(3);
-    await user.click(screen.getByRole('button', { name: 'Download Medium voice model' }));
-    expect(window.piDesktop.downloadSpeechModel).toHaveBeenCalledWith('balanced');
-    speechListener?.({ modelId: 'balanced', state: 'downloading', downloadedBytes: 238, totalBytes: 475 });
+    await user.click(screen.getByRole('button', { name: 'Download English Live voice model' }));
+    expect(window.piDesktop.downloadSpeechModel).toHaveBeenCalledWith('parakeet-unified');
+    speechListener?.({ modelId: 'parakeet-unified', state: 'downloading', downloadedBytes: 238, totalBytes: 475 });
     expect(await screen.findByText('50%')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Cancel Medium voice model download' }));
-    expect(window.piDesktop.cancelSpeechModelDownload).toHaveBeenCalledWith('balanced');
-    speechListener?.({ modelId: 'balanced', state: 'cancelled', downloadedBytes: 238, totalBytes: 475 });
-    await user.click(screen.getByRole('button', { name: /Parakeet 0.6B/ }));
+    await user.click(screen.getByRole('button', { name: 'Cancel English Live voice model download' }));
+    expect(window.piDesktop.cancelSpeechModelDownload).toHaveBeenCalledWith('parakeet-unified');
+    speechListener?.({ modelId: 'parakeet-unified', state: 'cancelled', downloadedBytes: 238, totalBytes: 475 });
+    await user.click(screen.getByRole('button', { name: /Parakeet Unified/ }));
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({ speech: expect.objectContaining({ modelId: 'balanced' }) }));
+    expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({ speech: expect.objectContaining({ modelId: 'parakeet-unified' }) }));
   });
 
   it('folds Reduced Motion into Performance mode and restores visuals after Holy sh*t is disabled', async () => {

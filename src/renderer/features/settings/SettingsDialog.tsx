@@ -22,8 +22,8 @@ import {
   LoaderCircle,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AppSettings, Diagnostics, LogEntry, ModelInfo, SpeechDownloadProgress, SpeechHotkeyStatus, SpeechModelId, SpeechStatus, UpdateCheckResult, VoiceHotkeyMode } from '../../../shared/contracts/ipc';
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import type { AppSettings, Diagnostics, LogEntry, ModelInfo, SpeechDownloadProgress, SpeechHotkeyStatus, SpeechModelId, SpeechStatus, SpeechTier, UpdateCheckResult, VoiceHotkeyMode } from '../../../shared/contracts/ipc';
 import { defaultSpeechSettings } from '../../../shared/contracts/ipc';
 import type { ThemeDefinition } from '../../../shared/themes';
 import {
@@ -481,6 +481,11 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
     }
   };
 
+  const speechTierLabels: Record<SpeechTier, string> = {
+    mini: 'Fastest — instant results',
+    balanced: 'Balanced — speed and accuracy',
+    max: 'Highest accuracy',
+  };
   const speechBackendLabel = !speechStatus
     ? 'Detecting acceleration…'
     : speechStatus.accelerated ? 'GPU acceleration active' : 'CPU fallback ready';
@@ -611,32 +616,38 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                     <Gauge size={15} aria-hidden="true" />
                     <div><strong>{speechBackendLabel}</strong><span>{speechStatus?.backend ?? 'Selecting the best available local backend…'}</span></div>
                   </div>
-                  <div className="settings-title settings-title--spaced"><span><Download size={17} /></span><div><h3>Model power</h3><p>Choose one local accuracy tier. Mini downloads automatically on first use.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><span><Download size={17} /></span><div><h3>Model power</h3><p>Pick a model per accuracy tier. Mini downloads automatically on first use. “Live” models show words while you speak.</p></div></div>
                   <div className="voice-model-list" aria-label="Voice transcription models">
-                    {speechStatus?.models.map((model) => {
+                    {speechStatus?.models.reduce<React.ReactElement[]>((rows, model, index, models) => {
+                      const previous = models[index - 1];
+                      if (!previous || previous.tier !== model.tier) {
+                        rows.push(<div className="voice-model-tier-group" key={`tier-${model.tier}`}>{speechTierLabels[model.tier]}</div>);
+                      }
                       const selected = settings.speech.modelId === model.id;
                       const activeProgress = speechProgress?.modelId === model.id && (speechProgress.state === 'downloading' || speechProgress.state === 'verifying') ? speechProgress : null;
                       const percent = activeProgress ? Math.min(100, Math.round(activeProgress.downloadedBytes / activeProgress.totalBytes * 100)) : 0;
-                      return (
+                      rows.push(
                         <div className="voice-model-row" data-selected={selected} key={model.id}>
                           <button className="voice-model-choice" type="button" aria-pressed={selected} onClick={() => setSettings({ ...settings, speech: { ...settings.speech, modelId: model.id } })}>
-                            <span className="voice-model-tier">{model.name}</span>
+                            <span className="voice-model-tier">{model.name}{model.streaming ? <em className="voice-model-live">live</em> : null}</span>
                             <span className="voice-model-copy"><strong>{model.model}</strong><small>{model.description}</small><AppTooltip content={model.detail}><em>{model.detail}</em></AppTooltip></span>
                           </button>
                           <div className="voice-model-action">
                             {speechBusy === model.id ? <AppTooltip content="Cancel download" sideOffset={7}><button type="button" className="voice-download-cancel" aria-label={`Cancel ${model.name} voice model download`} onClick={() => void cancelSpeechDownload(model.id)}><LoaderCircle className="voice-download-spinner" size={15} /><X className="voice-download-x" size={15} /><span className="icon-label">{activeProgress?.state === 'verifying' ? 'Verifying' : `${percent}%`}</span></button></AppTooltip> : model.installed ? <AppTooltip content="Remove downloaded model"><button type="button" aria-label={`Remove ${model.name} voice model`} onClick={() => void removeSpeechModel(model.id)}><Trash2 size={14} /><span className="icon-label">Installed</span></button></AppTooltip> : <button type="button" aria-label={`Download ${model.name} voice model`} onClick={() => void downloadSpeechModel(model.id)}><Download size={14} /><span className="icon-label">Download</span></button>}
                           </div>
                           {activeProgress && speechBusy === model.id && <progress aria-label={`${model.name} model download`} max={activeProgress.totalBytes} value={activeProgress.downloadedBytes} />}
-                        </div>
+                        </div>,
                       );
-                    }) ?? (speechStatusError
+                      return rows;
+                    }, []) ?? (speechStatusError
                       ? <div className="voice-model-error" role="alert"><CircleAlert size={15} /><span className="icon-label">{speechStatusError}</span></div>
                       : <div className="settings-skeleton"><span /><span /><span /></div>)}
                   </div>
                   <p className="voice-license-note">Models download from pinned Hugging Face releases, are SHA-256 verified before installation, and retain their upstream licenses. Supported hardware acceleration is used when stable; otherwise transcription uses CPU safety mode.</p>
-                  <div className="settings-title settings-title--spaced"><span><Keyboard size={17} /></span><div><h3>Live transcription &amp; hotkey</h3><p>Medium (Parakeet) transcribes as you speak. Trigger it from any application with a global hotkey.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><span><Keyboard size={17} /></span><div><h3>Live transcription &amp; hotkey</h3><p>See voice input as you speak. Trigger it from any application with a global hotkey.</p></div></div>
                   <div className="settings-group">
-                    <label className="settings-toggle"><div><strong>Live transcription</strong><small>Type words into the composer as you speak. Only the Medium (Parakeet) model supports live mode; other models record first, then transcribe after you stop.</small></div><input type="checkbox" checked={settings.speech.liveTranscription} onChange={(event) => setSettings({ ...settings, speech: { ...settings.speech, liveTranscription: event.target.checked } })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>Live transcription</strong><small>Show words in the composer while you speak when the selected model supports it. Silence is filtered before decoding, so pauses cost no CPU.</small></div><input type="checkbox" checked={settings.speech.liveTranscription} onChange={(event) => setSettings({ ...settings, speech: { ...settings.speech, liveTranscription: event.target.checked } })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>Final accuracy pass</strong><small>After you stop speaking, re-run the whole recording once for a cleaner transcript. Costs extra time and CPU; off by default.</small></div><input type="checkbox" checked={settings.speech.finalAccuracyPass} onChange={(event) => setSettings({ ...settings, speech: { ...settings.speech, finalAccuracyPass: event.target.checked } })} /><span aria-hidden="true" /></label>
                   </div>
                   <div className="settings-theme-row voice-hotkey-row">
                     <div><strong>Voice hotkey</strong><small>{settings.speech.voiceHotkey ? `Press ${settings.speech.voiceHotkey} ${settings.speech.voiceHotkeyMode === 'push-to-talk' ? 'and hold to talk' : 'to toggle recording'}.` : 'Off — use the microphone button in the composer instead.'}</small></div>

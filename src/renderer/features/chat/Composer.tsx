@@ -126,6 +126,9 @@ const MAX_VOICE_DURATION_MS = 180_000;
  *  backend's buffered-stream window (PARAKEET_BUFFERED_WINDOW_MS) is separate
  *  and model-constrained; this only sizes mic captures. */
 const STREAM_CHUNK_SAMPLES = 16_000 * 0.3;
+/** When accepted-but-unprocessed live audio reaches this depth, the meter warns
+ *  that the machine is falling behind before the hard ten-second limit fails. */
+const VOICE_LAG_WARN_SECONDS = 5;
 const SEND_HOLD_TO_ABORT_MS = 2_000;
 const afterNextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 type VoiceState = 'idle' | 'preparing' | 'downloading' | 'recording' | 'transcribing';
@@ -215,6 +218,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const [sessionDropActive, setSessionDropActive] = useState(false);
   const [previewImage, setPreviewImage] = useState<Attachment | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [optimizingPrompt, setOptimizingPrompt] = useState(false);
   const [forking, setForking] = useState(false);
   const [forkNotice, setForkNotice] = useState<string | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -240,6 +244,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const [composerError, setComposerError] = useState<string | null>(null);
   const [inputHeight, setInputHeight] = useState(MIN_COMPOSER_INPUT_HEIGHT);
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
+  const [voiceLag, setVoiceLag] = useState(false);
   const composer = useRef<HTMLFormElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const inputShell = useRef<HTMLDivElement>(null);
@@ -265,6 +270,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const selectionEndRef = useRef(caretPosition);
   const draftScrollTopRef = useRef(0);
   const submittingRef = useRef(false);
+  const optimizingPromptRef = useRef(false);
   const queueBusyRef = useRef(false);
   const goalUpdateBusyRef = useRef(false);
   const modelBusyRef = useRef(false);
@@ -471,7 +477,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     if (recording) {
       liveRecording.current = null;
       recording.feedQueue.cancel();
-      try { recording.controller.stop(); } catch { /* best-effort teardown */ }
+      void Promise.resolve(recording.controller.stop()).catch(() => undefined);
     }
     liveAnchorRef.current = null;
     liveSpanLenRef.current = 0;
@@ -811,10 +817,31 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   useEffect(() => {
     if (!('piDesktop' in window) || typeof window.piDesktop.onSpeechStreamUpdate !== 'function') return;
     return window.piDesktop.onSpeechStreamUpdate((update: SpeechStreamUpdate) => {
-      if (update.state === 'active' || update.state === 'final') applyLiveText(update.committed);
-      else if (update.state === 'error') setComposerError(update.error ?? 'Live transcription failed.');
-      else if (update.state === 'cancelled') { teardownLiveRecording(); if (voiceStateRef.current !== 'idle') updateVoiceState('idle'); }
+      if (update.state === 'active' || update.state === 'final') {
+        applyLiveText(update.committed);
+        setVoiceLag(update.state === 'active' && (update.backlogSeconds ?? 0) >= VOICE_LAG_WARN_SECONDS);
+      } else if (update.state === 'finalizing') {
+        // Input is closed: stop was pressed, or the main process sealed the
+        // stream at the three-minute limit. Stop the microphone; the finished
+        // text arrives with the final update.
+        setVoiceLag(false);
+        if (voiceStateRef.current === 'recording') void stopLiveRecording();
+      } else if (update.state === 'error') {
+        // Keep every word the user already saw before reporting the failure.
+        if (update.committed) applyLiveText(update.committed);
+        setVoiceLag(false);
+        teardownLiveRecording();
+        if (voiceStateRef.current !== 'idle') updateVoiceState('idle');
+        setComposerError(update.error ?? 'Live transcription failed.');
+      } else if (update.state === 'cancelled') {
+        setVoiceLag(false);
+        teardownLiveRecording();
+        if (voiceStateRef.current !== 'idle') updateVoiceState('idle');
+      }
     });
+  // stopLiveRecording is a stable closure over refs + state setters, matching
+  // the voice hotkey effect below.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applyLiveText, updateVoiceState]);
 
   // Global voice hotkey (registered by the main process): start/stop from anywhere.
@@ -1499,7 +1526,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
       await window.piDesktop.ensureSpeechModel(speech.modelId);
       if (!isCurrentVoiceAttempt(attempt)) return;
       updateVoiceState('preparing');
-      await window.piDesktop.startSpeechStream(speech.modelId, speech.language === 'auto' ? undefined : speech.language);
+      await window.piDesktop.startSpeechStream(speech.modelId, speech.language === 'auto' ? undefined : speech.language, speech.finalAccuracyPass);
       if (!isCurrentVoiceAttempt(attempt)) { await window.piDesktop.cancelSpeechStream().catch(() => undefined); return; }
       feedQueue = new VoiceStreamFeedQueue(
         (audio) => window.piDesktop.feedSpeechStream(audio),
@@ -1513,12 +1540,14 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         },
       );
       const controller = await startVoiceStream(speech.inputDeviceId, STREAM_CHUNK_SAMPLES, (pcm) => {
-        if (!isCurrentVoiceAttempt(attempt) || voiceStateRef.current !== 'recording') return;
+        // stop() flushes the final partial worklet chunk while state is
+        // "transcribing". The queue itself rejects data after cancellation.
+        if (!isCurrentVoiceAttempt(attempt)) return;
         feedQueue?.push(pcm);
       });
       if (!isCurrentVoiceAttempt(attempt)) {
         feedQueue.cancel();
-        controller.stop();
+        void Promise.resolve(controller.stop()).catch(() => undefined);
         await window.piDesktop.cancelSpeechStream().catch(() => undefined);
         return;
       }
@@ -1540,7 +1569,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     if (!recording) return;
     liveRecording.current = null;
     if (voiceStateRef.current === 'recording') updateVoiceState('transcribing');
-    try { recording.controller.stop(); } catch { /* best-effort teardown */ }
+    try { await recording.controller.stop(); } catch { /* best-effort teardown */ }
     try {
       await recording.feedQueue.closeAndDrain();
       await window.piDesktop.stopSpeechStream();
@@ -1839,6 +1868,41 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     } finally {
       goalUpdateBusyRef.current = false;
       if (mounted.current) setGoalUpdateBusyId(null);
+    }
+  };
+
+  const optimizePrompt = async () => {
+    if (!('piDesktop' in window) || optimizingPromptRef.current) return;
+    const origin = useRuntimeStore.getState().runtime;
+    const originalDraft = draftRef.current;
+    if (!originalDraft.trim() || origin.status !== 'ready' || origin.streaming || origin.activeSessionRunning || origin.sessionOperation) return;
+    if (typeof window.piDesktop.optimizePrompt !== 'function') {
+      setComposerError('Restart Fate UI to activate prompt improvement.');
+      return;
+    }
+    optimizingPromptRef.current = true;
+    setOptimizingPrompt(true);
+    setComposerError(null);
+    try {
+      const result = await window.piDesktop.optimizePrompt(originalDraft);
+      if (!mounted.current) return;
+      const current = useRuntimeStore.getState().runtime;
+      const selectionIsOrigin = current.sessionId === origin.sessionId && current.project?.path === origin.project?.path;
+      if (!selectionIsOrigin || draftRef.current !== originalDraft) return;
+      updateDraft(result.text);
+      requestAnimationFrame(() => {
+        if (!mounted.current) return;
+        textarea.current?.focus({ preventScroll: true });
+        textarea.current?.setSelectionRange(0, result.text.length);
+      });
+      showToast({ kind: 'success', title: 'Prompt improved', message: 'Review the selected prompt, then send it when ready.' });
+    } catch (error) {
+      if (mounted.current && activeDraftKey.current === sessionDraftKey(origin.project?.path ?? null, origin.sessionId, origin.sessions)) {
+        setComposerError(error instanceof Error ? error.message : 'Prompt improvement failed. Your draft was not changed.');
+      }
+    } finally {
+      optimizingPromptRef.current = false;
+      if (mounted.current) setOptimizingPrompt(false);
     }
   };
 
@@ -2235,12 +2299,12 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
             onPaste={pasteImages}
             placeholder={connected ? runtime.streaming ? 'Ask for follow-up changes…' : 'Ask Pi about your project…' : 'Open and trust a project to begin…'}
             rows={2}
-            disabled={!connected}
+            disabled={!connected || optimizingPrompt}
           />
         </div>
         <div className="composer-toolbar">
           {(voiceState === 'recording' || voiceState === 'transcribing') && (
-            <div className="composer-voice-meter" aria-hidden="true" data-live={isLiveModel || undefined}><i /><i /><i /><i /><i /></div>
+            <div className="composer-voice-meter" aria-hidden="true" data-live={isLiveModel || undefined} data-lag={voiceLag || undefined}><i /><i /><i /><i /><i /></div>
           )}
           <div className="composer-toolbar-leading">
             {compactToolbar && (
@@ -2446,9 +2510,24 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 </Popover.Root>
                 {connected && <ContextWheel usage={runtime.contextUsage} {...(runtime.model ? { fallbackWindow: runtime.model.contextWindow } : {})} />}
               </div>
+              <AppTooltip
+                content={optimizingPrompt ? 'Improving prompt with the selected model…' : runtime.streaming || runtime.activeSessionRunning ? 'Wait for Pi to finish before improving the prompt' : !draft.trim() ? 'Write a prompt to improve it' : 'Improve prompt with the selected model'}
+                wrapTrigger
+              >
+                <button
+                  className="voice-button prompt-optimize-button"
+                  type="button"
+                  aria-label={optimizingPrompt ? 'Improving prompt' : 'Improve prompt'}
+                  aria-busy={optimizingPrompt}
+                  disabled={!connected || !draft.trim() || optimizingPrompt || runtime.streaming || Boolean(runtime.activeSessionRunning) || Boolean(runtime.sessionOperation)}
+                  onClick={() => void optimizePrompt()}
+                >
+                  {optimizingPrompt ? <LoaderCircle className="tool-spinner" size={17} aria-hidden="true" /> : <Sparkles size={17} aria-hidden="true" />}
+                </button>
+              </AppTooltip>
               {speech.enabled && (
                 <AppTooltip
-                  content={voiceState === 'recording' ? 'Stop and transcribe' : voiceState === 'downloading' ? `Downloading local model… ${voiceDownloadProgress}%` : speechDownload ? 'Wait for the voice model download to finish or cancel it in Settings.' : voiceState === 'preparing' ? 'Preparing microphone…' : voiceState === 'transcribing' ? 'Transcribing locally…' : 'Voice input'}
+                  content={voiceState === 'recording' ? (voiceLag ? 'Transcription is falling behind — stop soon to keep your text' : 'Stop and transcribe') : voiceState === 'downloading' ? `Downloading local model… ${voiceDownloadProgress}%` : speechDownload ? 'Wait for the voice model download to finish or cancel it in Settings.' : voiceState === 'preparing' ? 'Preparing microphone…' : voiceState === 'transcribing' ? 'Transcribing locally…' : 'Voice input'}
                   wrapTrigger
                 >
                   <button

@@ -71,6 +71,18 @@ describe('Flight Deck selectors', () => {
     expect(result.omitted).toBe(false);
   });
 
+  it('reports omission when a team-only timeline overflows its visible limit, even with no other source overflow', () => {
+    const team = projectTeam(createTeamRuntime('session-1', '/project', { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 }, 'medium', 'read-only'));
+    team.timeline = Array.from({ length: FLIGHT_RECORDER_LIMIT + 5 }, (_value, index) => ({
+      id: `event-${index}`, sequence: index + 1, type: 'team.created' as const, summary: 'Lifecycle event', timestamp: index,
+    }));
+    const result = selectFlightRecorder({ timelineOrder: [], timelineById: {}, messagesById: {}, toolsById: {}, subagents: [], teams: [team] });
+    // The team source dropped events before merging, so omission is reported even
+    // though the merged row count fits the recorder limit.
+    expect(result.rows).toHaveLength(FLIGHT_RECORDER_LIMIT);
+    expect(result.omitted).toBe(true);
+  });
+
   it('matches only structured provenance against current and renamed Git paths', () => {
     const sources = {
       timelineOrder: ['tool:edit-1', 'tool:bash-1'],

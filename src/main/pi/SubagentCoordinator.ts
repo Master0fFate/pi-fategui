@@ -543,6 +543,11 @@ export class SubagentCoordinator {
     return this.runStore.getRuns(parentSessionId);
   }
 
+  /** Current enforced permission for a legacy child run, resolved at write time. Undefined when the run is gone. */
+  currentPermissionForRun(runId: string): PermissionLevel | undefined {
+    return this.contexts.get(runId)?.permissionLevel;
+  }
+
   async controlRun(parentSessionId: string, input: SubagentControlInput, modelRuntime: ModelRuntime): Promise<SubagentRun[]> {
     const target = input.target.trim().replace(/^@/u, '');
     if (input.action === 'cancel' && target.toLocaleLowerCase() === 'all') {
@@ -1082,6 +1087,8 @@ export class SubagentCoordinator {
       toolNames: context.toolNames,
       skillMode: context.skillMode,
       selectedSkills: context.selectedSkills,
+      runId: context.runId,
+      parentToolCallId: context.parentToolCallId,
     };
   }
 

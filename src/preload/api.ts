@@ -33,6 +33,7 @@ import {
   localImageInputSchema,
   logListSchema,
   musicClearResultSchema,
+  musicDurationsEventSchema,
   musicLoadInputSchema,
   musicQueueResultSchema,
   musicStatusSchema,
@@ -48,6 +49,8 @@ import {
   revealProjectResultSchema,
   promptAcceptanceSchema,
   promptInputSchema,
+  promptOptimizationInputSchema,
+  promptOptimizationResultSchema,
   queueMutationInputSchema,
   queueMutationResultSchema,
   runtimeImageSchema,
@@ -95,6 +98,7 @@ import {
   type AppSettings,
   type GitOperation,
   type ImageSaveInput,
+  type MusicDurationsEvent,
   type PiDesktopApi,
   type SessionDirectMessageInput,
   type PiEvent,
@@ -189,6 +193,12 @@ import {
   type TaskReorderInput,
   type TaskUpdateInput,
 } from '../shared/contracts/tasks';
+import {
+  attestationQueryRequestSchema,
+  attestationQueryResultSchema,
+  type AttestationQueryRequestInput,
+  type AttestationQueryResult,
+} from '../shared/contracts/mutationAttestation';
 
 export const piDesktopApi: PiDesktopApi = Object.freeze({
   async getAppInfo() {
@@ -392,6 +402,10 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async prompt(input: PromptInput) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimePrompt, promptInputSchema.parse(input));
     return promptAcceptanceSchema.parse(result);
+  },
+  async optimizePrompt(text: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeOptimizePrompt, promptOptimizationInputSchema.parse({ text }));
+    return promptOptimizationResultSchema.parse(result);
   },
   async abort() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeAbort, emptyInputSchema.parse({}));
@@ -668,8 +682,8 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     const result: unknown = await ipcRenderer.invoke(ipcChannels.speechCancel, emptyInputSchema.parse({}));
     return speechCancelResultSchema.parse(result).cancelled;
   },
-  async startSpeechStream(modelId: SpeechModelId, language?: string) {
-    const input = speechStreamStartInputSchema.parse({ modelId, language });
+  async startSpeechStream(modelId: SpeechModelId, language?: string, refine?: boolean) {
+    const input = speechStreamStartInputSchema.parse({ modelId, language, refine });
     await ipcRenderer.invoke(ipcChannels.speechStreamStart, input);
   },
   async feedSpeechStream(audio: ArrayBuffer) {
@@ -721,6 +735,11 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     const result = musicClearResultSchema.parse(await ipcRenderer.invoke(ipcChannels.musicClearQueue, emptyInputSchema.parse({})));
     if (!result.ok) throw new Error(JSON.stringify(result.error));
   },
+  onMusicDurations(handler: (event: MusicDurationsEvent) => void): () => void {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(musicDurationsEventSchema.parse(payload));
+    ipcRenderer.on(ipcChannels.musicDurations, listener);
+    return () => ipcRenderer.removeListener(ipcChannels.musicDurations, listener);
+  },
   async getDiagnostics() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.diagnosticsGet, emptyInputSchema.parse({}));
     return diagnosticsSchema.parse(result);
@@ -728,6 +747,11 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async getLogs() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.logsGet, emptyInputSchema.parse({}));
     return logListSchema.parse(result);
+  },
+  async queryAttestations(request?: AttestationQueryRequestInput) {
+    const parsed = attestationQueryRequestSchema.parse(request ?? {});
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.attestationsQuery, parsed);
+    return attestationQueryResultSchema.parse(result);
   },
   onEvents(listener: (events: PiEvent[]) => void) {
     const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(piEventBatchSchema.parse(payload));

@@ -95,6 +95,22 @@ export class AgentTeamCoordinator {
     return createAgentCollaborationTools(this, null, modelRuntime);
   }
 
+  /** Current task id for a team node, resolved at write time (nodes reuse sessions across tasks). */
+  currentTaskIdForNode(teamId: string, nodeId: string): string | undefined {
+    const node = this.teamsById.get(teamId)?.nodes.get(nodeId);
+    // A closed/released node is gone: return undefined so its writes are not attributed to stale state.
+    if (!node || node.status === 'closed' || node.status === 'released') return undefined;
+    return node.currentTaskId;
+  }
+
+  /** Current enforced permission for a team node, resolved at write time (it can be capped/lowered after creation). */
+  currentPermissionForNode(teamId: string, nodeId: string): PermissionLevel | undefined {
+    const node = this.teamsById.get(teamId)?.nodes.get(nodeId);
+    // A closed/released node is gone: return undefined so its writes record permission=null, not stale authority.
+    if (!node || node.status === 'closed' || node.status === 'released') return undefined;
+    return node.permissionLevel;
+  }
+
   rootNodeId(rootSessionId: string, teamId?: string): string {
     return this.ensureTeam(rootSessionId, teamId).state.rootNodeId;
   }
@@ -1012,7 +1028,7 @@ export class AgentTeamCoordinator {
       selectedSkills: prepared.selectedSkills,
       sessionDirectory,
       collaborationTools,
-      teamIdentity: { path: node.path, parentPath: parent.path, depth: node.depth, maxDepth: runtime.state.limits.maxDepth },
+      teamIdentity: { path: node.path, parentPath: parent.path, depth: node.depth, maxDepth: runtime.state.limits.maxDepth, teamId: runtime.state.id, nodeId: node.id },
     });
     return {
       session,
@@ -1074,7 +1090,7 @@ export class AgentTeamCoordinator {
       sessionDirectory,
       sessionFile,
       collaborationTools,
-      teamIdentity: { path: node.path, parentPath: parent.path, depth: node.depth, maxDepth: runtime.state.limits.maxDepth },
+      teamIdentity: { path: node.path, parentPath: parent.path, depth: node.depth, maxDepth: runtime.state.limits.maxDepth, teamId: runtime.state.id, nodeId: node.id },
     });
     const reopened: AgentNodeRuntime = {
       session,

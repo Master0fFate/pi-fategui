@@ -274,8 +274,8 @@ function DiffPreview({ origins, onOrigin }: { origins: readonly ChangeOrigin[]; 
       <div className="preview-heading review-preview-heading">
         <AppTooltip content={diff.path}><span>{diff.path}</span></AppTooltip>
         {!deleted && diff.state === 'text' && diff.openable && <AppTooltip content="Open in the system editor"><button type="button" aria-label="Open in the system editor" onClick={() => void openPath(diff.path)}><ExternalLink size={13} aria-hidden="true" /></button></AppTooltip>}
-        <div className="change-origins" aria-label="Recorded origins">
-          {origins.length ? origins.slice(0, 4).map((origin) => <button type="button" key={origin.id} aria-label={`Open recorded origin from ${origin.actorLabel}`} onClick={() => onOrigin(origin)} title={`${origin.actorLabel} · ${origin.toolName}`}>{origin.actorLabel}</button>) : <span>No recorded origin</span>}
+        <div className="change-origins" aria-label="Related activity">
+          {origins.length ? origins.slice(0, 4).map((origin) => <button type="button" key={origin.id} aria-label={`Open related activity from ${origin.actorLabel}`} onClick={() => onOrigin(origin)} title={`${origin.actorLabel} · ${origin.toolName}`}>{origin.actorLabel}</button>) : <span>No related activity</span>}
         </div>
       </div>
       <div className="preview-body">
@@ -510,7 +510,7 @@ export function ChangesPanel() {
               <AppTooltip content="Explain selected change" wrapTrigger><button type="button" aria-label="Explain selected change" disabled={!selected} onClick={() => draftReviewAction('explain')}><SearchCode size={12} aria-hidden="true" /></button></AppTooltip>
               <AppTooltip content="Test selected change" wrapTrigger><button type="button" aria-label="Test selected change" disabled={!selected} onClick={() => draftReviewAction('test')}><TestTube2 size={12} aria-hidden="true" /></button></AppTooltip>
               <AppTooltip content="Revise selected change" wrapTrigger><button type="button" aria-label="Revise selected change" disabled={!selected} onClick={() => draftReviewAction('revise')}><Wrench size={12} aria-hidden="true" /></button></AppTooltip>
-              <AppTooltip content="Open recorded origin" wrapTrigger><button type="button" aria-label="Open recorded origin" disabled={!origins[0]} onClick={() => { if (origins[0]) openTarget(origins[0].target); }}><Route size={12} aria-hidden="true" /></button></AppTooltip>
+              <AppTooltip content="Open related activity" wrapTrigger><button type="button" aria-label="Open related activity" disabled={!origins[0]} onClick={() => { if (origins[0]) openTarget(origins[0].target); }}><Route size={12} aria-hidden="true" /></button></AppTooltip>
             </div>
           </div>
         ) : null}

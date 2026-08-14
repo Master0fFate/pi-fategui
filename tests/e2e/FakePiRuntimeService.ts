@@ -1,5 +1,5 @@
 import type { GoalMaxClearResult, GoalMaxControlInput, GoalMaxCreateInput, GoalMaxEvent, GoalMaxState, GoalMaxUpdateInput } from '../../src/shared/contracts/goalmaxxing';
-import type { PermissionLevel, PiEvent, ProjectState, PromptAcceptance, PromptInput, QueuedMessage, QueueMutationInput, QueueMutationResult, RuntimeState, SessionSummary, SubagentControlInput, SubagentRun, ThinkingLevel } from '../../src/shared/contracts/ipc';
+import type { PermissionLevel, PiEvent, ProjectState, PromptAcceptance, PromptInput, PromptOptimizationResult, QueuedMessage, QueueMutationInput, QueueMutationResult, RuntimeState, SessionSummary, SubagentControlInput, SubagentRun, ThinkingLevel } from '../../src/shared/contracts/ipc';
 import type { AgentTeam, AgentTeamControlInput } from '../../src/shared/contracts/multiAgent';
 import type { TaskCreateInput, TaskDeleteInput, TaskEvent, TaskList, TaskReorderInput, TaskUpdateInput } from '../../src/shared/contracts/tasks';
 
@@ -164,6 +164,10 @@ export class FakePiRuntimeService {
       .filter((session) => !normalizedQuery || session.title.toLocaleLowerCase().includes(normalizedQuery))
       .map((session) => ({ ...session, active: session.id === this.activeSession }));
   }
+  async optimizePrompt(text: string): Promise<PromptOptimizationResult> {
+    return { text };
+  }
+
   async prompt(input: PromptInput): Promise<PromptAcceptance> {
     const runId = 'e2e-run';
     if (this.streaming && input.behavior !== 'prompt') {
