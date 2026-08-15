@@ -780,7 +780,14 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     return attestationQueryResultSchema.parse(result);
   },
   onEvents(listener: (events: PiEvent[]) => void) {
-    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(piEventBatchSchema.parse(payload));
+    const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+      const parsed = piEventBatchSchema.safeParse(payload);
+      if (!parsed.success) {
+        console.error('[fate-ui] dropped a runtime event batch that failed validation', parsed.error.message);
+        return;
+      }
+      listener(parsed.data);
+    };
     ipcRenderer.on(ipcChannels.runtimeEvents, handler);
     return () => ipcRenderer.removeListener(ipcChannels.runtimeEvents, handler);
   },

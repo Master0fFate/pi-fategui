@@ -1,3 +1,4 @@
+import { BrowserWindow } from 'electron';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({
@@ -14,7 +15,7 @@ vi.mock('electron', () => ({
 import type { ProjectState } from '../../shared/contracts/ipc';
 import type { MutationAttestationLedger } from '../pi/provenance/MutationAttestationLedger';
 import type { ProjectActivation } from '../projects/ProjectService';
-import { activatePreparedProject, assertProjectActivationIdle, createProjectActivationQueue, createProjectPathFocuser, createProjectPathOpener, discardCreatedWorktreeAfterFailure, resolveAttestationQuery } from './registerIpc';
+import { activatePreparedProject, assertProjectActivationIdle, createProjectActivationQueue, createProjectPathFocuser, createProjectPathOpener, discardCreatedWorktreeAfterFailure, registerIpc, resolveAttestationQuery } from './registerIpc';
 
 const previousProject: ProjectState = { path: '/previous', name: 'previous', trusted: true };
 const nextProject: ProjectState = { path: '/next', name: 'next', trusted: true };
@@ -72,6 +73,57 @@ function services() {
   const logs = { write: vi.fn() };
   return { runtime, files, settings, terminal, logs, setState: (next: never) => { current = next; } };
 }
+
+describe('runtime event sink transport hardening', () => {
+  it('replaces an invalid runtime event batch with a resync error instead of crashing', () => {
+    const runtime = {
+      setEventSink: vi.fn(),
+      setGoalEventSink: vi.fn(),
+      setTaskEventSink: vi.fn(),
+    };
+    const logs = { write: vi.fn() };
+    const sent: { channel: unknown; payload: unknown }[] = [];
+    const getAllWindows = vi.mocked(BrowserWindow.getAllWindows);
+    getAllWindows.mockReturnValue([{ webContents: { send: vi.fn((channel: unknown, payload: unknown) => sent.push({ channel, payload })) } } as never]);
+
+    registerIpc({
+      runtime,
+      projects: {},
+      files: {},
+      git: {},
+      settings: {},
+      terminal: { setEventSink: vi.fn() },
+      logs,
+      music: { setDurationSink: vi.fn() },
+      speech: { setEventSink: vi.fn(), setStreamSink: vi.fn() },
+      hotkey: {},
+      updates: {},
+      browser: {},
+      automations: {},
+      attestations: {},
+      rendererPolicy: {} as never,
+    } as never);
+
+    const sink = runtime.setEventSink.mock.calls[0]![0] as (events: unknown[]) => void;
+    const invalidBatch = [{ type: 'state.changed', state: { model: { contextWindow: 0 } }, messagesIncluded: false, timestamp: 1 }];
+    expect(() => sink(invalidBatch)).not.toThrow();
+    expect(logs.write).toHaveBeenCalledWith('error', 'ipc', expect.stringContaining('failed transport validation'));
+    expect(sent).toHaveLength(1);
+    const replacement = sent[0]!.payload as { type: string; error: { code: string } }[];
+    expect(replacement).toHaveLength(1);
+    expect(replacement[0]!.type).toBe('error');
+    expect(replacement[0]!.error.code).toBe('PI_RUNTIME_ERROR');
+
+    sent.length = 0;
+    const validBatch = [{ type: 'run.accepted', runId: 'run-1', timestamp: 1 }];
+    sink(validBatch);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.payload).toEqual(validBatch);
+
+    getAllWindows.mockReset();
+    getAllWindows.mockReturnValue([]);
+  });
+});
 
 describe('transactional project activation', () => {
   it('opens a launcher path through the same trusted activation transaction', async () => {

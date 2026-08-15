@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { activeToolsForPermission, assertOwnedToolDefinitions, PiRuntimeService, isCanonicalPathInside, selectUserExtensionPaths, shouldSyncGoalChildrenForPiEvent, type PiSdkAdapter } from './PiRuntimeService';
 import type { SubagentChildSessionFactory } from './SubagentSessionFactory';
 import type { PiEvent } from '../../shared/contracts/ipc';
+import { runtimeStateSchema } from '../../shared/contracts/ipc';
 import { defaultSessionsRoot, PiSessionRepository } from './PiSessionRepository';
 import type { SessionTitleGenerator } from './PiSessionTitleGenerator';
 import { InMemorySessionPermissionStore } from './SessionPermissionStore';
@@ -980,6 +981,38 @@ describe('PiRuntimeService', () => {
     expect(fake.session.setModel.mock.invocationCallOrder[0]).toBeLessThan(fake.session.prompt.mock.invocationCallOrder[0]!);
     expect(service.getState(false)).toMatchObject({ model: { id: 'fast' }, pendingModel: null });
     fake.settle();
+    await service.dispose();
+  });
+
+  it('clamps unusable model context windows so IPC state stays valid', async () => {
+    const unknownWindow = { ...model, id: 'unknown-window', name: 'Unknown Window Model', contextWindow: 0 };
+    const giantWindow = { ...model, id: 'giant-window', name: 'Giant Window Model', contextWindow: 9_000_000_000_000 };
+    const fake = fixture([model, unknownWindow, giantWindow]);
+    Object.assign(fake.session, {
+      model: unknownWindow,
+      getContextUsage: vi.fn(() => ({ tokens: 500, contextWindow: 0, percent: 50 })),
+    });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    const state = service.getState(false);
+    expect(state.model?.contextWindow).toBe(1);
+    expect(state.models?.find((candidate) => candidate.id === 'unknown-window')?.contextWindow).toBe(1);
+    expect(state.models?.find((candidate) => candidate.id === 'giant-window')?.contextWindow).toBe(2_147_483_647);
+    expect(state.contextUsage).toBeUndefined();
+    expect(() => runtimeStateSchema.parse(state)).not.toThrow();
+    await service.dispose();
+  });
+
+  it('drops reported context usage with an unusable context window', async () => {
+    const fake = fixture();
+    Object.assign(fake.session, { getContextUsage: vi.fn(() => ({ tokens: 500, contextWindow: 0, percent: 50 })) });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    const state = service.getState(false);
+    expect(state.contextUsage).toBeUndefined();
+    expect(() => runtimeStateSchema.parse(state)).not.toThrow();
     await service.dispose();
   });
 

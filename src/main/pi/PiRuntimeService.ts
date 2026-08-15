@@ -444,15 +444,34 @@ const realPiSdkAdapter: PiSdkAdapter = {
   },
 };
 
+const MAX_CONTRACT_CONTEXT_WINDOW = 2_147_483_647;
+
+/** Providers and custom model entries can report a zero, negative, or non-finite
+ *  context window. The IPC contract requires a positive integer, so clamp the
+ *  value instead of letting one unknown model crash the event transport. */
+function sanitizeContextWindow(value: number): number {
+  const floored = Number.isFinite(value) ? Math.floor(value) : 1;
+  return Math.min(MAX_CONTRACT_CONTEXT_WINDOW, Math.max(1, floored));
+}
+
+/** Reported context usage must also satisfy the IPC contract. Drop the report
+ *  when its window is unusable so the estimate path can take over. */
+function sanitizeContextUsage(usage: RuntimeState['contextUsage']): RuntimeState['contextUsage'] {
+  if (!usage) return usage;
+  if (!Number.isFinite(usage.contextWindow) || usage.contextWindow < 1) return undefined;
+  const percent = usage.percent;
+  return { ...usage, percent: percent === null || Number.isFinite(percent) ? percent : null };
+}
+
 function toModelInfo(model: { provider: string; id: string; name: string; reasoning: boolean; contextWindow: number; input?: readonly string[]; api?: string }): ModelInfo {
   return {
-    provider: model.provider,
-    id: model.id,
-    name: model.name,
+    provider: model.provider.slice(0, 200),
+    id: model.id.slice(0, 500),
+    name: model.name.slice(0, 500),
     reasoning: model.reasoning,
-    contextWindow: model.contextWindow,
+    contextWindow: sanitizeContextWindow(model.contextWindow),
     supportsImages: model.input?.includes('image') ?? false,
-    ...(model.api ? { api: model.api } : {}),
+    ...(model.api ? { api: model.api.slice(0, 100) } : {}),
   };
 }
 
@@ -1073,9 +1092,10 @@ export class PiRuntimeService {
       }
       this.objective = objective;
     }
-    const reportedContextUsage = session?.getContextUsage?.();
+    const reportedContextUsage = sanitizeContextUsage(session?.getContextUsage?.());
     const contextUsageEstimate = this.selectedSlot?.contextUsageEstimate;
-    const contextWindow = reportedContextUsage?.contextWindow ?? session?.model?.contextWindow;
+    const contextWindow = reportedContextUsage?.contextWindow
+      ?? (session?.model ? sanitizeContextWindow(session.model.contextWindow) : undefined);
     let contextUsage: RuntimeState['contextUsage'] = reportedContextUsage;
     if (
       contextUsageEstimate !== null

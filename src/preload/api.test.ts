@@ -27,7 +27,9 @@ describe('preload desktop bridge', () => {
     const valid = [{ type: 'tool.started', toolCallId: 'tool-1', name: 'edit', input: '{}', timestamp: 1, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'src/app.ts', operation: 'edit' }] } }];
     handler({}, valid);
     expect(listener).toHaveBeenCalledWith(valid);
-    expect(() => handler({}, [{ ...valid[0], provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: '../secret', operation: 'edit' }] } }])).toThrow();
+    listener.mockClear();
+    expect(() => handler({}, [{ ...valid[0], provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: '../secret', operation: 'edit' }] } }])).not.toThrow();
+    expect(listener).not.toHaveBeenCalled();
     unsubscribe();
     expect(electron.removeListener).toHaveBeenCalledWith(ipcChannels.runtimeEvents, handler);
   });

@@ -428,7 +428,23 @@ function register(channel: string, rendererPolicy: TrustedRendererPolicy, handle
 
 export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser, automations, attestations, newWindow, rendererPolicy }: IpcServices) {
   runtime.setEventSink((events) => {
-    const batch = piEventBatchSchema.parse(events);
+    let batch: unknown;
+    try {
+      batch = piEventBatchSchema.parse(events);
+    } catch (error) {
+      // A batch that fails transport validation must never crash the main
+      // process. Tell the renderer to resynchronize and keep running.
+      logs.write('error', 'ipc', `A runtime event batch failed transport validation and was dropped: ${error instanceof Error ? error.message : String(error)}`);
+      try {
+        batch = piEventBatchSchema.parse([{
+          type: 'error',
+          error: { code: 'PI_RUNTIME_ERROR', message: 'A runtime update failed internal validation and was dropped. Refresh the session to resynchronize.', retryable: true },
+          timestamp: Date.now(),
+        }]);
+      } catch {
+        return;
+      }
+    }
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeEvents, batch);
   });
   let pendingGoalEvents: GoalMaxEvent[] = [];
@@ -437,8 +453,16 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     if (goalEventTimer) clearTimeout(goalEventTimer);
     goalEventTimer = null;
     if (pendingGoalEvents.length === 0) return;
-    const batch = goalMaxEventBatchSchema.parse(pendingGoalEvents.splice(0, 50));
-    for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeGoalMaxEvents, batch);
+    let batch: unknown;
+    try {
+      batch = goalMaxEventBatchSchema.parse(pendingGoalEvents.splice(0, 50));
+    } catch (error) {
+      logs.write('error', 'ipc', `A goal event batch failed transport validation and was dropped: ${error instanceof Error ? error.message : String(error)}`);
+      batch = null;
+    }
+    if (batch !== null) {
+      for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeGoalMaxEvents, batch);
+    }
     if (pendingGoalEvents.length > 0) {
       goalEventTimer = setTimeout(flushGoalEvents, 0);
       goalEventTimer.unref?.();
@@ -458,8 +482,16 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     if (taskEventTimer) clearTimeout(taskEventTimer);
     taskEventTimer = null;
     if (pendingTaskEvents.length === 0) return;
-    const batch = taskEventBatchSchema.parse(pendingTaskEvents.splice(0, 50));
-    for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeTaskEvents, batch);
+    let taskBatch: unknown;
+    try {
+      taskBatch = taskEventBatchSchema.parse(pendingTaskEvents.splice(0, 50));
+    } catch (error) {
+      logs.write('error', 'ipc', `A task event batch failed transport validation and was dropped: ${error instanceof Error ? error.message : String(error)}`);
+      taskBatch = null;
+    }
+    if (taskBatch !== null) {
+      for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.runtimeTaskEvents, taskBatch);
+    }
     if (pendingTaskEvents.length > 0) {
       taskEventTimer = setTimeout(flushTaskEvents, 0);
       taskEventTimer.unref?.();
