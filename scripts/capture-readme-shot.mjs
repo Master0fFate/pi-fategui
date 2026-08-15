@@ -74,7 +74,7 @@ try {
 }
 
 const application = await electron.launch({
-  args: [e2eMain, '--force-device-scale-factor=2'],
+  args: [e2eMain, '--force-device-scale-factor=1', '--window-size=1680,1050'],
   env: {
     ...process.env,
     PI_DESKTOP_E2E_PROJECT: project,
@@ -99,8 +99,8 @@ async function applyTheme(page) {
 try {
   const page = await application.firstWindow();
   await applyTheme(page);
-  await page.getByRole('heading', { name: 'What would you like Pi to do?' }).waitFor();
-  await page.locator('.action-card--primary').click();
+  await page.getByRole('heading', { name: 'Start with your AI connection' }).waitFor();
+  await page.getByRole('button', { name: /Open project/ }).first().click();
   const composer = page.getByLabel('Message Pi');
   await composer.waitFor({ state: 'visible' });
   await page.waitForFunction(() => !document.querySelector('#pi-composer')?.hasAttribute('disabled'));
