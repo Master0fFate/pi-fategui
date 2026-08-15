@@ -115,6 +115,11 @@ export const ipcChannels = {
   runtimeSetModel: 'runtime:set-model',
   runtimeSetThinking: 'runtime:set-thinking',
   runtimeSetPermission: 'runtime:set-permission',
+  runtimeProviderLoginInitialize: 'runtime:provider-login:initialize',
+  runtimeProviderLoginStart: 'runtime:provider-login:start',
+  runtimeProviderLoginRespond: 'runtime:provider-login:respond',
+  runtimeProviderLoginCancel: 'runtime:provider-login:cancel',
+  runtimeProviderLogout: 'runtime:provider-logout',
   runtimeMutateQueue: 'runtime:mutate-queue',
   runtimeGoalMaxGet: 'runtime:goalmax:get',
   runtimeGoalMaxCreate: 'runtime:goalmax:create',
@@ -802,6 +807,35 @@ export const extensionUiStateSchema = z.object({
   title: z.string().min(1).max(300).nullable(),
 }).strict();
 
+const providerLoginMethodSchema = z.enum(['api_key', 'oauth']);
+const providerLoginOptionSchema = z.object({ id: z.string().min(1).max(500), label: z.string().min(1).max(500), description: z.string().max(2_000).optional() }).strict();
+export const providerLoginProviderSchema = z.object({
+  id: z.string().min(1).max(200),
+  name: z.string().min(1).max(300),
+  methods: z.array(providerLoginMethodSchema).min(1).max(2),
+  configured: z.boolean(),
+}).strict();
+export const providerLoginPromptSchema = z.object({
+  id: z.string().uuid(),
+  type: z.enum(['text', 'secret', 'select', 'manual_code']),
+  message: z.string().min(1).max(2_000),
+  placeholder: z.string().max(500).optional(),
+  options: z.array(providerLoginOptionSchema).max(100).optional(),
+}).strict();
+export const providerLoginStateSchema = z.object({
+  status: z.enum(['idle', 'working', 'awaiting-input', 'error']),
+  providers: z.array(providerLoginProviderSchema).max(500),
+  providerId: z.string().min(1).max(200).nullable(),
+  providerName: z.string().min(1).max(300).nullable(),
+  method: providerLoginMethodSchema.nullable(),
+  prompt: providerLoginPromptSchema.nullable(),
+  message: z.string().max(2_000).nullable(),
+  deviceCode: z.object({ userCode: z.string().min(1).max(500), verificationUri: z.string().url().max(2_000), expiresInSeconds: z.number().int().positive().max(86_400).optional() }).strict().nullable(),
+}).strict();
+export const providerLoginStartInputSchema = z.object({ providerId: z.string().trim().min(1).max(200), method: providerLoginMethodSchema }).strict();
+export const providerLoginRespondInputSchema = z.object({ promptId: z.string().uuid(), value: z.string().max(20_000) }).strict();
+export const providerLogoutInputSchema = z.object({ providerId: z.string().trim().min(1).max(200) }).strict();
+
 export const runtimeStateSchema = z.object({
   status: z.enum(['disconnected', 'initializing', 'ready', 'auth-required', 'error']),
   project: projectStateSchema.nullable(),
@@ -816,6 +850,7 @@ export const runtimeStateSchema = z.object({
   thinkingLevel: thinkingLevelSchema,
   pendingThinkingLevel: thinkingLevelSchema.nullable().optional(),
   permissionLevel: permissionLevelSchema.optional(),
+  providerLogin: providerLoginStateSchema.optional(),
   messages: z.array(runtimeMessageSchema),
   tools: z.array(runtimeToolSchema).optional(),
   commands: z.array(slashCommandSchema).max(5_000).optional(),
@@ -918,7 +953,7 @@ export const promptInputSchema = z.object({
   sessionReferences: promptSessionReferencesSchema.optional(),
 }).strict();
 export const promptAcceptanceSchema = z.object({ accepted: z.boolean(), runId: z.string().min(1) });
-export const promptOptimizationInputSchema = z.object({ text: z.string().trim().min(1).max(200_000) }).strict();
+export const promptOptimizationInputSchema = z.object({ text: z.string().trim().min(1).max(200_000), advanced: z.boolean().default(false) }).strict();
 export const promptOptimizationResultSchema = z.object({ text: z.string().trim().min(1).max(200_000) }).strict();
 export const abortResultSchema = z.object({ aborted: z.boolean() });
 const subagentControlTargetSchema = z.string().trim().min(1).max(100).refine((target) => !/[\u0000-\u001f\u007f]/u.test(target), 'Subagent targets cannot contain control characters.');
@@ -1113,6 +1148,7 @@ export const appSettingsSchema = z.object({
   musicPlayerEnabled: z.boolean().default(false),
   sendMessageWithModifier: z.boolean().default(false),
   compactSessions: z.boolean().default(false),
+  advancedPromptImprovement: z.boolean().default(false),
   themeId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,47}$/).default('catppuccin-mocha'),
   interfaceFont: interfaceFontSchema.default('noto-sans'),
   codeFont: codeFontSchema.default('jetbrains-mono'),
@@ -1174,6 +1210,10 @@ export type AppInfo = z.infer<typeof appInfoSchema>;
 export type AppError = z.infer<typeof appErrorSchema>;
 export type ThinkingLevel = z.infer<typeof thinkingLevelSchema>;
 export type PermissionLevel = z.infer<typeof permissionLevelSchema>;
+export type ProviderLoginState = z.infer<typeof providerLoginStateSchema>;
+export type ProviderLoginProvider = z.infer<typeof providerLoginProviderSchema>;
+export type ProviderLoginStartInput = z.infer<typeof providerLoginStartInputSchema>;
+export type ProviderLoginRespondInput = z.infer<typeof providerLoginRespondInputSchema>;
 export type InterfaceFont = z.infer<typeof interfaceFontSchema>;
 export type CodeFont = z.infer<typeof codeFontSchema>;
 export type SpeechModelId = z.infer<typeof speechModelIdSchema>;
@@ -1230,6 +1270,7 @@ export type PromptInput = z.infer<typeof promptInputSchema>;
 export type PromptAcceptance = z.infer<typeof promptAcceptanceSchema>;
 export type PromptOptimizationInput = z.infer<typeof promptOptimizationInputSchema>;
 export type PromptOptimizationResult = z.infer<typeof promptOptimizationResultSchema>;
+export type PromptOptimizationOptions = { advanced?: boolean };
 export type SubagentControlInput = z.infer<typeof subagentControlInputSchema>;
 export type QueuedMessage = z.infer<typeof queuedMessageSchema>;
 export type QueueMutationInput = z.infer<typeof queueMutationInputSchema>;
@@ -1315,13 +1356,18 @@ export interface PiDesktopApi {
   prepareAutomationSession: (id: string) => Promise<AutomationSessionPreparationResult>;
   getRuntimeState: () => Promise<RuntimeState>;
   prompt: (input: PromptInput) => Promise<PromptAcceptance>;
-  optimizePrompt: (text: string) => Promise<PromptOptimizationResult>;
+  optimizePrompt: (text: string, options?: PromptOptimizationOptions) => Promise<PromptOptimizationResult>;
   abort: () => Promise<{ aborted: boolean }>;
   controlSubagent: (input: SubagentControlInput) => Promise<RuntimeState>;
   controlAgentTeam: (input: AgentTeamControlInput) => Promise<RuntimeState>;
   setModel: (provider: string, id: string) => Promise<RuntimeState>;
   setThinkingLevel: (level: ThinkingLevel) => Promise<RuntimeState>;
   setPermissionLevel: (level: PermissionLevel) => Promise<RuntimeState>;
+  initializeProviderLogin: () => Promise<RuntimeState>;
+  startProviderLogin: (input: ProviderLoginStartInput) => Promise<RuntimeState>;
+  respondProviderLogin: (input: ProviderLoginRespondInput) => Promise<RuntimeState>;
+  cancelProviderLogin: () => Promise<RuntimeState>;
+  logoutProvider: (providerId: string) => Promise<RuntimeState>;
   mutateQueuedMessage: (input: QueueMutationInput) => Promise<QueueMutationResult>;
   getGoalMax: () => Promise<GoalMaxState | null>;
   createGoalMax: (input: GoalMaxCreateInput) => Promise<GoalMaxState>;

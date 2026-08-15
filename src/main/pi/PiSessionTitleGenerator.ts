@@ -3,7 +3,10 @@ import { messageText } from './PiEventNormalizer';
 
 const TITLE_LIMIT = 50;
 const PROMPT_LIMIT = 8_000;
-const TITLE_TIMEOUT_MS = 15_000;
+const TITLE_TIMEOUT_MS = 30_000;
+// Cap, not target: models that cannot disable thinking spend output tokens on
+// reasoning before the title, so leave room for reasoning plus the title.
+const TITLE_MAX_TOKENS = 512;
 
 export interface SessionTitleGenerator {
   generate(prompt: string, modelRuntime: ModelRuntime, session: AgentSession): Promise<string | null>;
@@ -35,11 +38,19 @@ export class PiSessionTitleGenerator implements SessionTitleGenerator {
         systemPrompt: 'Create a concise sidebar title for this coding session. Return only the title: one line, no quotes, no markdown, at most 50 characters. Describe the concrete task rather than repeating filler words.',
         messages: [{ role: 'user', content: prompt.slice(0, PROMPT_LIMIT), timestamp: Date.now() }],
       }, {
-        maxTokens: 40,
+        // No `reasoning` option: its absence is the adapter's strongest
+        // "thinking disabled" signal for providers that honor it. Models that
+        // still think (custom proxies, entries without reasoning flags) fit
+        // inside TITLE_MAX_TOKENS because it is a cap, not a target.
+        maxTokens: TITLE_MAX_TOKENS,
         signal: controller.signal,
       });
       if (response.stopReason === 'error' || response.stopReason === 'aborted') return null;
-      return sanitizeGeneratedSessionTitle(messageText(response));
+      // A length stop can cut the response inside the thinking phase with no
+      // text emitted at all; an empty title falls back to the first message.
+      const raw = messageText(response);
+      if (!raw.trim()) return null;
+      return sanitizeGeneratedSessionTitle(raw);
     } catch {
       return null;
     } finally {

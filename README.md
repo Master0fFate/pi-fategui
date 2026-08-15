@@ -32,6 +32,17 @@ Fate UI is a local-first **Electron desktop** workspace for the real Pi coding a
 
 Fate UI is an independent community project and is **not** an official Pi distribution.
 
+## SDK-only runtime
+
+Fate UI embeds `@earendil-works/pi-coding-agent` in its Electron main process. It does **not** start, shell out to, or require the `pi` terminal program. Installing Fate UI is enough to run the agent runtime.
+
+| Data | Owner and location |
+| --- | --- |
+| Provider credentials and model configuration | Fate UI: `~/.pi/fateGUI/` |
+| Pi sessions, settings, MCP configuration, skills, and extensions | Shared Pi resources: `~/.pi/agent/` and trusted project resources |
+
+On the first Fate UI run only, existing Pi `auth.json` and `models.json` are copied into the Fate UI provider store. Later Pi Terminal changes do not silently alter Fate UI credentials or models.
+
 > [!IMPORTANT]
 > Fate UI is beta software (`0.x` releases). Expect rough edges, and **back up important work before relying on it.** Public beta installers are currently unsigned — verify downloads against `SHA256SUMS` before installation.
 
@@ -54,15 +65,15 @@ chmod +x Fate-UI-<version>-Linux-x64.AppImage && ./Fate-UI-<version>-Linux-x64.A
 
 Building an installer from source is covered in [Development and release](docs/development.md).
 
-### 2. Authenticate Pi
+### 2. Connect an AI provider
 
-Fate UI reuses Pi's existing provider configuration, OAuth sessions, supported environment credentials, and `~/.pi/agent/auth.json`. Raw API keys are never exposed to renderer state.
+Fate UI uses its own provider credentials and model configuration under `~/.pi/fateGUI/`. On its first run only, it copies existing `~/.pi/agent/auth.json` and `models.json` when present. It does not copy or alter Pi sessions, settings, MCP configuration, skills, or extensions. Raw API keys are never exposed to renderer state.
 
-1. Install the [Pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) if you do not already use it.
-2. Start Pi in a terminal, run `pi`, then `/login`, and authenticate a supported provider.
-3. Open or restart Fate UI.
+1. Open Fate UI and select **Connect your AI**. You can also use `/login` after opening a project.
+2. Choose a provider, then complete its OAuth or API-key flow.
+3. The available model list refreshes automatically. Select a model, open a trusted project, and start prompting.
 
-Runtime diagnostics load without credentials, but prompting is unavailable until Pi reports an authenticated model.
+Fate UI bundles and runs the Pi SDK directly. You do not need a separate `pi` installation or a running Pi terminal process. Fate UI keeps compatibility with Pi's shared session, settings, MCP, skill, and extension layout through the SDK; this is resource compatibility, not a terminal dependency. Existing provider credentials are imported once on first run; supported environment credentials remain available through the SDK. Runtime diagnostics load without credentials, but prompting is unavailable until Pi reports an authenticated model.
 
 ### 3. Launch, trust, and prompt
 
@@ -71,7 +82,7 @@ cd /path/to/project
 fate                       # or: fate /path/to/project
 ```
 
-Fate UI opens the canonical directory and shows its trust prompt — choose **Trust**, **Open without Pi**, or **Cancel**. Fate UI is **single-instance by default**: a later `fate /path/to/project` launch forwards that folder to the already-running app (opening or focusing it) and exits instead of starting a second process. For multiple synced views of one session, use **File → New Window** (`Ctrl/Cmd+Shift+N`); it reuses the same live runtime. To start a fully isolated second process with its own persistent Chromium profile slot, add `--new-instance` (or set `FATE_NEW_INSTANCE=1`). Pi provider auth and the session catalog stay shared unless separately configured. See [Sessions and processes](docs/sessions-and-processes.md). Then type your first prompt.
+Fate UI opens the canonical directory and shows its trust prompt — choose **Trust**, **Open without Pi**, or **Cancel**. Fate UI is **single-instance by default**: a later `fate /path/to/project` launch forwards that folder to the already-running app (opening or focusing it) and exits instead of starting a second process. For multiple synced views of one session, use **File → New Window** (`Ctrl/Cmd+Shift+N`); it reuses the same live runtime. To start a fully isolated second process with its own persistent Chromium profile slot, add `--new-instance` (or set `FATE_NEW_INSTANCE=1`). Pi sessions stay shared; Fate UI provider auth and model configuration stay isolated. See [Sessions and processes](docs/sessions-and-processes.md). Then type your first prompt.
 
 ## Capabilities
 
@@ -89,7 +100,7 @@ Fate UI opens the canonical directory and shows its trust prompt — choose **Tr
 - **Unsigned installers.** Public beta installers are unsigned; Windows SmartScreen or macOS Gatekeeper may warn. Verify every download against `SHA256SUMS` before installation.
 - **Permission model.** Fate UI starts Pi in project-confined **Edit files** mode. **Read only** removes mutation tools. **Full access** is intentionally unsandboxed, requires explicit confirmation, and lets Pi run shell commands and reach host paths with your account's permissions. Opening another project resets the active permission level.
 - **Explicit trust.** Every project gets a **Trust / Open without Pi / Cancel** choice. The manual terminal stays visibly separate from Pi-generated tool activity.
-- **Credentials stay local.** Pi authentication is reused; raw API keys are never stored or displayed in renderer state.
+- **Credentials stay local.** Fate UI imports Pi credentials only on its first run, then keeps its provider store separate. Raw API keys are never displayed in renderer state.
 
 Full trust, boundary, and hardening detail lives in [Architecture and security](docs/architecture.md) and [SECURITY.md](SECURITY.md).
 

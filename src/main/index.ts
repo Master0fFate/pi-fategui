@@ -1,5 +1,7 @@
 import { app, BrowserWindow, dialog, protocol, session, shell, systemPreferences } from 'electron';
+import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { runProductionSmoke } from './bootstrap/productionSmoke';
 import { ShutdownCoordinator } from './bootstrap/shutdown';
@@ -13,10 +15,11 @@ import { parseLaunchProjectPath, hasNewInstanceFlag } from './launchProject';
 import { acquireInstanceProfile } from './instanceProfile';
 import { AppLogService } from './logging/AppLogService';
 import { AutomationRepository } from './automations/AutomationRepository';
-import { MusicService, PublicHttpsProxy } from './music/MusicService';
+import { MEDIA_SCHEME, MusicService, PublicHttpsProxy } from './music/MusicService';
 import { BrowserRuntimeBridge } from './pi/BrowserRuntimeBridge';
 import { MultiProjectPiRuntime } from './pi/MultiProjectPiRuntime';
 import { PiRuntimeService } from './pi/PiRuntimeService';
+import { prepareFateProviderStorage } from './pi/FateProviderStorage';
 import { SessionPermissionStore } from './pi/SessionPermissionStore';
 import { GoalMaxRepository } from './pi/goalmaxxing/GoalMaxRepository';
 import { MutationAttestationLedger } from './pi/provenance/MutationAttestationLedger';
@@ -33,13 +36,18 @@ import { createProductionUpdateInstallerAdapters, createUpdateInstaller } from '
 import { WindowStateService } from './windowState';
 import { LaunchDispatcher } from './windows/launchDispatcher';
 import { createAppWindowFactory, rememberWindowPlacement } from './windows/appWindows';
-import { existsSync, readdirSync } from 'node:fs';
 import { appCommandSchema, ipcChannels } from '../shared/contracts/ipc';
 import { browserEventBatchSchema } from '../shared/contracts/browser';
 
 protocol.registerSchemesAsPrivileged([{
   scheme: LOCAL_PAGE_SCHEME,
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+}, {
+  // Streams prefetched music bytes from the main-process cache to the player.
+  // It must be privileged so <audio> can stream and range-seek it directly
+  // without routing through the network stack or the renderer proxy.
+  scheme: MEDIA_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
 }]);
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -55,8 +63,8 @@ try {
 // Fate UI is single-instance by default: a later `fate <folder>` launch hands
 // its project path to the already-running app and exits. Set FATE_NEW_INSTANCE=1
 // (or pass --new-instance) for a fully isolated second process with its own
-// persistent Chromium profile slot (Pi provider auth and the session catalog
-// stay shared unless separately configured).
+// persistent Chromium profile slot. Pi sessions stay shared; Fate UI provider
+// credentials and model configuration stay in its own SDK-owned store.
 const newInstanceRequested = process.env.FATE_NEW_INSTANCE === '1' || hasNewInstanceFlag(process.argv);
 const instanceProfile = acquireInstanceProfile(app, newInstanceRequested ? 'multi' : 'single');
 // True for the running app (the primary single-instance lock holder, or any
@@ -234,6 +242,10 @@ if (instanceProfile.mode === 'single' && instancePrimaryApp) {
 
 app.whenReady().then(async () => {
   if (!instancePrimaryApp) return;
+  const providerStorage = await prepareFateProviderStorage();
+  if (providerStorage.imported.length > 0) {
+    logs.write('info', 'providers', `Imported Pi provider ${providerStorage.imported.join(' and ')} into Fate UI storage.`);
+  }
   const proxyUrl = await rendererNetworkProxy.start();
   const browserHistory = new BrowserHistoryRepository();
   browserHost = new BrowserHost({
@@ -249,6 +261,22 @@ app.whenReady().then(async () => {
     },
   });
   const developmentBypass = developmentUrl ? new URL(developmentUrl).host : null;
+  session.defaultSession.protocol.handle(MEDIA_SCHEME, (request) => {
+    const media = music.openMediaRequest(request.method, request.url, request.headers.get('range'));
+    if (!('file' in media)) return new Response('Media unavailable', { status: media.status });
+    const headers = new Headers({
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'no-store',
+      'Content-Length': String(media.end - media.start + 1),
+      'Content-Type': media.contentType,
+      'X-Content-Type-Options': 'nosniff',
+    });
+    if (media.status === 206) headers.set('Content-Range', `bytes ${media.start}-${media.end}/${media.totalBytes}`);
+    const body = media.headOnly
+      ? null
+      : Readable.toWeb(createReadStream(media.file, { start: media.start, end: media.end })) as ReadableStream<Uint8Array>;
+    return new Response(body, { status: media.status, headers });
+  });
   await session.defaultSession.setProxy({
     mode: 'fixed_servers',
     proxyRules: proxyUrl,

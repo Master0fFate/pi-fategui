@@ -1,4 +1,4 @@
-import { FolderOpen, FolderSearch, GitPullRequest, Globe2, PanelRightClose, PanelRightOpen, SearchCode, TerminalSquare } from 'lucide-react';
+import { FolderOpen, FolderSearch, GitPullRequest, Globe2, KeyRound, PanelRightClose, PanelRightOpen, SearchCode, TerminalSquare } from 'lucide-react';
 import { lazy, Suspense, useState } from 'react';
 import { ResizeHandle } from '../../components/ResizeHandle';
 import { IconButton } from '../../components/IconButton';
@@ -48,6 +48,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
   const [revealError, setRevealError] = useState<string | null>(null);
   const [projectPending, setProjectPending] = useState(false);
   const [projectError, setProjectError] = useState<string | null>(null);
+  const [connectRequest, setConnectRequest] = useState(0);
 
   const openProject = (intent?: WelcomeIntent) => {
     if (!('piDesktop' in window) || projectPending) return;
@@ -101,11 +102,14 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
         <>
           <div className="welcome-copy">
             <div className="welcome-symbol" aria-hidden="true">ƒ</div>
-            <h1 id="welcome-title">What would you like Pi to do?</h1>
-            <p>Open a repository, then inspect, edit, and verify with Pi.</p>
+            <h1 id="welcome-title">Start with your AI connection</h1>
+            <p>Connect a provider, then open a repository to inspect, edit, and verify with Pi.</p>
           </div>
           <div className="action-grid">
-            <button className="action-card action-card--primary" type="button" disabled={projectPending} onClick={() => openProject()}>
+            <button className="action-card action-card--primary" type="button" onClick={() => setConnectRequest((request) => request + 1)}>
+              <span className="action-icon"><KeyRound size={19} /></span><strong>Connect your AI</strong><small>Sign in with OAuth or add an API key. No Pi terminal is needed.</small>
+            </button>
+            <button className="action-card" type="button" disabled={projectPending} onClick={() => openProject()}>
               <span className="action-icon"><FolderOpen size={19} /></span><strong>{projectPending ? 'Opening project…' : 'Open project'}</strong><small>Choose a local repository and establish its trust boundary.</small>
             </button>
             <button className="action-card" type="button" disabled={projectPending} onClick={() => openProject('inspect')}><span className="action-icon"><SearchCode size={19} /></span><strong>Inspect codebase</strong><small>Trace structure, symbols, dependencies, and behavior with Pi.</small></button>
@@ -113,7 +117,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
           </div>
         </>
       ) : entryCount > 0 ? <ConversationTimeline /> : <div className="conversation conversation--empty" aria-hidden="true" />}
-      <Composer onOpenProject={() => openProject()} />
+      <Composer onOpenProject={() => openProject()} connectRequest={connectRequest} />
     </section>
   );
 

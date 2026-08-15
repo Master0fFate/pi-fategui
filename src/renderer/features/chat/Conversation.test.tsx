@@ -53,7 +53,7 @@ const activeGoalFixture = (status: GoalMaxState['status'] = 'active'): GoalMaxSt
 const reset = () => {
   useRuntimeStore.getState().setRuntime({ ...ready(), sessionId: null });
   useRuntimeStore.getState().setRuntime(ready());
-  useUiStore.setState({ sendMessageWithModifier: false, composerDraftRequest: null, toast: null, goalEditorOpen: false, selectedAgent: null });
+  useUiStore.setState({ sendMessageWithModifier: false, advancedPromptImprovement: false, composerDraftRequest: null, toast: null, goalEditorOpen: false, selectedAgent: null });
   useGoalMaxStore.setState({ projectPath: '/project', sessionId: 's1', goal: null, loading: false, selectionGeneration: 1 });
   useBrowserStore.getState().reset();
 };
@@ -499,7 +499,7 @@ describe('conversation components', () => {
     await user.type(screen.getByLabelText('Message Pi'), 'make it better');
     await user.click(screen.getByRole('button', { name: 'Improve prompt' }));
 
-    expect(optimizePrompt).toHaveBeenCalledWith('make it better');
+    expect(optimizePrompt).toHaveBeenCalledWith('make it better', { advanced: false });
     expect(screen.getByRole('button', { name: 'Improving prompt' })).toHaveAttribute('aria-busy', 'true');
     expect(screen.getByLabelText('Message Pi')).toBeDisabled();
 
@@ -507,6 +507,23 @@ describe('conversation components', () => {
 
     await waitFor(() => expect(screen.getByLabelText('Message Pi')).toHaveValue('Improve this draft without changing its intent.'));
     expect(screen.getByRole('button', { name: 'Improve prompt' })).toHaveAttribute('aria-busy', 'false');
+  });
+
+  it('turns the improve button accent-colored and requests codebase-grounded improvement when advanced mode is enabled', async () => {
+    const optimizePrompt = vi.fn(async () => ({ text: 'Grounded rewrite.' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { optimizePrompt } as unknown as PiDesktopApi });
+    act(() => useUiStore.setState({ advancedPromptImprovement: true }));
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    const button = screen.getByRole('button', { name: 'Improve prompt' });
+    expect(button).toHaveAttribute('data-advanced', 'true');
+
+    await user.type(screen.getByLabelText('Message Pi'), 'change the title to blue');
+    await user.click(button);
+
+    expect(optimizePrompt).toHaveBeenCalledWith('change the title to blue', { advanced: true });
+    act(() => useUiStore.setState({ advancedPromptImprovement: false }));
   });
 
   it('shows actual Pi context usage beside the send action', () => {

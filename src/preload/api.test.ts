@@ -52,12 +52,26 @@ describe('preload desktop bridge', () => {
     expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.clipboardWriteText, { text: 'Copied response' });
   });
 
+  it('loads provider sign-in choices through the pathless typed bridge', async () => {
+    const state = {
+      status: 'disconnected', project: null, sessionId: null, sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], error: null,
+      providerLogin: { status: 'idle', providers: [], providerId: null, providerName: null, method: null, prompt: null, message: null, deviceCode: null },
+    };
+    electron.invoke.mockResolvedValueOnce(state);
+
+    await expect(piDesktopApi.initializeProviderLogin()).resolves.toMatchObject({ status: 'disconnected', providerLogin: { status: 'idle' } });
+    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.runtimeProviderLoginInitialize, {});
+  });
+
   it('improves a draft through the validated runtime bridge', async () => {
-    electron.invoke.mockResolvedValueOnce({ text: 'Write a focused test plan.' });
+    electron.invoke.mockResolvedValue({ text: 'Write a focused test plan.' });
 
     await expect(piDesktopApi.optimizePrompt('  Write tests  ')).resolves.toEqual({ text: 'Write a focused test plan.' });
+    await expect(piDesktopApi.optimizePrompt('Write tests', { advanced: true })).resolves.toEqual({ text: 'Write a focused test plan.' });
 
-    expect(electron.invoke).toHaveBeenCalledWith(ipcChannels.runtimeOptimizePrompt, { text: 'Write tests' });
+    expect(electron.invoke).toHaveBeenNthCalledWith(1, ipcChannels.runtimeOptimizePrompt, { text: 'Write tests', advanced: false });
+    expect(electron.invoke).toHaveBeenNthCalledWith(2, ipcChannels.runtimeOptimizePrompt, { text: 'Write tests', advanced: true });
   });
 
   it('routes link context actions through the validated browser bridge', async () => {

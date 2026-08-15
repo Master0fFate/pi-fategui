@@ -21,6 +21,7 @@ const defaults: AppSettings = {
   musicPlayerEnabled: false,
   sendMessageWithModifier: false,
   compactSessions: false,
+  advancedPromptImprovement: false,
   themeId: 'catppuccin-mocha',
   interfaceFont: 'noto-sans',
   codeFont: 'jetbrains-mono',

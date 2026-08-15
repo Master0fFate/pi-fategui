@@ -81,6 +81,9 @@ import {
   subagentControlInputSchema,
   setModelInputSchema,
   setPermissionInputSchema,
+  providerLoginStartInputSchema,
+  providerLoginRespondInputSchema,
+  providerLogoutInputSchema,
   setThinkingInputSchema,
   terminalAckInputSchema,
   terminalCloseInputSchema,
@@ -104,8 +107,11 @@ import {
   type PiEvent,
   type TerminalEvent,
   type PromptInput,
+  type PromptOptimizationOptions,
   type QueueMutationInput,
   type PermissionLevel,
+  type ProviderLoginStartInput,
+  type ProviderLoginRespondInput,
   type SpeechDownloadProgress,
   type SpeechHotkeyStatus,
   type SpeechModelId,
@@ -403,8 +409,8 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimePrompt, promptInputSchema.parse(input));
     return promptAcceptanceSchema.parse(result);
   },
-  async optimizePrompt(text: string) {
-    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeOptimizePrompt, promptOptimizationInputSchema.parse({ text }));
+  async optimizePrompt(text: string, options?: PromptOptimizationOptions) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeOptimizePrompt, promptOptimizationInputSchema.parse({ text, advanced: options?.advanced ?? false }));
     return promptOptimizationResultSchema.parse(result);
   },
   async abort() {
@@ -429,6 +435,26 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   },
   async setPermissionLevel(level: PermissionLevel) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeSetPermission, setPermissionInputSchema.parse({ level }));
+    return runtimeStateSchema.parse(result);
+  },
+  async initializeProviderLogin() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeProviderLoginInitialize, emptyInputSchema.parse({}));
+    return runtimeStateSchema.parse(result);
+  },
+  async startProviderLogin(input: ProviderLoginStartInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeProviderLoginStart, providerLoginStartInputSchema.parse(input));
+    return runtimeStateSchema.parse(result);
+  },
+  async respondProviderLogin(input: ProviderLoginRespondInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeProviderLoginRespond, providerLoginRespondInputSchema.parse(input));
+    return runtimeStateSchema.parse(result);
+  },
+  async cancelProviderLogin() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeProviderLoginCancel, emptyInputSchema.parse({}));
+    return runtimeStateSchema.parse(result);
+  },
+  async logoutProvider(providerId: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeProviderLogout, providerLogoutInputSchema.parse({ providerId }));
     return runtimeStateSchema.parse(result);
   },
   async mutateQueuedMessage(input: QueueMutationInput) {

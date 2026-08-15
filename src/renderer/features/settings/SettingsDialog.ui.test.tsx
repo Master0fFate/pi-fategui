@@ -20,6 +20,7 @@ const settings: AppSettings = {
   musicPlayerEnabled: false,
   sendMessageWithModifier: false,
   compactSessions: false,
+  advancedPromptImprovement: false,
   themeId: 'catppuccin-mocha',
   interfaceFont: 'noto-sans',
   codeFont: 'jetbrains-mono',
@@ -176,7 +177,7 @@ describe('SettingsDialog feedback', () => {
     expect(screen.getByRole('combobox', { name: 'Custom image provider' })).toHaveTextContent('Mixed Images');
     expect(screen.getByText('Choose an image model ID')).toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: 'Image model ID' }), 'deployed-image');
-    expect(screen.getByText('Ready through Pi')).toBeInTheDocument();
+    expect(screen.getByText('Ready through Fate UI')).toBeInTheDocument();
   });
 
   it('configures a dedicated Gemini image route without exposing credential inputs', async () => {
@@ -192,7 +193,7 @@ describe('SettingsDialog feedback', () => {
     expect(screen.getByRole('combobox', { name: 'Image generation provider' })).toHaveTextContent('Google Gemini');
     expect(screen.getByRole('combobox', { name: 'Image generation model' })).toHaveTextContent('Nano Banana 2');
     expect(screen.getByText('generativelanguage.googleapis.com/v1beta/interactions')).toBeInTheDocument();
-    expect(screen.getByText(/Fate UI never stores or displays the credential/)).toBeInTheDocument();
+    expect(screen.getByText(/Fate UI never displays the credential/)).toBeInTheDocument();
     expect(screen.queryByLabelText(/API key/iu)).not.toBeInTheDocument();
   });
 
@@ -261,6 +262,21 @@ describe('SettingsDialog feedback', () => {
 
     expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({ sendMessageWithModifier: true }));
     await waitFor(() => expect(useUiStore.getState().sendMessageWithModifier).toBe(true));
+  });
+
+  it('persists advanced improve-prompt mode from the workspace settings', async () => {
+    const setSettings = vi.fn(async (value: AppSettings) => value);
+    installBridge(setSettings);
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+
+    await user.click(await screen.findByRole('tab', { name: /Workspace/ }));
+    await user.click(screen.getByRole('checkbox', { name: /Advanced improve prompt/ }));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({ advancedPromptImprovement: true }));
+    await waitFor(() => expect(useUiStore.getState().advancedPromptImprovement).toBe(true));
+    useUiStore.setState({ advancedPromptImprovement: false });
   });
 
   it('selects and downloads one of the three local voice power tiers', async () => {

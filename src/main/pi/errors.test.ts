@@ -5,7 +5,7 @@ describe('normalizeError', () => {
   it('provides an honest authentication action', () => {
     expect(normalizeError(new Error('No auth configured for model'))).toMatchObject({
       code: 'AUTH_REQUIRED', retryable: true,
-      actionable: expect.stringContaining('/login'),
+      actionable: expect.stringContaining('Connect your AI'),
     });
   });
 

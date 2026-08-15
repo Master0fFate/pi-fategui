@@ -83,6 +83,9 @@ import {
   subagentControlInputSchema,
   setModelInputSchema,
   setPermissionInputSchema,
+  providerLoginStartInputSchema,
+  providerLoginRespondInputSchema,
+  providerLogoutInputSchema,
   setThinkingInputSchema,
   terminalAckInputSchema,
   terminalCloseInputSchema,
@@ -848,9 +851,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     const accepted = await runtime.prompt({ ...parsed, ...(sessionReferences ? { sessionReferences } : {}) });
     return promptAcceptanceSchema.parse(accepted);
   }));
-  handle(ipcChannels.runtimeOptimizePrompt, async (_event, input) => runRuntimeMutation('improving a prompt', async () => (
-    promptOptimizationResultSchema.parse(await runtime.optimizePrompt(promptOptimizationInputSchema.parse(input).text))
-  )));
+  handle(ipcChannels.runtimeOptimizePrompt, async (_event, input) => runRuntimeMutation('improving a prompt', async () => {
+    const parsed = promptOptimizationInputSchema.parse(input);
+    return promptOptimizationResultSchema.parse(await runtime.optimizePrompt(parsed.text, parsed.advanced));
+  }));
   handle(ipcChannels.runtimeAbort, async (_event, input) => {
     emptyInputSchema.parse(input);
     return abortResultSchema.parse(await runtime.abort());
@@ -879,6 +883,23 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
       return runtimeStateSchema.parse(state);
     });
   });
+  handle(ipcChannels.runtimeProviderLoginInitialize, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    return runRuntimeMutation('loading provider sign-in options', async () => runtimeStateSchema.parse(await runtime.initializeProviderLogin()));
+  });
+  handle(ipcChannels.runtimeProviderLoginStart, async (_event, input) => runRuntimeMutation('starting provider sign-in', async () => (
+    runtimeStateSchema.parse(await runtime.startProviderLogin(providerLoginStartInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.runtimeProviderLoginRespond, async (_event, input) => runRuntimeMutation('continuing provider sign-in', () => (
+    runtimeStateSchema.parse(runtime.respondProviderLogin(providerLoginRespondInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.runtimeProviderLoginCancel, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    return runRuntimeMutation('cancelling provider sign-in', () => runtimeStateSchema.parse(runtime.cancelProviderLogin()));
+  });
+  handle(ipcChannels.runtimeProviderLogout, async (_event, input) => runRuntimeMutation('signing out of a provider', async () => (
+    runtimeStateSchema.parse(await runtime.logoutProvider(providerLogoutInputSchema.parse(input).providerId))
+  )));
   handle(ipcChannels.runtimeMutateQueue, async (_event, input) => runRuntimeMutation('editing queued messages', async () => (
     queueMutationResultSchema.parse(await runtime.mutateQueuedMessage(queueMutationInputSchema.parse(input)))
   )));

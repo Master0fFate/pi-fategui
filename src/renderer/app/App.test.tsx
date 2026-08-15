@@ -55,7 +55,7 @@ describe('first-launch shell', () => {
 
   it('renders honest first-launch navigation and inspector tabs', () => {
     render(<App />);
-    expect(screen.getByRole('heading', { name: 'What would you like Pi to do?' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Start with your AI connection' })).toBeInTheDocument();
     expect(screen.getByText('No sessions yet')).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Inspector destinations' })).toBeInTheDocument();
     expect(['Work', 'Run', 'System'].map((name) => screen.getByRole('button', { name }).textContent)).toEqual(['Work', 'Run', 'System']);
@@ -92,27 +92,42 @@ describe('first-launch shell', () => {
     expect(useUiStore.getState().browserOpen).toBe(true);
   });
 
-  it('routes every first-launch action through project selection', async () => {
+  it('keeps project actions separate from provider connection on first launch', async () => {
     const user = userEvent.setup();
     const runtime = useRuntimeStore.getState().runtime;
     const selectProject = vi.fn(async () => runtime);
+    const initializeProviderLogin = vi.fn(async () => ({
+      ...runtime,
+      providerLogin: {
+        status: 'idle' as const, providerId: null, providerName: null, method: null, prompt: null, message: null, deviceCode: null,
+        providers: [{ id: 'test', name: 'Test provider', methods: ['api_key'] as const, configured: false }],
+      },
+    }));
     Object.defineProperty(window, 'piDesktop', {
       configurable: true,
       value: {
         getRuntimeState: vi.fn(async () => runtime),
         onEvents: vi.fn(() => () => undefined),
         selectProject,
+        initializeProviderLogin,
       } as unknown as PiDesktopApi,
     });
     const { container } = render(<App />);
 
     const actionCards = [...container.querySelectorAll<HTMLButtonElement>('.action-card')];
     expect(actionCards.map((card) => card.textContent)).toEqual([
+      expect.stringContaining('Connect your AI'),
       expect.stringContaining('Open project'),
       expect.stringContaining('Inspect codebase'),
       expect.stringContaining('Ship a change'),
     ]);
-    for (const [index, card] of actionCards.entries()) {
+    await user.click(actionCards[0]!);
+    await waitFor(() => expect(initializeProviderLogin).toHaveBeenCalledOnce());
+    expect(selectProject).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Connect a provider' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Connect a provider' })).not.toBeInTheDocument());
+    for (const [index, card] of actionCards.slice(1).entries()) {
       await user.click(card);
       await waitFor(() => expect(selectProject).toHaveBeenCalledTimes(index + 1));
     }
@@ -169,7 +184,7 @@ describe('first-launch shell', () => {
     const { container } = render(<App />);
 
     expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument();
-    await user.click(container.querySelector<HTMLButtonElement>('.action-card--primary')!);
+    await user.click(container.querySelectorAll<HTMLButtonElement>('.action-card')[1]!);
 
     await waitFor(() => expect(selectProject).toHaveBeenCalledOnce());
     await waitFor(() => expect(useUiStore.getState().sidebarCollapsed).toBe(false));

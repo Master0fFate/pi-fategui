@@ -45,6 +45,10 @@ function formatTime(seconds: number): string {
 
 type LoopMode = 'off' | 'all' | 'one';
 
+// Automatic advancement gives up after this many consecutive unplayable
+// tracks instead of silently grinding through a broken playlist.
+const MAX_AUTO_SKIPS = 5;
+
 const loopModeLabels: Record<LoopMode, string> = {
   off: 'Loop mode: Off. Activate to loop queue',
   all: 'Loop mode: Queue. Activate to loop current track',
@@ -69,6 +73,7 @@ export function MusicPlayerDock() {
   const [muted, setMuted] = useState(false);
   const [loopMode, setLoopMode] = useState<LoopMode>('off');
   const [notice, setNotice] = useState('Paste a public media link or open local audio.');
+  const [skipNotice, setSkipNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const panelRef = useRef<HTMLElement>(null);
@@ -81,6 +86,8 @@ export function MusicPlayerDock() {
   const playWhenReady = useRef(false);
   const endedAtQueueEndRef = useRef(false);
   const lastAudibleVolume = useRef(1);
+  const autoAdvanceRef = useRef(false);
+  const autoSkipBudget = useRef(MAX_AUTO_SKIPS);
 
   const clearLocalAudio = useCallback(() => {
     for (const local of localStreamsRef.current.values()) URL.revokeObjectURL(local.url);
@@ -192,11 +199,13 @@ export function MusicPlayerDock() {
     audio.muted = muted;
   }, [muted, volume]);
 
-  const prepareTrack = useCallback(async (track: MusicTrack, index: number, autoPlay: boolean) => {
+  const prepareTrack = useCallback(async (track: MusicTrack, index: number, autoPlay: boolean, autoAdvance = false) => {
     const currentRequest = ++requestId.current;
     // Selecting or preparing a track means the queue-end completion state no longer applies.
     endedAtQueueEndRef.current = false;
     playWhenReady.current = autoPlay;
+    autoAdvanceRef.current = autoAdvance;
+    if (!autoAdvance) { autoSkipBudget.current = MAX_AUTO_SKIPS; setSkipNotice(null); }
     setTrackIndex(index);
     setStream(null);
     setBusy(true);
@@ -204,6 +213,7 @@ export function MusicPlayerDock() {
 
     const local = localStreamsRef.current.get(track.id);
     if (local) {
+      autoSkipBudget.current = MAX_AUTO_SKIPS;
       setStream({ trackId: track.id, title: local.title, duration: track.duration, url: local.url });
       setDuration(track.duration ?? 0);
       setNotice('');
@@ -222,13 +232,22 @@ export function MusicPlayerDock() {
     try {
       const nextStream = await window.piDesktop.resolveMusicTrack(track.id);
       if (currentRequest !== requestId.current) return;
+      autoSkipBudget.current = MAX_AUTO_SKIPS;
       setStream(nextStream);
       setDuration(nextStream.duration ?? track.duration ?? 0);
       setNotice('');
     } catch (reason) {
       if (currentRequest !== requestId.current) return;
       playWhenReady.current = false;
-      setError(bridgeMessage(reason, 'This track could not be resolved.'));
+      const message = bridgeMessage(reason, 'This track could not be resolved.');
+      const followUp = autoAdvance && autoSkipBudget.current > 0 ? queueRef.current?.tracks[index + 1] : undefined;
+      if (followUp) {
+        autoSkipBudget.current -= 1;
+        setSkipNotice(`Skipped “${track.title}” · ${message}`);
+        void prepareTrack(followUp, index + 1, true, true);
+        return;
+      }
+      setError(message);
       setNotice('Playback unavailable');
     } finally {
       if (currentRequest === requestId.current) setBusy(false);
@@ -261,6 +280,7 @@ export function MusicPlayerDock() {
     const currentRequest = ++requestId.current;
     setBusy(true);
     setError(null);
+    setSkipNotice(null);
     setNotice('Reading link…');
     try {
       const incomingQueue = await window.piDesktop.loadMusic(link);
@@ -344,6 +364,7 @@ export function MusicPlayerDock() {
     endedAtQueueEndRef.current = false;
     setBusy(true);
     setError(null);
+    setSkipNotice(null);
 
     const audio = audioRef.current;
     audio?.pause();
@@ -374,13 +395,13 @@ export function MusicPlayerDock() {
     }
   };
 
-  const move = (offset: number, autoPlay = true) => {
+  const move = (offset: number, autoPlay = true, autoAdvance = false) => {
     const activeQueue = queueRef.current;
     if (!activeQueue || busy) return;
     const nextIndex = trackIndex + offset;
     const track = activeQueue.tracks[nextIndex];
     if (!track) return;
-    void prepareTrack(track, nextIndex, autoPlay);
+    void prepareTrack(track, nextIndex, autoPlay, autoAdvance);
   };
 
   const togglePlayback = async () => {
@@ -537,6 +558,10 @@ export function MusicPlayerDock() {
           <AppTooltip content={stream?.title ?? activeTrack?.title ?? undefined}><strong>{stream?.title ?? activeTrack?.title ?? 'Nothing queued'}</strong></AppTooltip>
         </div>
 
+        <p className="music-status" data-error={error ? 'true' : undefined} role={error ? 'alert' : 'status'}>
+          {error ?? skipNotice ?? notice}
+        </p>
+
         <input
           className="music-progress"
           type="range"
@@ -615,8 +640,6 @@ export function MusicPlayerDock() {
             </button></AppTooltip>
           </div>
         </div>
-
-        <p className="visually-hidden" role={error ? 'alert' : 'status'}>{error ?? notice}</p>
       </section>
 
       <AppTooltip content={open ? 'Close music player' : 'Open music player'}>
@@ -670,23 +693,37 @@ export function MusicPlayerDock() {
             return;
           }
           if (trackIndex < activeQueue.tracks.length - 1) {
-            move(1, true);
+            move(1, true, true);
             return;
           }
           if (loopMode === 'all') {
-            void prepareTrack(activeQueue.tracks[0]!, 0, true);
+            void prepareTrack(activeQueue.tracks[0]!, 0, true, true);
             return;
           }
           endedAtQueueEndRef.current = true;
           setPlaying(false);
         }}
         onError={() => {
-          if (!stream) return;
+          const failedStream = stream;
+          if (!failedStream) return;
+          const followUp = autoAdvanceRef.current
+            && autoSkipBudget.current > 0
+            && (audioRef.current?.currentTime ?? 0) === 0
+            ? queueRef.current?.tracks[trackIndex + 1]
+            : undefined;
+          if (followUp) {
+            autoSkipBudget.current -= 1;
+            setSkipNotice(`Skipped “${failedStream.title}” · the stream failed to start`);
+            void prepareTrack(followUp, trackIndex + 1, true, true);
+            return;
+          }
           playWhenReady.current = false;
           setPlaying(false);
-          setError(stream.url.startsWith('blob:')
+          setError(failedStream.url.startsWith('blob:')
             ? 'This local audio file could not be decoded.'
-            : 'This stream could not play. Update yt-dlp or try another track.');
+            : failedStream.url.startsWith('fate-media:')
+              ? 'The prefetched audio could not be read. Load the link again.'
+              : 'This stream could not play. Update yt-dlp or try another track.');
         }}
       />
     </div>

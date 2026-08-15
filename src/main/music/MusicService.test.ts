@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { connect } from 'node:net';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { MusicService, PublicHttpsProxy, executableCandidates, isPublicIpAddress, type MusicProcessRunner } from './MusicService';
+import { MusicService, PublicHttpsProxy, executableCandidates, isPublicIpAddress, type AudioDownloadRequest, type AudioDownloadResult, type AudioDownloader, type MusicProcessRunner } from './MusicService';
 
 const publicDns = vi.fn(async () => ['93.184.216.34']);
 
@@ -257,5 +258,152 @@ describe('MusicService', () => {
     await vi.waitFor(() => expect(sink).toHaveBeenCalledWith([{ trackId: queue.tracks[0]!.id, duration: 61 }]));
     await new Promise((resolve) => { setTimeout(resolve, 60); });
     expect(run).toHaveBeenCalledTimes(3);
+  });
+
+  it('answers repeated track resolutions from the stream cache without re-running yt-dlp', async () => {
+    const process = runner([
+      JSON.stringify({ title: 'Loop queue', entries: [{ title: 'One', webpage_url: 'https://media.example/one', duration: 61 }] }),
+      JSON.stringify({ title: 'One', duration: 61, url: 'https://cdn.example/one.m4a?token=short-lived' }),
+    ]);
+    const service = new MusicService(process, publicDns);
+
+    const queue = await service.load('https://media.example/playlist');
+    const first = await service.resolveTrack(queue.tracks[0]!.id);
+    const second = await service.resolveTrack(queue.tracks[0]!.id);
+    expect(second.url).toBe(first.url);
+    expect(process.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('prefetches the next queue track in the background and serves it from the local media cache', async () => {
+    const prefetchBytes = Buffer.from('PREFETCHED-AUDIO');
+    const download = vi.fn(async (request: AudioDownloadRequest) => {
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(request.destination, prefetchBytes);
+      expect(request.proxyUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      expect(request.bytesPerSecond).toBeLessThan(1024 * 1024);
+      return { contentType: 'audio/mp4', bytes: prefetchBytes.length };
+    });
+    const process = runner([
+      JSON.stringify({
+        title: 'Focus queue',
+        entries: [
+          { title: 'One', webpage_url: 'https://media.example/one', duration: 61 },
+          { title: 'Two', webpage_url: 'https://media.example/two', duration: 122 },
+        ],
+      }),
+      JSON.stringify({ title: 'One', duration: 61, url: 'https://cdn.example/one.m4a?token=a' }),
+      JSON.stringify({ title: 'Two', duration: 122, url: 'https://cdn.example/two.m4a?token=b' }),
+    ]);
+    const service = new MusicService(process, publicDns, download);
+
+    const queue = await service.load('https://media.example/playlist');
+    await service.resolveTrack(queue.tracks[0]!.id);
+    await vi.waitFor(() => expect(download).toHaveBeenCalledOnce());
+
+    const second = await service.resolveTrack(queue.tracks[1]!.id);
+    expect(second.url).toMatch(/^fate-media:\/\/audio\/[0-9a-f]{32}$/u);
+    expect(process.run).toHaveBeenCalledTimes(3);
+
+    const served = service.openMediaRequest('GET', second.url, null);
+    expect(served).toMatchObject({ status: 200, totalBytes: prefetchBytes.length, contentType: 'audio/mp4' });
+    if (!('file' in served)) throw new Error('The media request should have resolved a cache file.');
+    await expect(readFile(served.file)).resolves.toEqual(prefetchBytes);
+
+    expect(service.openMediaRequest('GET', second.url, 'bytes=0-3')).toMatchObject({ status: 206, start: 0, end: 3 });
+    expect(service.openMediaRequest('GET', second.url, 'bytes=999-')).toMatchObject({ status: 416 });
+    expect(service.openMediaRequest('GET', second.url.replace(/[0-9a-f]{32}/u, '0'.repeat(32)), null)).toMatchObject({ status: 404 });
+    expect(service.openMediaRequest('POST', second.url, null)).toMatchObject({ status: 405 });
+  });
+
+  it('tolerates prefetch download failures and still resolves the track on demand', async () => {
+    const download = vi.fn(async () => { throw new Error('network reset'); });
+    const process = runner([
+      JSON.stringify({
+        title: 'Focus queue',
+        entries: [
+          { title: 'One', webpage_url: 'https://media.example/one', duration: 61 },
+          { title: 'Two', webpage_url: 'https://media.example/two', duration: 122 },
+        ],
+      }),
+      JSON.stringify({ title: 'One', duration: 61, url: 'https://cdn.example/one.m4a?token=a' }),
+      JSON.stringify({ title: 'Two', duration: 122, url: 'https://cdn.example/two.m4a?token=b' }),
+    ]);
+    const service = new MusicService(process, publicDns, download);
+
+    const queue = await service.load('https://media.example/playlist');
+    await service.resolveTrack(queue.tracks[0]!.id);
+    await vi.waitFor(() => expect(download).toHaveBeenCalledOnce());
+    await new Promise((resolve) => { setTimeout(resolve, 60); });
+
+    await expect(service.resolveTrack(queue.tracks[1]!.id)).resolves.toMatchObject({ url: 'https://cdn.example/two.m4a?token=b' });
+    expect(process.run).toHaveBeenCalledTimes(3);
+    expect(download).toHaveBeenCalledOnce();
+  });
+
+  it('does not stall user resolutions behind an in-flight prefetch download', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    let releaseDownload!: () => void;
+    const download: AudioDownloader = vi.fn((request) => new Promise<AudioDownloadResult>((resolve, reject) => {
+      void writeFile(request.destination, Buffer.from('NEXT')).catch(() => reject(new Error('write failed')));
+      releaseDownload = () => resolve({ contentType: 'audio/mp4', bytes: 4 });
+      request.signal.addEventListener('abort', () => resolve({ contentType: 'audio/mp4', bytes: 4 }));
+    }));
+    const process = runner([
+      JSON.stringify({
+        title: 'Focus queue',
+        entries: [
+          { title: 'One', webpage_url: 'https://media.example/one', duration: 61 },
+          { title: 'Two', webpage_url: 'https://media.example/two', duration: 122 },
+          { title: 'Three', webpage_url: 'https://media.example/three', duration: 183 },
+        ],
+      }),
+      JSON.stringify({ title: 'One', duration: 61, url: 'https://cdn.example/one.m4a?token=a' }),
+      JSON.stringify({ title: 'Two', duration: 122, url: 'https://cdn.example/two.m4a?token=b' }),
+      JSON.stringify({ title: 'Three', duration: 183, url: 'https://cdn.example/three.m4a?token=c' }),
+    ]);
+    const service = new MusicService(process, publicDns, download);
+
+    const queue = await service.load('https://media.example/playlist');
+    await service.resolveTrack(queue.tracks[0]!.id);
+    await vi.waitFor(() => expect(download).toHaveBeenCalledOnce());
+
+    // The hanging background download must not block an explicit user action.
+    await expect(service.resolveTrack(queue.tracks[2]!.id)).resolves.toMatchObject({ url: 'https://cdn.example/three.m4a?token=c' });
+    expect(process.run).toHaveBeenCalledTimes(4);
+
+    releaseDownload();
+    await vi.waitFor(() => expect(service.resolveTrack(queue.tracks[1]!.id)).resolves.toMatchObject({ url: /^fate-media:\/\/audio\//u }));
+  });
+
+  it('invalidates media tokens and cached files when the queue is cleared', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    const download = vi.fn(async (request: AudioDownloadRequest) => {
+      await writeFile(request.destination, Buffer.from('GONE'));
+      return { contentType: 'audio/mp4', bytes: 4 };
+    });
+    const process = runner([
+      JSON.stringify({
+        title: 'Focus queue',
+        entries: [
+          { title: 'One', webpage_url: 'https://media.example/one', duration: 61 },
+          { title: 'Two', webpage_url: 'https://media.example/two', duration: 122 },
+        ],
+      }),
+      JSON.stringify({ title: 'One', duration: 61, url: 'https://cdn.example/one.m4a?token=a' }),
+      JSON.stringify({ title: 'Two', duration: 122, url: 'https://cdn.example/two.m4a?token=b' }),
+    ]);
+    const service = new MusicService(process, publicDns, download);
+
+    const queue = await service.load('https://media.example/playlist');
+    await service.resolveTrack(queue.tracks[0]!.id);
+    const cached = await vi.waitFor(async () => {
+      const stream = await service.resolveTrack(queue.tracks[1]!.id);
+      expect(stream.url).toMatch(/^fate-media:\/\/audio\//u);
+      return stream.url;
+    });
+
+    service.clearQueue();
+    expect(service.openMediaRequest('GET', cached, null)).toMatchObject({ status: 404 });
+    await expect(service.resolveTrack(queue.tracks[1]!.id)).rejects.toThrow(/no longer/u);
   });
 });

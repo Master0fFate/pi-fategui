@@ -13,6 +13,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { activeToolsForPermission, assertOwnedToolDefinitions, PiRuntimeService, isCanonicalPathInside, selectUserExtensionPaths, shouldSyncGoalChildrenForPiEvent, type PiSdkAdapter } from './PiRuntimeService';
+import type { SubagentChildSessionFactory } from './SubagentSessionFactory';
 import type { PiEvent } from '../../shared/contracts/ipc';
 import { defaultSessionsRoot, PiSessionRepository } from './PiSessionRepository';
 import type { SessionTitleGenerator } from './PiSessionTitleGenerator';
@@ -111,7 +112,7 @@ function fixture(availableModels: typeof model[] = [model]) {
     dispose: vi.fn(async () => undefined),
   };
   const modelRuntime = {
-    getAvailable: vi.fn(async () => availableModels), getModel: vi.fn((_provider: string, _id: string) => model),
+    getAvailable: vi.fn(async () => availableModels), getModel: vi.fn((_provider: string, _id: string) => model), refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
   };
   const adapter: PiSdkAdapter = {
     supportsClone: true,
@@ -168,6 +169,123 @@ describe('PiRuntimeService', () => {
     );
     expect(fake.session.prompt).not.toHaveBeenCalled();
     expect(fake.session.messages).toEqual([]);
+    await service.dispose();
+  });
+
+  it('forces one rewrite retry when the model echoes the draft back unchanged', async () => {
+    const fake = fixture();
+    const completeSimple = vi.fn()
+      .mockResolvedValueOnce({ stopReason: 'stop', content: [{ type: 'text', text: 'review the current changes' }] })
+      .mockResolvedValueOnce({ stopReason: 'stop', content: [{ type: 'text', text: '## Goal\nReview the current changes and report only regressions.' }] });
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    await expect(service.optimizePrompt('review the current changes')).resolves.toEqual({ text: '## Goal\nReview the current changes and report only regressions.' });
+
+    expect(completeSimple).toHaveBeenCalledTimes(2);
+    expect(completeSimple.mock.calls[0]?.[1]?.messages[0]).toMatchObject({ content: 'review the current changes\n</draft>' });
+    expect(completeSimple.mock.calls[1]?.[1]?.messages[0].content).toContain('returned the draft unchanged');
+    await service.dispose();
+  });
+
+  it('detects an unchanged rewrite ignoring whitespace differences', async () => {
+    const fake = fixture();
+    const completeSimple = vi.fn()
+      .mockResolvedValueOnce({ stopReason: 'stop', content: [{ type: 'text', text: 'review\n the  current changes' }] })
+      .mockResolvedValueOnce({ stopReason: 'stop', content: [{ type: 'text', text: 'Improved rewrite.' }] });
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    await expect(service.optimizePrompt('review the current changes')).resolves.toEqual({ text: 'Improved rewrite.' });
+    expect(completeSimple).toHaveBeenCalledTimes(2);
+    await service.dispose();
+  });
+
+  it('explores the project read-only first and grounds the advanced rewrite in the research brief', async () => {
+    const fake = fixture();
+    const completeSimple = vi.fn();
+    completeSimple.mockImplementation(async () => ({
+      stopReason: 'stop',
+      content: [{ type: 'text', text: 'Change the <h1> title color in src/app/Header.tsx to blue.' }],
+    }));
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const researchSession = {
+      prompt: vi.fn(async () => undefined),
+      abort: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+      messages: [{ role: 'assistant', content: '## Facts\n- src/app/Header.tsx line 12: <h1> site title' }],
+    };
+    const researchSessionFactory = vi.fn(async () => researchSession) as unknown as SubagentChildSessionFactory;
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, researchSessionFactory);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    await expect(service.optimizePrompt('change the title to blue', true)).resolves.toEqual({ text: 'Change the <h1> title color in src/app/Header.tsx to blue.' });
+
+    expect(researchSessionFactory).toHaveBeenCalledWith(expect.objectContaining({
+      projectPath: '/project',
+      permissionLevel: 'read-only',
+      toolNames: ['read', 'grep', 'find', 'ls'],
+      skillMode: 'none',
+    }));
+    expect(researchSession.prompt).toHaveBeenCalledWith(expect.stringContaining('change the title to blue'));
+    expect(researchSession.dispose).toHaveBeenCalled();
+    const rewriteContent = completeSimple.mock.calls[0]?.[1]?.messages[0]?.content as string;
+    expect(rewriteContent).toContain('change the title to blue\n</draft>');
+    expect(rewriteContent).toContain('<research_brief>');
+    expect(rewriteContent).toContain('src/app/Header.tsx line 12');
+    expect(rewriteContent).toContain('verified ground truth');
+    expect(fake.session.prompt).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  it('degrades to the standard rewrite when the advanced research session fails', async () => {
+    const fake = fixture();
+    const completeSimple = vi.fn();
+    completeSimple.mockImplementation(async () => ({
+      stopReason: 'stop',
+      content: [{ type: 'text', text: 'Rewritten without research.' }],
+    }));
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const researchSessionFactory = vi.fn(async () => {
+      throw new Error('child session unavailable');
+    }) as unknown as SubagentChildSessionFactory;
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, researchSessionFactory);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    await expect(service.optimizePrompt('change the title to blue', true)).resolves.toEqual({ text: 'Rewritten without research.' });
+
+    const rewriteContent = completeSimple.mock.calls[0]?.[1]?.messages[0]?.content as string;
+    expect(rewriteContent).toBe('change the title to blue\n</draft>');
+    await service.dispose();
+  });
+
+  it('aborts a stalled research session after the timeout and still improves the draft', async () => {
+    vi.useFakeTimers();
+    const fake = fixture();
+    const completeSimple = vi.fn();
+    completeSimple.mockImplementation(async () => ({
+      stopReason: 'stop',
+      content: [{ type: 'text', text: 'Rewritten after timeout.' }],
+    }));
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const researchSession = {
+      prompt: vi.fn(() => new Promise<void>(() => undefined)),
+      abort: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+      messages: [],
+    };
+    const researchSessionFactory = vi.fn(async () => researchSession) as unknown as SubagentChildSessionFactory;
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, researchSessionFactory);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    const pending = service.optimizePrompt('change the title to blue', true);
+    await vi.advanceTimersByTimeAsync(240_000);
+    await expect(pending).resolves.toEqual({ text: 'Rewritten after timeout.' });
+
+    expect(researchSession.abort).toHaveBeenCalled();
+    expect(researchSession.dispose).toHaveBeenCalled();
     await service.dispose();
   });
 
@@ -1529,6 +1647,48 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('loads provider choices before any project session exists', async () => {
+    const fake = fixture();
+    const provider = { id: 'test', name: 'Test provider', auth: { apiKey: { login: true } } };
+    Object.assign(fake.modelRuntime, { getProviders: () => [provider], hasConfiguredAuth: () => false });
+    const service = new PiRuntimeService(fake.adapter);
+
+    await expect(service.initializeProviderLogin()).resolves.toMatchObject({
+      status: 'disconnected', project: null,
+      providerLogin: { status: 'idle', providers: [{ id: 'test', methods: ['api_key'] }] },
+    });
+    expect(fake.adapter.createModelRuntime).toHaveBeenCalledOnce();
+    await service.dispose();
+  });
+
+  it('runs a provider-owned SDK login flow without exposing persisted credentials', async () => {
+    const fake = fixture();
+    const login = vi.fn(async (_providerId: string, _method: string, interaction: { prompt: (prompt: { type: 'secret'; message: string }) => Promise<string>; notify: (event: { type: 'progress'; message: string }) => void }) => {
+      interaction.notify({ type: 'progress', message: 'Waiting for a credential…' });
+      await interaction.prompt({ type: 'secret', message: 'API key' });
+      return { type: 'api_key', key: 'not-exposed' };
+    });
+    const provider = { id: 'test', name: 'Test provider', auth: { apiKey: { login: true } } };
+    Object.assign(fake.modelRuntime, {
+      getProvider: () => provider,
+      getProviders: () => [provider],
+      hasConfiguredAuth: () => false,
+      login,
+    });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    await service.startProviderLogin({ providerId: 'test', method: 'api_key' });
+    await vi.waitFor(() => expect(service.getState(false).providerLogin).toMatchObject({ status: 'awaiting-input', prompt: { type: 'secret', message: 'API key' } }));
+    const promptId = service.getState(false).providerLogin?.prompt?.id;
+    expect(promptId).toBeTruthy();
+    service.respondProviderLogin({ promptId: promptId!, value: 'input-value' });
+    await vi.waitFor(() => expect(login).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(fake.modelRuntime.refresh).toHaveBeenCalledWith({ allowNetwork: true }));
+    expect(service.getState(false).providerLogin).not.toMatchObject({ prompt: { message: 'API key' } });
+    await service.dispose();
+  });
+
   it('publishes Pi extension, prompt, and canonical skill commands for the composer', async () => {
     const fake = fixture();
     Object.assign(fake.session, {
@@ -1545,6 +1705,8 @@ describe('PiRuntimeService', () => {
     const state = await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     expect(state.commands).toEqual([
+      { name: 'login', description: 'Connect a Pi model provider with OAuth or an API key', source: 'builtin' },
+      { name: 'logout', description: 'Disconnect a Pi model provider', source: 'builtin' },
       { name: 'goalmax', description: 'Start or manage a persistent goal · /goalmax, pause, resume, clear', source: 'builtin' },
       { name: 'parallax', description: 'Control Parallax', source: 'extension' },
       { name: 'review', description: 'Review changes', source: 'prompt' },
@@ -2658,7 +2820,7 @@ describe('PiRuntimeService', () => {
     const state = await service.openProject({ path: '/project', name: 'project', trusted: true });
     expect(state.status).toBe('auth-required');
     expect(state.sessionId).toBe('session-1');
-    expect(state.error?.actionable).toContain('/login');
+    expect(state.error?.actionable).toContain('Connect your AI');
     expect(fake.adapter.createRuntime).toHaveBeenCalledOnce();
     expect(fake.session.bindExtensions).toHaveBeenCalledOnce();
     await service.dispose();

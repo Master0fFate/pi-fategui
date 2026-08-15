@@ -466,13 +466,13 @@ function resolveImageProvider(settings: ImageGenerationSettings, context: ImageT
   if (!providerId) throw new Error('Choose a Pi provider for custom image generation in Settings → Agent.');
   const providerModels = available.filter((model) => model.provider === providerId);
   if (source === 'custom' && providerModels.length > 0 && !providerModels.some((model) => isOpenAICompatibleImageApi(model.api))) {
-    throw new Error(`Pi provider ${providerId} is not configured with an OpenAI-compatible API. Use openai-completions or openai-responses in ~/.pi/agent/models.json.`);
+    throw new Error(`Provider ${providerId} is not configured with an OpenAI-compatible API. Use openai-completions or openai-responses in ~/.pi/fateGUI/models.json.`);
   }
   const compatibleDriver = (model: ImageDriverModel) => source !== 'custom' || isOpenAICompatibleImageApi(model.api);
   const driver = (context.model?.provider === providerId && compatibleDriver(context.model) ? context.model : undefined)
     ?? providerModels.find(compatibleDriver);
   if (!driver) {
-    throw new Error(`Image generation needs an authenticated ${providerId} provider in Pi. Sign in with Pi /login or configure it in ~/.pi/agent/models.json, then retry.`);
+    throw new Error(`Image generation needs an authenticated ${providerId} provider. Use Fate UI /login or configure it in ~/.pi/fateGUI/models.json, then retry.`);
   }
   const requestedModel = settings.provider === source ? settings.model : null;
   const imageModel = source === 'custom'
@@ -496,7 +496,7 @@ function imageBaseUrl(selection: ResolvedImageProvider, context: ImageToolContex
           ? 'https://openrouter.ai/api/v1'
           : undefined;
   const value = selection.driver.baseUrl?.trim() || providerBaseUrl?.trim() || fallback;
-  if (!value) throw new Error(`Pi provider ${selection.providerId} does not define a base URL.`);
+  if (!value) throw new Error(`Provider ${selection.providerId} does not define a base URL.`);
   return secureImageBaseUrl(value);
 }
 
@@ -509,7 +509,7 @@ async function resolvedProviderHeaders(selection: ResolvedImageProvider, context
   const auth = await context.modelRegistry.getApiKeyAndHeaders(selection.driver);
   if (!auth.ok) throw new Error(`${selection.providerId} image generation is unavailable: ${auth.error}`);
   if (!auth.apiKey && selection.source !== 'custom') {
-    throw new Error(`${selection.providerId} image generation is not authenticated in Pi. Sign in with Pi /login, then retry.`);
+    throw new Error(`${selection.providerId} image generation is not authenticated. Use Fate UI /login, then retry.`);
   }
   const headers = new Headers();
   applyHeaders(headers, selection.driver.headers);

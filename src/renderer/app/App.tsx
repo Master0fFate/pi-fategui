@@ -275,6 +275,7 @@ export function App() {
       useUiStore.getState().setMusicPlayerEnabled(settings.musicPlayerEnabled);
       useUiStore.getState().setSendMessageWithModifier(settings.sendMessageWithModifier);
       useUiStore.getState().setCompactSessions(settings.compactSessions);
+      useUiStore.getState().setAdvancedPromptImprovement(settings.advancedPromptImprovement);
       useUiStore.getState().setSpeech(settings.speech ?? defaultSpeechSettings);
       void window.piDesktop.getSpeechStatus().then((status) => { if (active) useUiStore.getState().setSpeechStatus(status); }).catch(() => undefined);
     }).catch((error: unknown) => {

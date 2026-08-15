@@ -42,8 +42,8 @@ export function normalizeError(error: unknown, fallbackCode: AppError['code'] = 
 export function authRequiredError(): AppError {
   return {
     code: 'AUTH_REQUIRED',
-    message: 'Pi could not find authentication for an available model provider.',
-    actionable: 'Open the Pi CLI, run /login, then reopen this project. Environment credentials supported by Pi also work.',
+    message: 'Fate UI could not find authentication for an available model provider.',
+    actionable: 'Use Connect your AI to sign in with OAuth or add an API key. Supported environment credentials also work.',
     retryable: true,
   };
 }

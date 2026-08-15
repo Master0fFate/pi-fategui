@@ -22,7 +22,7 @@ Fate UI embeds Pi’s SDK in the Electron main process and translates its runtim
 
 ## Operating Context
 
-The product runs as a native desktop window beside a developer’s editor and repository. It uses local project directories, Git working trees, Pi’s existing provider authentication and session storage, shell processes, skills, prompt templates, and context files. Repositories are potentially untrusted and may contain project-local Pi resources.
+The product runs as a native desktop window beside a developer’s editor and repository. Its embedded Pi SDK owns provider authentication under `~/.pi/fateGUI/`; shared Pi sessions, settings, MCP configuration, skills, prompt templates, extensions, and context files remain compatible with the established Pi resource layout. It does not run or require the Pi terminal program. Repositories are potentially untrusted and may contain project-local Pi resources.
 
 ## Capabilities and Constraints
 
@@ -31,7 +31,7 @@ The product runs as a native desktop window beside a developer’s editor and re
 - The Electron main process owns Pi, sessions, project selection, filesystem, Git, terminal processes, settings, credential references, dialogs, and menus.
 - The preload exposes named, Zod-validated commands and events only. The renderer has no Node, Electron, filesystem, shell, or child-process access.
 - The embedded Pi SDK is preferred. Unsupported SDK capabilities must have honest unavailable states rather than invented behavior.
-- Existing Pi authentication is reused; raw API keys are never stored or displayed in renderer state.
+- Fate UI imports Pi credentials once on its first run, then owns provider auth and model configuration; raw API keys are never stored or displayed in renderer state.
 - Project trust is explicit. Manual terminal commands remain visually distinct from Pi-generated tool execution.
 - Conversation/event lists must remain usable with 5,000 entries, rapid streaming, large tool output, hundreds of changed files, and long sessions.
 

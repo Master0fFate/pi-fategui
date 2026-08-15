@@ -20,6 +20,7 @@ import { agentMentionContext, findLiveAgentMentions, parseAgentStopCommand, sess
 import { fileTagContext, fileTagText, findFileTags } from './fileTags';
 import { findSlashCommands, slashCommandContext, slashCommandDescription, slashCommandLabel, type SlashCommand } from './slashCommands';
 import { VoiceStreamFeedQueue, startVoiceStream, type VoiceStreamController } from './voiceStream';
+import { ProviderLoginDialog } from './ProviderLoginDialog';
 
 interface Attachment {
   name: string;
@@ -209,7 +210,7 @@ export async function resampleVoiceAudioOptimized(buffer: AudioBuffer, targetRat
   }
 }
 
-export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
+export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject: () => void; connectRequest?: number }) {
   const [draft, setDraft] = useState('');
   const [images, setImages] = useState<Attachment[]>([]);
   const [browserAnnotationIds, setBrowserAnnotationIds] = useState<string[]>([]);
@@ -217,6 +218,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const [sessionReferenceMenuOpen, setSessionReferenceMenuOpen] = useState(false);
   const [sessionDropActive, setSessionDropActive] = useState(false);
   const [previewImage, setPreviewImage] = useState<Attachment | null>(null);
+  const [providerLoginOpen, setProviderLoginOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [optimizingPrompt, setOptimizingPrompt] = useState(false);
   const [forking, setForking] = useState(false);
@@ -299,6 +301,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     thinkingLevel: state.runtime.thinkingLevel,
     pendingThinkingLevel: state.runtime.pendingThinkingLevel,
     permissionLevel: state.runtime.permissionLevel,
+    providerLogin: state.runtime.providerLogin,
     commands: state.runtime.commands,
     contextUsage: state.runtime.contextUsage,
     forkPoints: state.runtime.forkPoints,
@@ -326,6 +329,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const heldQueueIds = new Set(heldQueueItems.map((item) => item.id));
   const goalUpdates = activeGoal ? [...activeGoal.steering].reverse() : [];
   const sendMessageWithModifier = useUiStore((state) => state.sendMessageWithModifier);
+  const advancedPromptImprovement = useUiStore((state) => state.advancedPromptImprovement);
   const composerDraftRequest = useUiStore((state) => state.composerDraftRequest);
   const clearComposerDraftRequest = useUiStore((state) => state.clearComposerDraftRequest);
   const showToast = useUiStore((state) => state.showToast);
@@ -369,6 +373,23 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
   const voiceDownloadProgress = speechDownload?.modelId === speech.modelId
     ? speechDownload.state === 'verifying' ? 100 : Math.min(100, Math.round(speechDownload.downloadedBytes / speechDownload.totalBytes * 100))
     : 0;
+  const openProviderLogin = useCallback(async () => {
+    const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
+    if (typeof desktop?.initializeProviderLogin !== 'function') {
+      setComposerError('Provider sign-in is unavailable in this build. Update Fate UI and try again.');
+      return;
+    }
+    try {
+      const state = await desktop.initializeProviderLogin();
+      useRuntimeStore.getState().setRuntime(state);
+      setProviderLoginOpen(true);
+    } catch (error) {
+      if (mounted.current) setComposerError(error instanceof Error ? error.message : 'Provider sign-in options could not load. Try again.');
+    }
+  }, []);
+  useEffect(() => {
+    if (connectRequest > 0) void openProviderLogin();
+  }, [connectRequest, openProviderLogin]);
   const attachableSessions = useMemo(() => (runtime.sessions ?? [])
     .filter((session) => !session.active && !session.path.startsWith('live:'))
     .slice(0, 50)
@@ -904,6 +925,24 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     const text = submittedDraft.trim()
       || (submittedSessionReferences.length > 0 ? 'Review the attached session reference.' : '')
       || (submittedBrowserAnnotationIds.length > 0 ? 'Address the attached browser annotations.' : '');
+    if (/^\/login(?:\s+.*)?$/iu.test(text)) {
+      void openProviderLogin();
+      updateDraft('');
+      return;
+    }
+    const logout = /^\/logout\s+([^\s/]+)\s*$/iu.exec(text);
+    if (logout && 'piDesktop' in window) {
+      updateDraft('');
+      void window.piDesktop.logoutProvider(logout[1]!).then((state) => useRuntimeStore.getState().setRuntime(state)).catch((error: unknown) => {
+        if (mounted.current) setComposerError(error instanceof Error ? error.message : 'The provider could not be signed out.');
+      });
+      return;
+    }
+    if (/^\/logout\s*$/iu.test(text)) {
+      setProviderLoginOpen(true);
+      updateDraft('');
+      return;
+    }
     if (!text || runtimeNow.status !== 'ready' || submittingRef.current || !('piDesktop' in window)) return;
     submittingRef.current = true;
     if (mounted.current) {
@@ -1876,6 +1915,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     const origin = useRuntimeStore.getState().runtime;
     const originalDraft = draftRef.current;
     if (!originalDraft.trim() || origin.status !== 'ready' || origin.streaming || origin.activeSessionRunning || origin.sessionOperation) return;
+    if (voiceStateRef.current !== 'idle') return;
     if (typeof window.piDesktop.optimizePrompt !== 'function') {
       setComposerError('Restart Fate UI to activate prompt improvement.');
       return;
@@ -1884,7 +1924,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
     setOptimizingPrompt(true);
     setComposerError(null);
     try {
-      const result = await window.piDesktop.optimizePrompt(originalDraft);
+      const result = await window.piDesktop.optimizePrompt(originalDraft, { advanced: advancedPromptImprovement });
       if (!mounted.current) return;
       const current = useRuntimeStore.getState().runtime;
       const selectionIsOrigin = current.sessionId === origin.sessionId && current.project?.path === origin.project?.path;
@@ -2297,9 +2337,9 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
             }}
             onKeyDown={onKeyDown}
             onPaste={pasteImages}
-            placeholder={connected ? runtime.streaming ? 'Ask for follow-up changes…' : 'Ask Pi about your project…' : 'Open and trust a project to begin…'}
+            placeholder={connected ? runtime.streaming ? 'Ask for follow-up changes…' : 'Ask Pi about your project…' : runtime.status === 'auth-required' ? 'Type /login to connect a provider…' : 'Open and trust a project to begin…'}
             rows={2}
-            disabled={!connected || optimizingPrompt}
+            disabled={(!connected && runtime.status !== 'auth-required') || optimizingPrompt}
           />
         </div>
         <div className="composer-toolbar">
@@ -2511,15 +2551,26 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                 {connected && <ContextWheel usage={runtime.contextUsage} {...(runtime.model ? { fallbackWindow: runtime.model.contextWindow } : {})} />}
               </div>
               <AppTooltip
-                content={optimizingPrompt ? 'Improving prompt with the selected model…' : runtime.streaming || runtime.activeSessionRunning ? 'Wait for Pi to finish before improving the prompt' : !draft.trim() ? 'Write a prompt to improve it' : 'Improve prompt with the selected model'}
+                content={optimizingPrompt
+                  ? advancedPromptImprovement ? 'Exploring the project, then improving the prompt…' : 'Improving prompt with the selected model…'
+                  : runtime.streaming || runtime.activeSessionRunning
+                    ? 'Wait for Pi to finish before improving the prompt'
+                    : voiceState !== 'idle'
+                      ? 'Wait for voice input to finish before improving the prompt'
+                      : !draft.trim()
+                        ? 'Write a prompt to improve it'
+                        : advancedPromptImprovement
+                          ? 'Advanced: explore the project read-only, then improve the prompt with the findings'
+                          : 'Improve prompt with the selected model'}
                 wrapTrigger
               >
                 <button
                   className="voice-button prompt-optimize-button"
                   type="button"
+                  data-advanced={advancedPromptImprovement || undefined}
                   aria-label={optimizingPrompt ? 'Improving prompt' : 'Improve prompt'}
                   aria-busy={optimizingPrompt}
-                  disabled={!connected || !draft.trim() || optimizingPrompt || runtime.streaming || Boolean(runtime.activeSessionRunning) || Boolean(runtime.sessionOperation)}
+                  disabled={!connected || !draft.trim() || optimizingPrompt || runtime.streaming || Boolean(runtime.activeSessionRunning) || Boolean(runtime.sessionOperation) || voiceState !== 'idle'}
                   onClick={() => void optimizePrompt()}
                 >
                   {optimizingPrompt ? <LoaderCircle className="tool-spinner" size={17} aria-hidden="true" /> : <Sparkles size={17} aria-hidden="true" />}
@@ -2553,7 +2604,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
                     aria-label={runtime.streaming || runtime.activeSessionRunning ? 'Queue follow-up message' : goalCancelable && !draft.trim() ? 'Goal control; hold to cancel goal' : 'Send message'}
                     aria-describedby={runtime.streaming || goalCancelable ? 'streaming-send-instructions' : undefined}
                     aria-busy={submitting || liveAgentBusy}
-                    disabled={!connected || liveAgentBusy || (!runtime.streaming && submitting) || (!(liveAgentTarget && liveAgentTarget.kind !== 'session') && !runtime.streaming && !goalCancelable && !draft.trim() && browserAnnotationIds.length === 0 && sessionReferences.length === 0)}
+                    disabled={(!connected && runtime.status !== 'auth-required') || liveAgentBusy || (!runtime.streaming && submitting) || (!(liveAgentTarget && liveAgentTarget.kind !== 'session') && !runtime.streaming && !goalCancelable && !draft.trim() && browserAnnotationIds.length === 0 && sessionReferences.length === 0)}
                     onPointerDown={startSendHold}
                     onPointerUp={(event) => finishSendHold(normalizedPointerId(event.pointerId))}
                     onPointerCancel={(event) => cancelSendHold(normalizedPointerId(event.pointerId))}
@@ -2581,6 +2632,7 @@ export function Composer({ onOpenProject }: { onOpenProject: () => void }) {
         </div>
       </form>
       {composerError && <p className="composer-error" role="alert">{composerError}</p>}
+      <ProviderLoginDialog open={providerLoginOpen} state={runtime.providerLogin} onOpenChange={setProviderLoginOpen} />
       <Dialog.Root open={Boolean(previewImage)} onOpenChange={(open) => { if (!open) setPreviewImage(null); }}>
         <Dialog.Portal>
           <Dialog.Overlay className="cinematic-image-overlay" />

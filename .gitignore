@@ -11,6 +11,12 @@ build/vendor/yt-dlp/
 *.pem
 *.key
 *.mobileprovision
+# Provider credentials and mutable SDK model state. This also protects local
+# development when FATE_GUI_DATA_DIR points at the repository.
+auth.json
+auth.json.lock
+models.json
+models-store.json
 __pycache__/
 *.py[cod]
 .DS_Store

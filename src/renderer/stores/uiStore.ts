@@ -74,6 +74,7 @@ interface UiState {
   musicPlaying: boolean;
   sendMessageWithModifier: boolean;
   compactSessions: boolean;
+  advancedPromptImprovement: boolean;
   speech: SpeechSettings;
   speechDownload: SpeechDownloadProgress | null;
   speechStatus: SpeechStatus | null;
@@ -102,6 +103,7 @@ interface UiState {
   setMusicPlaying: (playing: boolean) => void;
   setSendMessageWithModifier: (enabled: boolean) => void;
   setCompactSessions: (enabled: boolean) => void;
+  setAdvancedPromptImprovement: (enabled: boolean) => void;
   setSpeech: (speech: SpeechSettings) => void;
   setSpeechDownload: (speechDownload: SpeechDownloadProgress | null) => void;
   setSpeechStatus: (speechStatus: SpeechStatus | null) => void;
@@ -170,6 +172,7 @@ export const useUiStore = create<UiState>()(
       musicPlaying: false,
       sendMessageWithModifier: false,
       compactSessions: false,
+      advancedPromptImprovement: false,
       speech: defaultSpeechSettings,
       speechDownload: null,
       speechStatus: null,
@@ -198,6 +201,7 @@ export const useUiStore = create<UiState>()(
       setMusicPlaying: (musicPlaying) => set({ musicPlaying }),
       setSendMessageWithModifier: (sendMessageWithModifier) => set({ sendMessageWithModifier }),
       setCompactSessions: (compactSessions) => set({ compactSessions }),
+      setAdvancedPromptImprovement: (advancedPromptImprovement) => set({ advancedPromptImprovement }),
       setSpeech: (speech) => set({ speech }),
       setSpeechDownload: (speechDownload) => set({ speechDownload }),
       setSpeechStatus: (speechStatus) => set({ speechStatus }),

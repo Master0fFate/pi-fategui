@@ -641,10 +641,11 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
   });
   try {
     const page = await application.firstWindow();
-    await expect(page.getByRole('heading', { name: 'What would you like Pi to do?' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Start with your AI connection' })).toBeVisible();
     await expect(page.locator('.brand-mark')).toHaveText('ƒ');
     await expect(page.locator('.welcome-symbol')).toHaveText('ƒ');
-    await expect(page.locator('.action-card')).toHaveCount(3);
+    await expect(page.locator('.action-card')).toHaveCount(4);
+    await expect(page.getByRole('button', { name: /Connect your AI/ })).toBeEnabled();
     await expect(page.getByRole('button', { name: /Inspect codebase/ })).toBeEnabled();
     await expect(page.getByRole('button', { name: /Ship a change/ })).toBeEnabled();
     await page.screenshot({ path: 'test-results/pi-desktop-welcome.png' });
@@ -751,7 +752,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.getByRole('button', { name: 'Edit files' }).click();
     await expect(page.getByRole('button', { name: 'Permission level: Edit files' })).toBeVisible();
     await expect(page.getByText('Connected')).toHaveCount(0);
-    await expect(page.getByRole('heading', { name: 'What would you like Pi to do?' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Start with your AI connection' })).toHaveCount(0);
     await expect(page.locator('.action-card')).toHaveCount(0);
     await expect(page.getByLabel('Message Pi')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Permission level: Edit files' })).toHaveText('');
@@ -1336,7 +1337,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     const musicPlayer = page.locator('section.music-player-panel');
     await expect(musicPlayer).toBeVisible();
     await expect(musicPlayer.getByPlaceholder('Paste media link here')).toBeVisible();
-    await expect(musicPlayer.locator('p:not(.visually-hidden)')).toHaveCount(0);
+    await expect(musicPlayer.locator('p.music-status')).toHaveText('yt-dlp is unavailable in the E2E harness.');
     await expect(page.locator('.music-dock-toggle > span')).toHaveCount(0);
     const playlistToggle = page.getByRole('button', { name: 'Show playlist' });
     const previousTrack = page.getByRole('button', { name: 'Previous track' });

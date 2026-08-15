@@ -44,7 +44,7 @@ import { enumerateMicrophones, microphoneAccessError, requestMicrophoneDevices, 
 
 const fallback: AppSettings = {
   appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true,
-  terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, themeId: 'midnight',
+  terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, advancedPromptImprovement: false, themeId: 'midnight',
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
   speech: defaultSpeechSettings,
@@ -114,6 +114,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   const setMusicPlayerEnabled = useUiStore((state) => state.setMusicPlayerEnabled);
   const setSendMessageWithModifier = useUiStore((state) => state.setSendMessageWithModifier);
   const setCompactSessions = useUiStore((state) => state.setCompactSessions);
+  const setAdvancedPromptImprovement = useUiStore((state) => state.setAdvancedPromptImprovement);
   const setSpeech = useUiStore((state) => state.setSpeech);
   const models = useRuntimeStore((state) => state.runtime.models);
   const providerGroups = useMemo(() => groupModelsByProvider(models), [models]);
@@ -318,6 +319,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
       setMusicPlayerEnabled(saved.musicPlayerEnabled);
       setSendMessageWithModifier(saved.sendMessageWithModifier);
       setCompactSessions(saved.compactSessions);
+      setAdvancedPromptImprovement(saved.advancedPromptImprovement);
       setSpeech(saved.speech);
       setStatus(null);
       setToast({ kind: 'success', title: 'Settings saved', message: 'Your preferences are active.' });
@@ -573,12 +575,12 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                   <div className="settings-select-row"><div><strong>Thinking level</strong><small>Initial reasoning effort when a project starts without an active session.</small></div><SelectControl label="Default thinking level" value={settings.thinkingLevel} className="settings-thinking-select" options={['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((level) => ({ value: level, label: level === 'xhigh' ? 'Extra high' : `${level[0]?.toUpperCase() ?? ''}${level.slice(1)}` }))} onValueChange={(value) => setSettings({ ...settings, thinkingLevel: value as AppSettings['thinkingLevel'] })} /></div>
                   <div className="settings-select-row"><div><strong>Agent orchestration</strong><small>Agent Teams V2 enables recursive child/grandchild delegation with durable context and hard safety limits. Applies when the project is reopened.</small></div><SelectControl label="Agent orchestration mode" value={settings.agentTeamMode} options={[{ value: 'legacy', label: 'Legacy subagents', detail: 'Flat managed agents and deterministic workflows' }, { value: 'v2', label: 'Agent Teams V2 (beta)', detail: 'Recursive provider-neutral teams' }]} onValueChange={(value) => setSettings({ ...settings, agentTeamMode: value as AppSettings['agentTeamMode'] })} /></div>
 
-                  <div className="settings-title settings-title--spaced"><span><ImageIcon size={17} /></span><div><h3>Image generation</h3><p>A dedicated image route, independent from the chat model and secured by Pi’s existing provider authentication.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><span><ImageIcon size={17} /></span><div><h3>Image generation</h3><p>A dedicated image route, independent from the chat model and secured by Fate UI’s embedded SDK provider connection.</p></div></div>
                   <div className="image-provider-config">
                     <div className="settings-model-controls">
                       <div className="settings-select-field"><span>Provider route</span><SelectControl label="Image generation provider" value={imageSettings.provider} options={[{ value: 'auto', label: 'Automatic', detail: 'Best authenticated Pi provider' }, ...imageGenerationProviderPresets.map((preset) => ({ value: preset.id, label: preset.name, detail: preset.auth })), { value: 'custom', label: 'Custom Pi provider', detail: 'OpenAI-compatible Images API' }]} onValueChange={chooseImageProvider} /></div>
                       {imageSettings.provider === 'custom' ? (
-                        <div className="settings-select-field"><span>Pi provider</span><SelectControl label="Custom image provider" value={imageSettings.customProvider ?? ''} options={[{ value: '', label: 'Select an OpenAI-compatible provider' }, ...(unavailableCustomImageProvider ? [unavailableCustomImageProvider] : []), ...imageCompatibleProviderGroups.map((group) => ({ value: group.provider, label: group.title, detail: 'Base URL and auth inherited from Pi' }))]} onValueChange={(customProvider) => setSettings({ ...settings, imageGeneration: { ...imageSettings, customProvider: customProvider || null } })} /></div>
+                        <div className="settings-select-field"><span>Pi provider</span><SelectControl label="Custom image provider" value={imageSettings.customProvider ?? ''} options={[{ value: '', label: 'Select an OpenAI-compatible provider' }, ...(unavailableCustomImageProvider ? [unavailableCustomImageProvider] : []), ...imageCompatibleProviderGroups.map((group) => ({ value: group.provider, label: group.title, detail: 'Base URL and auth from Fate UI provider storage' }))]} onValueChange={(customProvider) => setSettings({ ...settings, imageGeneration: { ...imageSettings, customProvider: customProvider || null } })} /></div>
                       ) : (
                         <div className="settings-select-field"><span>Image model</span><SelectControl label="Image generation model" value={imageSettings.model ?? ''} disabled={imageSettings.provider === 'auto'} options={imageSettings.provider === 'auto' ? [{ value: '', label: 'Chosen automatically' }] : (imagePreset?.models.map((model) => ({ value: model.id, label: model.name, detail: model.detail })) ?? [])} onValueChange={(model) => setSettings({ ...settings, imageGeneration: { ...imageSettings, model: model || null } })} /></div>
                       )}
@@ -588,13 +590,13 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                     )}
                     <div className="image-provider-status" data-ready={imageProviderReady}>
                       <LockKeyhole size={15} aria-hidden="true" />
-                      <div><strong>{imageSettings.provider === 'auto' ? imageProviderReady ? 'Pi chooses at generation time' : 'No image provider authenticated in Pi' : imageProviderReady ? 'Ready through Pi' : imageSettings.provider === 'custom' && selectedCustomImageProvider && !customImageModelReady ? 'Choose an image model ID' : 'Provider not authenticated in Pi'}</strong><span>{imagePreset?.description ?? (imageSettings.provider === 'custom' ? 'The base URL and credential come from ~/.pi/agent/models.json; only /images/generations is appended.' : 'Priority: ChatGPT OAuth, OpenAI, Gemini, then OpenRouter.')}</span></div>
+                      <div><strong>{imageSettings.provider === 'auto' ? imageProviderReady ? 'Fate UI chooses at generation time' : 'No image provider connected' : imageProviderReady ? 'Ready through Fate UI' : imageSettings.provider === 'custom' && selectedCustomImageProvider && !customImageModelReady ? 'Choose an image model ID' : 'Provider not connected'}</strong><span>{imagePreset?.description ?? (imageSettings.provider === 'custom' ? 'The base URL and credential come from ~/.pi/fateGUI/models.json; only /images/generations is appended.' : 'Priority: ChatGPT OAuth, OpenAI, Gemini, then OpenRouter.')}</span></div>
                     </div>
                     <dl className="image-provider-route">
-                      <div><dt>Authentication</dt><dd>{imagePreset?.auth ?? (imageSettings.provider === 'custom' ? 'Pi-managed provider credential' : 'Automatic · no credentials exposed')}</dd></div>
-                      <div><dt>Endpoint</dt><dd><code>{imagePreset?.endpoint ?? (imageSettings.provider === 'custom' ? 'Pi base URL + /images/generations' : 'Selected Pi provider endpoint')}</code></dd></div>
+                      <div><dt>Authentication</dt><dd>{imagePreset?.auth ?? (imageSettings.provider === 'custom' ? 'Fate UI-managed provider credential' : 'Automatic · no credentials exposed')}</dd></div>
+                      <div><dt>Endpoint</dt><dd><code>{imagePreset?.endpoint ?? (imageSettings.provider === 'custom' ? 'Fate UI provider base URL + /images/generations' : 'Selected Pi provider endpoint')}</code></dd></div>
                     </dl>
-                    {!imageProviderReady && <p className="image-provider-help">{imageSettings.provider === 'custom' && selectedCustomImageProvider && !customImageModelReady ? 'Enter the exact image model ID deployed by this provider.' : <>Authenticate a supported provider with Pi <code>/login</code>, or configure it in <code>~/.pi/agent/models.json</code>. Fate UI never stores or displays the credential.</>}</p>}
+                    {!imageProviderReady && <p className="image-provider-help">{imageSettings.provider === 'custom' && selectedCustomImageProvider && !customImageModelReady ? 'Enter the exact image model ID deployed by this provider.' : <>Connect a supported provider with Fate UI <code>/login</code>, or configure it in <code>~/.pi/fateGUI/models.json</code>. Fate UI never displays the credential.</>}</p>}
                   </div>
                 </div>
               )}
@@ -669,9 +671,10 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                   <div className="settings-notice"><ShieldCheck size={17} /><div><strong>Project-confined by default</strong><p>Read only and Edit files stay inside the trusted project. Full access explicitly unlocks host files and shell execution, is saved per session, and is not sandboxed.</p></div></div>
                   <div className="settings-title settings-title--spaced"><span><TerminalSquare size={17} /></span><div><h3>Terminal</h3><p>Choose the shell opened by the manual integrated terminal.</p></div></div>
                   <label className="settings-input-row"><span>Shell executable</span><input value={settings.terminalShell ?? ''} onChange={(event) => setSettings({ ...settings, terminalShell: event.target.value || null })} placeholder="System default" /></label>
-                  <div className="settings-title settings-title--spaced"><span><Keyboard size={17} /></span><div><h3>Message composer</h3><p>Choose whether sending uses the primary modifier key.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><span><Keyboard size={17} /></span><div><h3>Message composer</h3><p>Tune sending and prompt improvement behavior.</p></div></div>
                   <div className="settings-group">
                     <label className="settings-toggle"><div><strong>Ctrl/⌘ Enter to send</strong><small>When enabled, Enter inserts a new line. When off, Enter sends and Shift+Enter inserts a new line.</small></div><input type="checkbox" checked={settings.sendMessageWithModifier} onChange={(event) => setSettings({ ...settings, sendMessageWithModifier: event.target.checked })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>Advanced improve prompt</strong><small>Before rewriting, the model first explores the project read-only — exact files, symbols, and conventions — then writes the improved prompt from that evidence. Slower and uses more tokens; the button turns accent-colored while active.</small></div><input type="checkbox" checked={settings.advancedPromptImprovement} onChange={(event) => setSettings({ ...settings, advancedPromptImprovement: event.target.checked })} /><span aria-hidden="true" /></label>
                   </div>
                   <div className="settings-title settings-title--spaced"><span><Keyboard size={17} /></span><div><h3>Keyboard shortcuts</h3><p>Fast paths that work anywhere in the workspace.</p></div></div>
                   <dl className="settings-shortcuts"><div><dt>Command palette</dt><dd>Ctrl/⌘ K</dd></div><div><dt>Terminal</dt><dd>Ctrl/⌘ `</dd></div><div><dt>New session</dt><dd>Ctrl/⌘ N</dd></div><div><dt>Settings</dt><dd>Ctrl/⌘ ,</dd></div><div><dt>Stop generation</dt><dd>Esc</dd></div></dl>

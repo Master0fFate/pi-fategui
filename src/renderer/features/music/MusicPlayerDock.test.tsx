@@ -371,4 +371,77 @@ describe('MusicPlayerDock', () => {
     unmount();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:local-audio');
   });
+
+  it('skips an unresolvable track during automatic advance and keeps the queue moving', async () => {
+    const thirdId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const resolveMusicTrack = vi.fn(async (trackId: string) => {
+      if (trackId === secondId) throw new Error(JSON.stringify({ message: 'yt-dlp could not resolve this media.' }));
+      return {
+        trackId,
+        title: trackId === firstId ? 'First track' : 'Third track',
+        duration: 60,
+        url: `https://cdn.example/${trackId}.m4a`,
+      };
+    });
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getMusicStatus: vi.fn(async () => ({ available: true, version: '2026.03.17' as string, message: undefined })),
+        loadMusic: vi.fn(async () => ({
+          title: 'Focus queue',
+          tracks: [
+            { id: firstId, title: 'First track', duration: 60 },
+            { id: secondId, title: 'Second track', duration: 60 },
+            { id: thirdId, title: 'Third track', duration: 60 },
+          ],
+        })),
+        resolveMusicTrack,
+      } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    const { container } = render(<MusicPlayerDock />);
+    await user.click(screen.getByRole('button', { name: 'Open music player' }));
+    await user.type(screen.getByLabelText('Media or playlist link'), 'https://media.example/playlist');
+    await user.click(screen.getByRole('button', { name: 'Load music link' }));
+    const audio = container.querySelector('audio')!;
+    await waitFor(() => expect(audio).toHaveAttribute('src', `https://cdn.example/${firstId}.m4a`));
+
+    fireEvent.ended(audio);
+    await waitFor(() => expect(audio).toHaveAttribute('src', `https://cdn.example/${thirdId}.m4a`));
+    expect(resolveMusicTrack).toHaveBeenCalledTimes(3);
+    expect(container.querySelector('.music-status')).toHaveTextContent('Skipped “Second track”');
+  });
+
+  it('shows a visible error when automatic advance cannot continue', async () => {
+    const resolveMusicTrack = vi.fn(async (trackId: string) => {
+      if (trackId === secondId) throw new Error(JSON.stringify({ message: 'yt-dlp could not resolve this media.' }));
+      return { trackId, title: trackId === firstId ? 'First track' : 'Second track', duration: 60, url: `https://cdn.example/${trackId}.m4a` };
+    });
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getMusicStatus: vi.fn(async () => ({ available: true, version: '2026.03.17' as string, message: undefined })),
+        loadMusic: vi.fn(async () => ({
+          title: 'Focus queue',
+          tracks: [
+            { id: firstId, title: 'First track', duration: 60 },
+            { id: secondId, title: 'Second track', duration: 60 },
+          ],
+        })),
+        resolveMusicTrack,
+      } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    const { container } = render(<MusicPlayerDock />);
+    await user.click(screen.getByRole('button', { name: 'Open music player' }));
+    await user.type(screen.getByLabelText('Media or playlist link'), 'https://media.example/playlist');
+    await user.click(screen.getByRole('button', { name: 'Load music link' }));
+    const audio = container.querySelector('audio')!;
+    await waitFor(() => expect(audio).toHaveAttribute('src', `https://cdn.example/${firstId}.m4a`));
+
+    fireEvent.ended(audio);
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('yt-dlp could not resolve this media.'));
+    expect(container.querySelector('.music-status')).toHaveTextContent('yt-dlp could not resolve this media.');
+    expect(container.querySelector('.music-status')).toHaveAttribute('data-error', 'true');
+  });
 });

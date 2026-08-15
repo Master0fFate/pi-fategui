@@ -121,6 +121,41 @@ describe('Composer voice input', () => {
     expect(transcribeSpeech).toHaveBeenCalledOnce();
   });
 
+  it('keeps the improve-prompt button unclickable while a transcription is ongoing', async () => {
+    let resolveTranscript: ((value: { text: string; language: string; backend: string; accelerated: boolean }) => void) | undefined;
+    const transcribeSpeech = vi.fn(() => new Promise<{ text: string; language: string; backend: string; accelerated: boolean }>((resolve) => { resolveTranscript = resolve; }));
+    const optimizePrompt = vi.fn(async () => ({ text: 'Rewritten.' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {
+      ensureSpeechModel: vi.fn(async () => undefined),
+      transcribeSpeech,
+      cancelSpeechTranscription: vi.fn(async () => false),
+      optimizePrompt,
+    } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+    const textarea = screen.getByRole('textbox', { name: 'Message Pi' });
+    fireEvent.change(textarea, { target: { value: 'draft while speaking' } });
+
+    await user.click(screen.getByRole('button', { name: 'Start voice recording' }));
+    const improveWhileRecording = screen.getByRole('button', { name: 'Improve prompt' });
+    expect(improveWhileRecording).toBeDisabled();
+    await user.click(improveWhileRecording).catch(() => undefined);
+
+    await user.click(screen.getByRole('button', { name: 'Stop voice recording' }));
+    await waitFor(() => expect(transcribeSpeech).toHaveBeenCalledOnce());
+    const improveWhileTranscribing = screen.getByRole('button', { name: 'Improve prompt' });
+    expect(improveWhileTranscribing).toBeDisabled();
+
+    await act(async () => {
+      resolveTranscript?.({ text: 'review the current changes', language: 'en', backend: 'Test GPU', accelerated: true });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(textarea).toHaveValue('draft while speaking review the current changes'));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Improve prompt' })).toBeEnabled());
+    expect(optimizePrompt).not.toHaveBeenCalled();
+  });
+
   it('falls back to the system microphone with a transient toast instead of persistent composer text', async () => {
     const user = userEvent.setup();
     const stop = vi.fn();

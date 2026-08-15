@@ -36,7 +36,11 @@ Opening another project resets the active Pi permission level. In Agent Teams, d
 
 ## Credentials
 
-Fate UI reuses Pi's existing provider configuration, OAuth sessions, supported environment credentials, and `~/.pi/agent/auth.json`. Raw API keys are never stored or displayed in renderer state.
+Fate UI embeds `@earendil-works/pi-coding-agent` in the Electron main process. It does not execute or require the `pi` terminal program.
+
+Fate UI stores provider credentials and model configuration under `~/.pi/fateGUI/`. On its first run only, it copies existing `~/.pi/agent/auth.json` and `models.json` when present. Pi sessions, settings, MCP configuration, skills, and extensions remain shared. Supported environment credentials remain available through the Pi SDK. Raw API keys are never stored or displayed in renderer state.
+
+The provider store is private: Fate UI creates its directory with user-only permissions on supported POSIX systems, writes imported credential files with user-only permissions, and refuses a non-regular provider file. Git ignores the mutable provider files for repository-root development overrides. After the first run, Fate UI never falls back to Pi Terminal credential or model files.
 
 ## Reporting vulnerabilities
 
