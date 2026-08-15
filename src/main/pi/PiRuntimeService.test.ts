@@ -1722,6 +1722,57 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('keeps browser OAuth sign-in non-blocking while the manual code fallback stays answerable', async () => {
+    const fake = fixture();
+    const shellOpenExternal = vi.fn();
+    vi.doMock('electron', () => ({ shell: { openExternal: shellOpenExternal } }));
+    let resolveLogin: (() => void) | undefined;
+    const login = vi.fn(async (_providerId: string, _method: string, interaction: {
+      prompt: (request: { type: 'select' | 'manual_code'; message: string; placeholder?: string }) => Promise<string>;
+      notify: (event: { type: 'auth_url'; url: string }) => void;
+    }) => {
+      const method = await interaction.prompt({ type: 'select', message: 'Select OpenAI Codex login method:' });
+      expect(method).toBe('browser');
+      interaction.notify({ type: 'auth_url', url: 'https://auth.openai.com/oauth/authorize' });
+      // Mirrors the SDK: the manual_code prompt is registered while the browser
+      // callback can still complete the login in the background.
+      const pasted = await interaction.prompt({ type: 'manual_code', message: 'Complete login in your browser, or paste the authorization code / redirect URL here:', placeholder: 'http://localhost:1455/auth/callback' });
+      expect(pasted).toBe('http://localhost:1455/auth/callback?code=abc&state=s');
+      await new Promise<void>((resolve) => { resolveLogin = resolve; });
+      return { type: 'oauth', access: 'token', refresh: 'refresh', expires: Date.now() + 3_600_000, accountId: 'account' };
+    });
+    const provider = { id: 'openai-codex', name: 'OpenAI (ChatGPT Plus/Pro)', auth: { oauth: {} } };
+    Object.assign(fake.modelRuntime, {
+      getProvider: () => provider,
+      getProviders: () => [provider],
+      hasConfiguredAuth: (providerId: string) => providerId === 'openai-codex',
+      login,
+    });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    await service.startProviderLogin({ providerId: 'openai-codex', method: 'oauth' });
+    // Blocking select prompt for the login method keeps awaiting-input.
+    await vi.waitFor(() => expect(service.getState(false).providerLogin).toMatchObject({ status: 'awaiting-input', prompt: { type: 'select' } }));
+    service.respondProviderLogin({ promptId: service.getState(false).providerLogin!.prompt!.id, value: 'browser' });
+
+    // The manual_code fallback must NOT flip the flow into a blocking prompt:
+    // the browser message stays primary while the prompt remains answerable.
+    await vi.waitFor(() => {
+      const state = service.getState(false).providerLogin;
+      expect(state).toMatchObject({ status: 'working', prompt: { type: 'manual_code' }, message: 'A secure browser window opened. Complete sign-in there, then return to Fate UI.' });
+    });
+    expect(shellOpenExternal).toHaveBeenCalledWith('https://auth.openai.com/oauth/authorize');
+
+    const manualPromptId = service.getState(false).providerLogin!.prompt!.id;
+    service.respondProviderLogin({ promptId: manualPromptId, value: 'http://localhost:1455/auth/callback?code=abc&state=s' });
+    await vi.waitFor(() => expect(service.getState(false).providerLogin).toMatchObject({ status: 'working', prompt: null }));
+
+    resolveLogin?.();
+    await vi.waitFor(() => expect(service.getState(false).providerLogin).toMatchObject({ status: 'idle', prompt: null, providerId: null }));
+    await service.dispose();
+  });
+
   it('publishes Pi extension, prompt, and canonical skill commands for the composer', async () => {
     const fake = fixture();
     Object.assign(fake.session, {

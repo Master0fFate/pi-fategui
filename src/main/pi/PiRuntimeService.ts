@@ -1920,13 +1920,23 @@ export class PiRuntimeService {
       const detachAbort = () => request.signal?.removeEventListener('abort', rejectCancelled);
       request.signal?.addEventListener('abort', rejectCancelled, { once: true });
       this.providerLoginResponse = { id, resolve, reject, detachAbort };
-      this.providerLogin = { ...this.providerLoginState(), status: 'awaiting-input', providerId: provider.id, providerName: provider.name, method: input.method, prompt: { id, type: request.type, message: request.message.slice(0, 2_000), ...(request.placeholder ? { placeholder: request.placeholder.slice(0, 500) } : {}), ...(request.options ? { options: request.options.slice(0, 100).map((option) => ({ id: option.id.slice(0, 500), label: option.label.slice(0, 500), ...(option.description ? { description: option.description.slice(0, 2_000) } : {}) })) } : {}) }, message: null, deviceCode: null };
+      // `manual_code` is the SDK's headless fallback for browser OAuth flows (for
+      // example OpenAI Codex): the browser callback can still complete the login
+      // in the background, so it must stay non-blocking. Other prompt types
+      // (secret, select, text) genuinely require user input before the flow can
+      // continue and keep the blocking awaiting-input state.
+      const manualFallback = request.type === 'manual_code';
+      const previous = this.providerLoginState();
+      this.providerLogin = { ...previous, status: manualFallback ? 'working' : 'awaiting-input', providerId: provider.id, providerName: provider.name, method: input.method, prompt: { id, type: request.type, message: request.message.slice(0, 2_000), ...(request.placeholder ? { placeholder: request.placeholder.slice(0, 500) } : {}), ...(request.options ? { options: request.options.slice(0, 100).map((option) => ({ id: option.id.slice(0, 500), label: option.label.slice(0, 500), ...(option.description ? { description: option.description.slice(0, 2_000) } : {}) })) } : {}) }, message: manualFallback ? (previous.message ?? 'Complete sign-in in your browser. This closes automatically when it finishes.') : null, deviceCode: manualFallback ? previous.deviceCode : null };
       this.emitState();
     });
     const notify = (event: { type: 'info' | 'auth_url' | 'device_code' | 'progress'; message?: string; url?: string; userCode?: string; verificationUri?: string; expiresInSeconds?: number }) => {
       if (event.type === 'auth_url' && event.url) this.openProviderAuthUrl(event.url);
       if (event.type === 'device_code' && event.verificationUri) this.openProviderAuthUrl(event.verificationUri);
-      this.providerLogin = { ...this.providerLoginState(), status: 'working', providerId: provider.id, providerName: provider.name, method: input.method, prompt: null, message: (event.message ?? (event.type === 'auth_url' ? 'A secure browser window opened. Complete sign-in there, then return to Fate UI.' : event.type === 'device_code' ? 'Open the verification page and enter this device code.' : 'Working…')).slice(0, 2_000), deviceCode: event.type === 'device_code' && event.userCode && event.verificationUri ? { userCode: event.userCode.slice(0, 500), verificationUri: event.verificationUri, ...(event.expiresInSeconds ? { expiresInSeconds: Math.min(86_400, Math.max(1, Math.floor(event.expiresInSeconds))) } : {}) } : null };
+      // Progress updates must not orphan a pending non-blocking manual_code
+      // prompt: its response slot stays live so the paste fallback keeps working.
+      const pendingManualPrompt = this.providerLogin.prompt?.type === 'manual_code' ? this.providerLogin.prompt : null;
+      this.providerLogin = { ...this.providerLoginState(), status: 'working', providerId: provider.id, providerName: provider.name, method: input.method, prompt: pendingManualPrompt, message: (event.message ?? (event.type === 'auth_url' ? 'A secure browser window opened. Complete sign-in there, then return to Fate UI.' : event.type === 'device_code' ? 'Open the verification page and enter this device code.' : 'Working…')).slice(0, 2_000), deviceCode: event.type === 'device_code' && event.userCode && event.verificationUri ? { userCode: event.userCode.slice(0, 500), verificationUri: event.verificationUri, ...(event.expiresInSeconds ? { expiresInSeconds: Math.min(86_400, Math.max(1, Math.floor(event.expiresInSeconds))) } : {}) } : (pendingManualPrompt ? this.providerLogin.deviceCode : null) };
       this.emitState();
     };
     void runtime.login(provider.id, input.method, { signal: controller.signal, prompt, notify }).then(async () => {
