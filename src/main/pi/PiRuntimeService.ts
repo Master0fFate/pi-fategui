@@ -69,6 +69,7 @@ import { createPiExtensionUiBridge, emptyExtensionUiState, type ExtensionNoticeL
 import { PiDesktopError, authRequiredError, normalizeError } from './errors';
 import { defaultSessionsRoot, isSafeSessionPath, PiSessionRepository, sessionDisplayTitle } from './PiSessionRepository';
 import { prepareFateProviderStorage } from './FateProviderStorage';
+import { registerBundledModelProviders } from './bundledProviders';
 import { buildSessionReferenceContext } from './SessionReferenceContext';
 import { PiSessionTitleGenerator, type SessionTitleGenerator } from './PiSessionTitleGenerator';
 import { activeToolsForPermission, createProjectConfinedTools, type ProjectToolAccess } from './PiToolPolicy';
@@ -363,11 +364,13 @@ async function boundedContextPrompts(directory: string, label: string): Promise<
 
 export const createDefaultModelRuntime = async (): Promise<ModelRuntime> => {
   const storage = await prepareFateProviderStorage();
-  return ModelRuntime.create({
+  const runtime = await ModelRuntime.create({
     authPath: storage.paths.authPath,
     modelsPath: storage.paths.modelsPath,
     modelsStorePath: storage.paths.modelsStorePath,
   });
+  registerBundledModelProviders(runtime);
+  return runtime;
 };
 
 const realPiSdkAdapter: PiSdkAdapter = {
