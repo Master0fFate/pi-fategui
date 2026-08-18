@@ -17,7 +17,7 @@ const loginState: ProviderLoginState = {
   providers: [
     { id: 'anthropic', name: 'Anthropic', methods: ['oauth', 'api_key'], configured: true },
     { id: 'amazon-bedrock', name: 'Amazon Bedrock', methods: ['api_key'], configured: false },
-    { id: 'supergrok', name: 'SuperGrok (xAI OAuth)', methods: ['oauth'], configured: false },
+    { id: 'xai', name: 'xAI', methods: ['oauth', 'api_key'], configured: false },
   ],
   providerId: null, providerName: null, method: null, prompt: null, message: null, deviceCode: null,
 };
@@ -89,8 +89,8 @@ describe('ProviderConnectDialog list', () => {
     render(<ProviderConnectDialog open onOpenChange={() => undefined} />);
     expect(await screen.findByText('Amazon Bedrock')).toBeInTheDocument();
     // Right-side meta shows the sign-in method for builtin providers.
-    expect(screen.getByText('API key')).toBeInTheDocument();
-    expect(screen.getByText('OAuth')).toBeInTheDocument();
+    expect(screen.getByText('API key')).toBeInTheDocument(); // amazon-bedrock
+    expect(screen.getByText('OAuth · API key')).toBeInTheDocument(); // xai
     expect(screen.getByText('Connected')).toBeInTheDocument(); // anthropic
     expect(screen.getByText('20 models')).toBeInTheDocument(); // crof
     // The catalog row for a builtin provider is suppressed (no duplicate noise).
@@ -140,10 +140,10 @@ describe('ProviderConnectDialog sign-in flow', () => {
   it('shows sign-out for connected providers and a working state during login', async () => {
     const user = userEvent.setup();
     setRuntime({
-      providerLogin: { ...loginState, status: 'working', providerId: 'supergrok', providerName: 'SuperGrok (xAI OAuth)', message: 'A secure browser window opened.' },
+      providerLogin: { ...loginState, status: 'working', providerId: 'xai', providerName: 'xAI', message: 'A secure browser window opened.' },
     });
     render(<ProviderConnectDialog open onOpenChange={() => undefined} />);
-    await user.click(await screen.findByText('SuperGrok (xAI OAuth)'));
+    await user.click(await screen.findByText('xAI'));
     expect(await screen.findByText('A secure browser window opened.')).toBeInTheDocument();
   });
 

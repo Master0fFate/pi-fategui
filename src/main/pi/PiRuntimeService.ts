@@ -74,7 +74,6 @@ import { PiDesktopError, authRequiredError, normalizeError } from './errors';
 import { defaultSessionsRoot, isSafeSessionPath, PiSessionRepository, sessionDisplayTitle } from './PiSessionRepository';
 import { prepareFateProviderStorage } from './FateProviderStorage';
 import { ModelsDevService } from './modelsdev/ModelsDevService';
-import { registerSuperGrokProvider } from './supergrok/supergrokProvider';
 import { buildSessionReferenceContext } from './SessionReferenceContext';
 import { PiSessionTitleGenerator, type SessionTitleGenerator } from './PiSessionTitleGenerator';
 import { activeToolsForPermission, createProjectConfinedTools, type ProjectToolAccess } from './PiToolPolicy';
@@ -376,15 +375,14 @@ export const createDefaultModelRuntime = async (): Promise<ModelRuntime> => {
     // Custom providers are added through the models.dev catalog (Settings →
     // Agent → Providers, or /login) and persisted in models.json; their model
     // lists refresh once per GUI start from models.dev, not per provider.
-    // SuperGrok registers as a vendored OAuth provider (subscription), the
-    // same mechanism a pi extension would use. This startup allowance lets pi
-    // refresh its catalogs for signed-in users on every Fate GUI start. It
-    // diverges from pi CLI's offline-by-default startup because Fate is a
-    // desktop app with stored sign-ins; PI_OFFLINE still disables it entirely.
+    // xAI ships with the SDK (API key or SuperGrok/X subscription OAuth), so
+    // no vendored provider is needed. This startup allowance lets pi refresh
+    // its catalogs for signed-in users on every Fate GUI start. It diverges
+    // from pi CLI's offline-by-default startup because Fate is a desktop app
+    // with stored sign-ins; PI_OFFLINE still disables it entirely.
     allowModelNetwork: true,
     modelRefreshTimeoutMs: 15_000,
   });
-  registerSuperGrokProvider(runtime);
   return runtime;
 };
 

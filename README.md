@@ -84,9 +84,9 @@ Managed provider behavior:
 - Provider logos load live from models.dev; they are never cached and simply stay hidden offline.
 - A managed row shows a **key needed** badge until a credential exists, and ✕ removes the provider again.
 
-#### SuperGrok (xAI subscription)
+#### SuperGrok / xAI
 
-SuperGrok is built in — no package to install. Open `/login`, pick **SuperGrok (xAI OAuth)**, and complete the browser sign-in with the account that holds your SuperGrok subscription. Fate UI stores the credential in its local provider store and refreshes tokens automatically. Then switch models, for example `/model supergrok/grok-4.3`. The model list starts from a bundled seed (grok-4.20 variants, grok-4.3, grok-build-0.1, grok-composer-2.5-fast) and merges the live xAI catalog once signed in. (Provider internals vendored from the MIT-licensed `pi-supergrok` extension.)
+xAI ships with the embedded Pi SDK. Open `/login`, pick **xAI**, and choose **Sign in with SuperGrok or X Premium** (subscription OAuth) or an API key. Then switch models, for example `/model xai/grok-4.3`.
 
 Fate UI bundles and runs the Pi SDK directly. You do not need a separate `pi` installation or a running Pi terminal process. Fate UI keeps compatibility with Pi's shared session, settings, MCP, skill, and extension layout through the SDK; this is resource compatibility, not a terminal dependency. Existing provider credentials are imported once on first run; supported environment credentials remain available through the SDK. Runtime diagnostics load without credentials, but prompting is unavailable until Pi reports an authenticated model.
 
