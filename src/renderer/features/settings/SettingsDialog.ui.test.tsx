@@ -355,3 +355,56 @@ describe('SettingsDialog feedback', () => {
     await waitFor(() => expect(document.documentElement.dataset.performanceMode).toBe('false'));
   });
 });
+
+describe('SettingsDialog providers card (models.dev)', () => {
+  it('shows provider rows with logos and a key-needed badge for managed providers without credentials', async () => {
+    installBridge(vi.fn(async () => settings));
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: null, sessionId: null, sessionFile: null, streaming: false,
+      model: null,
+      models: [
+        { provider: 'crof', id: 'kimi-k3', name: 'CrofAI: Kimi K3', reasoning: true, contextWindow: 1_000_000 },
+        { provider: 'anthropic', id: 'claude-x', name: 'Claude X', reasoning: true, contextWindow: 200_000 },
+      ],
+      thinkingLevel: 'medium', messages: [], commands: [], error: null,
+      modelsDevManaged: [{ id: 'crof', name: 'CrofAI', baseUrl: 'https://crof.ai/v1', envVar: 'CROF_API_KEY', api: 'openai-completions', modelCount: 1, addedAt: 1, checkedAt: 1, credentialConfigured: false }],
+    });
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+    await user.click(screen.getByRole('tab', { name: /agent/i }));
+
+    const addProvider = await screen.findByRole('button', { name: /add provider/i });
+    expect(addProvider).toBeInTheDocument();
+    expect(screen.getByText('CrofAI')).toBeInTheDocument();
+    expect(screen.getByText('Anthropic')).toBeInTheDocument();
+    expect(screen.getByText('key needed')).toBeInTheDocument();
+    // Only the managed provider gets a remove control.
+    expect(screen.getByRole('button', { name: 'Remove CrofAI from Fate UI' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove Anthropic from Fate UI' })).not.toBeInTheDocument();
+    // Logos paint as currentColor masks from models.dev; no <img> elements.
+    const crofRow = screen.getByText('CrofAI').closest('.settings-provider-row')!;
+    const logo = crofRow.querySelector<HTMLElement>('.settings-provider-pick .provider-logo');
+    expect(logo).not.toBeNull();
+    expect(logo!.querySelector('img')).toBeNull();
+  });
+
+  it('removes a managed provider through the row control and toasts the result', async () => {
+    const bridge = installBridge(vi.fn(async () => settings));
+    (bridge as unknown as Record<string, unknown>).removeModelsDevProvider = vi.fn(async () => ({
+      providerId: 'crof', providerName: 'CrofAI', modelCount: 1,
+      state: { status: 'ready', project: null, sessionId: null, sessionFile: null, streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null },
+    }));
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: null, sessionId: null, sessionFile: null, streaming: false,
+      model: null,
+      models: [{ provider: 'crof', id: 'kimi-k3', name: 'CrofAI: Kimi K3', reasoning: true, contextWindow: 1_000_000 }],
+      thinkingLevel: 'medium', messages: [], commands: [], error: null,
+      modelsDevManaged: [{ id: 'crof', name: 'CrofAI', baseUrl: 'https://crof.ai/v1', envVar: 'CROF_API_KEY', api: 'openai-completions', modelCount: 1, addedAt: 1, checkedAt: 1, credentialConfigured: true }],
+    });
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+    await user.click(screen.getByRole('tab', { name: /agent/i }));
+    await user.click(await screen.findByRole('button', { name: 'Remove CrofAI from Fate UI' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('CrofAI removed');
+  });
+});

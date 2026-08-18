@@ -124,7 +124,8 @@ describe('first-launch shell', () => {
     await user.click(actionCards[0]!);
     await waitFor(() => expect(initializeProviderLogin).toHaveBeenCalledOnce());
     expect(selectProject).not.toHaveBeenCalled();
-    expect(screen.getByRole('dialog', { name: 'Connect a provider' })).toBeInTheDocument();
+    // The dialog gates on the logo prefetch budget before mounting.
+    expect(await screen.findByRole('dialog', { name: 'Connect a provider' })).toBeInTheDocument();
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Connect a provider' })).not.toBeInTheDocument());
     for (const [index, card] of actionCards.slice(1).entries()) {

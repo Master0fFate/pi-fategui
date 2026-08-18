@@ -26,6 +26,10 @@ import type {
   AppError,
   ExtensionUiState,
   ModelInfo,
+  ModelsDevListResult,
+  ModelsDevManagedProvider,
+  ModelsDevMutationResult,
+  ModelsDevProviderDetail,
   PermissionLevel,
   PiEvent,
   ProjectState,
@@ -69,7 +73,8 @@ import { createPiExtensionUiBridge, emptyExtensionUiState, type ExtensionNoticeL
 import { PiDesktopError, authRequiredError, normalizeError } from './errors';
 import { defaultSessionsRoot, isSafeSessionPath, PiSessionRepository, sessionDisplayTitle } from './PiSessionRepository';
 import { prepareFateProviderStorage } from './FateProviderStorage';
-import { registerBundledModelProviders } from './bundledProviders';
+import { ModelsDevService } from './modelsdev/ModelsDevService';
+import { registerSuperGrokProvider } from './supergrok/supergrokProvider';
 import { buildSessionReferenceContext } from './SessionReferenceContext';
 import { PiSessionTitleGenerator, type SessionTitleGenerator } from './PiSessionTitleGenerator';
 import { activeToolsForPermission, createProjectConfinedTools, type ProjectToolAccess } from './PiToolPolicy';
@@ -368,8 +373,18 @@ export const createDefaultModelRuntime = async (): Promise<ModelRuntime> => {
     authPath: storage.paths.authPath,
     modelsPath: storage.paths.modelsPath,
     modelsStorePath: storage.paths.modelsStorePath,
+    // Custom providers are added through the models.dev catalog (Settings →
+    // Agent → Providers, or /login) and persisted in models.json; their model
+    // lists refresh once per GUI start from models.dev, not per provider.
+    // SuperGrok registers as a vendored OAuth provider (subscription), the
+    // same mechanism a pi extension would use. This startup allowance lets pi
+    // refresh its catalogs for signed-in users on every Fate GUI start. It
+    // diverges from pi CLI's offline-by-default startup because Fate is a
+    // desktop app with stored sign-ins; PI_OFFLINE still disables it entirely.
+    allowModelNetwork: true,
+    modelRefreshTimeoutMs: 15_000,
   });
-  registerBundledModelProviders(runtime);
+  registerSuperGrokProvider(runtime);
   return runtime;
 };
 
@@ -853,6 +868,8 @@ export class PiRuntimeService {
   private providerLoginAbort: AbortController | null = null;
   private providerLoginResponse: { id: string; resolve: (value: string) => void; reject: (error: Error) => void; detachAbort?: () => void } | null = null;
   private providerLoginRuntimeInitialization: Promise<ModelRuntime> | null = null;
+  private readonly modelsDev: ModelsDevService;
+  private modelsDevManagedCache: ModelsDevManagedProvider[] = [];
 
   private get runtime(): AgentSessionRuntime | null { return this.selectedSlot?.runtime ?? null; }
   private get permissionLevel(): PermissionLevel { return this.selectedSlot?.permissionLevel ?? this.fallbackPermissionLevel; }
@@ -888,8 +905,13 @@ export class PiRuntimeService {
     private readonly recordAttestation: MutationRecorder | null = null,
     taskPersistence: TaskPersistence = new InMemoryTaskRepository(),
     private readonly researchSessionFactory: SubagentChildSessionFactory = createSdkChildSession,
+    modelsDevService?: ModelsDevService,
   ) {
     this.batcher = new PiEventBatcher((events) => this.eventSink(events));
+    this.modelsDev = modelsDevService ?? new ModelsDevService();
+    // Snapshot the managed-provider registry into the runtime state cache. The
+    // registry lives on disk; the cache keeps getState() synchronous.
+    void this.refreshModelsDevManagedCache();
     const childSessionFactory = (input: Parameters<typeof createSdkChildSession>[0]) => {
       const handle: ChildAttestationHandle | undefined = this.recordAttestation ? { sessionId: null } : undefined;
       const sink = handle && this.recordAttestation
@@ -1144,6 +1166,7 @@ export class PiRuntimeService {
       pendingThinkingLevel: this.selectedSlot?.pendingThinkingLevel?.level ?? null,
       permissionLevel: this.permissionLevel,
       providerLogin: this.providerLoginState(),
+      modelsDevManaged: this.modelsDevManagedCache,
       messages,
       tools,
       commands: this.getCommands(session),
@@ -1945,7 +1968,9 @@ export class PiRuntimeService {
     void runtime.login(provider.id, input.method, { signal: controller.signal, prompt, notify }).then(async () => {
       // Providers can publish a remote catalog only after credentials exist.
       // Refresh it before reading the available models so the model selector
-      // updates in the same sign-in flow.
+      // updates in the same sign-in flow. Pi refreshes its built-in catalogs at
+      // most once per ModelRuntime session, so this reuses the startup fetch
+      // when one already landed and only fetches for first-time sign-ins.
       await runtime.refresh({ allowNetwork: true });
       const available = await runtime.getAvailable();
       this.models = available.slice(0, 2_000).map(toModelInfo);
@@ -1999,6 +2024,131 @@ export class PiRuntimeService {
     }
     this.emitState();
     return this.getState(false);
+  }
+
+  // -------------------------------------------------------------------------
+  // models.dev managed providers (Add Provider flow)
+  // -------------------------------------------------------------------------
+
+  /** Rebuild the synchronous managed-provider snapshot in RuntimeState. */
+  private async refreshModelsDevManagedCache(): Promise<void> {
+    let entries;
+    try {
+      entries = await this.modelsDev.managedProviders();
+    } catch {
+      return;
+    }
+    const runtime = this.modelRuntime;
+    this.modelsDevManagedCache = entries.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      baseUrl: entry.baseUrl,
+      envVar: entry.envVar,
+      api: entry.api,
+      modelCount: entry.modelCount,
+      addedAt: entry.addedAt,
+      checkedAt: entry.checkedAt,
+      credentialConfigured: runtime?.hasConfiguredAuth?.(entry.id) === true,
+    }));
+  }
+
+  /** Live picker list fetched straight from models.dev. Nothing is cached. */
+  async listModelsDevProviders(): Promise<ModelsDevListResult> {
+    // A live runtime (lazily created, exactly like the sign-in dialog) yields
+    // the accurate set of already-configured provider ids, including the
+    // providers pi ships natively, so the picker never offers duplicates.
+    const runtime = await this.providerLoginRuntime();
+    const existing = new Set(runtime.getProviders().map((provider) => provider.id));
+    const { providers, fetchedAt } = await this.modelsDev.listProviders(existing);
+    return { providers: providers.map(({ summary }) => summary), fetchedAt };
+  }
+
+  /** Full models.dev provider detail for the confirm step. */
+  async getModelsDevProvider(providerId: string): Promise<ModelsDevProviderDetail> {
+    const detail = await this.modelsDev.getProviderDetail(providerId);
+    const { provider: _raw, ...rest } = detail;
+    return rest;
+  }
+
+  /**
+   * Add a models.dev provider: write models.json + registry, register it on
+   * the live runtime, optionally store the API key in the credential store.
+   */
+  async addModelsDevProvider(input: { providerId: string; apiKey?: string | undefined }): Promise<ModelsDevMutationResult> {
+    const session = this.runtime?.session;
+    if (this.replacementActive || (session && this.sessionHasActiveWork(session))) {
+      throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for the active Pi operation to finish before adding a provider.', retryable: true });
+    }
+    const { config, entry } = await this.modelsDev.addProvider(input.providerId);
+    const runtime = await this.providerLoginRuntime();
+    runtime.registerProvider(config.id, config as unknown as Parameters<ModelRuntime['registerProvider']>[1]);
+    const apiKey = input.apiKey?.trim();
+    if (apiKey) await runtime.setRuntimeApiKey(config.id, apiKey);
+    const available = await runtime.getAvailable();
+    this.models = available.slice(0, 2_000).map(toModelInfo);
+    if (this.project) {
+      this.status = available.length > 0 ? 'ready' : 'auth-required';
+      this.stateError = available.length > 0 ? null : authRequiredError();
+    }
+    await this.refreshModelsDevManagedCache();
+    this.emitState(true);
+    return { providerId: entry.id, providerName: entry.name, modelCount: entry.modelCount, state: this.getState(false) };
+  }
+
+  /** Remove a managed provider and rebuild the live runtime from disk. */
+  async removeModelsDevProvider(providerId: string): Promise<ModelsDevMutationResult> {
+    const session = this.runtime?.session;
+    if (this.replacementActive || (session && this.sessionHasActiveWork(session))) {
+      throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for the active Pi operation to finish before removing a provider.', retryable: true });
+    }
+    if (session?.model?.provider === providerId) {
+      throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The active session is using this provider. Switch to another model first.', retryable: false });
+    }
+    const registry = await this.modelsDev.managedProviders();
+    const entry = registry.find((candidate) => candidate.id === providerId);
+    const providerName = entry?.name ?? providerId;
+    const modelCount = entry?.modelCount ?? 0;
+    await this.modelsDev.removeProvider(providerId);
+    if (this.modelRuntime) {
+      try { this.modelRuntime.unregisterProvider(providerId); } catch { /* Config-layer providers may not be unregisterable; the disk rebuild below is authoritative. */ }
+      // Rebuild from models.json so future sessions never see the provider.
+      // Live slots keep their own runtime reference and stay untouched.
+      this.modelRuntime = null;
+      this.providerLoginRuntimeInitialization = null;
+      try {
+        const runtime = await this.providerLoginRuntime();
+        const available = await runtime.getAvailable();
+        this.models = available.slice(0, 2_000).map(toModelInfo);
+      } catch { /* Offline or storage errors keep the previous list minus the removed provider. */ }
+    }
+    this.models = this.models.filter((model) => model.provider !== providerId);
+    await this.refreshModelsDevManagedCache();
+    this.emitState(true);
+    return { providerId, providerName, modelCount, state: this.getState(false) };
+  }
+
+  /**
+   * GUI-start refresh of every managed provider's model list from models.dev.
+   * Offline or failed refreshes keep the cached lists; never throws.
+   */
+  async refreshManagedModelsDevProviders(): Promise<void> {
+    let updated: Array<{ id: string; config: import('./modelsdev/ModelsDevCatalog').GeneratedPiProviderConfig }>;
+    try {
+      updated = await this.modelsDev.refreshManagedProviders();
+    } catch {
+      return;
+    }
+    await this.refreshModelsDevManagedCache();
+    const runtime = this.modelRuntime;
+    if (!runtime) { this.emitState(); return; }
+    for (const { id, config } of updated) {
+      try { runtime.registerProvider(id, config as unknown as Parameters<ModelRuntime['registerProvider']>[1]); } catch { /* Composition failures surface as diagnostics; the disk file stays correct. */ }
+    }
+    try {
+      const available = await runtime.getAvailable();
+      this.models = available.slice(0, 2_000).map(toModelInfo);
+      this.emitState();
+    } catch { /* Keep the previous model list. */ }
   }
 
   private async providerLoginRuntime(): Promise<ModelRuntime> {
@@ -3622,7 +3772,11 @@ export class PiRuntimeService {
   private async steerGoalTurn(sessionId: string, capsule: string, goalId: string, revision: number): Promise<void> {
     const slot = this.findLiveSlot(sessionId);
     const current = this.project ? this.goalMax.get(this.project.path, sessionId) : null;
-    if (!slot || slot.disposed || !current || current.id !== goalId || current.revision !== revision) return;
+    // Deliver authoritative steering even if a concurrent mutation (child
+    // report, task update) bumped the goal revision after this capsule was
+    // built: dropping the delivery on that race parks the user's update. Only
+    // the goal identity and a non-terminal status gate the delivery.
+    if (!slot || slot.disposed || !current || current.id !== goalId || current.status === 'completed' || current.status === 'cancelled') return;
     const message = {
       customType: 'fate-goalmax-update',
       content: [{ type: 'text' as const, text: capsule }],

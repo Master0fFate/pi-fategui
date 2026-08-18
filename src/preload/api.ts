@@ -84,6 +84,11 @@ import {
   providerLoginStartInputSchema,
   providerLoginRespondInputSchema,
   providerLogoutInputSchema,
+  modelsDevAddInputSchema,
+  modelsDevListResultSchema,
+  modelsDevMutationResultSchema,
+  modelsDevProviderDetailSchema,
+  modelsDevRemoveInputSchema,
   setThinkingInputSchema,
   terminalAckInputSchema,
   terminalCloseInputSchema,
@@ -102,6 +107,7 @@ import {
   type GitOperation,
   type ImageSaveInput,
   type MusicDurationsEvent,
+  type ModelsDevAddInput,
   type PiDesktopApi,
   type SessionDirectMessageInput,
   type PiEvent,
@@ -456,6 +462,22 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async logoutProvider(providerId: string) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeProviderLogout, providerLogoutInputSchema.parse({ providerId }));
     return runtimeStateSchema.parse(result);
+  },
+  async listModelsDevProviders() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.modelsDevList, emptyInputSchema.parse({}));
+    return modelsDevListResultSchema.parse(result);
+  },
+  async getModelsDevProvider(providerId: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.modelsDevDetail, modelsDevRemoveInputSchema.parse({ providerId }));
+    return modelsDevProviderDetailSchema.parse(result);
+  },
+  async addModelsDevProvider(input: ModelsDevAddInput) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.modelsDevAdd, modelsDevAddInputSchema.parse(input));
+    return modelsDevMutationResultSchema.parse(result);
+  },
+  async removeModelsDevProvider(providerId: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.modelsDevRemove, modelsDevRemoveInputSchema.parse({ providerId }));
+    return modelsDevMutationResultSchema.parse(result);
   },
   async mutateQueuedMessage(input: QueueMutationInput) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.runtimeMutateQueue, queueMutationInputSchema.parse(input));

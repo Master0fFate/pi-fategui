@@ -20,7 +20,7 @@ import { agentMentionContext, findLiveAgentMentions, parseAgentStopCommand, sess
 import { fileTagContext, fileTagText, findFileTags } from './fileTags';
 import { findSlashCommands, slashCommandContext, slashCommandDescription, slashCommandLabel, type SlashCommand } from './slashCommands';
 import { VoiceStreamFeedQueue, startVoiceStream, type VoiceStreamController } from './voiceStream';
-import { ProviderLoginDialog } from './ProviderLoginDialog';
+import { ProviderConnectDialog } from '../../components/ProviderConnectDialog';
 
 interface Attachment {
   name: string;
@@ -2632,7 +2632,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
         </div>
       </form>
       {composerError && <p className="composer-error" role="alert">{composerError}</p>}
-      <ProviderLoginDialog open={providerLoginOpen} state={runtime.providerLogin} onOpenChange={setProviderLoginOpen} />
+      <ProviderConnectDialog open={providerLoginOpen} onOpenChange={setProviderLoginOpen} />
       <Dialog.Root open={Boolean(previewImage)} onOpenChange={(open) => { if (!open) setPreviewImage(null); }}>
         <Dialog.Portal>
           <Dialog.Overlay className="cinematic-image-overlay" />

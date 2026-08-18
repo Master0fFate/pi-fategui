@@ -73,6 +73,21 @@ Fate UI uses its own provider credentials and model configuration under `~/.pi/f
 2. Choose a provider, then complete its OAuth or API-key flow.
 3. The available model list refreshes automatically. Select a model, open a trusted project, and start prompting.
 
+#### Add any provider from models.dev
+
+The same live picker is available in two places: **/login → Add provider from models.dev** (including the first-run *Connect your AI* dialog) and Settings → **Agent → Providers → Add provider**. It is built on the open [models.dev](https://models.dev) catalog (~190 providers). Pick one, paste its API key (optional), and Fate UI writes the full provider block — models, pricing, reasoning effort maps, tool and structured-output flags — into `~/.pi/fateGUI/models.json` and the key into the local credential store. No secret ever lands in models.json; it only references the provider's environment variable. Added providers appear in /login immediately, where you can also sign in or sign out later with the standard flow.
+
+Managed provider behavior:
+
+- The model list refreshes from models.dev once per Fate GUI start; offline starts keep the last cached list.
+- The Add Provider picker always fetches fresh catalog data and never uses the cache.
+- Provider logos load live from models.dev; they are never cached and simply stay hidden offline.
+- A managed row shows a **key needed** badge until a credential exists, and ✕ removes the provider again.
+
+#### SuperGrok (xAI subscription)
+
+SuperGrok is built in — no package to install. Open `/login`, pick **SuperGrok (xAI OAuth)**, and complete the browser sign-in with the account that holds your SuperGrok subscription. Fate UI stores the credential in its local provider store and refreshes tokens automatically. Then switch models, for example `/model supergrok/grok-4.3`. The model list starts from a bundled seed (grok-4.20 variants, grok-4.3, grok-build-0.1, grok-composer-2.5-fast) and merges the live xAI catalog once signed in. (Provider internals vendored from the MIT-licensed `pi-supergrok` extension.)
+
 Fate UI bundles and runs the Pi SDK directly. You do not need a separate `pi` installation or a running Pi terminal process. Fate UI keeps compatibility with Pi's shared session, settings, MCP, skill, and extension layout through the SDK; this is resource compatibility, not a terminal dependency. Existing provider credentials are imported once on first run; supported environment credentials remain available through the SDK. Runtime diagnostics load without credentials, but prompting is unavailable until Pi reports an authenticated model.
 
 ### 3. Launch, trust, and prompt

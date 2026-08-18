@@ -317,6 +317,11 @@ app.whenReady().then(async () => {
     }
   }
   const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser: browserHost, automations, attestations: attestationLedger, newWindow: () => windows.createWindow(), rendererPolicy });
+  // Refresh every models.dev-managed provider's model list once per Fate GUI
+  // start. Runs beside startup, never blocking it; offline keeps the cache.
+  void runtime.refreshManagedModelsDevProviders().catch((error) => {
+    logs.write('warn', 'providers', `models.dev catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
   dispatcher.setOpener(mainCommands.openProjectPath);
   void hotkey.applySpeechSettings((await settings.load()).speech).then((status) => {
     if (!status.pushToTalkAvailable) logs.write('warn', 'speech', status.reason ?? 'Push-to-talk is unavailable on this platform.');

@@ -19,6 +19,8 @@ import { runtimeStateSchema } from '../../shared/contracts/ipc';
 import { defaultSessionsRoot, PiSessionRepository } from './PiSessionRepository';
 import type { SessionTitleGenerator } from './PiSessionTitleGenerator';
 import { InMemorySessionPermissionStore } from './SessionPermissionStore';
+import { ModelsDevService } from './modelsdev/ModelsDevService';
+import { ModelsDevStore } from './modelsdev/ModelsDevStore';
 
 const model = { provider: 'test', id: 'model', name: 'Test Model', reasoning: true, contextWindow: 1000, input: ['text', 'image'] as const };
 
@@ -3040,5 +3042,107 @@ describe('PiRuntimeService', () => {
     // The root attestation handle is cleared during that slot's disposal: a late
     // tool write resolves no context and cannot be attributed to the disposed run.
     expect(sink.resolveContext()).toBeNull();
+  });
+});
+
+describe('models.dev managed providers', () => {
+  const crofModel = { provider: 'crof', id: 'kimi-k3', name: 'CrofAI: Kimi K3', reasoning: true, contextWindow: 1_000_000, input: ['text'] as const };
+  const catalogPayload = () => ({
+    crof: {
+      id: 'crof', name: 'CrofAI', api: 'https://crof.ai/v1', env: ['CROF_API_KEY'], npm: '@ai-sdk/openai-compatible',
+      models: { 'kimi-k3': { id: 'kimi-k3', name: 'Kimi K3', reasoning: true, reasoning_options: [{ type: 'effort', values: ['none', 'low', 'high', 'max'] }], tool_call: true, limit: { context: 1_000_000, output: 262_144 }, cost: { input: 2, output: 8, cache_read: 0.25 } } },
+    },
+  });
+
+  function modelsDevFixture() {
+    const fake = fixture();
+    fake.modelRuntime.getAvailable = vi.fn(async () => [model]) as unknown as typeof fake.modelRuntime.getAvailable;
+    Object.assign(fake.modelRuntime, {
+      getProviders: vi.fn(() => [{ id: 'test', name: 'Test', auth: {} }, { id: 'crof', name: 'CrofAI', auth: {} }]),
+      registerProvider: vi.fn(),
+      unregisterProvider: vi.fn(),
+      setRuntimeApiKey: vi.fn(async () => undefined),
+      hasConfiguredAuth: vi.fn(() => true),
+    });
+    const dataRoot = mkdtempSync(path.join(tmpdir(), 'fate-modelsdev-rt-'));
+    const body = JSON.stringify(catalogPayload());
+    const service = new ModelsDevService({
+      store: new ModelsDevStore(dataRoot),
+      fetchImpl: (async () => ({ ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode(body).buffer })) as never,
+      now: () => 42_000,
+    });
+    return { fake, dataRoot, service };
+  }
+
+  it('lists live providers with managed and configured statuses', async () => {
+    const { fake, service } = modelsDevFixture();
+    const runtime = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, service);
+    const result = await runtime.listModelsDevProviders();
+    expect(result.providers).toHaveLength(1);
+    expect(result.providers[0]).toMatchObject({ id: 'crof', status: 'configured' });
+    await runtime.dispose();
+  });
+
+  it('adds a provider: writes storage, registers on the live runtime, stores the key', async () => {
+    const { fake, dataRoot, service } = modelsDevFixture();
+    const runtime = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, service);
+    const result = await runtime.addModelsDevProvider({ providerId: 'crof', apiKey: 'sk-live' });
+    expect(result).toMatchObject({ providerId: 'crof', providerName: 'CrofAI', modelCount: 1 });
+    expect((fake.modelRuntime as unknown as { registerProvider: ReturnType<typeof vi.fn> }).registerProvider).toHaveBeenCalledWith('crof', expect.objectContaining({ baseUrl: 'https://crof.ai/v1', apiKey: '$CROF_API_KEY' }));
+    expect((fake.modelRuntime as unknown as { setRuntimeApiKey: ReturnType<typeof vi.fn> }).setRuntimeApiKey).toHaveBeenCalledWith('crof', 'sk-live');
+    // The managed snapshot rides RuntimeState.
+    expect(runtime.getState(false).modelsDevManaged).toEqual([expect.objectContaining({ id: 'crof', credentialConfigured: true })]);
+    // models.json and the registry were written beside the Fate data root.
+    const store = new ModelsDevStore(dataRoot);
+    expect(Object.keys((await store.readModelsJson()).providers)).toEqual(['crof']);
+    expect(Object.keys((await store.readRegistry()).providers)).toEqual(['crof']);
+    await runtime.dispose();
+  });
+
+  it('adds without a key when none is supplied', async () => {
+    const { fake, service } = modelsDevFixture();
+    const runtime = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, service);
+    await runtime.addModelsDevProvider({ providerId: 'crof' });
+    expect((fake.modelRuntime as unknown as { setRuntimeApiKey: ReturnType<typeof vi.fn> }).setRuntimeApiKey).not.toHaveBeenCalled();
+    await runtime.dispose();
+  });
+
+  it('removes a managed provider from storage and the live runtime', async () => {
+    const { fake, service } = modelsDevFixture();
+    const runtime = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, service);
+    await runtime.addModelsDevProvider({ providerId: 'crof' });
+    const result = await runtime.removeModelsDevProvider('crof');
+    expect(result).toMatchObject({ providerId: 'crof', providerName: 'CrofAI' });
+    expect((fake.modelRuntime as unknown as { unregisterProvider: ReturnType<typeof vi.fn> }).unregisterProvider).toHaveBeenCalledWith('crof');
+    expect(runtime.getState(false).modelsDevManaged).toEqual([]);
+    await runtime.dispose();
+  });
+
+  it('refuses to remove a provider the active session is using', async () => {
+    const { fake, service } = modelsDevFixture();
+    const runtime = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, service);
+    await runtime.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.session.model = { ...model, provider: 'crof' };
+    await expect(runtime.removeModelsDevProvider('crof')).rejects.toThrow(/Switch to another model/);
+    await runtime.dispose();
+  });
+
+  it('refreshes managed providers from the catalog at GUI start without throwing offline', async () => {
+    const { fake, dataRoot, service } = modelsDevFixture();
+    const runtime = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, service);
+    await runtime.addModelsDevProvider({ providerId: 'crof' });
+    // A second service with a dead network keeps the cached models.
+    const offline = new ModelsDevService({
+      store: new ModelsDevStore(dataRoot),
+      fetchImpl: (async () => { throw new Error('down'); }) as never,
+      now: () => 43_000,
+    });
+    const offlineRuntime = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, offline);
+    await expect(offlineRuntime.refreshManagedModelsDevProviders()).resolves.toBeUndefined();
+    const store = new ModelsDevStore(dataRoot);
+    const provider = (await store.readModelsJson()).providers.crof as { models?: unknown[] };
+    expect(provider.models).toHaveLength(1);
+    await runtime.dispose();
+    await offlineRuntime.dispose();
   });
 });

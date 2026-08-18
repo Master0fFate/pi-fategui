@@ -120,6 +120,10 @@ export const ipcChannels = {
   runtimeProviderLoginRespond: 'runtime:provider-login:respond',
   runtimeProviderLoginCancel: 'runtime:provider-login:cancel',
   runtimeProviderLogout: 'runtime:provider-logout',
+  modelsDevList: 'modelsdev:list',
+  modelsDevDetail: 'modelsdev:detail',
+  modelsDevAdd: 'modelsdev:add',
+  modelsDevRemove: 'modelsdev:remove',
   runtimeMutateQueue: 'runtime:mutate-queue',
   runtimeGoalMaxGet: 'runtime:goalmax:get',
   runtimeGoalMaxCreate: 'runtime:goalmax:create',
@@ -272,6 +276,81 @@ export const projectStateSchema = z.object({
   name: z.string().min(1),
   trusted: z.boolean(),
 });
+
+// ---------------------------------------------------------------------------
+// models.dev provider catalog (Add Provider flow)
+// ---------------------------------------------------------------------------
+
+/** A provider the user added from models.dev. Rides RuntimeState so every
+ *  window sees the same managed list without extra IPC round-trips. */
+export const modelsDevManagedProviderSchema = z.object({
+  /** models.dev provider id; doubles as the Pi provider id in models.json. */
+  id: z.string().min(1).max(200),
+  name: z.string().min(1).max(300),
+  baseUrl: z.string().min(1).max(2_000),
+  /** Environment variable pi reads the API key from, when models.dev lists one. */
+  envVar: z.string().min(1).max(200).nullable(),
+  /** Pi streaming API kind, for example "openai-completions". */
+  api: z.string().min(1).max(100),
+  modelCount: z.number().int().nonnegative().max(100_000),
+  addedAt: z.number().finite(),
+  /** Last successful models.dev catalog refresh; null until the first one. */
+  checkedAt: z.number().finite().nullable(),
+  credentialConfigured: z.boolean(),
+});
+
+/** One row of the Add Provider picker. Fetched live from models.dev. */
+export const modelsDevProviderSummarySchema = z.object({
+  id: z.string().min(1).max(200),
+  name: z.string().min(1).max(300),
+  modelCount: z.number().int().nonnegative().max(100_000),
+  envVar: z.string().min(1).max(200).nullable(),
+  baseUrl: z.string().min(1).max(2_000),
+  api: z.string().min(1).max(100),
+  docUrl: z.string().min(1).max(2_000).nullable(),
+  /** "available" for addable rows; "managed" or "configured" rows are shown as already present. */
+  status: z.enum(['available', 'managed', 'configured']),
+});
+
+export const modelsDevModelSummarySchema = z.object({
+  id: z.string().min(1).max(500),
+  name: z.string().min(1).max(500),
+  reasoning: z.boolean(),
+  toolCall: z.boolean(),
+  structuredOutput: z.boolean(),
+  imageInput: z.boolean(),
+  contextWindow: z.number().int().positive(),
+  maxTokens: z.number().int().positive(),
+  effortValues: z.array(z.string().min(1).max(100)).max(20),
+  costInput: z.number().nonnegative(),
+  costOutput: z.number().nonnegative(),
+});
+
+/** Full provider detail shown before confirming an add. */
+export const modelsDevProviderDetailSchema = z.object({
+  id: z.string().min(1).max(200),
+  name: z.string().min(1).max(300),
+  baseUrl: z.string().min(1).max(2_000),
+  envVar: z.string().min(1).max(200).nullable(),
+  api: z.string().min(1).max(100),
+  docUrl: z.string().min(1).max(2_000).nullable(),
+  models: z.array(modelsDevModelSummarySchema).max(500),
+});
+
+export const modelsDevListResultSchema = z.object({
+  providers: z.array(modelsDevProviderSummarySchema).max(1_000),
+  fetchedAt: z.number().finite(),
+});
+
+export const modelsDevAddInputSchema = z.object({
+  providerId: z.string().min(1).max(200),
+  /** Optional API key; stored in the Fate UI credential store, never in models.json. */
+  apiKey: z.string().min(1).max(2_000).optional(),
+}).strict();
+
+export const modelsDevRemoveInputSchema = z.object({
+  providerId: z.string().min(1).max(200),
+}).strict();
 export const projectFileReferenceSchema = z.string().min(1).max(4_096).nullable();
 export const revealProjectResultSchema = z.object({ opened: z.literal(true) }).strict();
 
@@ -871,6 +950,14 @@ export const runtimeStateSchema = z.object({
   sessionOperation: z.boolean().optional(),
   eventCursor: z.number().int().nonnegative().optional(),
   error: appErrorSchema.nullable(),
+  modelsDevManaged: z.array(modelsDevManagedProviderSchema).max(200).optional(),
+});
+
+export const modelsDevMutationResultSchema = z.object({
+  providerId: z.string().min(1).max(200),
+  providerName: z.string().min(1).max(300),
+  modelCount: z.number().int().nonnegative(),
+  state: runtimeStateSchema,
 });
 
 export const automationSessionPreparationResultSchema = z.object({
@@ -1306,6 +1393,15 @@ export type AppCommand = z.infer<typeof appCommandSchema>;
 export type WindowControlAction = z.infer<typeof windowControlInputSchema>['action'];
 export type WindowState = z.infer<typeof windowStateSchema>;
 
+export type ModelsDevManagedProvider = z.infer<typeof modelsDevManagedProviderSchema>;
+export type ModelsDevProviderSummary = z.infer<typeof modelsDevProviderSummarySchema>;
+export type ModelsDevProviderDetail = z.infer<typeof modelsDevProviderDetailSchema>;
+export type ModelsDevModelSummary = z.infer<typeof modelsDevModelSummarySchema>;
+export type ModelsDevListResult = z.infer<typeof modelsDevListResultSchema>;
+export type ModelsDevAddInput = z.infer<typeof modelsDevAddInputSchema>;
+export type ModelsDevRemoveInput = z.infer<typeof modelsDevRemoveInputSchema>;
+export type ModelsDevMutationResult = z.infer<typeof modelsDevMutationResultSchema>;
+
 export interface PiDesktopApi {
   getAppInfo: () => Promise<AppInfo>;
   controlWindow: (action: WindowControlAction) => Promise<WindowState>;
@@ -1368,6 +1464,10 @@ export interface PiDesktopApi {
   respondProviderLogin: (input: ProviderLoginRespondInput) => Promise<RuntimeState>;
   cancelProviderLogin: () => Promise<RuntimeState>;
   logoutProvider: (providerId: string) => Promise<RuntimeState>;
+  listModelsDevProviders: () => Promise<z.infer<typeof modelsDevListResultSchema>>;
+  getModelsDevProvider: (providerId: string) => Promise<z.infer<typeof modelsDevProviderDetailSchema>>;
+  addModelsDevProvider: (input: z.infer<typeof modelsDevAddInputSchema>) => Promise<z.infer<typeof modelsDevMutationResultSchema>>;
+  removeModelsDevProvider: (providerId: string) => Promise<z.infer<typeof modelsDevMutationResultSchema>>;
   mutateQueuedMessage: (input: QueueMutationInput) => Promise<QueueMutationResult>;
   getGoalMax: () => Promise<GoalMaxState | null>;
   createGoalMax: (input: GoalMaxCreateInput) => Promise<GoalMaxState>;

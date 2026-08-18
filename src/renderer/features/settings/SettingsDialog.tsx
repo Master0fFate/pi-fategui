@@ -11,6 +11,7 @@ import {
   LockKeyhole,
   Monitor,
   Music2,
+  Plus,
   Save,
   ShieldCheck,
   SlidersHorizontal,
@@ -35,12 +36,15 @@ import {
 } from '../../../shared/imageGeneration';
 import { applyVisualSettings } from '../../appearance';
 import { AppTooltip } from '../../components/AppTooltip';
+import { ProviderLogo } from '../../components/ProviderLogo';
 import { SelectControl } from '../../components/SelectControl';
+import { ipcErrorMessage } from '../../lib/ipcError';
 import { codeFontOptions, interfaceFontOptions } from '../../fonts';
 import { fallbackThemes } from '../../theme';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { enumerateMicrophones, microphoneAccessError, requestMicrophoneDevices, type MicrophoneDevice } from './microphoneDevices';
+import { ProviderConnectDialog } from '../../components/ProviderConnectDialog';
 
 const fallback: AppSettings = {
   appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true,
@@ -117,7 +121,19 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   const setAdvancedPromptImprovement = useUiStore((state) => state.setAdvancedPromptImprovement);
   const setSpeech = useUiStore((state) => state.setSpeech);
   const models = useRuntimeStore((state) => state.runtime.models);
-  const providerGroups = useMemo(() => groupModelsByProvider(models), [models]);
+  const modelsDevManaged = useRuntimeStore((state) => state.runtime.modelsDevManaged);
+  const managedProviders = useMemo(() => modelsDevManaged ?? [], [modelsDevManaged]);
+  const managedById = useMemo(() => new Map(managedProviders.map((provider) => [provider.id, provider])), [managedProviders]);
+  // Managed providers keep their models.dev display name instead of the
+  // prettified provider id ("CrofAI", not "Crof").
+  const providerGroups = useMemo(
+    () => groupModelsByProvider(models).map((group) => {
+      const managed = managedById.get(group.provider);
+      return managed ? { ...group, title: managed.name } : group;
+    }),
+    [models, managedById],
+  );
+  const [addProviderOpen, setAddProviderOpen] = useState(false);
   const imageCompatibleProviderGroups = useMemo(
     () => providerGroups.filter((group) => group.models.some((model) => isOpenAICompatibleImageApi(model.api))),
     [providerGroups],
@@ -415,6 +431,11 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
     const firstModel = providerGroups.find((group) => group.provider === provider)?.models[0];
     setSettings({ ...settings, defaultModel: firstModel ? `${firstModel.provider}/${firstModel.id}` : null });
   };
+  const removeManagedProvider = (providerId: string) => {
+    void window.piDesktop.removeModelsDevProvider(providerId)
+      .then((result) => setToast({ kind: 'success', title: `${result.providerName} removed`, message: 'The provider and its models were removed from Fate UI provider storage.' }))
+      .catch((error: unknown) => setToast({ kind: 'error', title: 'Provider not removed', message: ipcErrorMessage(error, 'The provider could not be removed. Try again.') }));
+  };
 
   const imageSettings = settings.imageGeneration;
   const imagePreset = imageGenerationPreset(imageSettings.provider);
@@ -572,6 +593,37 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                     </div>
                     <div className="settings-model-meta">{selectedModel ? <><span>{selectedModel.reasoning ? 'Reasoning' : 'Standard'}</span><span>{Math.round(selectedModel.contextWindow / 1000)}k context</span>{selectedModel.supportsImages && <span>Images</span>}</> : <span>Pi chooses the active provider and model.</span>}</div>
                   </div>
+                  <div className="settings-providers">
+                    <div className="settings-providers-head">
+                      <div><strong>Providers</strong><small>Click a row to pick the default. Rows with a key badge are managed by models.dev.</small></div>
+                      <button type="button" className="settings-providers-add" onClick={() => setAddProviderOpen(true)}><Plus size={13} aria-hidden="true" /> Add provider</button>
+                    </div>
+                    <div className="settings-providers-list">
+                      {providerGroups.map((group) => {
+                        const managed = managedById.get(group.provider) ?? null;
+                        return (
+                          <div className="settings-provider-row" data-selected={selectedProvider === group.provider || undefined} key={group.provider}>
+                            <button type="button" className="settings-provider-pick" onClick={() => chooseProvider(group.provider)} title={managed ? `${managed.baseUrl}${managed.envVar ? ` · ${managed.envVar}` : ''}` : group.provider}>
+                              <ProviderLogo providerId={group.provider} size={14} />
+                              <span className="settings-provider-name">{group.title}</span>
+                              {managed && !managed.credentialConfigured && <em className="settings-provider-flag">key needed</em>}
+                              <span className="settings-provider-count">{group.models.length}</span>
+                            </button>
+                            {managed && (
+                              <button type="button" className="settings-provider-remove" aria-label={`Remove ${group.title} from Fate UI`} title="Remove this managed provider" onClick={() => removeManagedProvider(group.provider)}><X size={12} aria-hidden="true" /></button>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {managedProviders.filter((managed) => !providerGroups.some((group) => group.provider === managed.id)).map((managed) => (
+                        <div className="settings-provider-row settings-provider-row--offline" key={managed.id}>
+                          <span className="settings-provider-pick"><ProviderLogo providerId={managed.id} size={14} /><span className="settings-provider-name">{managed.name}</span><em className="settings-provider-flag">{managed.credentialConfigured ? 'no models' : 'key needed'}</em></span>
+                          <button type="button" className="settings-provider-remove" aria-label={`Remove ${managed.name} from Fate UI`} title="Remove this managed provider" onClick={() => removeManagedProvider(managed.id)}><X size={12} aria-hidden="true" /></button>
+                        </div>
+                      ))}
+                      {providerGroups.length === 0 && managedProviders.length === 0 && <div className="settings-provider-empty">No providers yet. Sign in with /login or add one from models.dev.</div>}
+                    </div>
+                  </div>
                   <div className="settings-select-row"><div><strong>Thinking level</strong><small>Initial reasoning effort when a project starts without an active session.</small></div><SelectControl label="Default thinking level" value={settings.thinkingLevel} className="settings-thinking-select" options={['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((level) => ({ value: level, label: level === 'xhigh' ? 'Extra high' : `${level[0]?.toUpperCase() ?? ''}${level.slice(1)}` }))} onValueChange={(value) => setSettings({ ...settings, thinkingLevel: value as AppSettings['thinkingLevel'] })} /></div>
                   <div className="settings-select-row"><div><strong>Agent orchestration</strong><small>Agent Teams V2 enables recursive child/grandchild delegation with durable context and hard safety limits. Applies when the project is reopened.</small></div><SelectControl label="Agent orchestration mode" value={settings.agentTeamMode} options={[{ value: 'legacy', label: 'Legacy subagents', detail: 'Flat managed agents and deterministic workflows' }, { value: 'v2', label: 'Agent Teams V2 (beta)', detail: 'Recursive provider-neutral teams' }]} onValueChange={(value) => setSettings({ ...settings, agentTeamMode: value as AppSettings['agentTeamMode'] })} /></div>
 
@@ -705,6 +757,11 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
               <button type="button" aria-label="Dismiss settings notification" onClick={() => setToast(null)}><X size={13} /></button>
             </div>
           )}
+          <ProviderConnectDialog
+            open={addProviderOpen}
+            onOpenChange={setAddProviderOpen}
+            onNotice={(kind, title, message) => setToast({ kind, title, message })}
+          />
 
           <footer>
             <div className="settings-footer-status" aria-live="polite">

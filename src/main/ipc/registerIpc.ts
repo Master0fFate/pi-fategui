@@ -34,6 +34,11 @@ import {
   imageSaveResultSchema,
   localImageInputSchema,
   diagnosticsSchema,
+  modelsDevAddInputSchema,
+  modelsDevListResultSchema,
+  modelsDevMutationResultSchema,
+  modelsDevProviderDetailSchema,
+  modelsDevRemoveInputSchema,
   logListSchema,
   musicClearResultSchema,
   musicDurationsEventSchema,
@@ -931,6 +936,21 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   });
   handle(ipcChannels.runtimeProviderLogout, async (_event, input) => runRuntimeMutation('signing out of a provider', async () => (
     runtimeStateSchema.parse(await runtime.logoutProvider(providerLogoutInputSchema.parse(input).providerId))
+  )));
+  handle(ipcChannels.modelsDevList, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    return runRuntimeMutation('loading the models.dev provider catalog', async () => (
+      modelsDevListResultSchema.parse(await runtime.listModelsDevProviders())
+    ));
+  });
+  handle(ipcChannels.modelsDevDetail, async (_event, input) => runRuntimeMutation('loading a models.dev provider', async () => (
+    modelsDevProviderDetailSchema.parse(await runtime.getModelsDevProvider(modelsDevRemoveInputSchema.parse(input).providerId))
+  )));
+  handle(ipcChannels.modelsDevAdd, async (_event, input) => runRuntimeMutation('adding a provider', async () => (
+    modelsDevMutationResultSchema.parse(await runtime.addModelsDevProvider(modelsDevAddInputSchema.parse(input)))
+  )));
+  handle(ipcChannels.modelsDevRemove, async (_event, input) => runRuntimeMutation('removing a provider', async () => (
+    modelsDevMutationResultSchema.parse(await runtime.removeModelsDevProvider(modelsDevRemoveInputSchema.parse(input).providerId))
   )));
   handle(ipcChannels.runtimeMutateQueue, async (_event, input) => runRuntimeMutation('editing queued messages', async () => (
     queueMutationResultSchema.parse(await runtime.mutateQueuedMessage(queueMutationInputSchema.parse(input)))
