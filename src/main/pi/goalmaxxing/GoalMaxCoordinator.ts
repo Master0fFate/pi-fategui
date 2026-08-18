@@ -566,11 +566,18 @@ export class GoalMaxCoordinator {
   /** Deliver edited/withdrawn steering to the running root or the next idle continuation. */
   private async redeliverSteering(sessionId: string, updated: GoalMaxState): Promise<void> {
     const runtime = this.host.runtime(sessionId);
-    if (updated.status === 'active' && runtime?.streaming && updated.executionState === 'running-root') {
-      await this.host.steerGoal(sessionId, goalMaxCapsule(updated), updated.id, updated.revision).catch(() => undefined);
-    } else if (updated.status === 'active' && runtime?.idle && updated.executionState === 'idle') {
+    if (updated.status !== 'active' || !runtime) return;
+    if (runtime.idle && updated.executionState === 'idle') {
       this.schedule(updated, 'user-steering');
+      return;
     }
+    // Goal updates are authoritative steering: force-deliver the capsule now
+    // instead of parking it in the goal state until a later continuation.
+    // steerGoalTurn injects into the running root turn when one is streaming
+    // and appends the capsule to the transcript for the next root wake
+    // otherwise, so a streaming root with a stale executionState, a settling
+    // turn, or active children all receive the update as soon as possible.
+    await this.host.steerGoal(sessionId, goalMaxCapsule(updated), updated.id, updated.revision).catch(() => undefined);
   }
 
   async clear(): Promise<GoalMaxClearResult> {

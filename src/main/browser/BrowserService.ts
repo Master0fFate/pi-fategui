@@ -132,17 +132,36 @@ export class BrowserService {
       sessionFullAccess: this.policy.hasSessionFullAccess(),
       controlLevel: this.policy.getControlLevel(),
       mode: this.mode,
-      tabs: [...this.tabs.values()].map((tab) => ({
-        id: tab.id,
-        profileId: tab.profileId,
-        url: this.displayUrl(tab),
-        title: tab.view.webContents.getTitle().slice(0, 4_000),
-        loading: tab.view.webContents.isLoading(),
-        canGoBack: tab.view.webContents.navigationHistory.canGoBack(),
-        canGoForward: tab.view.webContents.navigationHistory.canGoForward(),
-        documentEpoch: tab.documentEpoch,
-        semanticAvailable: tab.semanticAvailable,
-      })),
+      tabs: [...this.tabs.values()].map((tab) => {
+        // A tab closed microseconds ago can still emit one last lifecycle
+        // event before the map delete runs. Report it as inert instead of
+        // touching its destroyed webContents and throwing.
+        const contents = tab.view.webContents;
+        if (contents.isDestroyed()) {
+          return {
+            id: tab.id,
+            profileId: tab.profileId,
+            url: 'about:blank',
+            title: '',
+            loading: false,
+            canGoBack: false,
+            canGoForward: false,
+            documentEpoch: tab.documentEpoch,
+            semanticAvailable: false,
+          };
+        }
+        return {
+          id: tab.id,
+          profileId: tab.profileId,
+          url: this.displayUrl(tab),
+          title: contents.getTitle().slice(0, 4_000),
+          loading: contents.isLoading(),
+          canGoBack: contents.navigationHistory.canGoBack(),
+          canGoForward: contents.navigationHistory.canGoForward(),
+          documentEpoch: tab.documentEpoch,
+          semanticAvailable: tab.semanticAvailable,
+        };
+      }),
       grants: this.policy.listGrants(),
     };
   }
@@ -592,7 +611,11 @@ export class BrowserService {
   }
 
   async closeTab(tabId: string): Promise<void> {
-    const tab = this.tab(tabId);
+    // Direct lookup: closing a tab whose contents already died must still
+    // finish the bookkeeping below, not fail with TAB_NOT_FOUND and strand
+    // the dead entry in the map.
+    const tab = this.tabs.get(tabId);
+    if (!tab) throw new BrowserError('TAB_NOT_FOUND', `Browser tab ${tabId} does not exist.`);
     const wasActive = this.activeTabId === tabId;
     this.cancelAnnotationSelection();
     this.endUserNavigation(tabId);
@@ -620,34 +643,31 @@ export class BrowserService {
   }
 
   async dispose(): Promise<void> {
-    const failures: unknown[] = [];
+    // Never throws: sessions and the proxy can be torn down by Electron
+    // shutdown concurrently. Every step runs, failures are logged, and the
+    // caller always gets a fully reset service back.
     this.cancelActions();
     this.cancelAnnotationSelection();
-    for (const tab of this.tabs.values()) {
-      try { await this.destroyTab(tab); } catch (error) { failures.push(error); }
-    }
+    for (const tab of this.tabs.values()) await this.destroyTab(tab);
     for (const [session, listeners] of this.configuredSessions) {
-      try {
+      await attemptDisposal('session listener cleanup', 'browser', () => {
         session.removeListener('will-download', listeners.download);
         session.setPermissionRequestHandler(null);
         session.setPermissionCheckHandler(null);
         session.webRequest.onBeforeRequest(null);
-        await session.setProxy({ mode: 'direct' });
-      } catch (error) {
-        failures.push(error);
-      }
+      });
+      await attemptDisposal('session proxy reset', 'browser', () => session.setProxy({ mode: 'direct' }));
     }
     this.configuredSessions.clear();
     this.localPages.clear();
     this.clearAgentNavigationGuards();
     this.clearUserNavigations();
-    try { this.networkProxy.dispose(); } catch (error) { failures.push(error); }
+    attemptDisposal('network proxy shutdown', 'browser', () => this.networkProxy.dispose());
     this.tabs.clear();
     this.tabCreations.clear();
     this.activeTabId = null;
     this.viewBlockers.clear();
     this.eventSink = null;
-    if (failures.length > 0) throw new AggregateError(failures, 'The built-in browser did not dispose cleanly.');
   }
 
   private async configureSession(session: Session): Promise<void> {
@@ -992,12 +1012,24 @@ export class BrowserService {
 
   private applyVisibility(): void {
     const visible = this.visible && this.viewBlockers.size === 0;
-    for (const tab of this.tabs.values()) tab.view.setVisible(visible && tab.id === this.activeTabId);
+    for (const tab of this.tabs.values()) {
+      try {
+        tab.view.setVisible(visible && tab.id === this.activeTabId);
+      } catch {
+        // The view is being torn down; its visibility no longer matters.
+      }
+    }
   }
 
   private cancelActions(): void {
     this.actionController.abort();
-    for (const tabId of this.activeAgentNavigations) this.tabs.get(tabId)?.view.webContents.stop();
+    for (const tabId of this.activeAgentNavigations) {
+      try {
+        this.tabs.get(tabId)?.view.webContents.stop();
+      } catch {
+        // The contents is already gone; nothing left to stop.
+      }
+    }
     this.activeAgentNavigations.clear();
     this.actionController = new AbortController();
   }
@@ -1005,7 +1037,7 @@ export class BrowserService {
   private startAnnotationLoop(): void {
     if (this.mode !== 'annotate' || !this.visible || this.viewBlockers.size > 0 || !this.activeTabId) return;
     const tab = this.tabs.get(this.activeTabId);
-    if (!tab || !tab.semanticAvailable || tab.view.webContents.getURL() === 'about:blank') return;
+    if (!tab || tab.view.webContents.isDestroyed() || !tab.semanticAvailable || tab.view.webContents.getURL() === 'about:blank') return;
     this.cancelAnnotationSelection();
     const controller = new AbortController();
     const loop = ++this.annotationLoop;
@@ -1062,22 +1094,42 @@ export class BrowserService {
 
   private tab(tabId: string): BrowserTab {
     const tab = this.tabs.get(tabId);
-    if (!tab) throw new BrowserError('TAB_NOT_FOUND', `Browser tab ${tabId} does not exist.`);
+    // A tab whose contents died mid-close is gone for every practical
+    // purpose. Report the clean error instead of "Object has been destroyed"
+    // leaking from the first webContents access.
+    if (!tab || tab.view.webContents.isDestroyed()) {
+      throw new BrowserError('TAB_NOT_FOUND', `Browser tab ${tabId} does not exist.`);
+    }
     return tab;
   }
 
   private async destroyTab(tab: BrowserTab): Promise<void> {
-    const failures: unknown[] = [];
-    try { await tab.cdp.dispose(); } catch (error) { failures.push(error); }
+    // Disposal is best-effort and never throws. Chromium tears renderers,
+    // views, and debugger sessions down concurrently, so "object destroyed"
+    // races here are expected. Aborting on one would leak the tab entry and
+    // poison every later operation, which is far worse than the race itself.
+    await attemptDisposal('CDP detach', `tab ${tab.id}`, () => tab.cdp.dispose());
     if (!this.owner.isDestroyed()) {
-      try { this.owner.contentView.removeChildView(tab.view); } catch (error) { failures.push(error); }
+      await attemptDisposal('view detach', `tab ${tab.id}`, () => {
+        this.owner.contentView.removeChildView(tab.view);
+      });
     }
-    try {
-      if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
-    } catch (error) {
-      failures.push(error);
-    }
-    if (failures.length > 0) throw new AggregateError(failures, `Browser tab ${tab.id} did not dispose cleanly.`);
+    const contents = tab.view.webContents;
+    await attemptDisposal('page close', `tab ${tab.id}`, () => {
+      if (!contents.isDestroyed()) contents.close();
+    });
+    // close() honours beforeunload and is a no-op on a crashed renderer, so a
+    // tab can survive it and keep a renderer process alive. Reap it later —
+    // by then a graceful close has finished and isDestroyed() skips this.
+    const reaper = setTimeout(() => {
+      if (contents.isDestroyed()) return;
+      try {
+        contents.close({ waitForBeforeUnload: false });
+      } catch {
+        // Already gone between the check and the call.
+      }
+    }, 10_000);
+    reaper.unref?.();
   }
 
   private navigationBlocked(tabId: string, url: string, reason: string): void {
@@ -1097,6 +1149,17 @@ export function projectProfilePartition(canonicalProjectPath: string, profileId 
   const digest = createHash('sha256').update(identity).digest('hex').slice(0, 32);
   const profile = createHash('sha256').update(profileId).digest('hex').slice(0, 12);
   return `persist:fate-browser-${digest}-${profile}`;
+}
+
+async function attemptDisposal(step: string, context: string, operation: () => unknown): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    // Teardown races Chromium's own shutdown: destroyed renderers, detached
+    // debugger sessions, and mid-close views all throw here benignly. Log for
+    // diagnostics, never abort the remaining cleanup steps.
+    console.warn(`[browser] ${step} failed during ${context} disposal:`, error);
+  }
 }
 
 function navigationConsequence(value: string): BrowserConsequence {

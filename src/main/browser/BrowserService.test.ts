@@ -59,7 +59,7 @@ describe('BrowserService visibility safety', () => {
     const tab = {
       id: 'tab-1',
       humanNetworkOrigins: new Set<string>(),
-      view: { webContents: { loadURL: vi.fn(async () => { throw aborted; }), getURL: () => 'https://example.test/' } },
+      view: { webContents: { loadURL: vi.fn(async () => { throw aborted; }), getURL: () => 'https://example.test/', isDestroyed: () => false } },
     };
     const tabs = (service as unknown as { tabs: Map<string, unknown> }).tabs;
     tabs.set(tab.id, tab);
@@ -146,5 +146,129 @@ describe('BrowserService visibility safety', () => {
 
     createTab.mockRestore();
     await service.dispose();
+  });
+});
+
+describe('BrowserService disposal hardening', () => {
+  it('never surfaces "did not dispose cleanly" when every disposal step races Chromium teardown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const owner = {
+      isDestroyed: () => false,
+      contentView: { removeChildView: vi.fn(() => { throw new Error('Object has been destroyed.'); }) },
+    } as unknown as BrowserWindow;
+    const service = new BrowserService(owner, { canonicalProjectPath: process.cwd() });
+    const tab = {
+      id: 'tab-1',
+      cdp: { dispose: vi.fn(async () => { throw new Error('Object has been destroyed.'); }) },
+      view: { webContents: { isDestroyed: () => false, close: vi.fn(() => { throw new Error('Object has been destroyed.'); }), destroy: vi.fn() } },
+    };
+    const tabs = (service as unknown as { tabs: Map<string, unknown> }).tabs;
+    tabs.set('tab-1', tab);
+
+    await expect(
+      (service as unknown as { destroyTab(value: unknown): Promise<void> }).destroyTab(tab),
+    ).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+    tabs.delete('tab-1');
+    await service.dispose();
+    warn.mockRestore();
+  });
+
+  it('force-closes a tab whose renderer ignores close()', async () => {
+    vi.useFakeTimers();
+    try {
+      const service = new BrowserService({ isDestroyed: () => true } as unknown as BrowserWindow, {
+        canonicalProjectPath: process.cwd(),
+      });
+      const forcedClose = vi.fn();
+      const tab = {
+        id: 'tab-1',
+        cdp: { dispose: vi.fn(async () => undefined) },
+        view: { webContents: { isDestroyed: () => false, close: vi.fn().mockImplementation((_opts?: unknown) => {
+          if (typeof _opts === 'object') forcedClose();
+        }) } },
+      };
+
+      await (service as unknown as { destroyTab(value: unknown): Promise<void> }).destroyTab(tab);
+      expect(forcedClose).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(forcedClose).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still removes a closed tab from state when disposal steps fail', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(),
+    });
+    const createTab = vi.spyOn(service, 'createTab').mockResolvedValue(undefined);
+    const tabs = (service as unknown as { tabs: Map<string, unknown> }).tabs;
+    tabs.set('tab-doomed', {
+      id: 'tab-doomed',
+      cdp: { dispose: vi.fn(async () => { throw new Error('Object has been destroyed.'); }) },
+      view: { webContents: { isDestroyed: () => true, close: vi.fn() } },
+    });
+
+    await expect(service.closeTab('tab-doomed')).resolves.toBeUndefined();
+
+    // The dead entry must not strand in the map poisoning later state reads.
+    // createTab is mocked, so no real main-tab entry appears — only that the
+    // doomed tab is gone and closeTab resolved cleanly.
+    expect(service.getState().tabs.map((entry) => entry.id)).toEqual([]);
+    createTab.mockRestore();
+    await service.dispose();
+  });
+
+  it('dispose() completes without throwing when sessions and the proxy are already gone', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(),
+    });
+    const failingSession = {
+      removeListener: vi.fn(() => { throw new Error('Object has been destroyed.'); }),
+      setPermissionRequestHandler: vi.fn(),
+      setPermissionCheckHandler: vi.fn(),
+      webRequest: { onBeforeRequest: vi.fn() },
+      setProxy: vi.fn(async () => { throw new Error('Network service is gone.'); }),
+    };
+    (service as unknown as { configuredSessions: Map<object, { download: unknown }> }).configuredSessions.set(
+      failingSession,
+      { download: vi.fn() },
+    );
+    (service as unknown as { networkProxy: { dispose(): void } }).networkProxy = {
+      dispose: () => { throw new Error('Proxy socket already closed.'); },
+    };
+
+    await expect(service.dispose()).resolves.toBeUndefined();
+    expect(service.getState().tabs).toEqual([]);
+  });
+
+  it('reports an inert tab entry while a destroyed tab emits its last lifecycle event', () => {
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(),
+    });
+    const tabs = (service as unknown as { tabs: Map<string, unknown> }).tabs;
+    tabs.set('tab-dying', {
+      id: 'tab-dying',
+      profileId: 'project',
+      view: {
+        webContents: {
+          isDestroyed: () => true,
+          getTitle: () => { throw new Error('Object has been destroyed.'); },
+          getURL: () => { throw new Error('Object has been destroyed.'); },
+        },
+      },
+      documentEpoch: 3,
+      semanticAvailable: true,
+    });
+
+    const entry = service.getState().tabs.find((candidate) => candidate.id === 'tab-dying');
+    expect(entry).toMatchObject({ id: 'tab-dying', title: '', semanticAvailable: false });
+
+    tabs.delete('tab-dying');
+    void service.dispose();
   });
 });

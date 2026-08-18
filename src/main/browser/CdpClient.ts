@@ -114,21 +114,34 @@ export class CdpClient implements BrowserCdpClient {
   }
 
   async detach(): Promise<void> {
-    if (this.disposed) return;
-    const debuggerApi = this.contents.debugger;
-    if (this.detachListener) debuggerApi.off('detach', this.detachListener);
-    if (this.messageListener) debuggerApi.off('message', this.messageListener);
+    // Idempotent and never-throwing: the listener fields gate the debugger
+    // interaction, so a second call is a harmless no-op.
+    // A destroyed webContents takes its debugger attachment with it, and
+    // merely reading `.debugger` on it throws. isDestroyed() stays callable.
+    if (!this.contents.isDestroyed()) {
+      const debuggerApi = this.contents.debugger;
+      if (this.detachListener) debuggerApi.off('detach', this.detachListener);
+      if (this.messageListener) debuggerApi.off('message', this.messageListener);
+      if (debuggerApi.isAttached()) {
+        try {
+          debuggerApi.detach();
+        } catch {
+          // The renderer is already gone; Chromium reclaimed the session.
+        }
+      }
+    }
     this.detachListener = null;
     this.messageListener = null;
     this.eventWaiters.clear();
     this.supportedDomains.clear();
-    if (debuggerApi.isAttached()) debuggerApi.detach();
   }
 
   async dispose(): Promise<void> {
-    await this.detach();
+    // Set the flag first so concurrent dispose() calls become no-ops while
+    // this one runs, and so in-flight sends fail fast instead of queuing.
     this.disposed = true;
     this.listener = null;
+    await this.detach();
   }
 
   private async trySchemaDomains(): Promise<Set<string>> {
