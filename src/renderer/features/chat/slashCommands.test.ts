@@ -41,6 +41,14 @@ describe('slash command suggestions', () => {
     ]);
   });
 
+  it('refreshes cached search data if a command object changes in place', () => {
+    const command = { name: 'mutable', description: 'Old description', source: 'prompt' as const };
+    expect(findSlashCommands([command], 'old')).toEqual([command]);
+    command.description = 'New description';
+    expect(findSlashCommands([command], 'old')).toEqual([]);
+    expect(findSlashCommands([command], 'new')).toEqual([command]);
+  });
+
   it('bounds long descriptions without cutting a useful phrase too early', () => {
     const description = slashCommandDescription({
       name: 'skill:long',

@@ -37,7 +37,8 @@ const surfaces: Array<Extract<ResourceSearchItem, { kind: 'surface' }>> = [
 ];
 
 export function useResourceSearch(query: string, enabled = true): ResourceSearchState {
-  const project = useRuntimeStore((state) => state.runtime.project);
+  const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
+  const projectTrusted = useRuntimeStore((state) => state.runtime.project?.trusted ?? false);
   const runtimeCommands = useRuntimeStore((state) => state.runtime.commands);
   const runtimeSkills = useRuntimeStore((state) => state.runtime.skills);
   const runtimeSessions = useRuntimeStore((state) => state.runtime.sessions);
@@ -52,7 +53,7 @@ export function useResourceSearch(query: string, enabled = true): ResourceSearch
   const needle = query.trim().toLocaleLowerCase();
 
   useEffect(() => {
-    if (!enabled || !needle || !project || !('piDesktop' in window) || typeof window.piDesktop.searchFiles !== 'function') {
+    if (!enabled || !needle || !projectPath || !('piDesktop' in window) || typeof window.piDesktop.searchFiles !== 'function') {
       setFileState({ entries: [], searching: false, truncated: false, error: null });
       return undefined;
     }
@@ -61,7 +62,7 @@ export function useResourceSearch(query: string, enabled = true): ResourceSearch
     const timer = window.setTimeout(() => {
       void window.piDesktop.searchFiles(query.trim(), 40).then((result) => {
         const currentProject = useRuntimeStore.getState().runtime.project;
-        if (active && currentProject?.path === project.path) setFileState({
+        if (active && currentProject?.path === projectPath) setFileState({
           entries: result.entries,
           searching: false,
           truncated: result.truncated,
@@ -72,17 +73,15 @@ export function useResourceSearch(query: string, enabled = true): ResourceSearch
       });
     }, 140);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [enabled, needle, project, query]);
+  }, [enabled, needle, projectPath, query]);
 
-  const items = useMemo(() => {
-    if (!enabled || !needle) return [];
-    const pattern = automationSearchPattern(needle);
+  const staticSearchItems = useMemo(() => {
     const staticItems: ResourceSearchItem[] = [
-      ...surfaces.map((surface) => surface.surface === 'files' && !project
+      ...surfaces.map((surface) => surface.surface === 'files' && !projectPath
         ? { ...surface, disabledReason: 'Open a project to browse files.' }
-        : surface.surface === 'browser' && !project?.trusted
+        : surface.surface === 'browser' && !projectTrusted
           ? { ...surface, disabledReason: 'Open and trust a project to use Browser.' }
-          : surface.surface === 'terminal' && !project?.trusted
+          : surface.surface === 'terminal' && !projectTrusted
             ? { ...surface, disabledReason: 'Open and trust a project to use Terminal.' }
             : surface),
       ...sessions.map((session) => ({
@@ -92,13 +91,16 @@ export function useResourceSearch(query: string, enabled = true): ResourceSearch
         title: session.title,
         subtitle: `${session.messageCount} messages${session.active ? ' · Active session' : ''}`,
       })),
-      ...browserTabs.map((tab) => ({
-        id: `browser-tab:${tab.id}`,
-        kind: 'browser-tab' as const,
-        tabId: tab.id,
-        title: tab.title || (tab.url === 'about:blank' ? 'New tab' : safeUrlLabel(tab.url)),
-        subtitle: safeUrlLabel(tab.url),
-      })),
+      ...browserTabs.map((tab) => {
+        const urlLabel = safeUrlLabel(tab.url);
+        return {
+          id: `browser-tab:${tab.id}`,
+          kind: 'browser-tab' as const,
+          tabId: tab.id,
+          title: tab.title || (tab.url === 'about:blank' ? 'New tab' : urlLabel),
+          subtitle: urlLabel,
+        };
+      }),
       ...piSearchItems(commands, skills),
       ...automations.map((automation) => ({
         id: `automation:${automation.id}`,
@@ -108,8 +110,17 @@ export function useResourceSearch(query: string, enabled = true): ResourceSearch
         subtitle: `${automation.permissionLevel === 'edit' ? 'Edit project' : 'Read only'} · ${automation.prompt}`,
       })),
     ];
-    const ranked = staticItems
-      .map((item) => ({ item, score: matchScore(needle, item.title, item.subtitle, pattern) }))
+    return staticItems.map((item) => {
+      const normalizedTitle = item.title.toLocaleLowerCase();
+      return { item, normalizedTitle, titleParts: normalizedTitle.split(/[^a-z0-9]+/u) };
+    });
+  }, [automations, browserTabs, commands, projectPath, projectTrusted, sessions, skills]);
+
+  const items = useMemo(() => {
+    if (!enabled || !needle) return [];
+    const pattern = automationSearchPattern(needle);
+    const ranked = staticSearchItems
+      .map(({ item, normalizedTitle, titleParts }) => ({ item, score: matchScore(needle, normalizedTitle, titleParts, item.subtitle, pattern) }))
       .filter((entry): entry is { item: ResourceSearchItem; score: number } => entry.score !== null)
       .sort((left, right) => left.score - right.score || left.item.title.localeCompare(right.item.title))
       .slice(0, 40)
@@ -126,7 +137,7 @@ export function useResourceSearch(query: string, enabled = true): ResourceSearch
         subtitle: entry.path,
       }));
     return [...ranked, ...files].slice(0, 60);
-  }, [automations, browserTabs, commands, enabled, fileState.entries, needle, project, sessions, skills]);
+  }, [enabled, fileState.entries, needle, staticSearchItems]);
 
   return { items, searching: fileState.searching, truncated: fileState.truncated, error: fileState.error };
 }
@@ -236,11 +247,10 @@ async function switchSession(sessionId: string): Promise<void> {
   }
 }
 
-function matchScore(needle: string, title: string, subtitle: string, pattern: RegExp): number | null {
-  const normalizedTitle = title.toLocaleLowerCase();
+function matchScore(needle: string, normalizedTitle: string, titleParts: readonly string[], subtitle: string, pattern: RegExp): number | null {
   if (normalizedTitle === needle) return 0;
   if (normalizedTitle.startsWith(needle)) return 1;
-  if (normalizedTitle.split(/[^a-z0-9]+/u).some((part) => part.startsWith(needle))) return 2;
+  if (titleParts.some((part) => part.startsWith(needle))) return 2;
   if (normalizedTitle.includes(needle)) return 3;
   if (pattern.test(subtitle)) return 4;
   return null;

@@ -52,6 +52,7 @@ export function findAgentMentions(runs: readonly SubagentRun[], query: string, l
   const normalized = query.trim().replace(/^@/u, '').toLocaleLowerCase();
   return runs
     .map((run, index) => {
+      if (!normalized) return { run, index, score: 1 };
       const handle = subagentHandle(run);
       const name = subagentDisplayName(run).toLocaleLowerCase();
       const task = run.task.toLocaleLowerCase();
@@ -78,8 +79,8 @@ function mentionScore(query: string, handle: string, name: string, task: string)
   return task.includes(query) ? 30 : -1;
 }
 
-function teamNodeTask(team: AgentTeam, node: AgentTeamNode): string {
-  return node.currentTaskId ? team.tasks.find((task) => task.id === node.currentTaskId)?.summary ?? node.path : node.path;
+function teamNodeTask(taskSummaryById: ReadonlyMap<string, string>, node: AgentTeamNode): string {
+  return node.currentTaskId ? taskSummaryById.get(node.currentTaskId) ?? node.path : node.path;
 }
 
 export function findLiveAgentMentions(
@@ -99,7 +100,9 @@ export function findLiveAgentMentions(
       const displayName = subagentDisplayName(run);
       const active = run.status === 'running' || run.status === 'queued';
       const canReceive = run.status === 'running' || run.mailbox.state === 'available';
-      const score = mentionScore(normalized, handle, displayName.toLocaleLowerCase(), run.task.toLocaleLowerCase());
+      const score = normalized
+        ? mentionScore(normalized, handle, displayName.toLocaleLowerCase(), run.task.toLocaleLowerCase())
+        : 1;
       if (score >= 0 && canReceive) candidates.push({ kind: 'subagent', id: run.id, handle, displayName, status: run.status, task: run.task, active, canReceive, score, index });
     }
   }
@@ -107,11 +110,14 @@ export function findLiveAgentMentions(
   if (symbol !== '~') {
     for (const team of teams) {
       if (team.status === 'closed' || team.status === 'released') continue;
+      const taskSummaryById = new Map<string, string>(team.tasks.map((task) => [task.id, task.summary]));
       for (const node of team.nodes) {
         if (node.depth === 0 || node.status === 'closed' || node.status === 'released' || node.status === 'failed' || node.status === 'interrupted') continue;
-        const task = teamNodeTask(team, node);
+        const task = teamNodeTask(taskSummaryById, node);
         const active = node.status === 'active' || node.status === 'creating';
-        const score = mentionScore(normalized, node.handle.toLocaleLowerCase(), node.displayName.toLocaleLowerCase(), task.toLocaleLowerCase());
+        const score = normalized
+          ? mentionScore(normalized, node.handle.toLocaleLowerCase(), node.displayName.toLocaleLowerCase(), task.toLocaleLowerCase())
+          : 1;
         if (score >= 0) candidates.push({ kind: 'team-node', id: node.id, teamId: team.id, handle: node.handle, displayName: node.displayName, status: node.status, task, active, canReceive: true, score, index: index++ });
       }
     }
@@ -124,7 +130,9 @@ export function findLiveAgentMentions(
     const displayName = session.title || 'Untitled session';
     const handle = sessionMentionHandle(displayName, session.id);
     const active = session.attention === 'running';
-    const score = mentionScore(normalized, handle, displayName.toLocaleLowerCase(), (session.firstMessage ?? '').toLocaleLowerCase());
+    const score = normalized
+      ? mentionScore(normalized, handle, displayName.toLocaleLowerCase(), (session.firstMessage ?? '').toLocaleLowerCase())
+      : 1;
     if (score >= 0) candidates.push({ kind: 'session', id: session.id, handle, displayName, status: session.attention ?? 'saved', task: session.firstMessage ?? 'Saved session', active, canReceive: true, score, index: index++ });
   }
   return candidates

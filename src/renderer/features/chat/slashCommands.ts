@@ -13,6 +13,18 @@ export interface SlashCommandFilter {
   includeExtensions?: boolean;
 }
 
+interface SlashCommandSearchIndex {
+  name: string;
+  description: SlashCommand['description'];
+  source: SlashCommand['source'];
+  label: string;
+  canonical: string;
+  normalizedDescription: string;
+  labelParts: string[];
+}
+
+const slashCommandSearchCache = new WeakMap<SlashCommand, SlashCommandSearchIndex>();
+
 export function slashCommandContext(draft: string, caret: number): SlashCommandContext | null {
   const boundedCaret = Math.max(0, Math.min(draft.length, caret));
   const beforeCaret = draft.slice(0, boundedCaret);
@@ -67,18 +79,36 @@ export function findSlashCommands(
 
 function commandScore(command: SlashCommand, query: string): number {
   if (!query) return 1;
-  const label = normalize(slashCommandLabel(command));
-  const canonical = normalize(command.name);
-  const description = normalize(command.description);
-  if (label === query || canonical === query) return 100;
-  if (label.startsWith(query)) return 90;
-  if (canonical.startsWith(query)) return 85;
-  if (label.split(/[^a-z0-9]+/u).some((part) => part.startsWith(query))) return 80;
-  if (label.includes(query) || canonical.includes(query)) return 70;
-  if (isSubsequence(query, label)) return 55;
-  if (query.length >= 3 && editDistanceAtMost(label, query, 2)) return 45;
-  if (description.includes(query)) return 25;
+  const indexed = searchIndexForCommand(command);
+  if (indexed.label === query || indexed.canonical === query) return 100;
+  if (indexed.label.startsWith(query)) return 90;
+  if (indexed.canonical.startsWith(query)) return 85;
+  if (indexed.labelParts.some((part) => part.startsWith(query))) return 80;
+  if (indexed.label.includes(query) || indexed.canonical.includes(query)) return 70;
+  if (isSubsequence(query, indexed.label)) return 55;
+  if (query.length >= 3 && editDistanceAtMost(indexed.label, query, 2)) return 45;
+  if (indexed.normalizedDescription.includes(query)) return 25;
   return -1;
+}
+
+function searchIndexForCommand(command: SlashCommand): SlashCommandSearchIndex {
+  const cached = slashCommandSearchCache.get(command);
+  if (cached
+    && cached.name === command.name
+    && cached.description === command.description
+    && cached.source === command.source) return cached;
+  const label = normalize(slashCommandLabel(command));
+  const indexed: SlashCommandSearchIndex = {
+    name: command.name,
+    description: command.description,
+    source: command.source,
+    label,
+    canonical: normalize(command.name),
+    normalizedDescription: normalize(command.description),
+    labelParts: label.split(/[^a-z0-9]+/u),
+  };
+  slashCommandSearchCache.set(command, indexed);
+  return indexed;
 }
 
 function normalize(value: string): string {

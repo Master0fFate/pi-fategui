@@ -1,0 +1,80 @@
+name: Renderer performance profiles
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/performance.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'scripts/profile-live-renderer.mjs'
+      - 'src/main/pi/PiEventBatcher.ts'
+      - 'src/renderer/**'
+      - 'tests/e2e/**'
+      - 'vite.e2e.config.ts'
+      - 'vite.main.config.ts'
+      - 'vite.preload.config.ts'
+      - 'vite.renderer.config.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renderer-performance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  profile:
+    name: ${{ matrix.label }} live renderer profile
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            os: windows-2025
+            artifact: windows-x64
+          - label: macOS Apple Silicon
+            os: macos-15
+            artifact: macos-arm64
+          - label: Linux x64
+            os: ubuntu-22.04
+            artifact: linux-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+      FATE_GUI_DATA_DIR: ${{ runner.temp }}/fate-ui-performance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.17.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+      - name: Linux native prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3 xvfb
+      - name: Install dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+      - name: Build Electron E2E runtime
+        run: pnpm build:e2e
+      - name: Profile live renderer
+        if: runner.os != 'Linux'
+        shell: bash
+        run: node scripts/profile-live-renderer.mjs --runs 1 --label "${{ matrix.artifact }}" --out ".parallax/performance/${{ matrix.artifact }}.json"
+      - name: Profile live renderer on Linux display
+        if: runner.os == 'Linux'
+        run: xvfb-run -a node scripts/profile-live-renderer.mjs --runs 1 --label "${{ matrix.artifact }}" --out ".parallax/performance/${{ matrix.artifact }}.json"
+      - name: Upload performance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fate-ui-performance-${{ matrix.artifact }}
+          path: .parallax/performance/
+          if-no-files-found: warn
+          retention-days: 14
