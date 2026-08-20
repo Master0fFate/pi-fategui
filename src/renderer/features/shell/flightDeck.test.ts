@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createTeamRuntime, projectTeam } from '../../../main/pi/multi-agent/AgentTeamStore';
 import type { RuntimeState, RuntimeTool } from '../../../shared/contracts/ipc';
-import { FLIGHT_RECORDER_LIMIT, selectActivityPulse, selectChangeOrigins, selectFlightRecorder } from './flightDeck';
+import { FLIGHT_RECORDER_LIMIT, selectActivityPulse, selectChangeOrigins, selectFlightRecorder, writerConflictState } from './flightDeck';
 
 function runtime(overrides: Partial<RuntimeState> = {}): RuntimeState {
   return {
@@ -101,5 +101,20 @@ describe('Flight Deck selectors', () => {
     expect(origins).toHaveLength(1);
     expect(origins[0]).toMatchObject({ toolName: 'edit', target: { kind: 'tool', toolCallId: 'edit-1' } });
     expect(selectChangeOrigins({ path: 'src/other.ts', indexStatus: 'M', workTreeStatus: ' ', additions: 1, deletions: 0, binary: false }, sources)).toEqual([]);
+  });
+
+  it('marks a path ambiguous when more than one actor has related activity', () => {
+    const root = {
+      id: 'root', actorLabel: 'Main agent', toolName: 'edit', timestamp: 1,
+      provenance: { actor: { kind: 'root' as const }, affectedPaths: [{ path: 'src/a.ts', operation: 'edit' as const }] },
+      target: { kind: 'tool' as const, toolCallId: 't1' },
+    };
+    const child = {
+      ...root, id: 'child', actorLabel: 'Agent run-2',
+      provenance: { actor: { kind: 'legacy' as const, runId: 'run-2', parentToolCallId: 'parent-1' }, affectedPaths: [{ path: 'src/a.ts', operation: 'edit' as const }] },
+    };
+    expect(writerConflictState([])).toBe('none');
+    expect(writerConflictState([root])).toBe('single');
+    expect(writerConflictState([root, child])).toBe('ambiguous');
   });
 });

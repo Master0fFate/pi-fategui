@@ -35,7 +35,7 @@ describe('SettingsService', () => {
     const service = createSettings(logs);
     const saved = await service.set({
       appearance: 'system', defaultModel: 'provider/model', thinkingLevel: 'high', agentTeamMode: 'v2',
-      confirmRiskyCommands: false, terminalShell: 'pwsh.exe', reduceMotion: true, performanceMode: true, holyShitMode: true, musicPlayerEnabled: true, sendMessageWithModifier: true, compactSessions: false, advancedPromptImprovement: true, themeId: 'graphite',
+      confirmRiskyCommands: false, terminalShell: 'pwsh.exe', reduceMotion: true, performanceMode: true, holyShitMode: true, musicPlayerEnabled: true, sendMessageWithModifier: true, compactMode: false, compactSessions: false, advancedPromptImprovement: true, crashTelemetryEnabled: false, themeId: 'graphite',
       interfaceFont: 'poppins', codeFont: 'noto-sans-mono',
       imageGeneration: { provider: 'google', model: 'gemini-3.1-flash-image', customProvider: null },
       speech: { enabled: true, modelId: 'parakeet-unified', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' },
@@ -59,6 +59,17 @@ describe('SettingsService', () => {
     const loaded = await createSettings(logs).load();
     expect(loaded).toMatchObject({ appearance: 'system', thinkingLevel: 'high', holyShitMode: false, sendMessageWithModifier: false, interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null } });
     expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(loaded);
+  });
+
+  it('turns on Compact mode when an old file already used Compact sessions', async () => {
+    await mkdir(dataRoot, { recursive: true });
+    await writeFile(path.join(dataRoot, 'settings.json'), JSON.stringify({
+      appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true, terminalShell: null,
+      reduceMotion: false, performanceMode: false, compactSessions: true,
+    }), 'utf8');
+    const loaded = await createSettings().load();
+    expect(loaded.compactMode).toBe(true);
+    expect(loaded.compactSessions).toBe(true);
   });
 
   it('merges validated custom JSON themes with built-ins', async () => {
@@ -99,7 +110,7 @@ describe('SettingsService', () => {
   it('serializes concurrent writes and returns each persisted snapshot', async () => {
     const logs = new AppLogService();
     const service = createSettings(logs);
-    const first = { appearance: 'dark', defaultModel: null, thinkingLevel: 'low', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, advancedPromptImprovement: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } } as const;
+    const first = { appearance: 'dark', defaultModel: null, thinkingLevel: 'low', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } } as const;
     const second = { ...first, thinkingLevel: 'high' as const, reduceMotion: true };
 
     const [firstSaved, secondSaved] = await Promise.all([service.set(first), service.set(second)]);

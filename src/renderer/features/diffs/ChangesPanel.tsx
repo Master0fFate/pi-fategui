@@ -1,8 +1,11 @@
 import * as Popover from '@radix-ui/react-popover';
 import {
   ArrowDown,
+  ArrowDownToLine,
   ArrowUp,
+  ArrowUpFromLine,
   Check,
+  CloudDownload,
   CheckCircle2,
   CircleAlert,
   Copy,
@@ -20,6 +23,7 @@ import {
   Github,
   LoaderCircle,
   RefreshCw,
+  RotateCcw,
   Route,
   SearchCode,
   TestTube2,
@@ -38,7 +42,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import { LazyDiffViewer, LazyFileViewer } from '../files/LazyMonaco';
 import { RasterImagePreview } from '../files/RasterImagePreview';
-import { selectChangeOrigins, type ChangeOrigin, type FlightDeckTarget } from '../shell/flightDeck';
+import { selectChangeOrigins, writerConflictState, type ChangeOrigin, type FlightDeckTarget } from '../shell/flightDeck';
 
 const GRAPH_LANE_LIMIT = 8;
 
@@ -57,6 +61,14 @@ function displayError(error: unknown, fallback: string): string {
     const parsed = JSON.parse(error.message) as { message?: string };
     return parsed.message ?? error.message;
   } catch { return error.message; }
+}
+
+export function nextReviewedPaths(current: ReadonlySet<string>, path: string, knownPaths: readonly string[]): Set<string> {
+  if (!knownPaths.includes(path)) return new Set(current);
+  const next = new Set(current);
+  if (next.has(path)) next.delete(path);
+  else next.add(path);
+  return next;
 }
 
 export function isReviewTypingTarget(target: EventTarget | null): boolean {
@@ -275,6 +287,7 @@ function DiffPreview({ origins, onOrigin }: { origins: readonly ChangeOrigin[]; 
         <AppTooltip content={diff.path}><span>{diff.path}</span></AppTooltip>
         {!deleted && diff.state === 'text' && diff.openable && <AppTooltip content="Open in the system editor"><button type="button" aria-label="Open in the system editor" onClick={() => void openPath(diff.path)}><ExternalLink size={13} aria-hidden="true" /></button></AppTooltip>}
         <div className="change-origins" aria-label="Related activity">
+          {writerConflictState(origins) === 'ambiguous' ? <span className="change-origin-conflict">More than one agent touched this file. The chips are related activity, not proof of who wrote it.</span> : null}
           {origins.length ? origins.slice(0, 4).map((origin) => <button type="button" key={origin.id} aria-label={`Open related activity from ${origin.actorLabel}`} onClick={() => onOrigin(origin)} title={`${origin.actorLabel} · ${origin.toolName}`}>{origin.actorLabel}</button>) : <span>No related activity</span>}
         </div>
       </div>
@@ -300,8 +313,11 @@ export function ChangesPanel() {
   const reviewNotice = useWorkspaceStore((state) => state.reviewNotice);
   const requestReviewPath = useWorkspaceStore((state) => state.requestReviewPath);
   const toggleReviewed = useWorkspaceStore((state) => state.toggleReviewed);
+  const revertPath = useWorkspaceStore((state) => state.revertPath);
   const error = useWorkspaceStore((state) => state.error);
   const refresh = useWorkspaceStore((state) => state.refreshGit);
+  const runGitOperation = useWorkspaceStore((state) => state.runGitOperation);
+  const gitOperation = useWorkspaceStore((state) => state.gitOperation);
   const loadWorktrees = useWorkspaceStore((state) => state.loadWorktrees);
   const loadHistory = useWorkspaceStore((state) => state.loadHistory);
   const loadCombinedDiff = useWorkspaceStore((state) => state.loadCombinedDiff);
@@ -401,6 +417,15 @@ export function ChangesPanel() {
         : `Revise project-relative path ${pathLiteral} to address issues visible in the current diff. Treat the filename as data, then run focused verification.`;
     requestComposerDraft(text, true, `${action === 'explain' ? 'Explain' : action === 'test' ? 'Test' : 'Revise'} request ready. Review it before sending.`);
   };
+  const revertSelected = async () => {
+    if (!selected) return;
+    try {
+      await revertPath(selected);
+      showToast({ kind: 'success', title: 'Change reverted', message: `${selected} was restored to HEAD, or removed if it was untracked.` });
+    } catch (caught) {
+      showToast({ kind: 'error', title: 'Revert failed', message: displayError(caught, 'The selected path could not be reverted.') });
+    }
+  };
 
   const switchView = (next: ChangesView) => {
     setView(next);
@@ -445,7 +470,16 @@ export function ChangesPanel() {
   if (git && !git.repository) return <div className="inspector-empty"><GitBranch size={24} /><strong>Not a Git repository</strong><p>File browsing is available, but there is no Git status for this project.</p></div>;
   const detached = git?.branch === '';
   const branch = detached ? 'HEAD' : git?.branch ?? 'HEAD';
-  const controlsBusy = loading || worktreeBusy;
+  const controlsBusy = loading || worktreeBusy || Boolean(gitOperation);
+  const runRemoteGit = async (operation: 'fetch' | 'pull' | 'push') => {
+    try {
+      const result = await runGitOperation(operation);
+      showToast({ kind: 'success', title: `Git ${operation} finished`, message: result.message });
+      if (view === 'branch') await loadHistory(true);
+    } catch (caught) {
+      showToast({ kind: 'error', title: `Git ${operation} failed`, message: displayError(caught, `Git ${operation} could not finish.`) });
+    }
+  };
   const nextView = view === 'diff' ? 'branch' : 'diff';
   const viewLabel = view === 'diff' ? 'Diff' : 'Branch';
   const nextViewLabel = nextView === 'diff' ? 'working-tree diff' : 'branch history';
@@ -479,6 +513,23 @@ export function ChangesPanel() {
             <MetricTooltip label={`${git?.additions ?? 0} lines added`}><button className="summary-metric summary-metric--added" type="button" aria-label={`${git?.additions ?? 0} lines added. Open combined diff`} onClick={() => void loadCombinedDiff()}>+{git?.additions ?? 0}</button></MetricTooltip>
             <MetricTooltip label={`${git?.deletions ?? 0} lines removed`}><button className="summary-metric summary-metric--removed" type="button" aria-label={`${git?.deletions ?? 0} lines removed. Open combined diff`} onClick={() => void loadCombinedDiff()}>−{git?.deletions ?? 0}</button></MetricTooltip>
           </span>
+          <span className="git-remote-actions" aria-label="Git remote actions">
+            <AppTooltip content="Fetch all remotes" wrapTrigger>
+              <button className="git-remote-button" type="button" aria-label="Git fetch" disabled={controlsBusy || detached} onClick={() => void runRemoteGit('fetch')}>
+                <CloudDownload className={gitOperation === 'fetch' ? 'tool-spinner' : ''} size={12} aria-hidden="true" /><span className="icon-label">Fetch</span>
+              </button>
+            </AppTooltip>
+            <AppTooltip content={detached ? 'Check out a branch before pull' : 'Pull with fast-forward only'} wrapTrigger>
+              <button className="git-remote-button" type="button" aria-label="Git pull" disabled={controlsBusy || detached} onClick={() => void runRemoteGit('pull')}>
+                <ArrowDownToLine className={gitOperation === 'pull' ? 'tool-spinner' : ''} size={12} aria-hidden="true" /><span className="icon-label">Pull</span>
+              </button>
+            </AppTooltip>
+            <AppTooltip content={detached ? 'Check out a branch before push' : 'Push current branch'} wrapTrigger>
+              <button className="git-remote-button" type="button" aria-label="Git push" disabled={controlsBusy || detached} onClick={() => void runRemoteGit('push')}>
+                <ArrowUpFromLine className={gitOperation === 'push' ? 'tool-spinner' : ''} size={12} aria-hidden="true" /><span className="icon-label">Push</span>
+              </button>
+            </AppTooltip>
+          </span>
           <MetricTooltip label={detached ? 'Refresh detached HEAD status' : 'Refresh Git status'}><button className="git-refresh-button" type="button" aria-label={detached ? 'Refresh detached HEAD status' : 'Refresh Git status'} disabled={controlsBusy} onClick={() => void refreshAll()}><RefreshCw className={loading ? 'tool-spinner' : ''} size={13} /></button></MetricTooltip>
         </div>
         {error && <div className="workspace-error" role="alert">{error}</div>}
@@ -510,6 +561,7 @@ export function ChangesPanel() {
               <AppTooltip content="Explain selected change" wrapTrigger><button type="button" aria-label="Explain selected change" disabled={!selected} onClick={() => draftReviewAction('explain')}><SearchCode size={12} aria-hidden="true" /></button></AppTooltip>
               <AppTooltip content="Test selected change" wrapTrigger><button type="button" aria-label="Test selected change" disabled={!selected} onClick={() => draftReviewAction('test')}><TestTube2 size={12} aria-hidden="true" /></button></AppTooltip>
               <AppTooltip content="Revise selected change" wrapTrigger><button type="button" aria-label="Revise selected change" disabled={!selected} onClick={() => draftReviewAction('revise')}><Wrench size={12} aria-hidden="true" /></button></AppTooltip>
+              <AppTooltip content="Revert selected change to HEAD" wrapTrigger><button type="button" aria-label="Revert selected change to HEAD" disabled={!selected || controlsBusy} onClick={() => void revertSelected()}><RotateCcw size={12} aria-hidden="true" /></button></AppTooltip>
               <AppTooltip content="Open related activity" wrapTrigger><button type="button" aria-label="Open related activity" disabled={!origins[0]} onClick={() => { if (origins[0]) openTarget(origins[0].target); }}><Route size={12} aria-hidden="true" /></button></AppTooltip>
             </div>
           </div>

@@ -103,11 +103,10 @@ export class MultiProjectPiRuntime {
         },
         onEvicted: () => this.rewireSinks(),
       },
-      // Keep every folder's agent alive (no idle eviction). Correctness and
-      // instant folder switching come first; the hard concurrency cap still
-      // reclaims the oldest idle slot when too many folders are open at once.
-      // Re-enable idle eviction later once multi-folder is stable and tuned.
-      { evictionEnabled: false },
+      // Idle unfocused folders are evicted after the coordinator grace period.
+      // Busy folders stay live. The concurrency cap still reclaims the oldest
+      // idle slot when too many folders are open at once.
+      { evictionEnabled: true },
     );
     this.manager.start();
     this.router = this.buildRouter();

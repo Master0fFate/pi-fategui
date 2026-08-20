@@ -78,6 +78,8 @@ describe('Sidebar sessions', () => {
     expect(screen.getByRole('button', { name: 'Rename First' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Clone Second' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Compact Second' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Export First' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Open Second before exporting it' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Create an isolated Git worktree session from Second' })).toBeDisabled();
 
     await user.click(openSecond);
@@ -251,7 +253,7 @@ describe('Sidebar sessions', () => {
   });
 
   it('uses compact session density for conversation path rows too', () => {
-    useUiStore.setState({ compactSessions: true });
+    useUiStore.setState({ compactMode: true, compactSessions: true });
     const branches = [
       { id: 'current-leaf', parentId: 'root', depth: 1, label: 'current', preview: 'Current path', kind: 'message', active: true },
       { id: 'alternate-leaf', parentId: 'root', depth: 2, label: 'message', preview: 'Forked path', kind: 'custom', active: false },
@@ -652,7 +654,7 @@ describe('Sidebar sessions', () => {
   });
 
   it('renders compact one-line rows with a per-session actions menu', async () => {
-    useUiStore.setState({ compactSessions: true });
+    useUiStore.setState({ compactMode: true, compactSessions: true });
     const switchSession = vi.fn(async () => ready());
     Object.defineProperty(window, 'piDesktop', {
       configurable: true,
@@ -664,8 +666,11 @@ describe('Sidebar sessions', () => {
     expect(screen.getAllByRole('button', { name: /Actions for /u }).length).toBeGreaterThan(0);
     expect(screen.queryByText(/messages · updated/u)).toBeNull();
 
+    await user.click(screen.getByRole('button', { name: 'Actions for First' }));
+    expect(await screen.findByRole('menuitem', { name: 'Export First' })).toBeEnabled();
     await user.click(screen.getByRole('button', { name: 'Actions for Second' }));
     expect(await screen.findByRole('menuitem', { name: 'Clone Second' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Open Second before exporting it' })).toBeDisabled();
   });
 
   it('routes a foreign folder focus through focusProject when the bridge is available', async () => {
@@ -685,7 +690,7 @@ describe('Sidebar sessions', () => {
   });
 
   it('uses the same compact preview-style rows for the active and inactive folders in compact mode', async () => {
-    useUiStore.setState({ compactSessions: true });
+    useUiStore.setState({ compactMode: true, compactSessions: true });
     const project = { path: '/project', name: 'project' };
     const other = { path: '/other', name: 'other' };
     useProjectStore.setState({ projects: [project, other], expandedByPath: { '/project': true, '/other': true } });

@@ -2,21 +2,14 @@ import * as Dialog from '@radix-ui/react-dialog';
 import {
   Activity,
   Bot,
-  Check,
   CheckCircle2,
   CircleAlert,
   Gauge,
-  Keyboard,
-  ImageIcon,
   LockKeyhole,
-  Monitor,
-  Music2,
   Plus,
   Save,
   ShieldCheck,
   SlidersHorizontal,
-  TerminalSquare,
-  Type,
   Mic2,
   Download,
   Trash2,
@@ -37,7 +30,7 @@ import {
 import { applyVisualSettings } from '../../appearance';
 import { AppTooltip } from '../../components/AppTooltip';
 import { ProviderLogo } from '../../components/ProviderLogo';
-import { SelectControl } from '../../components/SelectControl';
+import { SelectControl, type SelectOption } from '../../components/SelectControl';
 import { ipcErrorMessage } from '../../lib/ipcError';
 import { codeFontOptions, interfaceFontOptions } from '../../fonts';
 import { fallbackThemes } from '../../theme';
@@ -48,7 +41,7 @@ import { ProviderConnectDialog } from '../../components/ProviderConnectDialog';
 
 const fallback: AppSettings = {
   appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true,
-  terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactSessions: false, advancedPromptImprovement: false, themeId: 'midnight',
+  terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight',
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
   speech: defaultSpeechSettings,
@@ -117,6 +110,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   const setOpen = useUiStore((state) => state.setSettingsOpen);
   const setMusicPlayerEnabled = useUiStore((state) => state.setMusicPlayerEnabled);
   const setSendMessageWithModifier = useUiStore((state) => state.setSendMessageWithModifier);
+  const setCompactMode = useUiStore((state) => state.setCompactMode);
   const setCompactSessions = useUiStore((state) => state.setCompactSessions);
   const setAdvancedPromptImprovement = useUiStore((state) => state.setAdvancedPromptImprovement);
   const setSpeech = useUiStore((state) => state.setSpeech);
@@ -303,6 +297,8 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   useEffect(() => {
     if (!open || !settingsLoaded) return;
     applyVisualSettings(settings, themeCatalog);
+    setCompactMode(settings.compactMode);
+    setCompactSessions(settings.compactSessions);
   }, [
     open,
     settings.appearance,
@@ -312,6 +308,8 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
     settings.reduceMotion,
     settings.holyShitMode,
     settings.themeId,
+    settings.compactMode,
+    settings.compactSessions,
     settingsLoaded,
     themeCatalog,
   ]);
@@ -334,6 +332,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
       applyVisualSettings(saved, themeCatalog);
       setMusicPlayerEnabled(saved.musicPlayerEnabled);
       setSendMessageWithModifier(saved.sendMessageWithModifier);
+      setCompactMode(saved.compactMode);
       setCompactSessions(saved.compactSessions);
       setAdvancedPromptImprovement(saved.advancedPromptImprovement);
       setSpeech(saved.speech);
@@ -415,7 +414,11 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   };
 
   const handleOpenChange = (nextOpen: boolean) => {
-    if (!nextOpen && settingsLoaded) applyVisualSettings(persistedSettings, themeCatalog);
+    if (!nextOpen && settingsLoaded) {
+      applyVisualSettings(persistedSettings, themeCatalog);
+      setCompactMode(persistedSettings.compactMode);
+      setCompactSessions(persistedSettings.compactSessions);
+    }
     setOpen(nextOpen);
   };
 
@@ -547,9 +550,8 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
             <nav className="settings-nav" aria-label="Settings categories" role="tablist" aria-orientation="vertical">
               {sections.map(({ id, label, detail, icon: Icon }) => (
                 <button key={id} type="button" role="tab" id={`settings-tab-${id}`} aria-selected={activeSection === id} aria-controls={`settings-panel-${id}`} onClick={() => chooseSection(id)}>
-                  <Icon size={16} aria-hidden="true" />
+                  <Icon size={14} aria-hidden="true" />
                   <span><strong>{label}</strong><small>{detail}</small></span>
-                  {activeSection === id && <Check className="settings-nav-check" size={13} aria-hidden="true" />}
                 </button>
               ))}
             </nav>
@@ -557,25 +559,26 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
             <div ref={settingsScroll} className="settings-scroll">
               {activeSection === 'general' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general">
-                  <div className="settings-title"><span><Monitor size={17} /></span><div><h3>Interface</h3><p>Theme, type, and visual behavior across Fate UI.</p></div></div>
+                  <div className="settings-title"><div><h3>Interface</h3><p>Theme, type, and visual behavior across Fate UI.</p></div></div>
                   <div className="settings-group">
-                    <div className="settings-theme-row"><div><strong>Theme</strong><small>Built-in, Fate custom, and Pi themes. Project themes load only after you trust the project.</small></div><SelectControl label="Interface theme" value={settings.themeId} className="settings-theme-select" options={themeCatalog.map((theme) => ({ value: theme.id, label: theme.name, detail: theme.tone === 'light' ? 'Light' : 'Dark' }))} onValueChange={(themeId) => setSettings({ ...settings, themeId })} /></div>
+                    <div className="settings-theme-row"><div><strong>Theme</strong><small>Built-in, Fate custom, and Pi themes. Project themes load only after you trust the project.</small></div><SelectControl compact={settings.compactMode} label="Interface theme" value={settings.themeId} className="settings-theme-select" options={themeCatalog.map((theme) => ({ value: theme.id, label: theme.name, detail: theme.tone === 'light' ? 'Light' : 'Dark' }))} onValueChange={(themeId) => setSettings({ ...settings, themeId })} /></div>
                   </div>
                   <div className="settings-group">
-                    <label className="settings-toggle"><div><strong>Compact sessions</strong><small>Group sessions by project folder and show them as one-line rows with actions in a ⋯ menu. Turn off for detailed session cards.</small></div><input type="checkbox" checked={settings.compactSessions} onChange={(event) => setSettings({ ...settings, compactSessions: event.target.checked })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>Compact mode</strong><small>Dense workbench: Settings, chrome, chat, composer, inspector, and dialogs. One-line session rows stay a nested option.</small></div><input type="checkbox" checked={settings.compactMode} onChange={(event) => setSettings({ ...settings, compactMode: event.target.checked })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle settings-toggle--nested"><div><strong>Compact sessions</strong><small>Group sessions by project folder and show them as one-line rows with actions in a ⋯ menu. Turn off for detailed session cards.</small></div><input type="checkbox" checked={settings.compactMode && settings.compactSessions} disabled={!settings.compactMode} onChange={(event) => setSettings({ ...settings, compactSessions: event.target.checked })} /><span aria-hidden="true" /></label>
                   </div>
-                  <div className="settings-title settings-title--spaced"><span><Type size={17} /></span><div><h3>Typography</h3><p>Bundled typefaces with a Noto fallback chain for extended Unicode.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><div><h3>Typography</h3><p>Bundled typefaces with a Noto fallback chain for extended Unicode.</p></div></div>
                   <div className="settings-group settings-font-group">
-                    <div className="settings-theme-row"><div><strong>Interface font</strong><small>Applies across navigation, settings, and conversation text.</small></div><SelectControl label="Interface font" value={settings.interfaceFont} className="settings-font-select" options={interfaceFontOptions} onValueChange={(interfaceFont) => setSettings({ ...settings, interfaceFont: interfaceFont as AppSettings['interfaceFont'] })} /></div>
-                    <div className="settings-theme-row"><div><strong>Code & terminal</strong><small>Used for code, tool output, diffs, and the integrated terminal.</small></div><SelectControl label="Code and terminal font" value={settings.codeFont} className="settings-font-select" options={codeFontOptions} onValueChange={(codeFont) => setSettings({ ...settings, codeFont: codeFont as AppSettings['codeFont'] })} /></div>
+                    <div className="settings-theme-row"><div><strong>Interface font</strong><small>Applies across navigation, settings, and conversation text.</small></div><SelectControl compact={settings.compactMode} label="Interface font" value={settings.interfaceFont} className="settings-font-select" options={interfaceFontOptions} onValueChange={(interfaceFont) => setSettings({ ...settings, interfaceFont: interfaceFont as AppSettings['interfaceFont'] })} /></div>
+                    <div className="settings-theme-row"><div><strong>Code & terminal</strong><small>Used for code, tool output, diffs, and the integrated terminal.</small></div><SelectControl compact={settings.compactMode} label="Code and terminal font" value={settings.codeFont} className="settings-font-select" options={codeFontOptions} onValueChange={(codeFont) => setSettings({ ...settings, codeFont: codeFont as AppSettings['codeFont'] })} /></div>
                     <div className="settings-font-preview" aria-label="Extended Unicode font preview"><span lang="hr">Čć Đđ Šš Žž</span><span lang="ru">Привет</span><span lang="hi">नमस्ते</span><span lang="he" dir="rtl">שלום</span><span lang="zh-Hans">中文</span></div>
                   </div>
-                  <div className="settings-title settings-title--spaced"><span><Gauge size={17} /></span><div><h3>Performance</h3><p>Lower rendering cost without disabling any app capability.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><div><h3>Performance</h3><p>Lower rendering cost without disabling any app capability.</p></div></div>
                   <div className="settings-group">
                     <label className="settings-toggle"><div><strong>Performance mode</strong><small>Includes Reduced Motion and disables transitions, entrance motion, ambient gradients, blur, and deep shadows.</small></div><input type="checkbox" checked={settings.performanceMode || settings.reduceMotion} onChange={(event) => setSettings({ ...settings, performanceMode: event.target.checked, reduceMotion: event.target.checked })} /><span aria-hidden="true" /></label>
                     <label className="settings-toggle"><div><strong>Holy sh*t</strong><small>Bare-bones fallback for very weak hardware: removes gradients, shadows, blur, animation, and smooth scrolling. Turn it off to restore your visual settings.</small></div><input type="checkbox" checked={settings.holyShitMode} onChange={(event) => setSettings({ ...settings, holyShitMode: event.target.checked })} /><span aria-hidden="true" /></label>
                   </div>
-                  <div className="settings-title settings-title--spaced"><span><Music2 size={17} /></span><div><h3>Ambient audio</h3><p>An optional player that stays separate from Pi and your project.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><div><h3>Ambient audio</h3><p>An optional player that stays separate from Pi and your project.</p></div></div>
                   <div className="settings-group">
                     <label className="settings-toggle"><div><strong>Music player</strong><small>Shows the minimal lower-right dock. Requires yt-dlp on PATH and accepts user-supplied HTTPS links or playlists.</small></div><input type="checkbox" checked={settings.musicPlayerEnabled} onChange={(event) => setSettings({ ...settings, musicPlayerEnabled: event.target.checked })} /><span aria-hidden="true" /></label>
                   </div>
@@ -584,12 +587,12 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
 
               {activeSection === 'agent' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-agent" aria-labelledby="settings-tab-agent">
-                  <div className="settings-title"><span><Bot size={17} /></span><div><h3>Agent defaults</h3><p>Fallbacks for the first Pi session opened in a project. Later sessions inherit the active composer settings.</p></div></div>
+                  <div className="settings-title"><div><h3>Agent defaults</h3><p>Fallbacks for the first Pi session opened in a project. Later sessions inherit the active composer settings.</p></div></div>
                   <div className="settings-model-picker">
                     <div className="settings-model-heading"><div><strong>Default model</strong><small>Models are separated by provider so the catalog stays clear as it grows.</small></div>{selectedProvider && <span>{formatProviderName(selectedProvider)}</span>}</div>
                     <div className="settings-model-controls">
-                      <div className="settings-select-field"><span>Provider</span><SelectControl label="Default provider" value={selectedProvider} options={[{ value: '', label: 'Automatic · Pi default' }, ...providerGroups.map((group) => ({ value: group.provider, label: group.title, detail: `${group.models.length} ${group.models.length === 1 ? 'model' : 'models'}` }))]} onValueChange={chooseProvider} /></div>
-                      <div className="settings-select-field"><span>Model</span><SelectControl label="Default model" value={settings.defaultModel ?? ''} disabled={!selectedGroup} options={[{ value: '', label: 'Select a model' }, ...(selectedGroup?.models.map((model) => ({ value: `${model.provider}/${model.id}`, label: model.name, ...(model.name === model.id ? {} : { detail: model.id }) })) ?? [])]} onValueChange={(value) => setSettings({ ...settings, defaultModel: value || null })} /></div>
+                      <div className="settings-select-field"><span>Provider</span><SelectControl compact={settings.compactMode} label="Default provider" value={selectedProvider} options={[{ value: '', label: 'Automatic · Pi default' }, ...providerGroups.map((group) => ({ value: group.provider, label: group.title, detail: `${group.models.length} ${group.models.length === 1 ? 'model' : 'models'}` }))]} onValueChange={chooseProvider} /></div>
+                      <div className="settings-select-field"><span>Model</span><SelectControl compact={settings.compactMode} label="Default model" value={settings.defaultModel ?? ''} disabled={!selectedGroup} options={[{ value: '', label: 'Select a model' }, ...(selectedGroup?.models.map((model) => ({ value: `${model.provider}/${model.id}`, label: model.name, ...(model.name === model.id ? {} : { detail: model.id }) })) ?? [])]} onValueChange={(value) => setSettings({ ...settings, defaultModel: value || null })} /></div>
                     </div>
                     <div className="settings-model-meta">{selectedModel ? <><span>{selectedModel.reasoning ? 'Reasoning' : 'Standard'}</span><span>{Math.round(selectedModel.contextWindow / 1000)}k context</span>{selectedModel.supportsImages && <span>Images</span>}</> : <span>Pi chooses the active provider and model.</span>}</div>
                   </div>
@@ -624,24 +627,26 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                       {providerGroups.length === 0 && managedProviders.length === 0 && <div className="settings-provider-empty">No providers yet. Sign in with /login or add one from models.dev.</div>}
                     </div>
                   </div>
-                  <div className="settings-select-row"><div><strong>Thinking level</strong><small>Initial reasoning effort when a project starts without an active session.</small></div><SelectControl label="Default thinking level" value={settings.thinkingLevel} className="settings-thinking-select" options={['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((level) => ({ value: level, label: level === 'xhigh' ? 'Extra high' : `${level[0]?.toUpperCase() ?? ''}${level.slice(1)}` }))} onValueChange={(value) => setSettings({ ...settings, thinkingLevel: value as AppSettings['thinkingLevel'] })} /></div>
-                  <div className="settings-select-row"><div><strong>Agent orchestration</strong><small>Agent Teams V2 enables recursive child/grandchild delegation with durable context and hard safety limits. Applies when the project is reopened.</small></div><SelectControl label="Agent orchestration mode" value={settings.agentTeamMode} options={[{ value: 'legacy', label: 'Legacy subagents', detail: 'Flat managed agents and deterministic workflows' }, { value: 'v2', label: 'Agent Teams V2 (beta)', detail: 'Recursive provider-neutral teams' }]} onValueChange={(value) => setSettings({ ...settings, agentTeamMode: value as AppSettings['agentTeamMode'] })} /></div>
+                  <div className="settings-group">
+                    <div className="settings-select-row"><div><strong>Thinking level</strong><small>Initial reasoning effort when a project starts without an active session.</small></div><SelectControl compact={settings.compactMode} label="Default thinking level" value={settings.thinkingLevel} className="settings-thinking-select" options={['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((level) => ({ value: level, label: level === 'xhigh' ? 'Extra high' : `${level[0]?.toUpperCase() ?? ''}${level.slice(1)}` }))} onValueChange={(value) => setSettings({ ...settings, thinkingLevel: value as AppSettings['thinkingLevel'] })} /></div>
+                    <div className="settings-select-row"><div><strong>Agent orchestration</strong><small>Agent Teams V2 enables recursive child/grandchild delegation with durable context and hard safety limits. Applies when the project is reopened.</small></div><SelectControl compact={settings.compactMode} label="Agent orchestration mode" value={settings.agentTeamMode} options={[{ value: 'legacy', label: 'Legacy subagents', detail: 'Flat managed agents and deterministic workflows' }, { value: 'v2', label: 'Agent Teams V2 (beta)', detail: 'Recursive provider-neutral teams' }]} onValueChange={(value) => setSettings({ ...settings, agentTeamMode: value as AppSettings['agentTeamMode'] })} /></div>
+                  </div>
 
-                  <div className="settings-title settings-title--spaced"><span><ImageIcon size={17} /></span><div><h3>Image generation</h3><p>A dedicated image route, independent from the chat model and secured by Fate UI’s embedded SDK provider connection.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><div><h3>Image generation</h3><p>A dedicated image route, independent from the chat model and secured by Fate UI’s embedded SDK provider connection.</p></div></div>
                   <div className="image-provider-config">
                     <div className="settings-model-controls">
-                      <div className="settings-select-field"><span>Provider route</span><SelectControl label="Image generation provider" value={imageSettings.provider} options={[{ value: 'auto', label: 'Automatic', detail: 'Best authenticated Pi provider' }, ...imageGenerationProviderPresets.map((preset) => ({ value: preset.id, label: preset.name, detail: preset.auth })), { value: 'custom', label: 'Custom Pi provider', detail: 'OpenAI-compatible Images API' }]} onValueChange={chooseImageProvider} /></div>
+                      <div className="settings-select-field"><span>Provider route</span><SelectControl compact={settings.compactMode} label="Image generation provider" value={imageSettings.provider} options={[{ value: 'auto', label: 'Automatic', detail: 'Best authenticated Pi provider' }, ...imageGenerationProviderPresets.map((preset) => ({ value: preset.id, label: preset.name, detail: preset.auth })), { value: 'custom', label: 'Custom Pi provider', detail: 'OpenAI-compatible Images API' }]} onValueChange={chooseImageProvider} /></div>
                       {imageSettings.provider === 'custom' ? (
-                        <div className="settings-select-field"><span>Pi provider</span><SelectControl label="Custom image provider" value={imageSettings.customProvider ?? ''} options={[{ value: '', label: 'Select an OpenAI-compatible provider' }, ...(unavailableCustomImageProvider ? [unavailableCustomImageProvider] : []), ...imageCompatibleProviderGroups.map((group) => ({ value: group.provider, label: group.title, detail: 'Base URL and auth from Fate UI provider storage' }))]} onValueChange={(customProvider) => setSettings({ ...settings, imageGeneration: { ...imageSettings, customProvider: customProvider || null } })} /></div>
+                        <div className="settings-select-field"><span>Pi provider</span><SelectControl compact={settings.compactMode} label="Custom image provider" value={imageSettings.customProvider ?? ''} options={[{ value: '', label: 'Select an OpenAI-compatible provider' }, ...(unavailableCustomImageProvider ? [unavailableCustomImageProvider] : []), ...imageCompatibleProviderGroups.map((group) => ({ value: group.provider, label: group.title, detail: 'Base URL and auth from Fate UI provider storage' }))]} onValueChange={(customProvider) => setSettings({ ...settings, imageGeneration: { ...imageSettings, customProvider: customProvider || null } })} /></div>
                       ) : (
-                        <div className="settings-select-field"><span>Image model</span><SelectControl label="Image generation model" value={imageSettings.model ?? ''} disabled={imageSettings.provider === 'auto'} options={imageSettings.provider === 'auto' ? [{ value: '', label: 'Chosen automatically' }] : (imagePreset?.models.map((model) => ({ value: model.id, label: model.name, detail: model.detail })) ?? [])} onValueChange={(model) => setSettings({ ...settings, imageGeneration: { ...imageSettings, model: model || null } })} /></div>
+                        <div className="settings-select-field"><span>Image model</span><SelectControl compact={settings.compactMode} label="Image generation model" value={imageSettings.model ?? ''} disabled={imageSettings.provider === 'auto'} options={imageSettings.provider === 'auto' ? [{ value: '', label: 'Chosen automatically' }] : (imagePreset?.models.map((model) => ({ value: model.id, label: model.name, detail: model.detail })) ?? [])} onValueChange={(model) => setSettings({ ...settings, imageGeneration: { ...imageSettings, model: model || null } })} /></div>
                       )}
                     </div>
                     {imageSettings.provider === 'custom' && (
                       <label className="image-model-input"><span>Image model ID</span><input value={imageSettings.model ?? ''} placeholder="Your deployed image model" onChange={(event) => setSettings({ ...settings, imageGeneration: { ...imageSettings, model: event.target.value || null } })} /></label>
                     )}
                     <div className="image-provider-status" data-ready={imageProviderReady}>
-                      <LockKeyhole size={15} aria-hidden="true" />
+                      <LockKeyhole size={13} aria-hidden="true" />
                       <div><strong>{imageSettings.provider === 'auto' ? imageProviderReady ? 'Fate UI chooses at generation time' : 'No image provider connected' : imageProviderReady ? 'Ready through Fate UI' : imageSettings.provider === 'custom' && selectedCustomImageProvider && !customImageModelReady ? 'Choose an image model ID' : 'Provider not connected'}</strong><span>{imagePreset?.description ?? (imageSettings.provider === 'custom' ? 'The base URL and credential come from ~/.pi/fateGUI/models.json; only /images/generations is appended.' : 'Priority: ChatGPT OAuth, OpenAI, Gemini, then OpenRouter.')}</span></div>
                     </div>
                     <dl className="image-provider-route">
@@ -655,22 +660,22 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
 
               {activeSection === 'voice' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-voice" aria-labelledby="settings-tab-voice">
-                  <div className="settings-title"><span><Mic2 size={17} /></span><div><h3>Voice input</h3><p>Private, on-device speech-to-text for the message composer.</p></div></div>
+                  <div className="settings-title"><div><h3>Voice input</h3><p>Private, on-device speech-to-text for the message composer.</p></div></div>
                   <div className="settings-group">
                     <label className="settings-toggle"><div><strong>Microphone button</strong><small>Show voice input beside Send. Audio stays on this device.</small></div><input type="checkbox" checked={settings.speech.enabled} onChange={(event) => setSettings({ ...settings, speech: { ...settings.speech, enabled: event.target.checked } })} /><span aria-hidden="true" /></label>
                   </div>
-                  <div className="settings-title settings-title--spaced"><span><Mic2 size={17} /></span><div><h3>Input device</h3><p>Choose the microphone used for voice prompts on this computer.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><div><h3>Input device</h3><p>Choose the microphone used for voice prompts on this computer.</p></div></div>
                   <div className="settings-group voice-device-group">
                     <div className="settings-theme-row">
                       <div><strong>Microphone</strong><small>{inputDeviceDetail}</small></div>
-                      <SelectControl label="Voice input device" value={settings.speech.inputDeviceId ?? ''} className="voice-device-select" disabled={inputDevicesLoading} options={inputDeviceOptions} onValueChange={(inputDeviceId) => setSettings({ ...settings, speech: { ...settings.speech, inputDeviceId: inputDeviceId || null } })} />
+                      <SelectControl compact={settings.compactMode} label="Voice input device" value={settings.speech.inputDeviceId ?? ''} className="voice-device-select" disabled={inputDevicesLoading} options={inputDeviceOptions} onValueChange={(inputDeviceId) => setSettings({ ...settings, speech: { ...settings.speech, inputDeviceId: inputDeviceId || null } })} />
                     </div>
                   </div>
                   <div className="voice-backend-status" data-accelerated={speechStatus?.accelerated ?? false}>
-                    <Gauge size={15} aria-hidden="true" />
+                    <Gauge size={13} aria-hidden="true" />
                     <div><strong>{speechBackendLabel}</strong><span>{speechStatus?.backend ?? 'Selecting the best available local backend…'}</span></div>
                   </div>
-                  <div className="settings-title settings-title--spaced"><span><Download size={17} /></span><div><h3>Model power</h3><p>Pick a model per accuracy tier. Mini downloads automatically on first use. “Live” models show words while you speak.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><div><h3>Model power</h3><p>Pick a model per accuracy tier. Mini downloads automatically on first use. “Live” models show words while you speak.</p></div></div>
                   <div className="voice-model-list" aria-label="Voice transcription models">
                     {speechStatus?.models.reduce<React.ReactElement[]>((rows, model, index, models) => {
                       const previous = models[index - 1];
@@ -683,11 +688,14 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                       rows.push(
                         <div className="voice-model-row" data-selected={selected} key={model.id}>
                           <button className="voice-model-choice" type="button" aria-pressed={selected} onClick={() => setSettings({ ...settings, speech: { ...settings.speech, modelId: model.id } })}>
-                            <span className="voice-model-tier">{model.name}{model.streaming ? <em className="voice-model-live">live</em> : null}</span>
-                            <span className="voice-model-copy"><strong>{model.model}</strong><small>{model.description}</small><AppTooltip content={model.detail}><em>{model.detail}</em></AppTooltip></span>
+                            <span className="voice-model-copy"><strong>{model.model}</strong><AppTooltip content={model.detail}><small>{model.description} · {model.detail}</small></AppTooltip></span>
                           </button>
-                          <div className="voice-model-action">
-                            {speechBusy === model.id ? <AppTooltip content="Cancel download" sideOffset={7}><button type="button" className="voice-download-cancel" aria-label={`Cancel ${model.name} voice model download`} onClick={() => void cancelSpeechDownload(model.id)}><LoaderCircle className="voice-download-spinner" size={15} /><X className="voice-download-x" size={15} /><span className="icon-label">{activeProgress?.state === 'verifying' ? 'Verifying' : `${percent}%`}</span></button></AppTooltip> : model.installed ? <AppTooltip content="Remove downloaded model"><button type="button" aria-label={`Remove ${model.name} voice model`} onClick={() => void removeSpeechModel(model.id)}><Trash2 size={14} /><span className="icon-label">Installed</span></button></AppTooltip> : <button type="button" aria-label={`Download ${model.name} voice model`} onClick={() => void downloadSpeechModel(model.id)}><Download size={14} /><span className="icon-label">Download</span></button>}
+                          <div className="voice-model-meta">
+                            {model.streaming && <em className="voice-model-live">live</em>}
+                            <span className="voice-model-tier">{model.name}</span>
+                            <div className="voice-model-action">
+                              {speechBusy === model.id ? <AppTooltip content={activeProgress?.state === 'verifying' ? 'Verifying' : 'Cancel download'} sideOffset={7}><button type="button" className="voice-download-cancel" aria-label={`Cancel ${model.name} voice model download`} onClick={() => void cancelSpeechDownload(model.id)}><LoaderCircle className="voice-download-spinner" size={13} /><X className="voice-download-x" size={13} /><span className="voice-download-pct">{activeProgress?.state === 'verifying' ? '…' : `${percent}%`}</span></button></AppTooltip> : model.installed ? <AppTooltip content="Remove downloaded model"><button type="button" aria-label={`Remove ${model.name} voice model`} onClick={() => void removeSpeechModel(model.id)}><Trash2 size={13} /></button></AppTooltip> : <AppTooltip content="Download"><button type="button" aria-label={`Download ${model.name} voice model`} onClick={() => void downloadSpeechModel(model.id)}><Download size={13} /></button></AppTooltip>}
+                            </div>
                           </div>
                           {activeProgress && speechBusy === model.id && <progress aria-label={`${model.name} model download`} max={activeProgress.totalBytes} value={activeProgress.downloadedBytes} />}
                         </div>,
@@ -698,17 +706,19 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                       : <div className="settings-skeleton"><span /><span /><span /></div>)}
                   </div>
                   <p className="voice-license-note">Models download from pinned Hugging Face releases, are SHA-256 verified before installation, and retain their upstream licenses. Supported hardware acceleration is used when stable; otherwise transcription uses CPU safety mode.</p>
-                  <div className="settings-title settings-title--spaced"><span><Keyboard size={17} /></span><div><h3>Live transcription &amp; hotkey</h3><p>See voice input as you speak. Trigger it from any application with a global hotkey.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><div><h3>Live transcription &amp; hotkey</h3><p>See voice input as you speak. Trigger it from any application with a global hotkey.</p></div></div>
                   <div className="settings-group">
                     <label className="settings-toggle"><div><strong>Live transcription</strong><small>Show words in the composer while you speak when the selected model supports it. Silence is filtered before decoding, so pauses cost no CPU.</small></div><input type="checkbox" checked={settings.speech.liveTranscription} onChange={(event) => setSettings({ ...settings, speech: { ...settings.speech, liveTranscription: event.target.checked } })} /><span aria-hidden="true" /></label>
                     <label className="settings-toggle"><div><strong>Final accuracy pass</strong><small>After you stop speaking, re-run the whole recording once for a cleaner transcript. Costs extra time and CPU; off by default.</small></div><input type="checkbox" checked={settings.speech.finalAccuracyPass} onChange={(event) => setSettings({ ...settings, speech: { ...settings.speech, finalAccuracyPass: event.target.checked } })} /><span aria-hidden="true" /></label>
                   </div>
-                  <div className="settings-theme-row voice-hotkey-row">
-                    <div><strong>Voice hotkey</strong><small>{settings.speech.voiceHotkey ? `Press ${settings.speech.voiceHotkey} ${settings.speech.voiceHotkeyMode === 'push-to-talk' ? 'and hold to talk' : 'to toggle recording'}.` : 'Off — use the microphone button in the composer instead.'}</small></div>
-                    <div className="voice-hotkey-controls">
-                      <button type="button" className="voice-hotkey-capture" data-active={capturingHotkey || undefined} aria-pressed={capturingHotkey} onClick={() => setCapturingHotkey((value) => !value)}>{capturingHotkey ? 'Press keys…' : (settings.speech.voiceHotkey ?? 'Record')}</button>
-                      {settings.speech.voiceHotkey && <button type="button" className="voice-hotkey-clear" aria-label="Clear voice hotkey" onClick={() => setSettings({ ...settings, speech: { ...settings.speech, voiceHotkey: null } })}><X size={14} /></button>}
-                      <SelectControl label="Voice hotkey mode" value={settings.speech.voiceHotkeyMode} options={[{ value: 'toggle', label: 'Toggle' }, { value: 'push-to-talk', label: 'Push to talk' }]} onValueChange={(value) => setSettings({ ...settings, speech: { ...settings.speech, voiceHotkeyMode: value as VoiceHotkeyMode } })} />
+                  <div className="settings-group">
+                    <div className="settings-theme-row voice-hotkey-row">
+                      <div><strong>Voice hotkey</strong><small>{settings.speech.voiceHotkey ? `Press ${settings.speech.voiceHotkey} ${settings.speech.voiceHotkeyMode === 'push-to-talk' ? 'and hold to talk' : 'to toggle recording'}.` : 'Off — use the microphone button in the composer instead.'}</small></div>
+                      <div className="voice-hotkey-controls">
+                        <button type="button" className="voice-hotkey-capture" data-active={capturingHotkey || undefined} aria-pressed={capturingHotkey} onClick={() => setCapturingHotkey((value) => !value)}>{capturingHotkey ? 'Press keys…' : (settings.speech.voiceHotkey ?? 'Record')}</button>
+                        {settings.speech.voiceHotkey && <button type="button" className="voice-hotkey-clear" aria-label="Clear voice hotkey" onClick={() => setSettings({ ...settings, speech: { ...settings.speech, voiceHotkey: null } })}><X size={14} /></button>}
+                        <SelectControl compact={settings.compactMode} label="Voice hotkey mode" value={settings.speech.voiceHotkeyMode} options={[{ value: 'toggle', label: 'Toggle' }, { value: 'push-to-talk', label: 'Push to talk' }]} onValueChange={(value) => setSettings({ ...settings, speech: { ...settings.speech, voiceHotkeyMode: value as VoiceHotkeyMode } })} />
+                      </div>
                     </div>
                   </div>
                   {hotkeyStatus && !hotkeyStatus.pushToTalkAvailable && settings.speech.voiceHotkeyMode === 'push-to-talk' && (
@@ -719,23 +729,24 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
 
               {activeSection === 'workspace' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-workspace" aria-labelledby="settings-tab-workspace">
-                  <div className="settings-title"><span><ShieldCheck size={17} /></span><div><h3>Project trust</h3><p>Clear boundaries between Pi actions and your manual tools.</p></div></div>
-                  <div className="settings-notice"><ShieldCheck size={17} /><div><strong>Project-confined by default</strong><p>Read only and Edit files stay inside the trusted project. Full access explicitly unlocks host files and shell execution, is saved per session, and is not sandboxed.</p></div></div>
-                  <div className="settings-title settings-title--spaced"><span><TerminalSquare size={17} /></span><div><h3>Terminal</h3><p>Choose the shell opened by the manual integrated terminal.</p></div></div>
+                  <div className="settings-title"><div><h3>Project trust</h3><p>Clear boundaries between Pi actions and your manual tools.</p></div></div>
+                  <div className="settings-notice"><ShieldCheck size={14} /><div><strong>Project-confined by default</strong><p>Read only and Edit files stay inside the trusted project. Full access explicitly unlocks host files and shell execution, is saved per session, and is not sandboxed.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><div><h3>Terminal</h3><p>Choose the shell opened by the manual integrated terminal.</p></div></div>
                   <label className="settings-input-row"><span>Shell executable</span><input value={settings.terminalShell ?? ''} onChange={(event) => setSettings({ ...settings, terminalShell: event.target.value || null })} placeholder="System default" /></label>
-                  <div className="settings-title settings-title--spaced"><span><Keyboard size={17} /></span><div><h3>Message composer</h3><p>Tune sending and prompt improvement behavior.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><div><h3>Message composer</h3><p>Tune sending and prompt improvement behavior.</p></div></div>
                   <div className="settings-group">
                     <label className="settings-toggle"><div><strong>Ctrl/⌘ Enter to send</strong><small>When enabled, Enter inserts a new line. When off, Enter sends and Shift+Enter inserts a new line.</small></div><input type="checkbox" checked={settings.sendMessageWithModifier} onChange={(event) => setSettings({ ...settings, sendMessageWithModifier: event.target.checked })} /><span aria-hidden="true" /></label>
                     <label className="settings-toggle"><div><strong>Advanced improve prompt</strong><small>Before rewriting, the model first explores the project read-only — exact files, symbols, and conventions — then writes the improved prompt from that evidence. Slower and uses more tokens; the button turns accent-colored while active.</small></div><input type="checkbox" checked={settings.advancedPromptImprovement} onChange={(event) => setSettings({ ...settings, advancedPromptImprovement: event.target.checked })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>Opt-in crash reports</strong><small>Off by default. When on, Fate UI writes a local file with stack, app version, and OS only. No prompts or code are stored.</small></div><input type="checkbox" checked={settings.crashTelemetryEnabled} onChange={(event) => setSettings({ ...settings, crashTelemetryEnabled: event.target.checked })} /><span aria-hidden="true" /></label>
                   </div>
-                  <div className="settings-title settings-title--spaced"><span><Keyboard size={17} /></span><div><h3>Keyboard shortcuts</h3><p>Fast paths that work anywhere in the workspace.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><div><h3>Keyboard shortcuts</h3><p>Fast paths that work anywhere in the workspace.</p></div></div>
                   <dl className="settings-shortcuts"><div><dt>Command palette</dt><dd>Ctrl/⌘ K</dd></div><div><dt>Terminal</dt><dd>Ctrl/⌘ `</dd></div><div><dt>New session</dt><dd>Ctrl/⌘ N</dd></div><div><dt>Settings</dt><dd>Ctrl/⌘ ,</dd></div><div><dt>Stop generation</dt><dd>Esc</dd></div></dl>
                 </div>
               )}
 
               {activeSection === 'system' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-system" aria-labelledby="settings-tab-system">
-                  <div className="settings-title"><span><Activity size={17} /></span><div><h3>Pi diagnostics</h3><p>Local runtime details for troubleshooting.</p></div></div>
+                  <div className="settings-title"><div><h3>Pi diagnostics</h3><p>Local runtime details for troubleshooting.</p></div></div>
                   {diagnosticsError
                     ? <p className="settings-error">{diagnosticsError}</p>
                     : diagnostics
@@ -743,7 +754,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                       : systemLoading || !systemLoadStarted.current
                         ? <div className="settings-skeleton" aria-label="Loading diagnostics"><span /><span /><span /></div>
                         : <p className="settings-empty">No diagnostics were returned.</p>}
-                  <div className="settings-title settings-title--spaced"><span><Activity size={17} /></span><div><h3>Application logs</h3><p>The latest local events, newest first.</p></div></div>
+                  <div className="settings-title settings-title--spaced"><div><h3>Application logs</h3><p>The latest local events, newest first.</p></div></div>
                   <div className="settings-logs">{logsError ? <p className="settings-error">{logsError}</p> : logs.length ? logs.slice(-100).reverse().map((entry) => <div key={`${entry.timestamp}-${entry.message}`}><time>{new Date(entry.timestamp).toLocaleTimeString()}</time><strong>{entry.level}</strong><span>{entry.scope}: {entry.message}</span></div>) : <p>{systemLoading ? 'Loading application logs…' : 'No application logs yet.'}</p>}</div>
                 </div>
               )}

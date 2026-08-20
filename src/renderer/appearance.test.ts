@@ -3,11 +3,12 @@ import type { AppSettings } from '../shared/contracts/ipc';
 import { applyNonThemeVisualSettings, applyVisualSettings } from './appearance';
 import { fallbackThemes, resolveTheme } from './theme';
 
-type VisualSettings = Pick<AppSettings, 'appearance' | 'codeFont' | 'holyShitMode' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'themeId'>;
+type VisualSettings = Pick<AppSettings, 'appearance' | 'codeFont' | 'compactMode' | 'holyShitMode' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'themeId'>;
 
 const visualSettings = (overrides: Partial<VisualSettings> = {}): VisualSettings => ({
   appearance: 'dark',
   codeFont: 'jetbrains-mono',
+  compactMode: false,
   holyShitMode: false,
   interfaceFont: 'noto-sans',
   performanceMode: false,
@@ -20,6 +21,7 @@ afterEach(() => {
   delete document.documentElement.dataset.holyShitMode;
   delete document.documentElement.dataset.performanceMode;
   delete document.documentElement.dataset.reduceMotion;
+  delete document.documentElement.dataset.compactMode;
 });
 
 describe('applyVisualSettings', () => {
@@ -41,6 +43,13 @@ describe('applyVisualSettings', () => {
     expect(document.documentElement.dataset.holyShitMode).toBe('false');
     expect(document.documentElement.dataset.performanceMode).toBe('false');
     expect(document.documentElement.dataset.reduceMotion).toBe('false');
+  });
+
+  it('writes Compact mode as a single root flag', () => {
+    applyVisualSettings(visualSettings({ compactMode: true }), fallbackThemes);
+    expect(document.documentElement.dataset.compactMode).toBe('true');
+    applyVisualSettings(visualSettings(), fallbackThemes);
+    expect(document.documentElement.dataset.compactMode).toBe('false');
   });
 
   it('applies non-theme settings without repainting the theme', () => {

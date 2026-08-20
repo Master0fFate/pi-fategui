@@ -105,6 +105,7 @@ async function setup() {
   try {
     const settingsPath = path.join(dataDir, 'settings.json');
     const settingsValue = JSON.parse(await readFile(settingsPath, 'utf8'));
+    settingsValue.compactMode = false;
     settingsValue.compactSessions = false;
     await writeFile(settingsPath, JSON.stringify(settingsValue), 'utf8');
   } catch { /* missing settings; defaults are fine */ }

@@ -199,6 +199,7 @@ export function App() {
   const [themeCatalog, setThemeCatalog] = useState(() => fallbackThemes);
   const [hydrationAttempt, setHydrationAttempt] = useState(0);
   const [hydrationError, setHydrationError] = useState<string | null>(null);
+  const [recoveryBanner, setRecoveryBanner] = useState<string | null>(null);
   const sessionReplacementBusy = useRef(false);
 
   useEffect(() => { if (paletteOpen) setPaletteActivated(true); }, [paletteOpen]);
@@ -274,6 +275,7 @@ export function App() {
       }
       useUiStore.getState().setMusicPlayerEnabled(settings.musicPlayerEnabled);
       useUiStore.getState().setSendMessageWithModifier(settings.sendMessageWithModifier);
+      useUiStore.getState().setCompactMode(settings.compactMode);
       useUiStore.getState().setCompactSessions(settings.compactSessions);
       useUiStore.getState().setAdvancedPromptImprovement(settings.advancedPromptImprovement);
       useUiStore.getState().setSpeech(settings.speech ?? defaultSpeechSettings);
@@ -284,7 +286,7 @@ export function App() {
       if (!active) return;
       setThemeCatalog(fallbackThemes);
       applyVisualSettings(
-        { appearance: 'dark', themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', performanceMode: false, reduceMotion: false, holyShitMode: false },
+        { appearance: 'dark', themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', performanceMode: false, reduceMotion: false, holyShitMode: false, compactMode: false },
         fallbackThemes,
         // A corrupt settings file must not overwrite the last good theme
         // snapshot, or the next launch would boot into the wrong palette.
@@ -386,8 +388,22 @@ export function App() {
       }
     });
 
-    void window.piDesktop.getRuntimeState().then((runtime) => {
-      if (cancelled) return;
+    const recover = Promise.resolve(
+      typeof window.piDesktop.consumeRecovery === 'function' ? window.piDesktop.consumeRecovery() : null,
+    ).catch(() => null);
+    void recover.then((notice) => {
+      if (!cancelled && notice) {
+        const bits = ['The last Fate UI process stopped without a clean shutdown.'];
+        if (notice.streaming || notice.activeSessionRunning) bits.push('A response or tool was still running.');
+        if (notice.queueSteering + notice.queueFollowUp > 0) bits.push('Queued prompts were not sent.');
+        if (notice.lastToolName) bits.push(`Last running tool: ${notice.lastToolName}.`);
+        bits.push('The session was restored. Check the last tool result before you continue.');
+        setRecoveryBanner(bits.join(' '));
+      }
+      if (cancelled) return Promise.resolve(null);
+      return window.piDesktop.getRuntimeState();
+    }).then((runtime) => {
+      if (cancelled || !runtime) return;
       if (bufferOverflowed) {
         // Do not install a snapshot paired with an incomplete event tail. A new
         // subscription and authoritative hydration replaces same-session data.
@@ -513,6 +529,19 @@ export function App() {
         else unavailable('Terminal unavailable', 'Open and trust a project before opening the manual terminal.');
       }
       else if (command === 'open-palette') ui.setPaletteOpen(true);
+      else if (command === 'export-session') {
+        if (typeof window.piDesktop.exportSession !== 'function') {
+          unavailable('Export unavailable', 'Restart Fate UI to enable session export.');
+          return;
+        }
+        if (!runtime.sessionId) {
+          unavailable('Nothing to export', 'Open a session before exporting it.');
+          return;
+        }
+        void window.piDesktop.exportSession().then((result) => {
+          if (result.saved) useUiStore.getState().showToast({ kind: 'success', title: 'Session exported', message: result.path ?? 'Saved locally.' });
+        }).catch((error: unknown) => failed('Could not export session', error, 'The session could not be exported.'));
+      }
     };
     const unsubscribe = typeof window.piDesktop.onAppCommand === 'function'
       ? window.piDesktop.onAppCommand(run)
@@ -556,6 +585,7 @@ export function App() {
   return (
     <>
       {hydrationError && <div className="hydration-error-banner" role="alert"><span>{hydrationError}</span><button type="button" onClick={() => setHydrationAttempt((value) => value + 1)}>Retry</button></div>}
+      {recoveryBanner && <div className="hydration-error-banner recovery-banner" role="status"><span>{recoveryBanner}</span><button type="button" onClick={() => setRecoveryBanner(null)}>Dismiss</button></div>}
       <BrowserInitializer />
       <WorkspaceInitializer />
       <AppShell />

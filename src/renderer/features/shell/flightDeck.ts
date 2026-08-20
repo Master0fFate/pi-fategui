@@ -287,6 +287,21 @@ function provenanceTouches(provenance: ToolProvenance, change: GitChange): boole
   return provenance.affectedPaths.some((reference) => reference.operation !== 'read' && (reference.path === change.path || reference.path === change.oldPath));
 }
 
+function originActorKey(origin: ChangeOrigin): string {
+  const actor = origin.provenance.actor;
+  if (actor.kind === 'root') return 'root';
+  if (actor.kind === 'legacy') return `legacy:${actor.runId}`;
+  return `team:${actor.nodeId}`;
+}
+
+/** Related activity is not causal proof. Multiple distinct actors on one path are ambiguous. */
+export function writerConflictState(origins: readonly ChangeOrigin[]): 'none' | 'single' | 'ambiguous' {
+  const actors = new Set(origins.map(originActorKey));
+  if (actors.size === 0) return 'none';
+  if (actors.size === 1) return 'single';
+  return 'ambiguous';
+}
+
 export function selectChangeOrigins(change: GitChange | undefined, sources: RecorderSources): ChangeOrigin[] {
   if (!change) return [];
   const candidates: ChangeOrigin[] = [];

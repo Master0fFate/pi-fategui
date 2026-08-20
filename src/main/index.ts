@@ -1,9 +1,11 @@
 import { app, BrowserWindow, dialog, protocol, session, shell, systemPreferences } from 'electron';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { runProductionSmoke } from './bootstrap/productionSmoke';
+import { RecoverySnapshotService } from './bootstrap/RecoverySnapshot';
 import { ShutdownCoordinator } from './bootstrap/shutdown';
 import { BrowserHistoryRepository } from './browser/BrowserHistoryRepository';
 import { BrowserHost } from './browser/BrowserHost';
@@ -14,6 +16,7 @@ import { registerIpc } from './ipc/registerIpc';
 import { parseLaunchProjectPath, hasNewInstanceFlag } from './launchProject';
 import { acquireInstanceProfile } from './instanceProfile';
 import { AppLogService } from './logging/AppLogService';
+import { CrashTelemetryService } from './logging/CrashTelemetry';
 import { AutomationRepository } from './automations/AutomationRepository';
 import { MEDIA_SCHEME, MusicService, PublicHttpsProxy } from './music/MusicService';
 import { BrowserRuntimeBridge } from './pi/BrowserRuntimeBridge';
@@ -88,7 +91,23 @@ configurePackagedSpeechLibrary({
 });
 
 const logs = new AppLogService();
+const recovery = new RecoverySnapshotService(RecoverySnapshotService.defaultFilePath(instanceProfile.slot));
 const settings = new SettingsService(logs);
+const crashTelemetry = new CrashTelemetryService(
+  path.join(process.env.FATE_GUI_DATA_DIR ? path.resolve(process.env.FATE_GUI_DATA_DIR) : path.join(os.homedir(), '.pi', 'fateGUI'), 'crash-reports'),
+  () => settings.get().crashTelemetryEnabled === true,
+  () => app.getVersion(),
+);
+process.on('uncaughtException', (error) => {
+  void crashTelemetry.record(error.stack ?? String(error)).catch(() => undefined);
+});
+process.on('unhandledRejection', (reason) => {
+  const stack = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  void crashTelemetry.record(stack).catch(() => undefined);
+});
+app.on('render-process-gone', (_event, _contents, details) => {
+  void crashTelemetry.record(`render-process-gone ${details.reason} ${details.exitCode}`).catch(() => undefined);
+});
 const automations = new AutomationRepository(logs);
 let browserHost: BrowserHost | null = null;
 const browserBridge = new BrowserRuntimeBridge(() => browserHost?.current() ?? null);
@@ -178,7 +197,7 @@ const shutdown = new ShutdownCoordinator({
   onBeforeDispose: () => rememberWindowPlacement(dispatcher.activeHandle(), windowState),
   disposeSync: () => { terminal.dispose(); music.dispose(); rendererNetworkProxy.dispose(); },
   disposeAsync: () => [
-    runtime.dispose().finally(() => attestationLedger.flush()),
+    runtime.dispose().finally(() => attestationLedger.flush()).finally(() => recovery.markClean()),
     speech.dispose(),
     hotkey.dispose(),
     windowState.flush(),
@@ -316,7 +335,8 @@ app.whenReady().then(async () => {
       logs.write('warn', 'microphone', `macOS microphone permission could not be requested: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser: browserHost, automations, attestations: attestationLedger, newWindow: () => windows.createWindow(), rendererPolicy });
+  await recovery.load();
+  const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, recovery, browser: browserHost, automations, attestations: attestationLedger, newWindow: () => windows.createWindow(), rendererPolicy });
   // Refresh every models.dev-managed provider's model list once per Fate GUI
   // start. Runs beside startup, never blocking it; offline keeps the cache.
   void runtime.refreshManagedModelsDevProviders().catch((error) => {

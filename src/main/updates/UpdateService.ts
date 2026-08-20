@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -38,6 +39,40 @@ export function platformAssetName(version: string, platform: string = process.pl
 export function releaseDownloadUrl(version: string, platform: string = process.platform, arch: string = process.arch): string {
   return `${RELEASE_DOWNLOAD_BASE}/v${version}/${platformAssetName(version, platform, arch)}`;
 }
+
+export function releaseChecksumsUrl(version: string): string {
+  return `${RELEASE_DOWNLOAD_BASE}/v${version}/SHA256SUMS`;
+}
+
+const sha256HexPattern = /^[0-9a-f]{64}$/iu;
+const sha256SumsLinePattern = /^([0-9a-f]{64})(?: {2}| \*)(.+)$/iu;
+
+/** Parse a published SHA256SUMS file (`<hex>  <name>` or `<hex> *<name>`). */
+export function parseSha256Sums(text: string): Map<string, string> {
+  const sums = new Map<string, string>();
+  for (const raw of text.split(/\r?\n/u)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const match = sha256SumsLinePattern.exec(line);
+    if (!match) continue;
+    const digest = match[1]!.toLowerCase();
+    const name = match[2]!.trim();
+    if (!sha256HexPattern.test(digest) || name.length === 0) continue;
+    sums.set(name, digest);
+  }
+  return sums;
+}
+
+export function digestForAsset(sums: Map<string, string>, assetName: string): string | null {
+  return sums.get(assetName) ?? null;
+}
+
+export const updateVerifyMessages = {
+  checksumsUnavailable: 'The update checksum list could not be downloaded. Installation was refused.',
+  checksumsInvalid: 'The update checksum list is invalid. Installation was refused.',
+  digestMissing: 'The update checksum list does not include this installer. Installation was refused.',
+  mismatch: 'The update file failed checksum verification. The downloaded file was deleted and was not installed.',
+} as const;
 
 /** Canonical macOS application bundle name and install location. */
 export const MACOS_APP_BUNDLE_NAME = 'Fate UI.app';
@@ -287,16 +322,22 @@ export class UpdateService {
   async downloadAndInstall(version: string): Promise<void> {
     const parsed = parseSemanticVersion(version);
     if (!parsed) throw new Error('The available update version is invalid.');
+    const assetName = platformAssetName(parsed.normalized, this.platform, this.arch);
     const url = releaseDownloadUrl(parsed.normalized, this.platform, this.arch);
-    const targetPath = path.join(this.downloadDir, platformAssetName(parsed.normalized, this.platform, this.arch));
+    const targetPath = path.join(this.downloadDir, assetName);
     await this.removeFile(targetPath);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.downloadTimeoutMs);
     timeout.unref?.();
     try {
+      const expectedDigest = await this.readExpectedDigest(parsed.normalized, assetName, controller.signal);
       const download = await this.fetchAsset(url, { signal: controller.signal });
       if (!download.ok || !download.body) throw new Error(`The update download could not start (HTTP ${download.status}).`);
-      await this.streamDownload(download, targetPath, parsed.normalized);
+      const actualDigest = await this.streamDownload(download, targetPath, parsed.normalized);
+      if (actualDigest !== expectedDigest) {
+        await this.removeFile(targetPath).catch(() => undefined);
+        throw new Error(updateVerifyMessages.mismatch);
+      }
     } catch (error) {
       if ((error as { name?: string })?.name === 'AbortError') throw new Error('The update download timed out. Check your connection and try again.');
       throw error;
@@ -306,8 +347,30 @@ export class UpdateService {
     await this.launchInstaller(targetPath, parsed.normalized);
   }
 
-  private async streamDownload(download: UpdateAssetDownload, targetPath: string, version: string): Promise<void> {
+  private async readExpectedDigest(version: string, assetName: string, signal: AbortSignal): Promise<string> {
+    let remoteText: string;
+    try {
+      const response = await this.fetchVersion(releaseChecksumsUrl(version), {
+        signal,
+        headers: { 'cache-control': 'no-cache', 'user-agent': 'Fate-UI-update-check' },
+      });
+      if (!response.ok) throw new Error(updateVerifyMessages.checksumsUnavailable);
+      remoteText = await response.text();
+    } catch (error) {
+      if (error instanceof Error && error.message === updateVerifyMessages.checksumsUnavailable) throw error;
+      if ((error as { name?: string })?.name === 'AbortError') throw error;
+      throw new Error(updateVerifyMessages.checksumsUnavailable);
+    }
+    const digest = digestForAsset(parseSha256Sums(remoteText), assetName);
+    if (!digest) {
+      throw new Error(remoteText.trim().length === 0 ? updateVerifyMessages.checksumsInvalid : updateVerifyMessages.digestMissing);
+    }
+    return digest;
+  }
+
+  private async streamDownload(download: UpdateAssetDownload, targetPath: string, version: string): Promise<string> {
     const file = createWriteStream(targetPath);
+    const hash = createHash('sha256');
     const total = download.total;
     let downloaded = 0;
     const report = () => {
@@ -315,6 +378,7 @@ export class UpdateService {
     };
     try {
       for await (const chunk of download.body) {
+        hash.update(chunk);
         await new Promise<void>((resolve, reject) => {
           file.write(chunk, (error) => (error ? reject(error) : resolve()));
         });
@@ -329,6 +393,7 @@ export class UpdateService {
       await this.removeFile(targetPath).catch(() => undefined);
       throw error;
     }
+    return hash.digest('hex');
   }
 }
 

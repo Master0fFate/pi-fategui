@@ -4,6 +4,7 @@ import type { RuntimeTool, SubagentRun } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { MessageImages } from './RichMessageContent';
+import { previewHotPathText, shouldAutoShowRunningOutput } from './hotPathBudgets';
 
 function elapsed(start: number, end: number): string {
   const milliseconds = Math.max(0, end - start);
@@ -77,10 +78,10 @@ export const ToolCard = memo(function ToolCard({ toolCallId, compact = false, wa
         </button>
       ) : null}
       {tool.images?.length ? <div className="tool-images"><MessageImages images={tool.images} /></div> : null}
-      {(expanded || (tool.status === 'running' && tool.output)) && (
+      {(expanded || (tool.status === 'running' && shouldAutoShowRunningOutput(tool.output))) && (
         <div className="tool-details">
           {expanded && <section><span>Input</span><pre>{tool.input || '—'}</pre></section>}
-          <section><span>{tool.status === 'error' ? 'Error' : 'Output'}{tool.outputTruncated && <em>bounded preview</em>}</span><pre>{tool.output || (tool.status === 'running' ? 'Waiting for output…' : 'No output')}</pre></section>
+          <section><span>{tool.status === 'error' ? 'Error' : 'Output'}{(tool.outputTruncated || (!expanded && previewHotPathText(tool.output).clipped)) && <em>bounded preview</em>}</span><pre>{expanded ? (tool.output || (tool.status === 'running' ? 'Waiting for output…' : 'No output')) : previewHotPathText(tool.output || (tool.status === 'running' ? 'Waiting for output…' : 'No output')).text}</pre></section>
         </div>
       )}
     </article>

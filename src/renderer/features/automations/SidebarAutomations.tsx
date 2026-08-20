@@ -174,7 +174,7 @@ export function SidebarAutomations() {
                       <span className="automation-row-copy">
                         <strong>{automation.name}</strong>
                         <small>{automationPromptPreview(automation.prompt)}</small>
-                        <em>{automation.lastLaunchedAt ? `Opened ${formatRelativeTime(automation.lastLaunchedAt)} · ` : ''}{automation.permissionLevel === 'edit' ? 'Edit project' : 'Read only'}</em>
+                        <em>{automation.lastLaunchedAt ? `Last run ${formatRelativeTime(automation.lastLaunchedAt)}${automation.lastLaunchOutcome ? ` · ${automation.lastLaunchOutcome}` : ''} · ${automation.launchCount} run${automation.launchCount === 1 ? '' : 's'} · ` : 'Never run · '}{automation.permissionLevel === 'edit' ? 'Edit project' : 'Read only'}</em>
                       </span>
                       <Play size={13} aria-hidden="true" />
                     </button>

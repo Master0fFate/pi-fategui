@@ -121,6 +121,7 @@ const supportedImageTypes = new Set<Attachment['mimeType']>(['image/png', 'image
 const thinkingLevels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const MODEL_NAME_MAX_LENGTH = 28;
 const MIN_COMPOSER_INPUT_HEIGHT = 53;
+const COMPACT_MIN_COMPOSER_INPUT_HEIGHT = 36;
 const COMPOSER_RESIZE_STEP = 18;
 const MAX_VOICE_DURATION_MS = 180_000;
 /** Live-stream feed chunk size (300 ms of 16 kHz mono = 4 800 samples). The
@@ -147,8 +148,8 @@ type SendClickOutcome = 'submit-follow-up' | 'submit-prompt' | 'cancel';
 const thinkingLabel = (level: string) => level === 'xhigh' ? 'Extra high' : level.charAt(0).toUpperCase() + level.slice(1);
 const normalizedPointerId = (pointerId: number) => Number.isFinite(pointerId) ? pointerId : 1;
 
-export function clampComposerInputHeight(contentHeight: number, maximum: number): number {
-  return Math.min(Math.max(MIN_COMPOSER_INPUT_HEIGHT, maximum), Math.max(MIN_COMPOSER_INPUT_HEIGHT, Math.ceil(contentHeight)));
+export function clampComposerInputHeight(contentHeight: number, maximum: number, minimum = MIN_COMPOSER_INPUT_HEIGHT): number {
+  return Math.min(Math.max(minimum, maximum), Math.max(minimum, Math.ceil(contentHeight)));
 }
 
 function compactModelName(name: string): string {
@@ -328,6 +329,8 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const queuedItems = [...heldQueueItems, ...(queue.items ?? [])];
   const heldQueueIds = new Set(heldQueueItems.map((item) => item.id));
   const goalUpdates = activeGoal ? [...activeGoal.steering].reverse() : [];
+  const compactMode = useUiStore((state) => state.compactMode);
+  const minComposerInputHeight = compactMode ? COMPACT_MIN_COMPOSER_INPUT_HEIGHT : MIN_COMPOSER_INPUT_HEIGHT;
   const sendMessageWithModifier = useUiStore((state) => state.sendMessageWithModifier);
   const advancedPromptImprovement = useUiStore((state) => state.advancedPromptImprovement);
   const composerDraftRequest = useUiStore((state) => state.composerDraftRequest);
@@ -390,6 +393,13 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   useEffect(() => {
     if (connectRequest > 0) void openProviderLogin();
   }, [connectRequest, openProviderLogin]);
+  useEffect(() => {
+    setInputHeight((current) => {
+      if (compactMode && current === MIN_COMPOSER_INPUT_HEIGHT) return COMPACT_MIN_COMPOSER_INPUT_HEIGHT;
+      if (!compactMode && current === COMPACT_MIN_COMPOSER_INPUT_HEIGHT) return MIN_COMPOSER_INPUT_HEIGHT;
+      return Math.max(minComposerInputHeight, current);
+    });
+  }, [compactMode, minComposerInputHeight]);
   const attachableSessions = useMemo(() => (runtime.sessions ?? [])
     .filter((session) => !session.active && !session.path.startsWith('live:'))
     .slice(0, 50)
@@ -720,13 +730,13 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     const form = composer.current;
     const input = textarea.current;
     const workspace = form?.closest<HTMLElement>('.welcome');
-    if (!form || !input) return MIN_COMPOSER_INPUT_HEIGHT;
+    if (!form || !input) return minComposerInputHeight;
     const formHeight = form.getBoundingClientRect().height;
-    const measuredInputHeight = input.getBoundingClientRect().height || MIN_COMPOSER_INPUT_HEIGHT;
-    const fixedHeight = Math.max(71, formHeight - measuredInputHeight);
+    const measuredInputHeight = input.getBoundingClientRect().height || minComposerInputHeight;
+    const fixedHeight = Math.max(compactMode ? 52 : 71, formHeight - measuredInputHeight);
     const workspaceHeight = workspace?.getBoundingClientRect().height || window.innerHeight;
-    return Math.max(MIN_COMPOSER_INPUT_HEIGHT, Math.floor(workspaceHeight * 0.5 - fixedHeight));
-  }, []);
+    return Math.max(minComposerInputHeight, Math.floor(workspaceHeight * 0.5 - fixedHeight));
+  }, [compactMode, minComposerInputHeight]);
 
   const autoSizeInput = useCallback(() => {
     const input = textarea.current;
@@ -736,10 +746,10 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     const contentHeight = input.scrollHeight;
     input.style.height = previousInlineHeight;
     setInputHeight((current) => {
-      const next = clampComposerInputHeight(contentHeight, maxInputHeight());
+      const next = clampComposerInputHeight(contentHeight, maxInputHeight(), minComposerInputHeight);
       return current === next ? current : next;
     });
-  }, [maxInputHeight]);
+  }, [maxInputHeight, minComposerInputHeight]);
 
   const syncInputFades = useCallback(() => {
     const input = textarea.current;
@@ -1369,7 +1379,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     const startHeight = textarea.current.getBoundingClientRect().height || inputHeight;
     const maximum = maxInputHeight();
     const onMove = (moveEvent: globalThis.PointerEvent) => {
-      setInputHeight(Math.min(maximum, Math.max(MIN_COMPOSER_INPUT_HEIGHT, Math.round(startHeight + startY - moveEvent.clientY))));
+      setInputHeight(Math.min(maximum, Math.max(minComposerInputHeight, Math.round(startHeight + startY - moveEvent.clientY))));
     };
     const finish = () => {
       window.removeEventListener('pointermove', onMove);
@@ -1389,11 +1399,11 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     let next: number | null = null;
     if (event.key === 'ArrowUp') next = inputHeight + COMPOSER_RESIZE_STEP;
     else if (event.key === 'ArrowDown') next = inputHeight - COMPOSER_RESIZE_STEP;
-    else if (event.key === 'Home') next = MIN_COMPOSER_INPUT_HEIGHT;
+    else if (event.key === 'Home') next = minComposerInputHeight;
     else if (event.key === 'End') next = maxInputHeight();
     if (next === null) return;
     event.preventDefault();
-    setInputHeight(Math.min(maxInputHeight(), Math.max(MIN_COMPOSER_INPUT_HEIGHT, next)));
+    setInputHeight(Math.min(maxInputHeight(), Math.max(minComposerInputHeight, next)));
   };
 
   const startResourceTag = () => {
@@ -2248,7 +2258,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
             role="separator"
             aria-label="Resize message input"
             aria-orientation="horizontal"
-            aria-valuemin={MIN_COMPOSER_INPUT_HEIGHT}
+            aria-valuemin={minComposerInputHeight}
             aria-valuemax={maxInputHeight()}
             aria-valuenow={Math.round(inputHeight)}
             tabIndex={0}

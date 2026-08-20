@@ -1024,6 +1024,28 @@ export class GitService {
     }
   }
 
+  /** Restore one project-relative path to HEAD, or delete it when it is untracked. */
+  async revertPath(relativePath: string): Promise<GitStatus> {
+    await this.files.confinePath(relativePath);
+    const root = this.files.getRoot();
+    await validateSelectedRoot(root);
+    const listed = (await execute(root, ['ls-files', '-z', '--', relativePath])).toString('utf8').replace(/\0/gu, '').trim();
+    if (listed) {
+      await execute(root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', relativePath]);
+    } else {
+      await execute(root, ['clean', '-f', '--', relativePath]);
+    }
+    if (this.files.getRoot() !== root) throw new Error('The active project changed before the Git revert completed.');
+    this.files.invalidate(root);
+    this.statusRequest = null;
+    this.lastStatus = null;
+    this.historyRequest = null;
+    this.diffCache.clear();
+    this.diffRequests.clear();
+    this.statusGeneration += 1;
+    return this.status();
+  }
+
   async diff(relativePath: string): Promise<GitDiff> {
     await this.files.confinePath(relativePath);
     const root = this.files.getRoot();

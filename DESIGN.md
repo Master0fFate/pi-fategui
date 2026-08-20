@@ -72,6 +72,8 @@ The shipped interface governs atmosphere and first-launch hierarchy; the maintai
 - Spacious first launch; compact, stable density during work.
 - Motion acknowledges state without delaying input or moving layout.
 
+**Fate Compact** is the operate-surface density system. Turn it on with **Settings → Interface → Compact mode** (`data-compact-mode`). It restyles the whole workbench. Compact sessions is nested under that switch. Spec: [`design/COMPACT.md`](design/COMPACT.md).
+
 ## Colors
 
 Canvas and panel neutrals own nearly the entire interface. Accent is deliberately rare; success, warning, and danger appear only for semantic status.

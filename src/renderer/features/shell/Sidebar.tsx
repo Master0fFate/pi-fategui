@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  FileDown,
   FileText,
   Folder,
   FolderOpen,
@@ -631,7 +632,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     setDraggingSessionId(null);
   };
 
-  const compactSessions = useUiStore((state) => state.compactSessions);
+  const compactMode = useUiStore((state) => state.compactMode);
+  const compactSessions = useUiStore((state) => state.compactMode && state.compactSessions);
   const projects = useProjectStore((state) => state.projects);
   const expandedByPath = useProjectStore((state) => state.expandedByPath);
   const forgetProject = useProjectStore((state) => state.forgetProject);
@@ -907,7 +909,26 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   const renderSessionActions = (session: SessionSummary, inMenu = false) => {
     type SessionAction = { key: string; label: string; ariaLabel: string; icon: typeof GitFork; disabled: boolean; onClick: () => void; danger?: boolean; className?: string };
+    const exportSession = () => {
+      if (!('piDesktop' in window) || typeof window.piDesktop.exportSession !== 'function') {
+        showToast({ kind: 'error', title: 'Export unavailable', message: 'Restart Fate UI to enable session export.' });
+        return;
+      }
+      void window.piDesktop.exportSession().then((result) => {
+        if (result.saved) showToast({ kind: 'success', title: 'Session exported', message: result.path ?? 'Saved locally.' });
+      }).catch((error: unknown) => {
+        showToast({ kind: 'error', title: 'Export failed', message: sidebarErrorMessage(error, 'The session could not be exported.') });
+      });
+    };
     const actions: SessionAction[] = [
+      {
+        key: 'export',
+        label: session.active ? 'Export session' : 'Open this session to export it',
+        ariaLabel: session.active ? `Export ${session.title}` : `Open ${session.title} before exporting it`,
+        icon: FileDown,
+        disabled: !session.active,
+        onClick: exportSession,
+      },
       capabilities?.fork ? { key: 'fork', label: sessionActionTooltip(session, 'Branch from latest prompt'), ariaLabel: `Create new session from latest prompt in ${session.title}`, icon: GitFork, disabled: sessionActionDisabled(session), onClick: () => void runSessionAction(session, 'fork') } : null,
       capabilities?.fork ? { key: 'worktree', label: worktreeUnavailableReason ?? 'Create isolated Git worktree', ariaLabel: `Create an isolated Git worktree session from ${session.title}`, icon: GitBranchPlus, disabled: replacementBusy || anySessionRunning, onClick: () => void runSessionAction(session, 'worktree'), className: 'session-worktree-button' } : null,
       capabilities?.clone ? { key: 'clone', label: sessionActionTooltip(session, 'Clone session'), ariaLabel: `Clone ${session.title}`, icon: Copy, disabled: sessionActionDisabled(session), onClick: () => void runSessionAction(session, 'clone') } : null,
@@ -921,7 +942,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           const Icon = action.icon;
           return (
             <AppTooltip key={action.key} content={action.label} wrapTrigger>
-              <button type="button" role={inMenu ? 'menuitem' : undefined} className={action.className} aria-label={action.ariaLabel} disabled={action.disabled} onClick={action.onClick}><Icon size={12} /></button>
+              <button type="button" role={inMenu ? 'menuitem' : undefined} className={action.className} aria-label={action.ariaLabel} disabled={action.disabled} onClick={action.onClick}>
+                <Icon size={13} aria-hidden="true" />
+              </button>
             </AppTooltip>
           );
         })}
@@ -1319,6 +1342,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           </div>
           <div className="session-sort-row">
             <SelectControl
+              compact={compactMode}
               label="Sort sessions"
               value={sort}
               className="session-sort-select"

@@ -202,6 +202,9 @@ export const ipcChannels = {
   gitHistory: 'git:history',
   gitCommitDetails: 'git:commit-details',
   gitOperation: 'git:operation',
+  gitRevertPath: 'git:revert-path',
+  recoveryConsume: 'recovery:consume',
+  sessionExport: 'session:export',
 } as const;
 
 export const getAppInfoInputSchema = z.object({}).strict();
@@ -480,6 +483,24 @@ export const gitOperationResultSchema = z.object({
 export const gitWorktreeInputSchema = z.object({ path: z.string().min(1).max(32_768) }).strict();
 export const gitCommitInputSchema = z.object({ hash: gitHashSchema }).strict();
 export const gitOperationInputSchema = z.object({ operation: gitOperationSchema }).strict();
+export const gitRevertPathInputSchema = z.object({ path: z.string().min(1).max(4_096) }).strict();
+export const gitRevertPathResultSchema = z.object({
+  path: z.string().min(1).max(4_096),
+  status: gitStatusSchema,
+}).strict();
+export const recoveryNoticeSchema = z.object({
+  projectPath: z.string().min(1).max(32_768).nullable(),
+  sessionId: z.string().min(1).max(500).nullable(),
+  permissionLevel: permissionLevelSchema.optional(),
+  streaming: z.boolean(),
+  activeSessionRunning: z.boolean(),
+  queueSteering: z.number().int().nonnegative().max(10_000),
+  queueFollowUp: z.number().int().nonnegative().max(10_000),
+  eventCursor: z.number().int().nonnegative().optional(),
+  lastToolName: z.string().min(1).max(200).nullable(),
+  writtenAt: z.number().finite(),
+}).strict();
+export const recoveryNoticeResultSchema = recoveryNoticeSchema.nullable();
 
 export const runtimeImageSchema = z.object({
   data: z.string().min(1).max(20_000_000),
@@ -1234,8 +1255,10 @@ export const appSettingsSchema = z.object({
   holyShitMode: z.boolean().default(false),
   musicPlayerEnabled: z.boolean().default(false),
   sendMessageWithModifier: z.boolean().default(false),
+  compactMode: z.boolean().default(false),
   compactSessions: z.boolean().default(false),
   advancedPromptImprovement: z.boolean().default(false),
+  crashTelemetryEnabled: z.boolean().default(false),
   themeId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,47}$/).default('catppuccin-mocha'),
   interfaceFont: interfaceFontSchema.default('noto-sans'),
   codeFont: codeFontSchema.default('jetbrains-mono'),
@@ -1291,7 +1314,11 @@ export const diagnosticsSchema = z.object({
 });
 export const logEntrySchema = z.object({ timestamp: z.string().datetime(), level: z.enum(['info', 'warn', 'error']), scope: z.string(), message: z.string() });
 export const logListSchema = z.array(logEntrySchema).max(500);
-export const appCommandSchema = z.enum(['open-project', 'new-session', 'focus-composer', 'focus-address', 'stop-generation', 'toggle-sidebar', 'toggle-inspector', 'toggle-browser', 'open-settings', 'open-terminal', 'open-palette']);
+export const appCommandSchema = z.enum(['open-project', 'new-session', 'focus-composer', 'focus-address', 'stop-generation', 'toggle-sidebar', 'toggle-inspector', 'toggle-browser', 'open-settings', 'open-terminal', 'open-palette', 'export-session']);
+export const sessionExportResultSchema = z.object({
+  saved: z.boolean(),
+  path: z.string().min(1).max(32_768).optional(),
+}).strict();
 
 export type AppInfo = z.infer<typeof appInfoSchema>;
 export type AppError = z.infer<typeof appErrorSchema>;
@@ -1377,6 +1404,8 @@ export type GitCommitFile = z.infer<typeof gitCommitFileSchema>;
 export type GitCommitDetails = z.infer<typeof gitCommitDetailsSchema>;
 export type GitOperation = z.infer<typeof gitOperationSchema>;
 export type GitOperationResult = z.infer<typeof gitOperationResultSchema>;
+export type GitRevertPathResult = z.infer<typeof gitRevertPathResultSchema>;
+export type RecoveryNotice = z.infer<typeof recoveryNoticeSchema>;
 export type TerminalEvent = z.infer<typeof terminalEventSchema>;
 export type ImageGenerationSettings = z.infer<typeof imageGenerationSettingsSchema>;
 export type AppSettings = z.infer<typeof appSettingsSchema>;
@@ -1511,6 +1540,9 @@ export interface PiDesktopApi {
   getGitHistory: () => Promise<GitHistory>;
   getGitCommitDetails: (hash: string) => Promise<GitCommitDetails>;
   runGitOperation: (operation: GitOperation) => Promise<GitOperationResult>;
+  revertGitPath: (path: string) => Promise<z.infer<typeof gitRevertPathResultSchema>>;
+  consumeRecovery: () => Promise<z.infer<typeof recoveryNoticeResultSchema>>;
+  exportSession: () => Promise<z.infer<typeof sessionExportResultSchema>>;
   createTerminal: (cols: number, rows: number) => Promise<z.infer<typeof terminalCreateResultSchema>>;
   writeTerminal: (id: string, data: string) => Promise<void>;
   acknowledgeTerminal: (id: string, characters: number) => Promise<void>;

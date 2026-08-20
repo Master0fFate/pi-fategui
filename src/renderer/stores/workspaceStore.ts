@@ -58,6 +58,7 @@ interface WorkspaceStore {
   selectCommit: (hash: string | null) => void;
   loadCombinedDiff: () => Promise<void>;
   runGitOperation: (operation: GitOperation) => Promise<GitOperationResult>;
+  revertPath: (path: string) => Promise<void>;
   selectChange: (path: string) => Promise<void>;
   toggleReviewed: (path: string) => void;
   requestReviewPath: (projectPath: string, path: string, nonce: number) => void;
@@ -423,6 +424,29 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === gitOperationRequestSequence) set({ gitOperation: null, error: messageOf(error) });
       throw error;
     }
+  },
+
+  revertPath: async (path) => {
+    const expectedProject = get().projectPath;
+    if (!expectedProject) throw new Error('Open a project before reverting a change.');
+    if (!('piDesktop' in window) || typeof window.piDesktop.revertGitPath !== 'function') {
+      throw new Error('Path revert is unavailable.');
+    }
+    const generation = gitGeneration;
+    set({ error: null });
+    const result = await window.piDesktop.revertGitPath(path);
+    if (!isCurrentGitGeneration(expectedProject, generation)) return;
+    gitGeneration += 1;
+    const reviewedPaths = new Set(get().reviewedPaths);
+    reviewedPaths.delete(path);
+    const stillSelected = result.status.changes.some((change) => change.path === get().selectedChange);
+    set({
+      git: result.status,
+      reviewedPaths,
+      selectedChange: stillSelected ? get().selectedChange : null,
+      diff: stillSelected ? get().diff : null,
+      reviewNotice: `${path} restored to HEAD or removed if it was untracked.`,
+    });
   },
 
   toggleReviewed: (path) => {

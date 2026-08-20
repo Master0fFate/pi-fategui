@@ -1,4 +1,4 @@
-import { FolderOpen, FolderSearch, GitPullRequest, Globe2, KeyRound, PanelRightClose, PanelRightOpen, SearchCode, TerminalSquare } from 'lucide-react';
+import { FolderOpen, FolderSearch, GitPullRequest, Globe2, KeyRound, PanelRightClose, PanelRightOpen, Search, SearchCode, TerminalSquare } from 'lucide-react';
 import { lazy, Suspense, useState } from 'react';
 import { ResizeHandle } from '../../components/ResizeHandle';
 import { IconButton } from '../../components/IconButton';
@@ -43,6 +43,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
   const requestComposerDraft = useUiStore((state) => state.requestComposerDraft);
   const browserOpen = useUiStore((state) => state.browserOpen);
   const setBrowserOpen = useUiStore((state) => state.setBrowserOpen);
+  const setPaletteOpen = useUiStore((state) => state.setPaletteOpen);
   const browserPaneWidth = useUiStore((state) => state.browserPaneWidth);
   const setBrowserPaneWidth = useUiStore((state) => state.setBrowserPaneWidth);
   const [revealError, setRevealError] = useState<string | null>(null);
@@ -124,12 +125,17 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
   return (
     <main className="workspace">
       <header className="workspace-header">
-        <div>
+        <div className="workspace-header-identity">
           <span className="eyebrow">SESSION</span>
           <strong>{activeSession?.title ?? runtime.project?.name ?? 'Welcome'}</strong>
           <WorkspaceActivityPulse />
         </div>
         <div className="session-controls">
+          <IconButton
+            label="Open command palette"
+            className="workspace-command-palette"
+            onClick={() => setPaletteOpen(true)}
+          ><Search size={17} /></IconButton>
           <IconButton
             label={showBrowser ? 'Close browser' : 'Open browser'}
             className="workspace-browser-toggle"

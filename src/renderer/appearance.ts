@@ -5,7 +5,7 @@ import { applyTheme, resolveTheme } from './theme';
 
 type VisualSettings = Pick<
   AppSettings,
-  'appearance' | 'codeFont' | 'holyShitMode' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'themeId'
+  'appearance' | 'codeFont' | 'compactMode' | 'holyShitMode' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'themeId'
 >;
 
 export function applyNonThemeVisualSettings(settings: VisualSettings): void {
@@ -14,6 +14,7 @@ export function applyNonThemeVisualSettings(settings: VisualSettings): void {
   root.dataset.reduceMotion = String(performanceMode);
   root.dataset.performanceMode = String(performanceMode);
   root.dataset.holyShitMode = String(settings.holyShitMode);
+  root.dataset.compactMode = String(settings.compactMode);
   root.dataset.appearance = settings.appearance;
   applyFonts(settings.interfaceFont, settings.codeFont);
 }

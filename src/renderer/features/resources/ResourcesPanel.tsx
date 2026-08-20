@@ -49,13 +49,21 @@ export function ResourcesPanel() {
       <div className="inspector-empty">
         <Sparkles size={24} />
         <strong>No Pi resources loaded</strong>
-        <p>Extension commands, prompt templates, and skills will appear here when Pi discovers them.</p>
+        <p>Extension commands, prompt templates, and skills will appear here when Pi discovers them. MCP is unavailable in the embedded Pi SDK.</p>
       </div>
     );
   }
 
   return (
     <div className="resources-panel">
+      <section className="resource-group" aria-label="MCP servers">
+        <strong className="icon-label">MCP servers</strong>
+        <p>MCP is unavailable in the embedded Pi SDK. Fate UI does not invent a server marketplace. Use skills and extension commands below.</p>
+      </section>
+      <section className="resource-group" aria-label="Pinned project facts">
+        <strong className="icon-label">Pinned facts</strong>
+        <p>Pi has no pin API. Put durable project facts in AGENTS.md. Fate UI will not invent magic memory.</p>
+      </section>
       <ResourceGroup id="extensions" title="Extension commands" kind="extension" items={extensionCommands} />
       <ResourceGroup id="prompt-templates" title="Prompt templates" kind="prompt" items={promptTemplates} />
       <ResourceGroup id="skills" title="Skills" kind="skill" items={skillItems} />

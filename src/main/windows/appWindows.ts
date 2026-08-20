@@ -156,6 +156,7 @@ export function createAppWindowFactory(deps: AppWindowFactoryDeps): AppWindowFac
         { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: () => sendCommand('open-project') },
         { label: 'New Session', accelerator: 'CmdOrCtrl+N', click: () => sendCommand('new-session') },
         { label: 'New Window', accelerator: 'CmdOrCtrl+Shift+N', click: () => createWindow() },
+        { label: 'Export Session…', click: () => sendCommand('export-session') },
         { type: 'separator' },
         { role: 'quit' },
       ] },

@@ -137,7 +137,7 @@ export class BrowserService {
         // event before the map delete runs. Report it as inert instead of
         // touching its destroyed webContents and throwing.
         const contents = tab.view.webContents;
-        if (contents.isDestroyed()) {
+        if (webContentsGone(contents)) {
           return {
             id: tab.id,
             profileId: tab.profileId,
@@ -1097,7 +1097,7 @@ export class BrowserService {
     // A tab whose contents died mid-close is gone for every practical
     // purpose. Report the clean error instead of "Object has been destroyed"
     // leaking from the first webContents access.
-    if (!tab || tab.view.webContents.isDestroyed()) {
+    if (!tab || webContentsGone(tab.view.webContents)) {
       throw new BrowserError('TAB_NOT_FOUND', `Browser tab ${tabId} does not exist.`);
     }
     return tab;
@@ -1108,22 +1108,27 @@ export class BrowserService {
     // views, and debugger sessions down concurrently, so "object destroyed"
     // races here are expected. Aborting on one would leak the tab entry and
     // poison every later operation, which is far worse than the race itself.
+    // Capture the handle before detach. After removeChildView, Electron can
+    // drop view.webContents to undefined. The 10s reaper then throws
+    // "Cannot read properties of undefined (reading 'isDestroyed')" as an
+    // uncaught main-process exception during fast session switches.
+    const contents = tab.view.webContents;
     await attemptDisposal('CDP detach', `tab ${tab.id}`, () => tab.cdp.dispose());
-    if (!this.owner.isDestroyed()) {
+    if (this.owner && !this.owner.isDestroyed()) {
       await attemptDisposal('view detach', `tab ${tab.id}`, () => {
         this.owner.contentView.removeChildView(tab.view);
       });
     }
-    const contents = tab.view.webContents;
     await attemptDisposal('page close', `tab ${tab.id}`, () => {
-      if (!contents.isDestroyed()) contents.close();
+      if (!webContentsGone(contents)) contents.close();
     });
     // close() honours beforeunload and is a no-op on a crashed renderer, so a
     // tab can survive it and keep a renderer process alive. Reap it later —
     // by then a graceful close has finished and isDestroyed() skips this.
+    if (webContentsGone(contents)) return;
     const reaper = setTimeout(() => {
-      if (contents.isDestroyed()) return;
       try {
+        if (webContentsGone(contents)) return;
         contents.close({ waitForBeforeUnload: false });
       } catch {
         // Already gone between the check and the call.
@@ -1149,6 +1154,14 @@ export function projectProfilePartition(canonicalProjectPath: string, profileId 
   const digest = createHash('sha256').update(identity).digest('hex').slice(0, 32);
   const profile = createHash('sha256').update(profileId).digest('hex').slice(0, 12);
   return `persist:fate-browser-${digest}-${profile}`;
+}
+
+function webContentsGone(contents: WebContents | null | undefined): contents is null | undefined {
+  try {
+    return !contents || contents.isDestroyed();
+  } catch {
+    return true;
+  }
 }
 
 async function attemptDisposal(step: string, context: string, operation: () => unknown): Promise<void> {

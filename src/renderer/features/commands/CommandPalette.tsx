@@ -3,7 +3,9 @@ import {
   Bot,
   Brain,
   FileCode2,
+  FileDown,
   FolderOpen,
+  GitBranch,
   Globe2,
   Library,
   PanelLeft,
@@ -113,6 +115,48 @@ export function CommandPalette() {
       { id: 'inspector', label: 'Toggle inspector', icon: PanelRight, run: actions.toggleInspector },
       { id: 'terminal', label: 'Toggle manual terminal', hint: 'Ctrl/⌘ `', icon: TerminalSquare, disabled: Boolean(terminalReason), ...(terminalReason ? { disabledReason: terminalReason } : {}), run: actions.toggleTerminal },
       { id: 'settings', label: 'Open settings', hint: 'Ctrl/⌘ ,', icon: Settings, run: () => actions.setSettingsOpen(true) },
+      {
+        id: 'export-session',
+        label: 'Export session',
+        icon: FileDown,
+        disabled: !runtime.sessionId,
+        ...(!runtime.sessionId ? { disabledReason: 'Open a session before exporting it.' } : {}),
+        run: () => {
+          if (!('piDesktop' in window) || typeof window.piDesktop.exportSession !== 'function') return;
+          void window.piDesktop.exportSession().then((result) => {
+            if (result.saved) actions.showToast({ kind: 'success', title: 'Session exported', message: result.path ?? 'Saved locally.' });
+          }).catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Export failed', message: commandErrorMessage(error) }));
+        },
+      },
+      {
+        id: 'git-fetch', label: 'Git fetch', icon: GitBranch,
+        disabled: !runtime.project, ...(!runtime.project ? { disabledReason: 'Open a project first.' } : {}),
+        run: () => { if ('piDesktop' in window) void window.piDesktop.runGitOperation('fetch').catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Git fetch failed', message: commandErrorMessage(error) })); },
+      },
+      {
+        id: 'git-pull', label: 'Git pull', icon: GitBranch,
+        disabled: !runtime.project, ...(!runtime.project ? { disabledReason: 'Open a project first.' } : {}),
+        run: () => { if ('piDesktop' in window) void window.piDesktop.runGitOperation('pull').catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Git pull failed', message: commandErrorMessage(error) })); },
+      },
+      {
+        id: 'review-runway', label: 'Open Review Runway', icon: FileCode2,
+        disabled: !runtime.project, ...(!runtime.project ? { disabledReason: 'Open a project first.' } : {}),
+        run: () => { useUiStore.getState().openInspectorTab('changes'); },
+      },
+      {
+        id: 'worktrees', label: 'Review worktrees', icon: GitBranch,
+        disabled: !runtime.project, ...(!runtime.project ? { disabledReason: 'Open a project first.' } : {}),
+        run: () => { useUiStore.getState().openInspectorTab('changes'); },
+      },
+      {
+        id: 'agents', label: 'Open agent sessions', icon: Bot,
+        run: () => { useUiStore.getState().openInspectorTab('sessions'); },
+      },
+      {
+        id: 'git-push', label: 'Git push', icon: GitBranch,
+        disabled: !runtime.project, ...(!runtime.project ? { disabledReason: 'Open a project first.' } : {}),
+        run: () => { if ('piDesktop' in window) void window.piDesktop.runGitOperation('push').catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Git push failed', message: commandErrorMessage(error) })); },
+      },
     ];
     for (const model of runtime.models) base.push({
       id: `model:${model.provider}/${model.id}`,
@@ -135,9 +179,12 @@ export function CommandPalette() {
 
   const filteredCommands = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
-    return commands
-      .filter((command) => !needle || command.label.toLocaleLowerCase().includes(needle))
-      .slice(0, needle ? 40 : 12);
+    if (needle) {
+      return commands.filter((command) => command.label.toLocaleLowerCase().includes(needle)).slice(0, 40);
+    }
+    const actions = commands.filter((command) => !command.id.startsWith('thinking:') && !command.id.startsWith('model:')).slice(0, 16);
+    const models = commands.filter((command) => command.id.startsWith('model:'));
+    return [...actions, ...models];
   }, [commands, query]);
   const entries = useMemo<PaletteEntry[]>(() => [
     ...filteredCommands.map((command) => ({ id: `command:${command.id}`, kind: 'command' as const, command })),

@@ -15,6 +15,7 @@ interface SelectControlProps {
   readonly disabled?: boolean;
   readonly className?: string;
   readonly contentClassName?: string;
+  readonly compact?: boolean;
   /** Which side of the trigger the dropdown opens on. Defaults to 'bottom' (Radix default). */
   readonly side?: 'top' | 'right' | 'bottom' | 'left';
   /** Render a filter input at the top of the dropdown that narrows options by label, detail, or value. */
@@ -35,6 +36,7 @@ export function SelectControl({
   disabled = false,
   className = '',
   contentClassName = '',
+  compact = false,
   side = 'bottom',
   searchable = false,
   searchPlaceholder = 'Filter options',
@@ -133,13 +135,13 @@ export function SelectControl({
       disabled={disabled}
       onValueChange={onValueChange}
     >
-      <Select.Trigger className={`custom-select-trigger ${className}`.trim()} aria-label={label}>
+      <Select.Trigger className={`custom-select-trigger${compact ? ' custom-select-trigger--compact' : ''} ${className}`.trim()} aria-label={label}>
         <Select.Value />
-        <Select.Icon className="custom-select-chevron"><ChevronDown size={13} /></Select.Icon>
+        <Select.Icon className="custom-select-chevron"><ChevronDown size={compact ? 11 : 13} /></Select.Icon>
       </Select.Trigger>
       <Select.Portal>
         <Select.Content
-          className={`custom-select-content ${contentClassName}`.trim()}
+          className={`custom-select-content${compact ? ' custom-select-content--compact' : ''} ${contentClassName}`.trim()}
           position="popper"
           side={side}
           align="end"
@@ -209,7 +211,7 @@ export function SelectControl({
           <Select.Viewport ref={viewportRef} className="custom-select-viewport">
             {visibleOptions.map((option) => (
               <Select.Item className="custom-select-item" key={option.value} value={option.value}>
-                <Select.ItemIndicator className="custom-select-indicator"><Check size={13} /></Select.ItemIndicator>
+                <Select.ItemIndicator className="custom-select-indicator"><Check size={compact ? 11 : 13} /></Select.ItemIndicator>
                 <span className="custom-select-copy">
                   <Select.ItemText>{option.label}</Select.ItemText>
                   {option.detail && <small>{option.detail}</small>}

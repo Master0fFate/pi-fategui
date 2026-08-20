@@ -23,6 +23,10 @@ import {
   gitHistorySchema,
   gitOperationInputSchema,
   gitOperationResultSchema,
+  gitRevertPathInputSchema,
+  gitRevertPathResultSchema,
+  recoveryNoticeResultSchema,
+  sessionExportResultSchema,
   gitStatusSchema,
   gitWorktreeInputSchema,
   gitWorktreeListSchema,
@@ -654,6 +658,18 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async runGitOperation(operation: GitOperation) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.gitOperation, gitOperationInputSchema.parse({ operation }));
     return gitOperationResultSchema.parse(result);
+  },
+  async revertGitPath(path: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.gitRevertPath, gitRevertPathInputSchema.parse({ path }));
+    return gitRevertPathResultSchema.parse(result);
+  },
+  async consumeRecovery() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.recoveryConsume, emptyInputSchema.parse({}));
+    return recoveryNoticeResultSchema.parse(result);
+  },
+  async exportSession() {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.sessionExport, emptyInputSchema.parse({}));
+    return sessionExportResultSchema.parse(result);
   },
   async createTerminal(cols: number, rows: number) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.terminalCreate, terminalCreateInputSchema.parse({ cols, rows }));

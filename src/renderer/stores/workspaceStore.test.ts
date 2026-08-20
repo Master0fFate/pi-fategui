@@ -319,4 +319,21 @@ describe('workspaceStore Git request invalidation', () => {
     await Promise.all([pendingHistory, pendingDetails]);
     expect(useWorkspaceStore.getState()).toMatchObject({ history: null, commitDetails: {}, error: null });
   });
+
+  it('reverts a selected path and drops it from the review set', async () => {
+    const nextStatus = status('main');
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { revertGitPath: vi.fn(async () => ({ path: 'src/a.ts', status: nextStatus })) } as unknown as PiDesktopApi,
+    });
+    useWorkspaceStore.setState({
+      selectedChange: 'src/a.ts',
+      reviewedPaths: new Set(['src/a.ts']),
+      git: status('dirty'),
+    });
+    await useWorkspaceStore.getState().revertPath('src/a.ts');
+    expect(useWorkspaceStore.getState().git).toEqual(nextStatus);
+    expect(useWorkspaceStore.getState().reviewedPaths.has('src/a.ts')).toBe(false);
+    expect(useWorkspaceStore.getState().selectedChange).toBeNull();
+  });
 });

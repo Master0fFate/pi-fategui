@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi } from '../../shared/contracts/ipc';
 import { useWorkspaceStore } from '../stores/workspaceStore';
-import { buildCommitGraphRows, ChangeRow, ChangesPanel, isReviewTypingTarget, reviewNavigationIndex } from './diffs/ChangesPanel';
+import { buildCommitGraphRows, ChangeRow, ChangesPanel, isReviewTypingTarget, nextReviewedPaths, reviewNavigationIndex } from './diffs/ChangesPanel';
 import { FilesPanel } from './files/FilesPanel';
 import { ResourcesPanel } from './resources/ResourcesPanel';
 import { useRuntimeStore } from '../stores/runtimeStore';
@@ -49,6 +49,9 @@ describe('workspace inspector panels', () => {
     expect(isReviewTypingTarget(editable)).toBe(true);
     expect(isReviewTypingTarget(monacoChild)).toBe(true);
     expect(isReviewTypingTarget(document.createElement('button'))).toBe(false);
+    expect([...nextReviewedPaths(new Set(), 'src/a.ts', ['src/a.ts'])]).toEqual(['src/a.ts']);
+    expect([...nextReviewedPaths(new Set(['src/a.ts']), 'src/a.ts', ['src/a.ts'])]).toEqual([]);
+    expect([...nextReviewedPaths(new Set(['src/a.ts']), 'missing.ts', ['src/a.ts'])]).toEqual(['src/a.ts']);
   });
 
   it('does not navigate Review Runway from modifiers or typing/editor descendants', () => {
@@ -217,7 +220,9 @@ describe('workspace inspector panels', () => {
     render(<ChangesPanel />);
     expect(screen.getByRole('button', { name: 'Change worktree. Current branch: HEAD' })).toHaveTextContent('HEAD');
     expect(screen.getByRole('button', { name: 'Refresh detached HEAD status' })).toBeEnabled();
-    expect(screen.queryByRole('button', { name: /fetch|pull|push/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Git fetch' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Git pull' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Git push' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh detached HEAD status' }));
     await vi.waitFor(() => expect(getGitStatus).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(useUiStore.getState().toast).toMatchObject({
@@ -259,7 +264,7 @@ describe('workspace inspector panels', () => {
     fireEvent.click(screen.getByRole('button', { name: '1000 changed files. Open combined diff' }));
     expect(await screen.findByTestId('file-monaco')).toHaveTextContent('working-tree.diff');
     expect(getGitCombinedDiff).toHaveBeenCalledOnce();
-    expect(screen.queryByRole('button', { name: /revert|accept/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Revert selected change to HEAD' })).toBeInTheDocument();
   });
 
   it('renders a bounded graph, lazy commit card, refs, and selected commit file tree', async () => {

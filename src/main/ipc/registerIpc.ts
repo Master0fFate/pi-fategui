@@ -25,6 +25,10 @@ import {
   gitHistorySchema,
   gitOperationInputSchema,
   gitOperationResultSchema,
+  gitRevertPathInputSchema,
+  gitRevertPathResultSchema,
+  recoveryNoticeResultSchema,
+  sessionExportResultSchema,
   gitStatusSchema,
   gitWorktreeInputSchema,
   gitWorktreeListSchema,
@@ -153,6 +157,8 @@ import type { MusicService } from '../music/MusicService';
 import type { SpeechService } from '../speech/SpeechService';
 import type { GlobalHotkeyService } from '../speech/GlobalHotkeyService';
 import type { UpdateService } from '../updates/UpdateService';
+import type { RecoverySnapshotService } from '../bootstrap/RecoverySnapshot';
+import { buildSessionExport } from '../pi/SessionExport';
 import { isTrustedRendererUrl, type TrustedRendererPolicy } from '../security/trustedRenderer';
 import type { BrowserHost } from '../browser/BrowserHost';
 import type { MutationAttestationLedger } from '../pi/provenance/MutationAttestationLedger';
@@ -220,6 +226,7 @@ export interface IpcServices {
   speech: Pick<SpeechService, 'setEventSink' | 'setStreamSink' | 'getStatus' | 'download' | 'cancelDownload' | 'remove' | 'transcribe' | 'cancel' | 'streamStart' | 'streamFeed' | 'streamStop' | 'streamCancel'>;
   hotkey: GlobalHotkeyService;
   updates: Pick<UpdateService, 'check' | 'openDownload' | 'downloadAndInstall'>;
+  recovery?: Pick<RecoverySnapshotService, 'remember' | 'consume' | 'peek' | 'markClean'>;
   browser: Pick<BrowserHost, 'ensure' | 'current' | 'setAppOverlay' | 'respondToConfirmation' | 'reset'>;
   automations: Pick<AutomationRepository, 'list' | 'create' | 'update' | 'remove' | 'recordLaunch'>;
   /** Read-only per-project attestation ledger; resolves only the current trusted project. */
@@ -431,8 +438,28 @@ function register(channel: string, rendererPolicy: TrustedRendererPolicy, handle
   });
 }
 
-export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, browser, automations, attestations, newWindow, rendererPolicy }: IpcServices) {
+async function applyPendingRecovery(
+  runtime: Pick<PiRuntimeService, 'getState' | 'switchSession'>,
+  recovery: Pick<RecoverySnapshotService, 'peek' | 'markClean'> | undefined,
+): Promise<void> {
+  const pending = recovery?.peek();
+  if (!pending?.sessionId || !pending.projectPath) return;
+  const state = runtime.getState(false);
+  if (state.project?.path !== pending.projectPath) return;
+  if (state.sessionId !== pending.sessionId) {
+    try {
+      await runtime.switchSession(pending.sessionId);
+    } catch {
+      // Keep the dirty snapshot so a later successful open can retry the session restore.
+      return;
+    }
+  }
+  await recovery?.markClean();
+}
+
+export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, recovery, browser, automations, attestations, newWindow, rendererPolicy }: IpcServices) {
   runtime.setEventSink((events) => {
+    try { recovery?.remember(runtime.getState(false)); } catch { /* Snapshot failures must never drop live events. */ }
     let batch: unknown;
     try {
       batch = piEventBatchSchema.parse(events);
@@ -792,7 +819,9 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     return queueProjectActivation.run(async () => {
       const activation = await projects.prepareSelect(BrowserWindow.fromWebContents(event.sender) ?? undefined);
       if (!activation) return runtimeStateSchema.parse(runtime.getState());
-      return runtimeStateSchema.parse(await activatePreparedProject(activation, activationServices, 'changing projects'));
+      await activatePreparedProject(activation, activationServices, 'changing projects');
+      await applyPendingRecovery(runtime, recovery);
+      return runtimeStateSchema.parse(runtime.getState());
     });
   });
   handle(ipcChannels.projectSelectFile, async (event, input) => {
@@ -810,7 +839,9 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   });
   handle(ipcChannels.projectOpenPath, async (event, input) => {
     const parsed = projectPathInputSchema.parse(input);
-    return runtimeStateSchema.parse(await openProjectPath(parsed.projectPath, BrowserWindow.fromWebContents(event.sender) ?? undefined));
+    await openProjectPath(parsed.projectPath, BrowserWindow.fromWebContents(event.sender) ?? undefined);
+    await applyPendingRecovery(runtime, recovery);
+    return runtimeStateSchema.parse(runtime.getState());
   });
   handle(ipcChannels.projectFocusPath, async (event, input) => {
     const parsed = projectPathInputSchema.parse(input);
@@ -1128,6 +1159,45 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     const parsed = gitOperationInputSchema.parse(input);
     return gitOperationResultSchema.parse(await git.runOperation(parsed.operation));
   }));
+  handle(ipcChannels.gitRevertPath, async (_event, input) => queueProjectActivation.runSerializedMutation(async () => {
+    const parsed = gitRevertPathInputSchema.parse(input);
+    return gitRevertPathResultSchema.parse({ path: parsed.path, status: await git.revertPath(parsed.path) });
+  }));
+  handle(ipcChannels.recoveryConsume, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    await applyPendingRecovery(runtime, recovery);
+    return recoveryNoticeResultSchema.parse(recovery ? recovery.consume() : null);
+  });
+  handle(ipcChannels.sessionExport, async (event, input) => {
+    emptyInputSchema.parse(input);
+    const state = runtime.getState();
+    if (!state.sessionId) {
+      throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a session before exporting it.', retryable: true });
+    }
+    const title = state.sessions?.find((session) => session.id === state.sessionId)?.title ?? state.sessionId;
+    const artifact = buildSessionExport({
+      sessionId: state.sessionId,
+      title,
+      projectPath: state.project?.path ?? null,
+      model: state.model ? `${state.model.provider}/${state.model.id}` : null,
+      permissionLevel: state.permissionLevel ?? null,
+      messages: state.messages.map((message) => ({ role: message.role, text: message.text })),
+      tools: (state.tools ?? []).map((tool) => ({ name: tool.name, status: tool.status, output: tool.output })),
+      error: state.error?.message ?? null,
+    });
+    const result = await dialog.showSaveDialog(ownerWindow(event), {
+      title: 'Export session',
+      defaultPath: `session-${state.sessionId}.md`,
+      filters: [
+        { name: 'Markdown', extensions: ['md'] },
+        { name: 'JSON', extensions: ['json'] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return sessionExportResultSchema.parse({ saved: false });
+    const markdown = result.filePath.toLocaleLowerCase().endsWith('.json') ? false : true;
+    await fs.writeFile(result.filePath, markdown ? artifact.markdown : artifact.json, 'utf8');
+    return sessionExportResultSchema.parse({ saved: true, path: result.filePath });
+  });
   handle(ipcChannels.terminalCreate, (event, input) => {
     const parsed = terminalCreateInputSchema.parse(input);
     return terminalCreateResultSchema.parse(terminal.create(event.sender.id, parsed.cols, parsed.rows));
@@ -1288,5 +1358,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     return attestationQueryResultSchema.parse(await resolveAttestationQuery(runtime, attestations, request));
   });
 
-  return { openProjectPath, focusProjectPath };
+  const openRecoveredProjectPath = async (projectPath: string, owner?: BrowserWindow) => {
+    await openProjectPath(projectPath, owner);
+    await applyPendingRecovery(runtime, recovery);
+    return runtime.getState();
+  };
+  return { openProjectPath: openRecoveredProjectPath, focusProjectPath };
 }

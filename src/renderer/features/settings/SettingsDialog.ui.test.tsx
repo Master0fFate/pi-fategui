@@ -19,8 +19,10 @@ const settings: AppSettings = {
   holyShitMode: false,
   musicPlayerEnabled: false,
   sendMessageWithModifier: false,
+  compactMode: false,
   compactSessions: false,
   advancedPromptImprovement: false,
+  crashTelemetryEnabled: false,
   themeId: 'catppuccin-mocha',
   interfaceFont: 'noto-sans',
   codeFont: 'jetbrains-mono',
@@ -90,6 +92,8 @@ afterEach(() => {
   document.documentElement.dataset.performanceMode = 'false';
   document.documentElement.dataset.reduceMotion = 'false';
   document.documentElement.dataset.holyShitMode = 'false';
+  document.documentElement.dataset.compactMode = 'false';
+  useUiStore.setState({ compactMode: false, compactSessions: false });
   delete document.documentElement.dataset.interfaceFont;
   delete document.documentElement.dataset.codeFont;
   document.documentElement.style.removeProperty('--font-interface');
@@ -143,6 +147,31 @@ describe('SettingsDialog feedback', () => {
     expect(document.documentElement.dataset.codeFont).toBe('noto-sans-mono');
     expect(screen.getByLabelText('Extended Unicode font preview')).toHaveTextContent('Čć Đđ Šš Žž');
     expect(screen.getByLabelText('Extended Unicode font preview')).toHaveTextContent('中文');
+  });
+
+  it('previews Compact mode on the root flag and nests Compact sessions under it', async () => {
+    const setSettings = vi.fn(async (value: AppSettings) => value);
+    installBridge(setSettings);
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+
+    const compactMode = await screen.findByRole('checkbox', { name: /^Compact mode/ });
+    const compactSessions = screen.getByRole('checkbox', { name: /^Compact sessions/ });
+    expect(compactSessions).toBeDisabled();
+    await waitFor(() => expect(document.documentElement.dataset.compactMode).toBe('false'));
+
+    await user.click(compactMode);
+    await waitFor(() => expect(document.documentElement.dataset.compactMode).toBe('true'));
+    expect(compactSessions).toBeEnabled();
+    expect(useUiStore.getState().compactMode).toBe(true);
+
+    await user.click(compactSessions);
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({ compactMode: true, compactSessions: true }));
+    await waitFor(() => {
+      expect(useUiStore.getState().compactMode).toBe(true);
+      expect(useUiStore.getState().compactSessions).toBe(true);
+    });
   });
 
   it('describes agent settings as initial project fallbacks rather than new-session defaults', async () => {

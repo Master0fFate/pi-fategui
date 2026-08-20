@@ -641,4 +641,23 @@ describe('GitService', { timeout: 30_000 }, () => {
     expect(diff).toMatchObject({ state: 'text', language: 'typescript', original: 'const value = 1;\n', modified: 'const value = 2;\nconst 世界 = true;\n' });
     await expect(git.diff('../outside')).rejects.toThrow('outside the active project');
   });
+
+  it('reverts a tracked path to HEAD and deletes an untracked path', async () => {
+    const root = await repository();
+    await fs.writeFile(path.join(root, 'tracked.ts'), 'original\n');
+    await run('git', ['add', '--', 'tracked.ts'], { cwd: root });
+    await run('git', ['commit', '-m', 'base'], { cwd: root });
+    await fs.writeFile(path.join(root, 'tracked.ts'), 'changed\n');
+    await fs.writeFile(path.join(root, 'fresh.ts'), 'new\n');
+    const files = new FilesystemService();
+    await files.setRoot(root);
+    const git = new GitService(files);
+    await expect(git.revertPath('../secret')).rejects.toThrow('outside the active project');
+    const afterTracked = await git.revertPath('tracked.ts');
+    expect(await fs.readFile(path.join(root, 'tracked.ts'), 'utf8')).toBe('original\n');
+    expect(afterTracked.changes.some((change) => change.path === 'tracked.ts')).toBe(false);
+    const afterUntracked = await git.revertPath('fresh.ts');
+    await expect(fs.stat(path.join(root, 'fresh.ts'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(afterUntracked.changes.some((change) => change.path === 'fresh.ts')).toBe(false);
+  });
 });

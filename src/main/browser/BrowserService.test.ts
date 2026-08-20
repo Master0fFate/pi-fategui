@@ -199,6 +199,68 @@ describe('BrowserService disposal hardening', () => {
     }
   });
 
+  it('does not throw from the close reaper when webContents is already gone', async () => {
+    vi.useFakeTimers();
+    try {
+      const service = new BrowserService({ isDestroyed: () => true } as unknown as BrowserWindow, {
+        canonicalProjectPath: process.cwd(),
+      });
+      const tab = {
+        id: 'tab-1',
+        cdp: { dispose: vi.fn(async () => undefined) },
+        view: { webContents: undefined },
+      };
+
+      await expect(
+        (service as unknown as { destroyTab(value: unknown): Promise<void> }).destroyTab(tab),
+      ).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(10_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closes the captured webContents after detach drops the view getter', async () => {
+    const captured = { isDestroyed: () => false, close: vi.fn() };
+    let detached = false;
+    const owner = {
+      isDestroyed: () => false,
+      contentView: { removeChildView: vi.fn(() => { detached = true; }) },
+    } as unknown as BrowserWindow;
+    const service = new BrowserService(owner, { canonicalProjectPath: process.cwd() });
+    const tab = {
+      id: 'tab-1',
+      cdp: { dispose: vi.fn(async () => undefined) },
+      view: {
+        get webContents() { return detached ? undefined : captured; },
+      },
+    };
+
+    await (service as unknown as { destroyTab(value: unknown): Promise<void> }).destroyTab(tab);
+
+    expect(captured.close).toHaveBeenCalledOnce();
+    await service.dispose();
+  });
+
+  it('reports inert state when a tab view has already dropped webContents', () => {
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(),
+    });
+    const tabs = (service as unknown as { tabs: Map<string, unknown> }).tabs;
+    tabs.set('tab-gone', {
+      id: 'tab-gone',
+      profileId: 'project',
+      view: { webContents: undefined },
+      documentEpoch: 1,
+      semanticAvailable: true,
+    });
+
+    expect(service.getState().tabs).toEqual([
+      expect.objectContaining({ id: 'tab-gone', title: '', semanticAvailable: false }),
+    ]);
+    tabs.delete('tab-gone');
+  });
+
   it('still removes a closed tab from state when disposal steps fail', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
