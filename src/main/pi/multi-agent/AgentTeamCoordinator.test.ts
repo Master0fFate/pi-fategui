@@ -116,6 +116,18 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(coordinator.currentTaskIdForNode(team.id, child.nodeId)).toBe(team.tasks[0]?.id);
   });
 
+  it('refuses Agent Team children that would use a Fate-disabled model', async () => {
+    const root = rootSession();
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' }),
+      getDisabledModels: () => ['test/model'],
+      sendRootMessage: vi.fn(async () => undefined),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    await expect(coordinator.spawn(coordinator.rootNodeId('root-session'), { task: 'investigate' }, 'disabled-spawn', runtime())).rejects.toThrow(/disabled in Fate UI settings/);
+  });
+
   it('returns undefined for the current permission/task of a closed node, not stale state', async () => {
     const root = rootSession();
     const coordinator = new AgentTeamCoordinator({

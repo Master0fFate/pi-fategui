@@ -9,6 +9,7 @@ import {
   modelThinkingLevels,
   type ParentModel,
 } from './SubagentProtocol';
+import { visibleModels } from '../../shared/modelVisibility';
 
 export interface CatalogDetails {
   kind: 'fate-subagent-catalog';
@@ -40,6 +41,7 @@ export async function buildSubagentCatalog(
   session: AgentSession,
   modelRuntime: ModelRuntime,
   params: { section?: 'all' | 'models' | 'agents' | 'skills' | 'capabilities'; query?: string; provider?: string; limit?: number },
+  disabledModels: readonly string[] = [],
 ) {
   const [available, profiles, skillCatalog] = await Promise.all([
     modelRuntime.getAvailable(),
@@ -49,7 +51,7 @@ export async function buildSubagentCatalog(
   const section = params.section ?? 'all';
   const query = params.query?.trim().toLocaleLowerCase() ?? '';
   const limit = Math.max(1, Math.round(params.limit ?? 200));
-  const matchingModels = [...available]
+  const matchingModels = visibleModels([...available], disabledModels)
     .filter((model) => !params.provider || model.provider === params.provider)
     .filter((model) => !query || `${model.provider}/${model.id} ${model.name}`.toLocaleLowerCase().includes(query))
     .sort((left, right) => left.provider.localeCompare(right.provider) || left.name.localeCompare(right.name));

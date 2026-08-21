@@ -255,4 +255,45 @@ describe('Composer voice input', () => {
     expect(Array.from(new Float32Array(feedSpeechStream.mock.calls[1]![0]))).toEqual([0.5, -0.5]);
     await waitFor(() => expect(stopSpeechStream).toHaveBeenCalledOnce());
   });
+
+  it('does not send a silent thinking pause to the batch model', async () => {
+    const transcribeSpeech = vi.fn(async () => ({ text: 'should not run', language: 'en', backend: 'CPU', accelerated: false }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {
+      ensureSpeechModel: vi.fn(async () => undefined),
+      transcribeSpeech,
+      cancelSpeechTranscription: vi.fn(async () => false),
+    } as unknown as PiDesktopApi });
+    Object.defineProperty(globalThis, 'AudioContext', { configurable: true, value: class {
+      decodeAudioData = async () => ({
+        length: 16_000 * 4,
+        numberOfChannels: 1,
+        sampleRate: 16_000,
+        duration: 4,
+        getChannelData: () => new Float32Array(16_000 * 4),
+      });
+      close = async () => undefined;
+    } });
+    const user = userEvent.setup();
+    const { container } = render(<Composer onOpenProject={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: 'Start voice recording' }));
+    await user.click(await screen.findByRole('button', { name: 'Stop voice recording' }));
+    await waitFor(() => expect(container.querySelector('.composer-error')).toHaveTextContent('No speech was detected'));
+    expect(transcribeSpeech).not.toHaveBeenCalled();
+  });
+
+  it('does not blame the microphone when the model returns no text for speech', async () => {
+    const transcribeSpeech = vi.fn(async () => ({ text: '   ', language: 'en', backend: 'CPU', accelerated: false }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {
+      ensureSpeechModel: vi.fn(async () => undefined),
+      transcribeSpeech,
+      cancelSpeechTranscription: vi.fn(async () => false),
+    } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    const { container } = render(<Composer onOpenProject={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: 'Start voice recording' }));
+    await user.click(await screen.findByRole('button', { name: 'Stop voice recording' }));
+    await waitFor(() => expect(transcribeSpeech).toHaveBeenCalledOnce());
+    await waitFor(() => expect(container.querySelector('.composer-error')).toHaveTextContent('The voice model returned no text'));
+    expect(container.querySelector('.composer-error')).not.toHaveTextContent('closer to the microphone');
+  });
 });

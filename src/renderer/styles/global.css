@@ -96,6 +96,12 @@ button:disabled { cursor: not-allowed; }
   pointer-events: none;
   user-select: none;
 }
+/* Horizontal strip occupied by the custom window controls on platforms that put
+   them in the top-right corner. Mirrors WindowChrome: win32 is the platform
+   default, darwin uses top-left traffic lights, linux offsets from the edge. */
+:root { --window-controls-reserve: 138px; }
+:root[data-platform="darwin"] { --window-controls-reserve: 0px; }
+:root[data-platform="linux"] { --window-controls-reserve: 105px; }
 .window-controls {
   position: fixed; z-index: 80; top: 0; right: 0; display: flex; height: 38px;
   align-items: stretch; app-region: no-drag; -webkit-app-region: no-drag; pointer-events: auto;
@@ -124,6 +130,9 @@ button:disabled { cursor: not-allowed; }
 .window-controls--darwin .window-control--minimize { background: #febc2e; }
 .window-controls--darwin .window-control--maximize { background: #28c840; }
 .window-controls--darwin .window-control--maximize span { width: 5px; height: 5px; border: 1px solid currentColor; }
+/* Overlays can land inside header drag bands (toast over the collapsed-state drag tail);
+   mark them no-drag so their buttons stay clickable. */
+.window-control-error, .app-toast { app-region: no-drag; -webkit-app-region: no-drag; }
 .window-control-error { position: fixed; z-index: 90; top: 43px; right: 9px; max-width: 300px; padding: 7px 9px; border: 1px solid var(--theme-danger); border-radius: 7px; color: var(--theme-danger); background: var(--theme-danger-soft); font-size: 10px; box-shadow: 0 8px 24px var(--theme-shadow-soft); }
 
 .sidebar, .inspector {
@@ -524,11 +533,28 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 
 .workspace { position: relative; grid-column: 3; display: flex; min-width: 0; flex-direction: column; container-name: workspace; container-type: inline-size; overflow: hidden; }
 .workspace-header {
-  display: flex; align-items: center; justify-content: space-between; flex: 0 0 72px; min-width: 0; padding: 12px 22px 7px;
-  border-bottom: 1px solid color-mix(in srgb, var(--theme-border) 68%, transparent); app-region: drag; -webkit-app-region: drag; user-select: none;
+  position: relative; flex: 0 0 72px; min-width: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--theme-border) 68%, transparent); user-select: none;
+}
+/* The header chrome (border line) spans the full width. Dragging lives on an inner
+   layer instead of the header itself so the drag rectangle can stop short of the
+   custom window-control strip without cutting the visual header short. */
+.workspace-header-drag {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between; min-width: 0; padding: 12px 22px 7px;
+  app-region: drag; -webkit-app-region: drag;
 }
 /* A draggable box cannot overlap custom controls: padding reserves content space but not Electron's native hit-test region. */
 .app-shell--inspector-collapsed .workspace-header { margin-right: 0; }
+/* Right-corner window controls (Windows, Linux) sit over this header when the inspector
+   is collapsed and the workspace reaches the window edge. End the drag layer — and with
+   it the header action buttons — left of the control strip. The area below the strip
+   stays draggable through the tail zone so the titlebar feel is preserved. */
+:root:not([data-platform="darwin"]) .app-shell--inspector-collapsed .workspace-header-drag { right: var(--window-controls-reserve); }
+.workspace-header-drag-tail { display: none; }
+:root:not([data-platform="darwin"]) .app-shell--inspector-collapsed .workspace-header-drag-tail {
+  display: block; position: absolute; top: 38px; right: 0; width: var(--window-controls-reserve); height: calc(100% - 38px);
+  app-region: drag; -webkit-app-region: drag;
+}
 .workspace-header-identity { display: flex; min-width: 0; max-width: calc(100% - 128px); flex-direction: column; }
 .workspace-header .eyebrow { color: var(--theme-subtle); font-size: 9px; font-weight: 700; letter-spacing: 0.13em; }
 .workspace-header strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
@@ -629,6 +655,9 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .composer textarea { position: relative; z-index: 1; width: 100%; height: 100%; padding: 2px 3px 4px; overflow-y: auto; resize: none; border: 0; outline: 0; color: var(--theme-text); background: transparent; font-size: 14px; line-height: 1.5; }
 .composer textarea::placeholder { color: var(--theme-subtle); }
 .extension-status-rail { position: absolute; z-index: 12; top: 76px; right: 22px; display: flex; width: max-content; max-width: min(260px, calc(100% - 44px)); height: 18px; align-items: center; gap: 5px; color: var(--theme-subtle); font-size: 9px; line-height: 1; opacity: .88; pointer-events: none; }
+/* Keep the rail aligned with the header action column instead of floating under the
+   OS window controls when the workspace reaches the window edge. */
+:root:not([data-platform="darwin"]) .app-shell--inspector-collapsed .extension-status-rail { right: calc(var(--window-controls-reserve) + 22px); }
 .extension-status-mark { flex: none; color: var(--theme-accent); }
 .extension-status-primary { min-width: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .extension-status-details-trigger { display: inline-flex; flex: none; height: 18px; align-items: center; gap: 2px; padding: 0 2px; border-radius: 4px; color: var(--theme-muted); background: transparent; cursor: pointer; font-size: 8px; pointer-events: auto; }
@@ -1195,6 +1224,7 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .agent-tree-root-copy, .agent-tree-branch-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .agent-tree-root-copy strong { overflow: hidden; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .agent-tree-root-copy small { overflow: hidden; color: var(--theme-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-tree-root-copy .agent-tree-root-meta { color: var(--theme-subtle); font-size: 8px; }
 .agent-tree-overview { color: var(--theme-subtle); font-size: 8px; white-space: nowrap; }
 .agent-team-create { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 7px; color: var(--theme-accent); background: var(--theme-accent-soft); font-size: 8px; font-weight: 650; }
 .agent-team-create:disabled { opacity: .55; }
@@ -1395,7 +1425,7 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 .inspector { display: flex; grid-column: 5; min-width: 0; flex-direction: column; border-left: 1px solid color-mix(in srgb, var(--theme-border) 55%, transparent); container-type: inline-size; overflow: hidden; }
 :root:not([data-platform="darwin"]) .app-shell--inspector-open .inspector { padding-top: 38px; }
 .inspector-heading { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 36px; padding: 0 14px 0 8px; app-region: drag; -webkit-app-region: drag; user-select: none; }
-.app-shell--inspector-open .inspector-heading { margin-right: 150px; }
+.app-shell--inspector-open .inspector-heading { margin-right: calc(var(--window-controls-reserve) + 12px); }
 :root[data-platform="darwin"] .app-shell--inspector-open .inspector-heading { margin-right: 0; }
 .inspector-heading button { app-region: no-drag; -webkit-app-region: no-drag; }
 .inspector-primary-nav { display: grid; flex: none; height: 36px; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 0 8px; border-bottom: 1px solid color-mix(in srgb, var(--theme-border) 62%, transparent); }
@@ -2045,7 +2075,6 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 .settings-group { margin-top: 14px; border: 0; border-block: 1px solid var(--theme-border); border-radius: 0; }
 .settings-field, .settings-toggle, .settings-select-row { display: flex; align-items: center; justify-content: space-between; min-height: 62px; gap: 24px; padding: 0; }
 .settings-field + .settings-toggle, .settings-toggle + .settings-toggle, .settings-select-row + .settings-select-row { border-top: 1px solid var(--theme-border); }
-.settings-toggle--nested { padding-left: 18px; }
 .settings-toggle:has(input:disabled) { opacity: .42; cursor: not-allowed; }
 .settings-field > div, .settings-toggle > div, .settings-select-row > div, .settings-model-heading > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .settings-field strong, .settings-toggle strong, .settings-select-row strong, .settings-model-heading strong { color: var(--theme-text); font-size: 11px; font-weight: 580; }
@@ -2509,6 +2538,15 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 .settings-provider-remove:hover { color: var(--theme-danger, #e5484d); background: color-mix(in srgb, var(--theme-danger, #e5484d) 10%, transparent); }
 .settings-provider-remove:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: -2px; }
 .settings-provider-empty { padding: 12px 10px; color: var(--theme-subtle); font-size: 10px; }
+.provider-models-dialog { width: min(420px, calc(100vw - 48px)); }
+.provider-models-dialog .provider-dialog-detail-head small,
+.provider-models-dialog .provider-dialog-title + *,
+.provider-models-dialog [id='provider-models-description'] { display: block; margin-top: 2px; color: var(--theme-subtle); font-size: 9px; line-height: 1.4; }
+.provider-models-actions { display: flex; gap: 6px; margin: 0 0 8px; }
+.provider-model-toggle { min-height: 0; gap: 12px; padding: 7px 10px; border-top: 0; border-bottom: 1px solid var(--theme-border); }
+.provider-model-toggle:last-child { border-bottom: 0; }
+.provider-model-toggle[data-enabled] { color: var(--theme-text); }
+.provider-model-toggle:not([data-enabled]) strong { color: var(--theme-muted); }
 
 :root[data-compact-mode="true"] .settings-dialog {
   width: min(calc(100vw - 40px), 760px); height: min(680px, 88vh); max-height: 88vh; border-radius: 12px;
@@ -2528,7 +2566,6 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 :root[data-compact-mode="true"] .settings-field,
 :root[data-compact-mode="true"] .settings-toggle,
 :root[data-compact-mode="true"] .settings-select-row { min-height: 0; gap: 12px; padding: 6px 10px; }
-:root[data-compact-mode="true"] .settings-toggle--nested { padding-left: 28px; }
 :root[data-compact-mode="true"] .settings-field > div,
 :root[data-compact-mode="true"] .settings-toggle > div,
 :root[data-compact-mode="true"] .settings-select-row > div,
@@ -2584,7 +2621,8 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 :root[data-compact-mode="true"] .brand-copy span { font-size: 10px; }
 :root[data-compact-mode="true"] .icon-button,
 :root[data-compact-mode="true"] .sidebar-settings-button { width: 26px; height: 26px; flex-basis: 26px; }
-:root[data-compact-mode="true"] .workspace-header { flex: 0 0 36px; padding: 0 8px 0 12px; }
+:root[data-compact-mode="true"] .workspace-header { flex: 0 0 36px; }
+:root[data-compact-mode="true"] .workspace-header-drag { padding: 0 8px 0 12px; }
 :root[data-compact-mode="true"] .workspace-header-identity {
   flex-direction: row; align-items: center; gap: 8px; max-width: calc(100% - 156px);
 }
@@ -2662,6 +2700,7 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 }
 :root[data-compact-mode="true"] .composer-input-shell { display: flex; align-items: center; min-height: 36px; }
 :root[data-compact-mode="true"] .composer textarea { font-size: 12px; line-height: 1.4; padding: 4px 2px; }
+:root[data-compact-mode="true"]:not([data-platform="darwin"]) .app-shell--inspector-collapsed .extension-status-rail { right: calc(var(--window-controls-reserve) + 12px); }
 :root[data-compact-mode="true"] .extension-status-rail {
   top: 40px; right: 12px; max-width: min(220px, calc(100% - 36px)); height: 16px; font-size: 8px;
 }

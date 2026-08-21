@@ -657,7 +657,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     const assertWindowControlsOutsideDragRegions = async () => {
       const overlaps = await page.evaluate(() => {
         const controls = [...document.querySelectorAll<HTMLElement>('.window-control')];
-        const dragRegions = [...document.querySelectorAll<HTMLElement>('.window-drag-region, .workspace-header, .inspector-heading')];
+        const dragRegions = [...document.querySelectorAll<HTMLElement>('.window-drag-region, .workspace-header-drag, .workspace-header-drag-tail, .inspector-heading')];
         return controls.flatMap((control) => {
           const controlRect = control.getBoundingClientRect();
           return dragRegions.flatMap((region) => {
@@ -672,10 +672,42 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
       });
       expect(overlaps).toEqual([]);
     };
+    // Windows and Linux keep min/max/close in the top-right corner. When the inspector
+    // is collapsed, header and browser-pane action buttons must clear that fixed strip.
+    const assertHeaderActionsClearOfWindowControls = async () => {
+      const clashes = await page.evaluate(() => {
+        const controlsStrip = document.querySelector<HTMLElement>('.window-controls');
+        if (!controlsStrip) return [];
+        const stripRect = controlsStrip.getBoundingClientRect();
+        const targets = [...document.querySelectorAll<HTMLElement>('.session-controls button, .browser-tab-strip button, .browser-toolbar button')];
+        return targets
+          .filter((target) => {
+            const rect = target.getBoundingClientRect();
+            return rect.left < stripRect.right && rect.right > stripRect.left && rect.top < stripRect.bottom && rect.bottom > stripRect.top;
+          })
+          .map((target) => target.getAttribute('aria-label') ?? target.className);
+      });
+      expect(clashes).toEqual([]);
+    };
+    // Overlays (toast, control-error) can geometrically sit inside header drag bands;
+    // they must stay no-drag so their buttons never start a window drag.
+    const assertOverlaysAreNoDrag = async () => {
+      const regions = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('.app-toast, .window-control-error')].map((element) => ({
+        className: element.className,
+        region: getComputedStyle(element).getPropertyValue('-webkit-app-region'),
+      })));
+      expect(regions.filter((entry) => entry.region !== 'no-drag')).toEqual([]);
+    };
+    // The app-shell animates grid columns (150ms): assertions must wait until the
+    // header reaches its resting position — the state users actually click in.
+    const waitForCollapsedLayoutToSettle = () => page.waitForTimeout(300);
     await assertWindowControlsOutsideDragRegions();
     await page.getByRole('button', { name: 'Collapse inspector' }).click();
     await expect(page.locator('.app-shell')).toHaveClass(/app-shell--inspector-collapsed/);
+    await waitForCollapsedLayoutToSettle();
     await assertWindowControlsOutsideDragRegions();
+    await assertHeaderActionsClearOfWindowControls();
+    await assertOverlaysAreNoDrag();
     await page.getByRole('button', { name: 'Open inspector' }).click();
     await expect(page.locator('.app-shell')).toHaveClass(/app-shell--inspector-open/);
     await page.waitForTimeout(180);
@@ -1130,7 +1162,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     const compactToolsTrigger = page.getByRole('button', { name: 'Open composer tools' });
     await expect(compactToolsTrigger).toBeVisible();
     await expect(activityPulse).toBeVisible();
-    const compactHeader = await page.locator('.workspace-header').evaluate((element) => ({ client: element.clientWidth, scroll: element.scrollWidth }));
+    const compactHeader = await page.locator('.workspace-header-drag').evaluate((element) => ({ client: element.clientWidth, scroll: element.scrollWidth }));
     expect(compactHeader.scroll).toBeLessThanOrEqual(compactHeader.client);
     expect(await page.locator('.activity-pulse-chip').evaluateAll((chips) => chips.every((chip) => getComputedStyle(chip).display === 'none'))).toBe(true);
     const compactOverflow = await page.locator('form.composer').evaluate((element) => ({ client: element.clientWidth, scroll: element.scrollWidth }));

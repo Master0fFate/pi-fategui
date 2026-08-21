@@ -28,7 +28,7 @@ function fixture(availableModels: typeof model[] = [model]) {
   let settleRun: (() => void) | undefined;
   let streaming = false;
   let sessionName: string | undefined;
-  let activeTools = ['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen'];
+  let activeTools = ['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen', 'goalmax_status', 'goalmax_report', 'goalmax_complete'];
   let steeringMessages: string[] = [];
   let followUpMessages: string[] = [];
   const sessionListeners = new Set<(event: unknown) => void>();
@@ -1344,6 +1344,23 @@ describe('PiRuntimeService', () => {
     await service.controlGoalMax({ action: 'cancel' });
     await expect(service.clearGoalMax()).resolves.toMatchObject({ cleared: true, archivedGoalId: goal.id });
     await expect(service.getGoalMax()).resolves.toBeNull();
+    await service.dispose();
+  });
+
+  it('hides GoalMax tools until /goalmax is initiated and withdraws them after clear', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    // The session starts goal-free: registration stays, activation does not.
+    expect(fake.session.getActiveToolNames().some((name) => name.startsWith('goalmax_'))).toBe(false);
+
+    await service.createGoalMax({ objective: 'Report progress through the control plane', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    expect(fake.session.getActiveToolNames()).toEqual(expect.arrayContaining(['goalmax_status', 'goalmax_report', 'goalmax_complete']));
+    fake.settle();
+
+    await service.controlGoalMax({ action: 'cancel' });
+    await service.clearGoalMax();
+    expect(fake.session.getActiveToolNames().some((name) => name.startsWith('goalmax_'))).toBe(false);
     await service.dispose();
   });
 

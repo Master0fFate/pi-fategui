@@ -446,6 +446,25 @@ describe('SubagentCoordinator', () => {
     expect(JSON.stringify(result.details)).not.toContain('example.test');
   });
 
+  it('hides Fate-disabled models from the catalog and refuses them for children', async () => {
+    const parent = parentSession();
+    const coordinator = new SubagentCoordinator({
+      resolveParent: () => ({ projectPath: '/project', session: parent, permissionLevel: 'full-access' }),
+      getDisabledModels: () => ['alternate/glm'],
+      emit: () => undefined,
+    });
+
+    const catalog = await executeNamedTool(coordinator, runtime(), 'subagent_catalog', 'catalog-disabled', {});
+    expect(catalog.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('test/model') });
+    expect(JSON.stringify(catalog.details)).not.toContain('alternate/glm');
+
+    await expect(executeTool(coordinator, {
+      task: 'Use the hidden model',
+      model: { provider: 'alternate', id: 'glm' },
+      tools: ['read'],
+    }, undefined, undefined, runtime())).rejects.toThrow(/disabled in Fate UI settings/);
+  });
+
   it('preloads exact user-selected Pi skills without injecting a scenario prompt', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-subagent-skill-'));
     try {

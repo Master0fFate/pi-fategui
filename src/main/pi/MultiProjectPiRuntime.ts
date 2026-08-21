@@ -41,6 +41,7 @@ export interface MultiProjectPiRuntimeDeps {
   createGoalPersistence: () => GoalMaxPersistence;
   browserIntegration: PiBrowserRuntimeIntegration | null;
   defaults: () => Promise<SessionDefaults>;
+  getDisabledModels?: () => readonly string[];
   /** Optional mutation-attestation recorder threaded to root and child confined tools. */
   recordAttestation?: MutationRecorder;
 }
@@ -282,7 +283,7 @@ export class MultiProjectPiRuntime {
       }
       return this.sharedModelRuntime!;
     };
-    return new PiRuntimeService(
+    const service = new PiRuntimeService(
       this.deps.adapter,
       undefined,
       this.deps.sessionPermissions,
@@ -293,6 +294,8 @@ export class MultiProjectPiRuntime {
       modelRuntimeProvider,
       this.deps.recordAttestation ?? null,
     );
+    if (this.deps.getDisabledModels) service.setDisabledModelsSource(this.deps.getDisabledModels);
+    return service;
   }
 
   private wireService(path: string, service: PiRuntimeService): void {

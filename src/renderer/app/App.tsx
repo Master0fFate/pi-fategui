@@ -278,6 +278,7 @@ export function App() {
       useUiStore.getState().setCompactMode(settings.compactMode);
       useUiStore.getState().setCompactSessions(settings.compactSessions);
       useUiStore.getState().setAdvancedPromptImprovement(settings.advancedPromptImprovement);
+      useUiStore.getState().setDisabledModels(settings.disabledModels ?? []);
       useUiStore.getState().setSpeech(settings.speech ?? defaultSpeechSettings);
       void window.piDesktop.getSpeechStatus().then((status) => { if (active) useUiStore.getState().setSpeechStatus(status); }).catch(() => undefined);
     }).catch((error: unknown) => {

@@ -10,6 +10,7 @@ import { SettingsDialog } from './SettingsDialog';
 const settings: AppSettings = {
   appearance: 'dark',
   defaultModel: null,
+  disabledModels: [],
   thinkingLevel: 'medium',
   agentTeamMode: 'legacy',
   confirmRiskyCommands: true,
@@ -149,29 +150,37 @@ describe('SettingsDialog feedback', () => {
     expect(screen.getByLabelText('Extended Unicode font preview')).toHaveTextContent('中文');
   });
 
-  it('previews Compact mode on the root flag and nests Compact sessions under it', async () => {
+  it('runs Compact sessions standalone in the Compaction section while Compact mode stays a master switch', async () => {
     const setSettings = vi.fn(async (value: AppSettings) => value);
     installBridge(setSettings);
     const user = userEvent.setup();
     render(<SettingsDialog />);
 
-    const compactMode = await screen.findByRole('checkbox', { name: /^Compact mode/ });
+    await user.click(await screen.findByRole('tab', { name: /Compaction/ }));
+    const compactMode = screen.getByRole('checkbox', { name: /^Compact mode/ });
     const compactSessions = screen.getByRole('checkbox', { name: /^Compact sessions/ });
-    expect(compactSessions).toBeDisabled();
-    await waitFor(() => expect(document.documentElement.dataset.compactMode).toBe('false'));
 
-    await user.click(compactMode);
-    await waitFor(() => expect(document.documentElement.dataset.compactMode).toBe('true'));
+    // Sessions are usable on their own: enabled, and saving keeps Compact mode off.
     expect(compactSessions).toBeEnabled();
-    expect(useUiStore.getState().compactMode).toBe(true);
-
     await user.click(compactSessions);
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({ compactMode: true, compactSessions: true }));
+    expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({ compactMode: false, compactSessions: true }));
     await waitFor(() => {
-      expect(useUiStore.getState().compactMode).toBe(true);
+      expect(useUiStore.getState().compactMode).toBe(false);
       expect(useUiStore.getState().compactSessions).toBe(true);
     });
+
+    // Turning the master switch on flips every entry below it on.
+    await user.click(compactMode);
+    expect(compactMode).toBeChecked();
+    expect(compactSessions).toBeChecked();
+    await waitFor(() => expect(document.documentElement.dataset.compactMode).toBe('true'));
+    expect(useUiStore.getState().compactSessions).toBe(true);
+
+    // Turning the master switch off flips every entry below it off again.
+    await user.click(compactMode);
+    expect(compactMode).not.toBeChecked();
+    expect(compactSessions).not.toBeChecked();
   });
 
   it('describes agent settings as initial project fallbacks rather than new-session defaults', async () => {
@@ -415,6 +424,31 @@ describe('SettingsDialog providers card (models.dev)', () => {
     const logo = crofRow.querySelector<HTMLElement>('.settings-provider-pick .provider-logo');
     expect(logo).not.toBeNull();
     expect(logo!.querySelector('img')).toBeNull();
+  });
+
+  it('opens a model window from a provider row so the user can hide autoloaded models', async () => {
+    installBridge(vi.fn(async () => settings));
+    useRuntimeStore.getState().setRuntime({
+      status: 'ready', project: null, sessionId: null, sessionFile: null, streaming: false,
+      model: null,
+      models: [
+        { provider: 'crof', id: 'kimi-k3', name: 'CrofAI: Kimi K3', reasoning: true, contextWindow: 1_000_000 },
+        { provider: 'crof', id: 'glm-5', name: 'CrofAI: GLM-5', reasoning: false, contextWindow: 200_000 },
+      ],
+      thinkingLevel: 'medium', messages: [], commands: [], error: null,
+      modelsDevManaged: [{ id: 'crof', name: 'CrofAI', baseUrl: 'https://crof.ai/v1', envVar: 'CROF_API_KEY', api: 'openai-completions', modelCount: 2, addedAt: 1, checkedAt: 1, credentialConfigured: true }],
+    });
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+    await user.click(screen.getByRole('tab', { name: /agent/i }));
+    await user.click(await screen.findByRole('button', { name: 'Show or hide CrofAI models' }));
+
+    const modelsDialog = await screen.findByRole('dialog', { name: 'CrofAI models' });
+    expect(modelsDialog).toHaveTextContent('2 of 2 show in the model picker');
+    await user.click(screen.getByRole('checkbox', { name: 'Show CrofAI: GLM-5 in the model picker' }));
+    expect(screen.getByRole('dialog', { name: 'CrofAI models' })).toHaveTextContent('1 of 2 show in the model picker');
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(await screen.findByRole('button', { name: 'Show or hide CrofAI models' })).toHaveTextContent('1/2');
   });
 
   it('removes a managed provider through the row control and toasts the result', async () => {

@@ -89,6 +89,7 @@ import { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
 import type { AgentTeamControlInput } from '../../shared/contracts/multiAgent';
 import { InMemorySessionPermissionStore, type SessionPermissionPersistence } from './SessionPermissionStore';
 import { GoalMaxCoordinator, type GoalMaxDiagnosticResult, type GoalMaxRuntimeChild, type GoalMaxRuntimeChildObservation, type GoalMaxRuntimeSnapshot, type GoalMaxVerificationResult } from './goalmaxxing/GoalMaxCoordinator';
+import { GOALMAX_TOOL_NAME_SET } from './goalmaxxing/GoalMaxTools';
 import { goalMaxCapsule } from './goalmaxxing/GoalMaxPrompt';
 import { InMemoryGoalMaxRepository, type GoalMaxPersistence } from './goalmaxxing/GoalMaxRepository';
 import { classifyGoalMaxTool, GoalMaxProgressEngine } from './goalmaxxing/GoalMaxProgressEngine';
@@ -269,6 +270,8 @@ interface RuntimeSlot {
   lengthContinuationCount: number;
   firstPromptText: string;
   firstTitleStarted: boolean;
+  /** Frozen at user-prompt start so a mid-turn settings save cannot change child catalogs. */
+  disabledModelsForTurn: readonly string[] | null;
   createdAt: string;
   modifiedAt: string;
   disposed: boolean;
@@ -444,8 +447,13 @@ const realPiSdkAdapter: PiSdkAdapter = {
       toolAccessBySession.set(created.session, toolAccess);
       ownedCustomToolsBySession.set(created.session, customTools);
       // Gate only Fate UI's controlled tools. User-installed extension tools keep
-      // the activation state selected by Pi and their owning extensions.
-      created.session.setActiveToolsByName(activeToolsForPermission(created.session.getActiveToolNames(), 'edit'));
+      // the activation state selected by Pi and their owning extensions. GoalMax
+      // tools stay registered but inactive until /goalmax initiates a goal; the
+      // coordinator re-activates them through the goal snapshot policy.
+      created.session.setActiveToolsByName(activeToolsForPermission(
+        created.session.getActiveToolNames().filter((name) => !GOALMAX_TOOL_NAME_SET.has(name)),
+        'edit',
+      ));
       return {
         ...created,
         services,
@@ -868,6 +876,7 @@ export class PiRuntimeService {
   private providerLoginRuntimeInitialization: Promise<ModelRuntime> | null = null;
   private readonly modelsDev: ModelsDevService;
   private modelsDevManagedCache: ModelsDevManagedProvider[] = [];
+  private disabledModelsSource: () => readonly string[] = () => [];
 
   private get runtime(): AgentSessionRuntime | null { return this.selectedSlot?.runtime ?? null; }
   private get permissionLevel(): PermissionLevel { return this.selectedSlot?.permissionLevel ?? this.fallbackPermissionLevel; }
@@ -941,6 +950,7 @@ export class PiRuntimeService {
         const agentStrategy = this.goalAgentStrategy(sessionId);
         return { projectPath: this.project.path, session: slot.runtime.session, permissionLevel: slot.permissionLevel, ...(agentStrategy ? { agentStrategy } : {}) };
       },
+      getDisabledModels: (sessionId) => this.disabledModelsForSession(sessionId),
       sendRootMessage: (rootSessionId, message, activeDelivery, triggerWhenIdle) => {
         const slot = this.findLiveSlot(rootSessionId);
         if (!slot || slot.disposed) return Promise.resolve();
@@ -979,6 +989,7 @@ export class PiRuntimeService {
         const agentStrategy = this.goalAgentStrategy(sessionId);
         return { projectPath: this.project.path, session: slot.runtime.session, permissionLevel: slot.permissionLevel, ...(agentStrategy ? { agentStrategy } : {}) };
       },
+      getDisabledModels: (sessionId) => this.disabledModelsForSession(sessionId),
       emit: (parentSessionId, event) => {
         const slot = this.findLiveSlot(parentSessionId);
         if (shouldSyncGoalChildrenForPiEvent(event)) this.syncGoalChildren(parentSessionId);
@@ -1076,6 +1087,16 @@ export class PiRuntimeService {
 
   setEventSink(sink: (events: PiEvent[]) => void): void {
     this.eventSink = sink;
+  }
+
+  setDisabledModelsSource(source: () => readonly string[]): void {
+    this.disabledModelsSource = source;
+  }
+
+  private disabledModelsForSession(sessionId?: string): readonly string[] {
+    const slot = sessionId ? this.findLiveSlot(sessionId) : this.selectedSlot;
+    if (slot?.disabledModelsForTurn) return slot.disabledModelsForTurn;
+    return this.disabledModelsSource();
   }
 
   setGoalEventSink(sink: (event: GoalMaxEvent) => void): void {
@@ -1490,6 +1511,7 @@ export class PiRuntimeService {
     // Each user turn re-issues its own one-turn grants. Clear any stale grant
     // from the previous turn before re-populating from this prompt.
     slot.sessionMessageTargets.clear();
+    slot.disabledModelsForTurn = [...this.disabledModelsSource()];
     if (includesSessionReferences) {
       for (const reference of input.sessionReferences!) slot.sessionMessageTargets.set(reference.id, reference);
     }
@@ -2730,6 +2752,7 @@ export class PiRuntimeService {
       lengthContinuationCount: 0,
       firstPromptText: '',
       firstTitleStarted: false,
+      disabledModelsForTurn: null,
       createdAt: now,
       modifiedAt: now,
       disposed: false,
@@ -2790,6 +2813,7 @@ export class PiRuntimeService {
     slot.attention = null;
     slot.runFailed = false;
     slot.sessionTurnPhase = 'idle';
+    slot.disabledModelsForTurn = null;
     slot.deferredChildMessages = [];
     slot.heldGoalMessages = [];
     slot.heldCompactionMessages = [];
@@ -2901,14 +2925,17 @@ export class PiRuntimeService {
     }
     slot.permissionLevel = await this.permissionForSession(session, slot);
     if (!ownsSession()) return;
-    session.setActiveToolsByName(activeToolsForPermission(session.getActiveToolNames(), slot.permissionLevel));
+    session.setActiveToolsByName(activeToolsForPermission(
+      session.getActiveToolNames().filter((name) => !GOALMAX_TOOL_NAME_SET.has(name)),
+      slot.permissionLevel,
+    ));
     this.subagents.restoreParent(session);
     this.agentTeams.restoreRoot(session);
     const restoredV2 = this.agentTeams.getTeams(session.sessionId).length > 0;
     const restoredLegacy = this.subagents.getRuns(session.sessionId).length > 0 || this.subagents.getWorkflowViews(session.sessionId).length > 0;
     const orchestrationMode = restoredV2 ? 'v2' : restoredLegacy ? 'legacy' : this.agentTeamMode;
     const selectedOrchestration = orchestrationMode === 'v2' ? V2_ORCHESTRATION_TOOLS : LEGACY_ORCHESTRATION_TOOLS;
-    const ordinaryActiveTools = session.getActiveToolNames().filter((name) => !ALL_ORCHESTRATION_TOOLS.has(name));
+    const ordinaryActiveTools = session.getActiveToolNames().filter((name) => !ALL_ORCHESTRATION_TOOLS.has(name) && !GOALMAX_TOOL_NAME_SET.has(name));
     session.setActiveToolsByName(activeToolsForPermission([...ordinaryActiveTools, ...selectedOrchestration], slot.permissionLevel));
     if (access) access.fullAccess = slot.permissionLevel === 'full-access';
     this.installModelBoundary(slot, session, ownsSession);
@@ -3083,10 +3110,13 @@ export class PiRuntimeService {
   private handleSessionEvent(slot: RuntimeSlot, session: AgentSession, generation: number, event: AgentSessionEvent): void {
     if (this.initialization !== slot.projectGeneration || slot.disposed || generation !== slot.sessionGeneration || slot.runtime.session !== session) return;
     this.goalMax.observeSessionEvent(session.sessionId, event);
-    if (event.type === 'agent_start') slot.sessionTurnPhase = 'active';
-    else if (event.type === 'agent_end') slot.sessionTurnPhase = 'ending';
+    if (event.type === 'agent_start') {
+      slot.sessionTurnPhase = 'active';
+      if (!slot.disabledModelsForTurn) slot.disabledModelsForTurn = [...this.disabledModelsSource()];
+    } else if (event.type === 'agent_end') slot.sessionTurnPhase = 'ending';
     else if (event.type === 'agent_settled') {
       slot.sessionMessageTargets.clear();
+      slot.disabledModelsForTurn = null;
       slot.sessionTurnPhase = 'idle';
       if (slot.heldGoalMessages.length > 0) this.reconcileHeldGoalMessages(slot);
     }
@@ -3610,11 +3640,15 @@ export class PiRuntimeService {
   }
 
   private applyGoalAgentPolicy(slot: RuntimeSlot, session: AgentSession, goal: GoalMaxState | null): void {
-    const strategy = goal && goal.status !== 'completed' && goal.status !== 'cancelled' ? goal.agentStrategy : undefined;
+    const goalOpen = Boolean(goal && goal.status !== 'completed' && goal.status !== 'cancelled');
+    const strategy = goalOpen ? goal!.agentStrategy : undefined;
     const currentTools = session.getActiveToolNames();
-    const ordinaryTools = currentTools.filter((name) => !ALL_ORCHESTRATION_TOOLS.has(name));
+    // GoalMax tools ride the same activation gate as orchestration tools: they
+    // are exposed to the model only while an initiated goal is still open.
+    const ordinaryTools = currentTools.filter((name) => !ALL_ORCHESTRATION_TOOLS.has(name) && !GOALMAX_TOOL_NAME_SET.has(name));
     const orchestrationTools = strategy === 'off' ? [] : this.goalOrchestrationTools(session.sessionId);
-    const nextTools = activeToolsForPermission([...ordinaryTools, ...orchestrationTools], slot.permissionLevel);
+    const goalTools = goalOpen ? [...GOALMAX_TOOL_NAME_SET] : [];
+    const nextTools = activeToolsForPermission([...ordinaryTools, ...orchestrationTools, ...goalTools], slot.permissionLevel);
     if (nextTools.length !== currentTools.length || nextTools.some((name, index) => name !== currentTools[index])) session.setActiveToolsByName(nextTools);
     if (strategy === 'off' || strategy === 'read-only') {
       this.subagents.capDelegationPermission(session.sessionId, 'read-only');

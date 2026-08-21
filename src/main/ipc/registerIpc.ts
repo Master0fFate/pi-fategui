@@ -145,6 +145,7 @@ import {
   type TaskEvent,
 } from '../../shared/contracts/tasks';
 import { normalizeError, PiDesktopError } from '../pi/errors';
+import { enabledModelIdentity } from '../../shared/modelVisibility';
 import { encodedImageSize, MAX_PROMPT_IMAGE_BYTES, MAX_PROMPT_IMAGE_DIMENSION, MAX_PROMPT_IMAGE_TOTAL_PIXELS } from '../pi/PiPromptImages';
 import type { FilesystemService } from '../files/FilesystemService';
 import type { GitService } from '../git/GitService';
@@ -241,7 +242,7 @@ interface ProjectActivationServices {
     focusProject?: (project: ProjectState) => Promise<RuntimeState>;
   };
   files: Pick<FilesystemService, 'getRootOrNull' | 'setRoot' | 'clearRoot'>;
-  settings: { load: () => Promise<Pick<Awaited<ReturnType<SettingsService['load']>>, 'thinkingLevel' | 'defaultModel'> & Partial<Pick<Awaited<ReturnType<SettingsService['load']>>, 'agentTeamMode'>>> };
+  settings: { load: () => Promise<Pick<Awaited<ReturnType<SettingsService['load']>>, 'thinkingLevel' | 'defaultModel'> & Partial<Pick<Awaited<ReturnType<SettingsService['load']>>, 'agentTeamMode' | 'disabledModels'>>> };
   terminal: Pick<TerminalService, 'disposeProjectTerminals'>;
   logs: Pick<AppLogService, 'write'>;
   browser?: Pick<BrowserHost, 'reset'>;
@@ -348,7 +349,7 @@ export async function activatePreparedProject(
   if (action !== 'changing projects') assertProjectActivationIdle(runtime, action);
   const activateRuntime = (project: ProjectState) => runtimeAction === 'focus' && runtime.focusProject
     ? runtime.focusProject(project)
-    : runtime.openProject(project, { thinkingLevel: defaults.thinkingLevel, defaultModel: defaults.defaultModel, ...(defaults.agentTeamMode ? { agentTeamMode: defaults.agentTeamMode } : {}) });
+    : runtime.openProject(project, { thinkingLevel: defaults.thinkingLevel, defaultModel: enabledModelIdentity(defaults.disabledModels, defaults.defaultModel), ...(defaults.agentTeamMode ? { agentTeamMode: defaults.agentTeamMode } : {}) });
   let rootAttempted = false;
   let runtimeAttempted = false;
   let activatedState: Awaited<ReturnType<PiRuntimeService['openProject']>>;

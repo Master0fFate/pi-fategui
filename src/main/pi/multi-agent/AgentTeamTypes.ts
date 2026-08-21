@@ -76,6 +76,7 @@ export interface PreparedAgentRequest extends SpawnAgentRequest {
 
 export interface AgentTeamCoordinatorHost {
   resolveRoot(sessionId: string): { projectPath: string; session: AgentSession; permissionLevel: PermissionLevel; agentStrategy?: 'auto' | 'off' | 'read-only' } | null;
+  getDisabledModels?: (sessionId?: string) => readonly string[];
   /**
    * Routes child-generated messages through the root session's lifecycle gate.
    * A message arriving after `agent_end` must wait for `agent_settled`; queueing

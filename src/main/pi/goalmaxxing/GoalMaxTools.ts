@@ -6,6 +6,16 @@ import type { GoalMaxCoordinator } from './GoalMaxCoordinator';
 const phaseValues = ['intake', 'planning', 'research', 'implementation', 'validation', 'verification', 'handoff'] as const;
 const reportStatusValues = ['pending', 'active', 'satisfied', 'failed'] as const;
 
+/** Canonical GoalMax tool identities. The runtime keeps these tools registered
+ * but only exposes them to the model while /goalmax is initiated, so the set is
+ * the single source of truth for the activation gate. */
+export const GOALMAX_TOOL_NAMES = {
+  status: 'goalmax_status',
+  report: 'goalmax_report',
+  complete: 'goalmax_complete',
+} as const;
+export const GOALMAX_TOOL_NAME_SET: ReadonlySet<string> = new Set<string>(Object.values(GOALMAX_TOOL_NAMES));
+
 function enumString(values: readonly string[], description: string) {
   return Type.Unsafe<string>({ type: 'string', enum: values, description });
 }
@@ -32,7 +42,7 @@ export interface GoalMaxCompletionInput {
 export function createGoalMaxTools(coordinator: GoalMaxCoordinator): ToolDefinition[] {
   return [
     defineTool({
-      name: 'goalmax_status',
+      name: GOALMAX_TOOL_NAMES.status,
       label: 'Goal status',
       promptSnippet: 'Inspect the active persistent goal and current evidence',
       description: 'Read the authoritative GoalMax objective, lifecycle, criteria, current evidence IDs, blockers, budget, usage, and child assignments. This tool never mutates control-plane state.',
@@ -44,7 +54,7 @@ export function createGoalMaxTools(coordinator: GoalMaxCoordinator): ToolDefinit
       },
     }),
     defineTool({
-      name: 'goalmax_report',
+      name: GOALMAX_TOOL_NAMES.report,
       label: 'Goal progress',
       promptSnippet: 'Report evidence-linked goal progress, a blocker, or a completion candidate',
       description: 'Report bounded interim progress to the GoalMax control plane. During intake, the model may replace provisional criteria with a concrete taskPlan. It may also update phase, attach current evidence IDs to criteria, assign criterion ownership, or report an exact blocker. The completion-candidate outcome remains available for compatibility; prefer goalmax_complete for the final handoff. This tool cannot pause, cancel, clear, budget, elevate permissions, or mark the goal completed.',
@@ -91,7 +101,7 @@ export function createGoalMaxTools(coordinator: GoalMaxCoordinator): ToolDefinit
       },
     }),
     defineTool({
-      name: 'goalmax_complete',
+      name: GOALMAX_TOOL_NAMES.complete,
       label: 'Complete goal',
       promptSnippet: 'Atomically complete GoalMax when current evidence proves the objective',
       description: 'Use exactly once at the end of a GoalMax objective, after implementation and the strongest available checks are finished. The control plane refreshes evidence and atomically marks the goal completed only when every completion condition passes. An incomplete request remains active and returns exact next work without creating a warning state.',

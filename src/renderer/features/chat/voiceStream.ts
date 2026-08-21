@@ -9,8 +9,11 @@
  * so without this the mic would be captured but `process()` would never run.
  */
 
+import { SpeechGate } from '../../../shared/speechGate';
 import { MAX_SPEECH_STREAM_BACKLOG_SAMPLES, MAX_SPEECH_STREAM_FEED_SAMPLES, SPEECH_SAMPLE_RATE } from '../../../shared/speech';
 import { combineSampleBatch, takeSampleBatch } from '../../../shared/speechQueue';
+
+export { SpeechGate, defaultSpeechGateConfig, type SpeechGateConfig } from '../../../shared/speechGate';
 
 export interface VoiceStreamController {
   /** Flush the final partial PCM capture, then stop the mic and close the graph. */
@@ -28,40 +31,8 @@ export const MAX_VOICE_STREAM_BACKLOG_SAMPLES = MAX_SPEECH_STREAM_BACKLOG_SAMPLE
  *  IPC, so this queues them while a slow CPU feed is in flight, then sends a
  *  bounded PCM batch in capture order. closeAndDrain() is the stop barrier: all
  *  accepted audio reaches main before stream finalization starts.
- *  A speech gate (Handy-style) drops silence before it is ever queued: the
- *  decode engine only ever sees speech, so pauses cost no CPU. */
-export interface SpeechGateConfig {
-  /** Frame RMS at or above this counts as speech. Conservative so quiet
-   *  speech passes; Chromium's noise suppression keeps the floor well below. */
-  readonly rmsThreshold: number;
-  /** Silence following speech keeps flowing for this long, so word tails are
-   *  never clipped and short mid-word pauses stay in context. */
-  readonly hangoverSamples: number;
-}
-export const defaultSpeechGateConfig: SpeechGateConfig = {
-  rmsThreshold: 0.006,
-  hangoverSamples: SPEECH_SAMPLE_RATE * 0.8,
-};
-
-/** Decides, per captured chunk, whether the decode engine should see it.
- *  Pure and synchronous so it can be unit-tested without audio hardware. */
-export class SpeechGate {
-  private silentSamples = 0;
-  constructor(private readonly config: SpeechGateConfig = defaultSpeechGateConfig) {}
-  /** Record one chunk; true when it must be forwarded for inference. */
-  push(pcm: Float32Array): boolean {
-    let sumSquares = 0;
-    for (let i = 0; i < pcm.length; i += 1) sumSquares += pcm[i]! * pcm[i]!;
-    const rms = Math.sqrt(sumSquares / pcm.length);
-    if (rms >= this.config.rmsThreshold) {
-      this.silentSamples = 0;
-      return true;
-    }
-    this.silentSamples += pcm.length;
-    return this.silentSamples <= this.config.hangoverSamples;
-  }
-}
-
+ *  A Handy-style speech gate drops long thinking pauses before they are queued.
+ *  Speech, pre-roll, and a hangover tail still reach the decoder. */
 export class VoiceStreamFeedQueue {
   private readonly pending: Float32Array[] = [];
   private pendingSamples = 0;
@@ -79,21 +50,15 @@ export class VoiceStreamFeedQueue {
 
   push(pcm: Float32Array): boolean {
     if (this.closed || this.failure || pcm.length === 0) return false;
-    // Silence never reaches the engine: pauses in dictation cost no CPU, and
-    // silence-driven hallucinations cannot start.
-    if (!this.gate.push(pcm)) return false;
-    if (this.pendingSamples + this.inFlightSamples + pcm.length > MAX_VOICE_STREAM_BACKLOG_SAMPLES) {
-      this.fail(new Error('Live transcription cannot keep up with this computer. Try a shorter recording or a faster voice model.'));
-      return false;
-    }
-    this.pending.push(pcm);
-    this.pendingSamples += pcm.length;
-    this.startDrain();
-    return true;
+    const forwarded = this.gate.push(pcm);
+    if (!forwarded || forwarded.length === 0) return false;
+    return this.enqueue(forwarded);
   }
 
   async closeAndDrain(): Promise<void> {
     this.closed = true;
+    const tail = this.gate.flush();
+    if (tail && tail.length > 0 && !this.failure && !this.cancelled) this.enqueue(tail);
     while (this.draining) await this.draining;
     if (this.failure) throw this.failure;
   }
@@ -107,11 +72,23 @@ export class VoiceStreamFeedQueue {
     this.pendingSamples = 0;
   }
 
+  private enqueue(pcm: Float32Array): boolean {
+    if (this.failure || this.cancelled || pcm.length === 0) return false;
+    if (this.pendingSamples + this.inFlightSamples + pcm.length > MAX_VOICE_STREAM_BACKLOG_SAMPLES) {
+      this.fail(new Error('Live transcription cannot keep up with this computer. Try a shorter recording or a faster voice model.'));
+      return false;
+    }
+    this.pending.push(pcm);
+    this.pendingSamples += pcm.length;
+    this.startDrain();
+    return true;
+  }
+
   private startDrain(): void {
     if (this.draining || this.failure || this.cancelled) return;
     this.draining = this.drain().finally(() => {
       this.draining = null;
-      if (!this.closed && this.pending.length > 0 && !this.failure && !this.cancelled) this.startDrain();
+      if (this.pending.length > 0 && !this.failure && !this.cancelled) this.startDrain();
     });
   }
 

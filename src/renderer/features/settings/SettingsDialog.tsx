@@ -7,6 +7,7 @@ import {
   Gauge,
   LockKeyhole,
   Plus,
+  Rows3,
   Save,
   ShieldCheck,
   SlidersHorizontal,
@@ -38,20 +39,23 @@ import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { enumerateMicrophones, microphoneAccessError, requestMicrophoneDevices, type MicrophoneDevice } from './microphoneDevices';
 import { ProviderConnectDialog } from '../../components/ProviderConnectDialog';
+import { ProviderModelsDialog } from './ProviderModelsDialog';
+import { enabledModelIdentity, modelIdentity, visibleModels } from '../../../shared/modelVisibility';
 
 const fallback: AppSettings = {
-  appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true,
+  appearance: 'dark', defaultModel: null, disabledModels: [], thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true,
   terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight',
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
   speech: defaultSpeechSettings,
 };
 
-type SettingsSection = 'general' | 'agent' | 'voice' | 'workspace' | 'system';
+type SettingsSection = 'general' | 'compaction' | 'agent' | 'voice' | 'workspace' | 'system';
 type SettingsToast = { kind: 'success' | 'error'; title: string; message: string };
 
 const sections = [
   { id: 'general', label: 'General', detail: 'Look & performance', icon: SlidersHorizontal },
+  { id: 'compaction', label: 'Compaction', detail: 'Density controls', icon: Rows3 },
   { id: 'agent', label: 'Agent', detail: 'Models & reasoning', icon: Bot },
   { id: 'voice', label: 'Voice', detail: 'Local speech-to-text', icon: Mic2 },
   { id: 'workspace', label: 'Workspace', detail: 'Trust & terminal', icon: ShieldCheck },
@@ -113,6 +117,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   const setCompactMode = useUiStore((state) => state.setCompactMode);
   const setCompactSessions = useUiStore((state) => state.setCompactSessions);
   const setAdvancedPromptImprovement = useUiStore((state) => state.setAdvancedPromptImprovement);
+  const setDisabledModels = useUiStore((state) => state.setDisabledModels);
   const setSpeech = useUiStore((state) => state.setSpeech);
   const models = useRuntimeStore((state) => state.runtime.models);
   const modelsDevManaged = useRuntimeStore((state) => state.runtime.modelsDevManaged);
@@ -128,6 +133,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
     [models, managedById],
   );
   const [addProviderOpen, setAddProviderOpen] = useState(false);
+  const [modelsProviderId, setModelsProviderId] = useState<string | null>(null);
   const imageCompatibleProviderGroups = useMemo(
     () => providerGroups.filter((group) => group.models.some((model) => isOpenAICompatibleImageApi(model.api))),
     [providerGroups],
@@ -180,9 +186,11 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
     void window.piDesktop.getSettings()
       .then((nextSettings) => {
         if (!active) return;
-        setSettings(nextSettings);
+        const defaultModel = enabledModelIdentity(nextSettings.disabledModels, nextSettings.defaultModel);
+        const loaded = defaultModel === nextSettings.defaultModel ? nextSettings : { ...nextSettings, defaultModel };
+        setSettings(loaded);
         setPersistedSettings(nextSettings);
-        setSelectedProvider(nextSettings.defaultModel?.split('/')[0] ?? '');
+        setSelectedProvider(defaultModel?.split('/')[0] ?? '');
         setSettingsLoaded(true);
       })
       .catch((error: unknown) => { if (active) setStatus(error instanceof Error ? error.message : 'Settings could not load.'); });
@@ -335,6 +343,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
       setCompactMode(saved.compactMode);
       setCompactSessions(saved.compactSessions);
       setAdvancedPromptImprovement(saved.advancedPromptImprovement);
+      setDisabledModels(saved.disabledModels ?? []);
       setSpeech(saved.speech);
       setStatus(null);
       setToast({ kind: 'success', title: 'Settings saved', message: 'Your preferences are active.' });
@@ -427,12 +436,30 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
     if (settingsScroll.current) settingsScroll.current.scrollTop = 0;
   };
 
-  const selectedGroup = providerGroups.find((group) => group.provider === selectedProvider);
-  const selectedModel = models.find((model) => `${model.provider}/${model.id}` === settings.defaultModel);
+  const disabledModels = settings.disabledModels ?? [];
+  const pickerGroups = groupModelsByProvider(visibleModels(models, disabledModels)).map((group) => {
+    const managed = managedById.get(group.provider);
+    return managed ? { ...group, title: managed.name } : group;
+  });
+  const selectedGroup = pickerGroups.find((group) => group.provider === selectedProvider);
+  const selectedModel = visibleModels(models, disabledModels).find((model) => modelIdentity(model.provider, model.id) === settings.defaultModel);
+  const modelsProvider = modelsProviderId
+    ? providerGroups.find((group) => group.provider === modelsProviderId)
+      ?? (managedById.get(modelsProviderId) ? { provider: modelsProviderId, title: managedById.get(modelsProviderId)!.name, models: [] as ModelInfo[] } : null)
+    : null;
   const chooseProvider = (provider: string) => {
     setSelectedProvider(provider);
-    const firstModel = providerGroups.find((group) => group.provider === provider)?.models[0];
-    setSettings({ ...settings, defaultModel: firstModel ? `${firstModel.provider}/${firstModel.id}` : null });
+    const firstModel = pickerGroups.find((group) => group.provider === provider)?.models[0];
+    setSettings({ ...settings, defaultModel: firstModel ? modelIdentity(firstModel.provider, firstModel.id) : null });
+  };
+  const applyDisabledModels = (nextDisabled: string[]) => {
+    const hideDefault = Boolean(settings.defaultModel && nextDisabled.includes(settings.defaultModel));
+    if (hideDefault) setSelectedProvider('');
+    setSettings({
+      ...settings,
+      disabledModels: nextDisabled,
+      defaultModel: hideDefault ? null : settings.defaultModel,
+    });
   };
   const removeManagedProvider = (providerId: string) => {
     void window.piDesktop.removeModelsDevProvider(providerId)
@@ -563,10 +590,6 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                   <div className="settings-group">
                     <div className="settings-theme-row"><div><strong>Theme</strong><small>Built-in, Fate custom, and Pi themes. Project themes load only after you trust the project.</small></div><SelectControl compact={settings.compactMode} label="Interface theme" value={settings.themeId} className="settings-theme-select" options={themeCatalog.map((theme) => ({ value: theme.id, label: theme.name, detail: theme.tone === 'light' ? 'Light' : 'Dark' }))} onValueChange={(themeId) => setSettings({ ...settings, themeId })} /></div>
                   </div>
-                  <div className="settings-group">
-                    <label className="settings-toggle"><div><strong>Compact mode</strong><small>Dense workbench: Settings, chrome, chat, composer, inspector, and dialogs. One-line session rows stay a nested option.</small></div><input type="checkbox" checked={settings.compactMode} onChange={(event) => setSettings({ ...settings, compactMode: event.target.checked })} /><span aria-hidden="true" /></label>
-                    <label className="settings-toggle settings-toggle--nested"><div><strong>Compact sessions</strong><small>Group sessions by project folder and show them as one-line rows with actions in a ⋯ menu. Turn off for detailed session cards.</small></div><input type="checkbox" checked={settings.compactMode && settings.compactSessions} disabled={!settings.compactMode} onChange={(event) => setSettings({ ...settings, compactSessions: event.target.checked })} /><span aria-hidden="true" /></label>
-                  </div>
                   <div className="settings-title settings-title--spaced"><div><h3>Typography</h3><p>Bundled typefaces with a Noto fallback chain for extended Unicode.</p></div></div>
                   <div className="settings-group settings-font-group">
                     <div className="settings-theme-row"><div><strong>Interface font</strong><small>Applies across navigation, settings, and conversation text.</small></div><SelectControl compact={settings.compactMode} label="Interface font" value={settings.interfaceFont} className="settings-font-select" options={interfaceFontOptions} onValueChange={(interfaceFont) => setSettings({ ...settings, interfaceFont: interfaceFont as AppSettings['interfaceFont'] })} /></div>
@@ -585,32 +608,43 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                 </div>
               )}
 
+              {activeSection === 'compaction' && (
+                <div className="settings-panel" role="tabpanel" id="settings-panel-compaction" aria-labelledby="settings-tab-compaction">
+                  <div className="settings-title"><div><h3>Compaction</h3><p>Density controls for the workbench. Compact mode is the master switch: it turns every option below on or off with it. Each option also works on its own.</p></div></div>
+                  <div className="settings-group">
+                    <label className="settings-toggle"><div><strong>Compact mode</strong><small>Dense workbench: Settings, chrome, chat, composer, inspector, and dialogs. Flips every option below to match this switch.</small></div><input type="checkbox" checked={settings.compactMode} onChange={(event) => setSettings({ ...settings, compactMode: event.target.checked, compactSessions: event.target.checked })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>Compact sessions</strong><small>Group sessions by project folder and show them as one-line rows with actions in a ⋯ menu. Turn off for detailed session cards. Works on its own, without Compact mode.</small></div><input type="checkbox" checked={settings.compactSessions} onChange={(event) => setSettings({ ...settings, compactSessions: event.target.checked })} /><span aria-hidden="true" /></label>
+                  </div>
+                </div>
+              )}
+
               {activeSection === 'agent' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-agent" aria-labelledby="settings-tab-agent">
                   <div className="settings-title"><div><h3>Agent defaults</h3><p>Fallbacks for the first Pi session opened in a project. Later sessions inherit the active composer settings.</p></div></div>
                   <div className="settings-model-picker">
                     <div className="settings-model-heading"><div><strong>Default model</strong><small>Models are separated by provider so the catalog stays clear as it grows.</small></div>{selectedProvider && <span>{formatProviderName(selectedProvider)}</span>}</div>
                     <div className="settings-model-controls">
-                      <div className="settings-select-field"><span>Provider</span><SelectControl compact={settings.compactMode} label="Default provider" value={selectedProvider} options={[{ value: '', label: 'Automatic · Pi default' }, ...providerGroups.map((group) => ({ value: group.provider, label: group.title, detail: `${group.models.length} ${group.models.length === 1 ? 'model' : 'models'}` }))]} onValueChange={chooseProvider} /></div>
-                      <div className="settings-select-field"><span>Model</span><SelectControl compact={settings.compactMode} label="Default model" value={settings.defaultModel ?? ''} disabled={!selectedGroup} options={[{ value: '', label: 'Select a model' }, ...(selectedGroup?.models.map((model) => ({ value: `${model.provider}/${model.id}`, label: model.name, ...(model.name === model.id ? {} : { detail: model.id }) })) ?? [])]} onValueChange={(value) => setSettings({ ...settings, defaultModel: value || null })} /></div>
+                      <div className="settings-select-field"><span>Provider</span><SelectControl compact={settings.compactMode} label="Default provider" value={selectedProvider} options={[{ value: '', label: 'Automatic · Pi default' }, ...pickerGroups.map((group) => ({ value: group.provider, label: group.title, detail: `${group.models.length} ${group.models.length === 1 ? 'model' : 'models'}` }))]} onValueChange={chooseProvider} /></div>
+                      <div className="settings-select-field"><span>Model</span><SelectControl compact={settings.compactMode} label="Default model" value={settings.defaultModel ?? ''} disabled={!selectedGroup} options={[{ value: '', label: 'Select a model' }, ...(selectedGroup?.models.map((model) => ({ value: modelIdentity(model.provider, model.id), label: model.name, ...(model.name === model.id ? {} : { detail: model.id }) })) ?? [])]} onValueChange={(value) => setSettings({ ...settings, defaultModel: value || null })} /></div>
                     </div>
                     <div className="settings-model-meta">{selectedModel ? <><span>{selectedModel.reasoning ? 'Reasoning' : 'Standard'}</span><span>{Math.round(selectedModel.contextWindow / 1000)}k context</span>{selectedModel.supportsImages && <span>Images</span>}</> : <span>Pi chooses the active provider and model.</span>}</div>
                   </div>
                   <div className="settings-providers">
                     <div className="settings-providers-head">
-                      <div><strong>Providers</strong><small>Click a row to pick the default. Rows with a key badge are managed by models.dev.</small></div>
+                      <div><strong>Providers</strong><small>Click a row to show or hide models. Set the default above. Rows with a key badge are managed by models.dev.</small></div>
                       <button type="button" className="settings-providers-add" onClick={() => setAddProviderOpen(true)}><Plus size={13} aria-hidden="true" /> Add provider</button>
                     </div>
                     <div className="settings-providers-list">
                       {providerGroups.map((group) => {
                         const managed = managedById.get(group.provider) ?? null;
+                        const enabledCount = visibleModels(group.models, disabledModels).length;
                         return (
-                          <div className="settings-provider-row" data-selected={selectedProvider === group.provider || undefined} key={group.provider}>
-                            <button type="button" className="settings-provider-pick" onClick={() => chooseProvider(group.provider)} title={managed ? `${managed.baseUrl}${managed.envVar ? ` · ${managed.envVar}` : ''}` : group.provider}>
+                          <div className="settings-provider-row" key={group.provider}>
+                            <button type="button" className="settings-provider-pick" aria-label={`Show or hide ${group.title} models`} onClick={() => setModelsProviderId(group.provider)} title={managed ? `${managed.baseUrl}${managed.envVar ? ` · ${managed.envVar}` : ''}` : group.provider}>
                               <ProviderLogo providerId={group.provider} size={14} />
                               <span className="settings-provider-name">{group.title}</span>
                               {managed && !managed.credentialConfigured && <em className="settings-provider-flag">key needed</em>}
-                              <span className="settings-provider-count">{group.models.length}</span>
+                              <span className="settings-provider-count">{enabledCount === group.models.length ? group.models.length : `${enabledCount}/${group.models.length}`}</span>
                             </button>
                             {managed && (
                               <button type="button" className="settings-provider-remove" aria-label={`Remove ${group.title} from Fate UI`} title="Remove this managed provider" onClick={() => removeManagedProvider(group.provider)}><X size={12} aria-hidden="true" /></button>
@@ -620,7 +654,9 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                       })}
                       {managedProviders.filter((managed) => !providerGroups.some((group) => group.provider === managed.id)).map((managed) => (
                         <div className="settings-provider-row settings-provider-row--offline" key={managed.id}>
-                          <span className="settings-provider-pick"><ProviderLogo providerId={managed.id} size={14} /><span className="settings-provider-name">{managed.name}</span><em className="settings-provider-flag">{managed.credentialConfigured ? 'no models' : 'key needed'}</em></span>
+                          <button type="button" className="settings-provider-pick" aria-label={`Show or hide ${managed.name} models`} onClick={() => setModelsProviderId(managed.id)}>
+                            <ProviderLogo providerId={managed.id} size={14} /><span className="settings-provider-name">{managed.name}</span><em className="settings-provider-flag">{managed.credentialConfigured ? 'no models' : 'key needed'}</em>
+                          </button>
                           <button type="button" className="settings-provider-remove" aria-label={`Remove ${managed.name} from Fate UI`} title="Remove this managed provider" onClick={() => removeManagedProvider(managed.id)}><X size={12} aria-hidden="true" /></button>
                         </div>
                       ))}
@@ -708,7 +744,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                   <p className="voice-license-note">Models download from pinned Hugging Face releases, are SHA-256 verified before installation, and retain their upstream licenses. Supported hardware acceleration is used when stable; otherwise transcription uses CPU safety mode.</p>
                   <div className="settings-title settings-title--spaced"><div><h3>Live transcription &amp; hotkey</h3><p>See voice input as you speak. Trigger it from any application with a global hotkey.</p></div></div>
                   <div className="settings-group">
-                    <label className="settings-toggle"><div><strong>Live transcription</strong><small>Show words in the composer while you speak when the selected model supports it. Silence is filtered before decoding, so pauses cost no CPU.</small></div><input type="checkbox" checked={settings.speech.liveTranscription} onChange={(event) => setSettings({ ...settings, speech: { ...settings.speech, liveTranscription: event.target.checked } })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>Live transcription</strong><small>Show words in the composer while you speak when the selected model supports it. Long thinking pauses are not sent to the model, but recording stays open.</small></div><input type="checkbox" checked={settings.speech.liveTranscription} onChange={(event) => setSettings({ ...settings, speech: { ...settings.speech, liveTranscription: event.target.checked } })} /><span aria-hidden="true" /></label>
                     <label className="settings-toggle"><div><strong>Final accuracy pass</strong><small>After you stop speaking, re-run the whole recording once for a cleaner transcript. Costs extra time and CPU; off by default.</small></div><input type="checkbox" checked={settings.speech.finalAccuracyPass} onChange={(event) => setSettings({ ...settings, speech: { ...settings.speech, finalAccuracyPass: event.target.checked } })} /><span aria-hidden="true" /></label>
                   </div>
                   <div className="settings-group">
@@ -773,6 +809,17 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
             onOpenChange={setAddProviderOpen}
             onNotice={(kind, title, message) => setToast({ kind, title, message })}
           />
+          {modelsProvider && (
+            <ProviderModelsDialog
+              open
+              onOpenChange={(open) => { if (!open) setModelsProviderId(null); }}
+              providerId={modelsProvider.provider}
+              title={modelsProvider.title}
+              models={modelsProvider.models}
+              disabledModels={disabledModels}
+              onDisabledModelsChange={applyDisabledModels}
+            />
+          )}
 
           <footer>
             <div className="settings-footer-status" aria-live="polite">

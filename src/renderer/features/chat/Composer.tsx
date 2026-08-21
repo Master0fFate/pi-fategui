@@ -19,8 +19,10 @@ import { ContextWheel } from './ContextWheel';
 import { agentMentionContext, findLiveAgentMentions, parseAgentStopCommand, sessionMentionHandle, type LiveAgentMention } from './agentMentions';
 import { fileTagContext, fileTagText, findFileTags } from './fileTags';
 import { findSlashCommands, slashCommandContext, slashCommandDescription, slashCommandLabel, type SlashCommand } from './slashCommands';
+import { trimSpeechPcm } from '../../../shared/speechGate';
 import { VoiceStreamFeedQueue, startVoiceStream, type VoiceStreamController } from './voiceStream';
 import { ProviderConnectDialog } from '../../components/ProviderConnectDialog';
+import { modelIdentity, visibleModels } from '../../../shared/modelVisibility';
 
 interface Attachment {
   name: string;
@@ -330,6 +332,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const heldQueueIds = new Set(heldQueueItems.map((item) => item.id));
   const goalUpdates = activeGoal ? [...activeGoal.steering].reverse() : [];
   const compactMode = useUiStore((state) => state.compactMode);
+  const disabledModels = useUiStore((state) => state.disabledModels);
   const minComposerInputHeight = compactMode ? COMPACT_MIN_COMPOSER_INPUT_HEIGHT : MIN_COMPOSER_INPUT_HEIGHT;
   const sendMessageWithModifier = useUiStore((state) => state.sendMessageWithModifier);
   const advancedPromptImprovement = useUiStore((state) => state.advancedPromptImprovement);
@@ -366,13 +369,13 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const modelTooltip = `Current: ${currentModelName}\nNext: ${nextModelName}`;
   const modelOptions = useMemo(() => {
     if (!nextModel) return [{ value: '', label: 'Not connected' }];
-    const options = runtime.models.map((model) => ({ value: `${model.provider}/${model.id}`, label: model.name, detail: model.provider }));
-    const selectedKey = `${nextModel.provider}/${nextModel.id}`;
+    const options = visibleModels(runtime.models, disabledModels).map((model) => ({ value: modelIdentity(model.provider, model.id), label: model.name, detail: model.provider }));
+    const selectedKey = modelIdentity(nextModel.provider, nextModel.id);
     if (!options.some((option) => option.value === selectedKey)) {
       options.unshift({ value: selectedKey, label: nextModel.name, detail: nextModel.provider });
     }
     return options;
-  }, [runtime.models, nextModel]);
+  }, [runtime.models, nextModel, disabledModels]);
   const voiceDownloadProgress = speechDownload?.modelId === speech.modelId
     ? speechDownload.state === 'verifying' ? 100 : Math.min(100, Math.round(speechDownload.downloadedBytes / speechDownload.totalBytes * 100))
     : 0;
@@ -849,6 +852,10 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     if (!('piDesktop' in window) || typeof window.piDesktop.onSpeechStreamUpdate !== 'function') return;
     return window.piDesktop.onSpeechStreamUpdate((update: SpeechStreamUpdate) => {
       if (update.state === 'active' || update.state === 'final') {
+        if (update.state === 'active' && !update.committed.trim() && liveSpanLenRef.current > 0) {
+          setVoiceLag((update.backlogSeconds ?? 0) >= VOICE_LAG_WARN_SECONDS);
+          return;
+        }
         applyLiveText(update.committed);
         setVoiceLag(update.state === 'active' && (update.backlogSeconds ?? 0) >= VOICE_LAG_WARN_SECONDS);
       } else if (update.state === 'finalizing') {
@@ -1635,7 +1642,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
 
   const insertTranscript = (transcript: string, target: VoiceInsertionTarget) => {
     const text = transcript.trim();
-    if (!text) throw new Error('No speech was detected. Try again closer to the microphone.');
+    if (!text) throw new Error('The voice model returned no text. Try speaking a bit longer, then stop.');
     const current = draftRef.current;
     const selectionStart = Number.isFinite(target.start) ? Math.max(0, target.start) : current.length;
     const selectionEnd = Number.isFinite(target.end) ? Math.max(selectionStart, target.end) : selectionStart;
@@ -1711,7 +1718,9 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       if (decoded.duration > MAX_VOICE_DURATION_MS / 1_000 + 1) throw new Error('Voice recordings are limited to three minutes.');
       const pcm = await resampleVoiceAudioOptimized(decoded);
       if (!isCurrentVoiceAttempt(recording.attempt) || !targetSelectionIsCurrent()) return;
-      const audio = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer;
+      const spoken = trimSpeechPcm(pcm);
+      if (spoken.length === 0) throw new Error('No speech was detected. Try again closer to the microphone.');
+      const audio = spoken.buffer.slice(spoken.byteOffset, spoken.byteOffset + spoken.byteLength) as ArrayBuffer;
       if (!('piDesktop' in window) || typeof window.piDesktop.transcribeSpeech !== 'function') throw new Error('Voice transcription is unavailable.');
       const result = await window.piDesktop.transcribeSpeech(speech.modelId, audio, speech.language === 'auto' ? undefined : speech.language);
       if (recording.cancelled || !isCurrentVoiceAttempt(recording.attempt) || !targetSelectionIsCurrent()) return;

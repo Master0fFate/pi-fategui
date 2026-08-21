@@ -306,6 +306,9 @@ describe('IPC contracts', () => {
     expect(defaults.interfaceFont).toBe('noto-sans');
     expect(defaults.codeFont).toBe('jetbrains-mono');
     expect(defaults.speech).toEqual(defaultSpeechSettings);
+    expect(defaults.disabledModels).toEqual([]);
+    expect(appSettingsSchema.parse({ ...defaults, disabledModels: ['crof/kimi-k3'] }).disabledModels).toEqual(['crof/kimi-k3']);
+    expect(() => appSettingsSchema.parse({ ...defaults, disabledModels: ['x'.repeat(701)] })).toThrow();
     expect(speechModelInputSchema.parse({ modelId: 'cohere-transcribe' })).toEqual({ modelId: 'cohere-transcribe' });
     expect(() => speechModelInputSchema.parse({ modelId: 'huge' })).toThrow();
     expect(speechTranscribeInputSchema.parse({ modelId: 'canary-flash', audio: new ArrayBuffer(16) }).audio.byteLength).toBe(16);

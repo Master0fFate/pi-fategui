@@ -1246,6 +1246,8 @@ export const imageGenerationSettingsSchema = z.object({
 export const appSettingsSchema = z.object({
   appearance: z.enum(['dark', 'system']),
   defaultModel: z.string().max(500).nullable(),
+  /** Hidden `provider/id` keys. Disabled models stay loaded but leave the picker. */
+  disabledModels: z.array(z.string().min(1).max(700)).max(5_000).default([]),
   thinkingLevel: thinkingLevelSchema,
   agentTeamMode: z.enum(['legacy', 'v2']).default('legacy'),
   confirmRiskyCommands: z.boolean(),

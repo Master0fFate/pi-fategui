@@ -13,6 +13,7 @@ import { createToolProvenance } from '../ToolProvenance';
 import { discoverSubagentProfiles, resolveSubagentProfile } from '../SubagentProfiles';
 import { assertSkillTools, selectSubagentSkills } from '../SubagentSkills';
 import { childToolNames, modelInfo, type ChildToolName, type ParentModel } from '../SubagentProtocol';
+import { disabledModelMessage, isModelDisabled, visibleModels } from '../../../shared/modelVisibility';
 import { createAgentCollaborationTools } from './AgentCollaborationTools';
 import { sanitizedRecentTurns } from './AgentContextForker';
 import { reserveAgentPath } from './AgentPath';
@@ -956,18 +957,32 @@ export class AgentTeamCoordinator {
     const callerPermission = !bypassGoalPolicy && root.agentStrategy === 'read-only' ? 'read-only' : caller.permissionLevel;
     const permission = effectivePermission(request.permission ?? 'read-only', callerPermission);
     const available = request.model || profile.modelReference ? [...await modelRuntime.getAvailable()] as ParentModel[] : [];
+    const disabledModels = this.host.getDisabledModels?.(runtime.state.rootSessionId) ?? [];
+    const enabled = visibleModels(available, disabledModels);
     let selected: ParentModel;
     if (request.model) {
-      const model = available.find((candidate) => candidate.provider === request.model!.provider && candidate.id === request.model!.id);
-      if (!model) throw new Error(`Model ${request.model.provider}/${request.model.id} is not currently authenticated in Pi.`);
-      selected = model;
+      const model = enabled.find((candidate) => candidate.provider === request.model!.provider && candidate.id === request.model!.id);
+      if (model) selected = model;
+      else if (available.some((candidate) => candidate.provider === request.model!.provider && candidate.id === request.model!.id)) {
+        throw new Error(disabledModelMessage(request.model.provider, request.model.id));
+      } else {
+        throw new Error(`Model ${request.model.provider}/${request.model.id} is not currently authenticated in Pi.`);
+      }
     } else if (profile.modelReference) {
-      const exact = available.find((model) => `${model.provider}/${model.id}` === profile.modelReference);
-      const bare = available.filter((model) => model.id === profile.modelReference);
-      selected = exact ?? (bare.length === 1 ? bare[0]! : (() => { throw new Error(`Agent profile model ${profile.modelReference} is unavailable or ambiguous.`); })());
+      const exact = enabled.find((model) => `${model.provider}/${model.id}` === profile.modelReference);
+      const disabledExact = available.find((model) => `${model.provider}/${model.id}` === profile.modelReference);
+      if (exact) selected = exact;
+      else if (disabledExact) throw new Error(disabledModelMessage(disabledExact.provider, disabledExact.id));
+      else {
+        const bare = enabled.filter((model) => model.id === profile.modelReference);
+        selected = bare.length === 1 ? bare[0]! : (() => { throw new Error(`Agent profile model ${profile.modelReference} is unavailable or ambiguous.`); })();
+      }
     } else {
       const callerSession = this.sessionForNode(runtime, caller.id);
       selected = callerSession?.model ?? root.session.model;
+      if (isModelDisabled(disabledModels, selected.provider, selected.id)) {
+        throw new Error(disabledModelMessage(selected.provider, selected.id));
+      }
     }
     const permitted = childToolsForPermission(permission);
     const callerCap = caller.depth === 0 ? new Set(permitted) : new Set(caller.enabledTools);
@@ -1071,6 +1086,9 @@ export class AgentTeamCoordinator {
     const root = this.host.resolveRoot(runtime.state.rootSessionId);
     const model = modelRuntime.getModel(node.model.provider, node.model.id);
     if (!root || !model) throw new Error(`Stored model ${node.model.provider}/${node.model.id} is unavailable for ${node.path}.`);
+    if (isModelDisabled(this.host.getDisabledModels?.(runtime.state.rootSessionId), node.model.provider, node.model.id)) {
+      throw new Error(disabledModelMessage(node.model.provider, node.model.id));
+    }
     const parent = this.requireNode(runtime, node.parentNodeId!);
     const allowDelegation = existing?.allowDelegation !== false;
     const collaborationTools = allowDelegation ? createAgentCollaborationTools(this, node.id, modelRuntime) : [];

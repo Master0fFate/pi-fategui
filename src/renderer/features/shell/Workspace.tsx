@@ -125,39 +125,42 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
   return (
     <main className="workspace">
       <header className="workspace-header">
-        <div className="workspace-header-identity">
-          <span className="eyebrow">SESSION</span>
-          <strong>{activeSession?.title ?? runtime.project?.name ?? 'Welcome'}</strong>
-          <WorkspaceActivityPulse />
+        <div className="workspace-header-drag">
+          <div className="workspace-header-identity">
+            <span className="eyebrow">SESSION</span>
+            <strong>{activeSession?.title ?? runtime.project?.name ?? 'Welcome'}</strong>
+            <WorkspaceActivityPulse />
+          </div>
+          <div className="session-controls">
+            <IconButton
+              label="Open command palette"
+              className="workspace-command-palette"
+              onClick={() => setPaletteOpen(true)}
+            ><Search size={17} /></IconButton>
+            <IconButton
+              label={showBrowser ? 'Close browser' : 'Open browser'}
+              className="workspace-browser-toggle"
+              aria-pressed={showBrowser}
+              disabled={!browserAvailable}
+              onClick={toggleBrowser}
+            ><Globe2 size={17} /></IconButton>
+            <IconButton label="Show project in file browser" onClick={() => void revealProject()} disabled={!runtime.project}><FolderSearch size={17} /></IconButton>
+            <IconButton
+              label={terminalOpen ? 'Close terminal' : 'Open terminal'}
+              className="workspace-terminal-toggle"
+              aria-pressed={terminalOpen}
+              onClick={toggleTerminal}
+              disabled={!runtime.project?.trusted}
+            ><TerminalSquare size={17} /></IconButton>
+            <IconButton
+              label={inspectorCollapsed ? 'Open inspector' : 'Collapse inspector'}
+              className="workspace-inspector-toggle"
+              aria-pressed={!inspectorCollapsed}
+              onClick={onToggleInspector}
+            >{inspectorCollapsed ? <PanelRightOpen size={17} /> : <PanelRightClose size={17} />}</IconButton>
+          </div>
         </div>
-        <div className="session-controls">
-          <IconButton
-            label="Open command palette"
-            className="workspace-command-palette"
-            onClick={() => setPaletteOpen(true)}
-          ><Search size={17} /></IconButton>
-          <IconButton
-            label={showBrowser ? 'Close browser' : 'Open browser'}
-            className="workspace-browser-toggle"
-            aria-pressed={showBrowser}
-            disabled={!browserAvailable}
-            onClick={toggleBrowser}
-          ><Globe2 size={17} /></IconButton>
-          <IconButton label="Show project in file browser" onClick={() => void revealProject()} disabled={!runtime.project}><FolderSearch size={17} /></IconButton>
-          <IconButton
-            label={terminalOpen ? 'Close terminal' : 'Open terminal'}
-            className="workspace-terminal-toggle"
-            aria-pressed={terminalOpen}
-            onClick={toggleTerminal}
-            disabled={!runtime.project?.trusted}
-          ><TerminalSquare size={17} /></IconButton>
-          <IconButton
-            label={inspectorCollapsed ? 'Open inspector' : 'Collapse inspector'}
-            className="workspace-inspector-toggle"
-            aria-pressed={!inspectorCollapsed}
-            onClick={onToggleInspector}
-          >{inspectorCollapsed ? <PanelRightOpen size={17} /> : <PanelRightClose size={17} />}</IconButton>
-        </div>
+        <div className="workspace-header-drag-tail" aria-hidden="true" />
       </header>
       {!showBrowser && <ExtensionStatusRail />}
       {revealError && <div className="project-reveal-error" role="alert">{revealError}</div>}

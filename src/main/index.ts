@@ -41,6 +41,7 @@ import { LaunchDispatcher } from './windows/launchDispatcher';
 import { createAppWindowFactory, rememberWindowPlacement } from './windows/appWindows';
 import { appCommandSchema, ipcChannels } from '../shared/contracts/ipc';
 import { browserEventBatchSchema } from '../shared/contracts/browser';
+import { enabledModelIdentity } from '../shared/modelVisibility';
 
 protocol.registerSchemesAsPrivileged([{
   scheme: LOCAL_PAGE_SCHEME,
@@ -116,6 +117,7 @@ const recordAttestation = createMutationRecorder(attestationLedger, logs);
 const piRuntime = new MultiProjectPiRuntime({
   sessionPermissions: new SessionPermissionStore(logs),
   getImageGenerationSettings: () => settings.get().imageGeneration,
+  getDisabledModels: () => settings.get().disabledModels ?? [],
   createGoalPersistence: () => new GoalMaxRepository(logs),
   browserIntegration: browserBridge,
   recordAttestation,
@@ -123,7 +125,7 @@ const piRuntime = new MultiProjectPiRuntime({
     const loaded = await settings.load();
     return {
       thinkingLevel: loaded.thinkingLevel,
-      defaultModel: loaded.defaultModel,
+      defaultModel: enabledModelIdentity(loaded.disabledModels, loaded.defaultModel),
       ...(loaded.agentTeamMode ? { agentTeamMode: loaded.agentTeamMode } : {}),
     };
   },

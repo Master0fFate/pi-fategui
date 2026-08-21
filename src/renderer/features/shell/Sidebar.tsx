@@ -633,7 +633,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   };
 
   const compactMode = useUiStore((state) => state.compactMode);
-  const compactSessions = useUiStore((state) => state.compactMode && state.compactSessions);
+  const compactSessions = useUiStore((state) => state.compactSessions);
   const projects = useProjectStore((state) => state.projects);
   const expandedByPath = useProjectStore((state) => state.expandedByPath);
   const forgetProject = useProjectStore((state) => state.forgetProject);

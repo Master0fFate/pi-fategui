@@ -8,18 +8,10 @@ import { builtInThemes, customThemeFileSchema, themeCatalogSchema, type ThemeDef
 import type { AppLogService } from '../logging/AppLogService';
 import { PiThemeService } from './PiThemeService';
 
-function migrateCompactMode(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const record = value as Record<string, unknown>;
-  if (!('compactMode' in record) && record.compactSessions === true) {
-    return { ...record, compactMode: true };
-  }
-  return value;
-}
-
 const defaults: AppSettings = {
   appearance: 'dark',
   defaultModel: null,
+  disabledModels: [],
   thinkingLevel: 'medium',
   agentTeamMode: 'legacy',
   confirmRiskyCommands: true,
@@ -58,7 +50,7 @@ export class SettingsService {
     this.loaded = true;
     try {
       const value: unknown = JSON.parse(await fs.readFile(this.filePath(), 'utf8'));
-      this.settings = appSettingsSchema.parse(migrateCompactMode(value));
+      this.settings = appSettingsSchema.parse(value);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         await this.migrateLegacy();
@@ -138,7 +130,7 @@ export class SettingsService {
     if (path.normalize(legacyPath) === path.normalize(this.filePath())) return;
     try {
       const value: unknown = JSON.parse(await fs.readFile(legacyPath, 'utf8'));
-      this.settings = appSettingsSchema.parse(migrateCompactMode(value));
+      this.settings = appSettingsSchema.parse(value);
       await this.persist(this.settings);
       this.logs.write('info', 'settings', 'Application settings migrated to ~/.pi/fateGUI.');
     } catch (error) {

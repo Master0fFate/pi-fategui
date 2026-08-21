@@ -89,6 +89,7 @@ import {
   type SubagentLivenessState,
 } from './SubagentLiveness';
 import { completedSubagentResult, formatSubagentRuns, subagentDetails, workflowToolResult } from './SubagentPresentation';
+import { disabledModelMessage, isModelDisabled, visibleModels } from '../../shared/modelVisibility';
 import { SubagentRunStore } from './SubagentRunStore';
 import {
   SubagentWorkflowEngine,
@@ -220,6 +221,7 @@ export interface SubagentParentContext {
 
 export interface SubagentCoordinatorHost {
   resolveParent: (sessionId: string) => SubagentParentContext | null;
+  getDisabledModels?: (sessionId?: string) => readonly string[];
   emit: (parentSessionId: string, event: PiEvent) => void;
   persist?: (parentSessionId: string, run: SubagentRun) => void;
   persistWorkflow?: (parentSessionId: string, workflow: SubagentWorkflow) => void;
@@ -533,7 +535,7 @@ export class SubagentCoordinator {
       executionMode: 'parallel',
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
         const parent = this.requireParent(ctx.sessionManager.getSessionId(), ctx.cwd);
-        const result = await buildSubagentCatalog(parent.projectPath, parent.session, modelRuntime, params);
+        const result = await buildSubagentCatalog(parent.projectPath, parent.session, modelRuntime, params, this.disabledModels(parent.session.sessionId));
         return this.deliverToParent(parent, result, 'orchestrator-to-parent catalog result');
       },
     });
@@ -937,12 +939,13 @@ export class SubagentCoordinator {
     return Promise.all(requests.map(async (request, index): Promise<PreparedTask> => {
       const profile = selectedProfiles[index]!;
       const permissionLevel = effectivePermission(request.permissionLevel, delegationPermission(parent));
+      const sessionId = parent.session.sessionId;
       const primary = request.model
-        ? this.resolveExplicitModel(request.model, available)
+        ? this.resolveExplicitModel(request.model, available, sessionId)
         : profile.modelReference
-          ? this.resolveProfileModel(profile.modelReference, available)
-          : parent.session.model!;
-      const fallbacks = request.routing.fallbackModels.map((selection) => this.resolveExplicitModel(selection, available));
+          ? this.resolveProfileModel(profile.modelReference, available, sessionId)
+          : this.requireEnabledParentModel(parent.session.model!, sessionId);
+      const fallbacks = request.routing.fallbackModels.map((selection) => this.resolveExplicitModel(selection, available, sessionId));
       const modelCandidates = [...new Map([primary, ...fallbacks].map((model) => [modelKey(model), model])).values()];
       const permitted = childToolNamesForPermission(permissionLevel);
       const requestedTools = request.tools === undefined ? null : new Set(request.tools);
@@ -973,18 +976,38 @@ export class SubagentCoordinator {
     }));
   }
 
-  private resolveExplicitModel(selection: ModelSelection, available: readonly ParentModel[]): ParentModel {
-    const model = available.find((candidate) => candidate.provider === selection.provider && candidate.id === selection.id);
-    if (!model) throw new Error(`Model ${selection.provider}/${selection.id} is not currently authenticated in Pi. Call subagent_catalog for exact available models.`);
+  private disabledModels(sessionId?: string): readonly string[] {
+    return this.host.getDisabledModels?.(sessionId) ?? [];
+  }
+
+  private requireEnabledParentModel(model: ParentModel, sessionId: string): ParentModel {
+    if (isModelDisabled(this.disabledModels(sessionId), model.provider, model.id)) {
+      throw new Error(disabledModelMessage(model.provider, model.id));
+    }
     return model;
   }
 
-  private resolveProfileModel(reference: string, available: readonly ParentModel[]): ParentModel {
-    const canonical = available.find((model) => `${model.provider}/${model.id}` === reference);
+  private resolveExplicitModel(selection: ModelSelection, available: readonly ParentModel[], sessionId: string): ParentModel {
+    const enabled = visibleModels(available, this.disabledModels(sessionId));
+    const model = enabled.find((candidate) => candidate.provider === selection.provider && candidate.id === selection.id);
+    if (model) return model;
+    if (available.some((candidate) => candidate.provider === selection.provider && candidate.id === selection.id)) {
+      throw new Error(disabledModelMessage(selection.provider, selection.id));
+    }
+    throw new Error(`Model ${selection.provider}/${selection.id} is not currently authenticated in Pi. Call subagent_catalog for exact available models.`);
+  }
+
+  private resolveProfileModel(reference: string, available: readonly ParentModel[], sessionId: string): ParentModel {
+    const enabled = visibleModels(available, this.disabledModels(sessionId));
+    const canonical = enabled.find((model) => `${model.provider}/${model.id}` === reference);
     if (canonical) return canonical;
-    const bare = available.filter((model) => model.id === reference);
+    const disabledCanonical = available.find((model) => `${model.provider}/${model.id}` === reference);
+    if (disabledCanonical) throw new Error(disabledModelMessage(disabledCanonical.provider, disabledCanonical.id));
+    const bare = enabled.filter((model) => model.id === reference);
     if (bare.length === 1) return bare[0]!;
     if (bare.length > 1) throw new Error(`Agent profile model ${reference} is ambiguous across providers. Use an explicit {provider, id}.`);
+    const disabledBare = available.filter((model) => model.id === reference);
+    if (disabledBare.length === 1) throw new Error(disabledModelMessage(disabledBare[0]!.provider, disabledBare[0]!.id));
     throw new Error(`Agent profile model ${reference} is not currently authenticated in Pi.`);
   }
 
@@ -1346,7 +1369,7 @@ export class SubagentCoordinator {
     runId = this.resolveRunTarget(parentSessionId, runId).id;
     const context = this.requireContext(parentSessionId, runId);
     if (context.phase === 'closing') throw new Error(`Subagent ${runId} is closing.`);
-    const model = selection ? this.resolveExplicitModel(selection, [...await modelRuntime.getAvailable()] as ParentModel[]) : context.model;
+    const model = selection ? this.resolveExplicitModel(selection, [...await modelRuntime.getAvailable()] as ParentModel[], parentSessionId) : context.model;
     if (context.session) assertContextTransfer('existing child context to retargeted model', model, '', context.session);
     const desiredThinking = model.reasoning ? thinkingLevel ?? context.thinkingLevel : 'off';
     let controlled: SubagentRun | undefined;

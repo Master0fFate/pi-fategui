@@ -24,6 +24,7 @@ import type { RuntimeState } from '../../../shared/contracts/ipc';
 import { openResource, useResourceSearch, type ResourceSearchItem } from '../resources/resourceSearch';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
+import { modelIdentity, visibleModels } from '../../../shared/modelVisibility';
 
 interface Command {
   id: string;
@@ -42,6 +43,7 @@ type PaletteEntry =
 export function CommandPalette() {
   const open = useUiStore((state) => state.paletteOpen);
   const setOpen = useUiStore((state) => state.setPaletteOpen);
+  const disabledModels = useUiStore((state) => state.disabledModels);
   const actions = useUiStore(useShallow((ui) => ({
     toggleSidebar: ui.toggleSidebar,
     toggleInspector: ui.toggleInspector,
@@ -158,8 +160,8 @@ export function CommandPalette() {
         run: () => { if ('piDesktop' in window) void window.piDesktop.runGitOperation('push').catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Git push failed', message: commandErrorMessage(error) })); },
       },
     ];
-    for (const model of runtime.models) base.push({
-      id: `model:${model.provider}/${model.id}`,
+    for (const model of visibleModels(runtime.models, disabledModels)) base.push({
+      id: `model:${modelIdentity(model.provider, model.id)}`,
       label: `Use model: ${model.name}`,
       icon: Bot,
       disabled: Boolean(modelReason),
@@ -175,7 +177,7 @@ export function CommandPalette() {
       run: () => { if ('piDesktop' in window) invoke('Thinking level change', () => window.piDesktop.setThinkingLevel(level)); },
     });
     return base;
-  }, [actions, runtime, setRuntime]);
+  }, [actions, disabledModels, runtime, setRuntime]);
 
   const filteredCommands = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();

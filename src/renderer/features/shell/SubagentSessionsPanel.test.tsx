@@ -390,6 +390,25 @@ describe('subagent session inspector', () => {
     expect(node).not.toHaveAttribute('data-flight-focus');
   });
 
+  it('shows the bound model and effort on the Main agent root like child rows', () => {
+    render(<SubagentSessionsPanel />);
+
+    const meta = document.querySelector('.agent-tree-root-meta');
+    expect(meta).toHaveTextContent('root session · Model · Medium');
+    expect(meta).toHaveAttribute('title', 'test/model');
+  });
+
+  it('keeps the Main agent root meta in sync with a pending model change', () => {
+    act(() => useRuntimeStore.getState().hydrateRuntime({
+      ...state,
+      pendingModel: { provider: 'test', id: 'grok', name: 'Grok 4.6', reasoning: true, contextWindow: 100_000 },
+      pendingThinkingLevel: 'high',
+    }));
+    render(<SubagentSessionsPanel />);
+
+    expect(document.querySelector('.agent-tree-root-meta')).toHaveTextContent('root session · Grok 4.6 · High');
+  });
+
   it('discovers nested children, opens a controlled transcript, and deep-links from the parent tool', async () => {
     const user = userEvent.setup();
     const view = render(<><Inspector onCollapse={vi.fn()} /><ToolCard toolCallId="delegate-1" /></>);

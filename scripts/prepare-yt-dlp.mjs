@@ -3,10 +3,10 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const YT_DLP_VERSION = '2026.07.04';
+export const YT_DLP_VERSION = '2026.08.19';
 const RELEASE_ROOT = `https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}`;
 const SOURCE_ROOT = `https://raw.githubusercontent.com/yt-dlp/yt-dlp/${YT_DLP_VERSION}`;
-const CHECKSUMS_SHA256 = 'eca42575010efc77b8dc1e263c57e19c4bddc42d3e08ba789ccde72c97d48c64';
+const CHECKSUMS_SHA256 = 'a63701f30755cb4d9317950d69703e9d751d490cb1b7059e1bb501a353fe7dcb';
 const MAX_BINARY_BYTES = 64 * 1024 * 1024;
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 
@@ -19,18 +19,18 @@ export const YT_DLP_LICENSES = Object.freeze([
   {
     source: 'THIRD_PARTY_LICENSES.txt',
     output: 'yt-dlp-THIRD_PARTY_LICENSES.txt',
-    sha256: 'b085c65586a953cdb4b13c6390d63ec984d66912e4b6a19e66ba3582f2ed104b',
+    sha256: '472aefe951c7db35e1657c1d13fd337140511ed6f2b329205105ad441c5a02b7',
   },
 ]);
 
 const TARGETS = new Map([
-  ['win32/x64', { asset: 'yt-dlp.exe', output: 'yt-dlp.exe', sha256: '52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8' }],
-  ['win32/arm64', { asset: 'yt-dlp_arm64.exe', output: 'yt-dlp.exe', sha256: '1525690b037ecc0bb677e38e7147b0025179cbc9a8d0c57264e3100b18099280' }],
-  ['win32/ia32', { asset: 'yt-dlp_x86.exe', output: 'yt-dlp.exe', sha256: 'cac3a9359367ea819289afe4c59f3e432865dafb6b08c938e2c22b4534898f12' }],
-  ['linux/x64', { asset: 'yt-dlp_linux', output: 'yt-dlp', sha256: '6bbb3d314cde4febe36e5fa1d55462e29c974f63444e707871834f6d8cc210ae' }],
-  ['linux/arm64', { asset: 'yt-dlp_linux_aarch64', output: 'yt-dlp', sha256: 'b6ce97646773070d7a7ffd6bbbdcaecb47c48483909c54c915bf08a7a9b5e0b1' }],
-  ['darwin/x64', { asset: 'yt-dlp_macos', output: 'yt-dlp', sha256: '498bd0dae17855c599d371d68ec5bafc439a9d8640e838be25c765a9792f261b' }],
-  ['darwin/arm64', { asset: 'yt-dlp_macos', output: 'yt-dlp', sha256: '498bd0dae17855c599d371d68ec5bafc439a9d8640e838be25c765a9792f261b' }],
+  ['win32/x64', { asset: 'yt-dlp.exe', output: 'yt-dlp.exe', sha256: '66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a' }],
+  ['win32/arm64', { asset: 'yt-dlp_arm64.exe', output: 'yt-dlp.exe', sha256: '05b438997bafc3affdfda9d041353c9d73e04dc842207254b655b0887c4445b0' }],
+  ['win32/ia32', { asset: 'yt-dlp_x86.exe', output: 'yt-dlp.exe', sha256: 'a8f91bd41452506bc81ebd2f369b186fea0ee7075413ba00cef9fd346a0a5d0c' }],
+  ['linux/x64', { asset: 'yt-dlp_linux', output: 'yt-dlp', sha256: '58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a' }],
+  ['linux/arm64', { asset: 'yt-dlp_linux_aarch64', output: 'yt-dlp', sha256: 'b16e4dab368a816cd05d477d698a605a6ae87ccee1c8ffd38fa21d7254141fcc' }],
+  ['darwin/x64', { asset: 'yt-dlp_macos', output: 'yt-dlp', sha256: '0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202' }],
+  ['darwin/arm64', { asset: 'yt-dlp_macos', output: 'yt-dlp', sha256: '0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202' }],
 ]);
 
 const PLATFORM_ALIASES = new Map([

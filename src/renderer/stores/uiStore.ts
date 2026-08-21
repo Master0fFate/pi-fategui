@@ -76,6 +76,7 @@ interface UiState {
   compactMode: boolean;
   compactSessions: boolean;
   advancedPromptImprovement: boolean;
+  disabledModels: string[];
   speech: SpeechSettings;
   speechDownload: SpeechDownloadProgress | null;
   speechStatus: SpeechStatus | null;
@@ -106,6 +107,7 @@ interface UiState {
   setCompactMode: (enabled: boolean) => void;
   setCompactSessions: (enabled: boolean) => void;
   setAdvancedPromptImprovement: (enabled: boolean) => void;
+  setDisabledModels: (disabledModels: string[]) => void;
   setSpeech: (speech: SpeechSettings) => void;
   setSpeechDownload: (speechDownload: SpeechDownloadProgress | null) => void;
   setSpeechStatus: (speechStatus: SpeechStatus | null) => void;
@@ -176,6 +178,7 @@ export const useUiStore = create<UiState>()(
       compactMode: false,
       compactSessions: false,
       advancedPromptImprovement: false,
+      disabledModels: [],
       speech: defaultSpeechSettings,
       speechDownload: null,
       speechStatus: null,
@@ -206,6 +209,7 @@ export const useUiStore = create<UiState>()(
       setCompactMode: (compactMode) => set({ compactMode }),
       setCompactSessions: (compactSessions) => set({ compactSessions }),
       setAdvancedPromptImprovement: (advancedPromptImprovement) => set({ advancedPromptImprovement }),
+      setDisabledModels: (disabledModels) => set({ disabledModels }),
       setSpeech: (speech) => set({ speech }),
       setSpeechDownload: (speechDownload) => set({ speechDownload }),
       setSpeechStatus: (speechStatus) => set({ speechStatus }),
