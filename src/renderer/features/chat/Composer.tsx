@@ -2616,13 +2616,13 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                 </AppTooltip>
               )}
               {sendButtonStops && <span id="streaming-send-instructions" className="visually-hidden">Click to {goalCancelable ? 'cancel the persistent goal and stop its work' : 'stop Pi'}.</span>}
-              <AppTooltip content={liveAgentMessageTarget ? `Send directly to @${liveAgentTarget.handle}` : sendButtonStops ? goalCancelable ? 'Click to cancel goal' : 'Click to stop Pi' : runtime.streaming || runtime.activeSessionRunning ? 'Send follow-up message' : sendMessageWithModifier ? 'Send · Ctrl/⌘ Enter' : 'Send · Enter'}>
+              <AppTooltip content={liveAgentMessageTarget ? `Send directly to @${liveAgentTarget.handle}` : sendButtonStops ? goalCancelable ? 'Click to cancel goal' : 'Click to stop Pi' : runtime.streaming || runtime.activeSessionRunning ? 'Click queues the follow-up message' : sendMessageWithModifier ? 'Send · Ctrl/⌘ Enter' : 'Send · Enter'}>
                 <span className="send-tooltip-trigger">
                   <button
                     className="send-button"
                     type="submit"
                     data-mode={sendButtonStops ? 'stop' : 'send'}
-                    aria-label={liveAgentMessageTarget ? 'Send message to live agent' : sendButtonStops ? goalCancelable ? 'Cancel goal' : 'Stop Pi' : runtime.streaming || runtime.activeSessionRunning ? 'Send follow-up message' : 'Send message'}
+                    aria-label={liveAgentMessageTarget ? 'Send message to live agent' : sendButtonStops ? goalCancelable ? 'Cancel goal' : 'Stop Pi' : runtime.streaming || runtime.activeSessionRunning ? 'Queue follow-up message' : 'Send message'}
                     aria-describedby={sendButtonStops ? 'streaming-send-instructions' : undefined}
                     aria-busy={submitting || liveAgentBusy}
                     disabled={(!connected && runtime.status !== 'auth-required') || liveAgentBusy || (!runtime.streaming && submitting) || (!liveAgentMessageTarget && !runtime.streaming && !activeSessionRunning && !goalCancelable && !hasPendingPrompt)}

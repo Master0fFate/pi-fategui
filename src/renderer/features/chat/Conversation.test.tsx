@@ -1274,7 +1274,7 @@ describe('conversation components', () => {
       useRuntimeStore.setState({ runtime: ready({ streaming: true }), queue: { steering: 0, followUp: 0, items: [] } });
       render(<Composer onOpenProject={vi.fn()} />);
       fireEvent.change(screen.getByLabelText('Message Pi'), { target: { value: 'Queue this change' } });
-      const send = screen.getByRole('button', { name: 'Send follow-up message' });
+      const send = screen.getByRole('button', { name: 'Queue follow-up message' });
 
       fireEvent.click(send);
 
@@ -1354,7 +1354,7 @@ describe('conversation components', () => {
 
     expect(screen.getByRole('button', { name: 'Stop Pi' }).querySelector('.lucide-square')).toBeInTheDocument();
     fireEvent.change(input, { target: { value: 'Still here' } });
-    expect(screen.getByRole('button', { name: 'Send follow-up message' }).querySelector('.lucide-arrow-up')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Queue follow-up message' }).querySelector('.lucide-arrow-up')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Stop Pi' })).not.toBeInTheDocument();
 
     fireEvent.change(input, { target: { value: '' } });
