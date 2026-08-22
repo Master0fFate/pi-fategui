@@ -43,11 +43,13 @@ jobs:
     timeout-minutes: 30
     env:
       NODE_OPTIONS: --max-old-space-size=4096
-      FATE_GUI_DATA_DIR: ${{ runner.temp }}/fate-ui-performance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Configure isolated performance data directory
+        shell: bash
+        run: echo "FATE_GUI_DATA_DIR=$RUNNER_TEMP/fate-ui-performance" >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11.17.0
