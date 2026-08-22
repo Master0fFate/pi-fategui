@@ -19,6 +19,7 @@ import {
 import { type ChangeEvent, type CSSProperties, type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import type { MusicQueue, MusicStream, MusicTrack } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
+import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { MAX_LOCAL_AUDIO_TRACKS, MAX_MUSIC_QUEUE_TRACKS, appendMusicQueue, isSupportedLocalAudio, localAudioTitle, remoteMusicSourceError } from './musicSources';
 
@@ -57,6 +58,9 @@ const loopModeLabels: Record<LoopMode, string> = {
 
 export function MusicPlayerDock() {
   const enabled = useUiStore((state) => state.musicPlayerEnabled);
+  const browserOpen = useUiStore((state) => state.browserOpen);
+  const projectTrusted = useRuntimeStore((state) => state.runtime.project?.trusted ?? false);
+  const [browserInset, setBrowserInset] = useState(0);
   const playing = useUiStore((state) => state.musicPlaying);
   const setPlaying = useUiStore((state) => state.setMusicPlaying);
   const [open, setOpen] = useState(false);
@@ -98,6 +102,39 @@ export function MusicPlayerDock() {
     clearLocalAudio();
     setPlaying(false);
   }, [clearLocalAudio, setPlaying]);
+
+  // While the browser pane shares the workspace, the dock shifts left so the
+  // toggle stays visible beside the conversation column instead of over the pane.
+  useEffect(() => {
+    let frame = 0;
+    const measure = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const pane = document.querySelector('.browser-thread-preview');
+        const workspace = document.querySelector('.workspace');
+        // Below the 820px workspace container query the browser pane stacks under
+        // the conversation, so the dock keeps its bottom-right corner.
+        if (!pane || !workspace || workspace.clientWidth <= 820) {
+          setBrowserInset(0);
+          return;
+        }
+        setBrowserInset(Math.max(0, Math.round(window.innerWidth - pane.getBoundingClientRect().left)));
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    const workspace = document.querySelector('.workspace');
+    if (workspace) observer.observe(workspace);
+    const pane = document.querySelector('.browser-thread-preview');
+    if (pane) observer.observe(pane);
+    window.addEventListener('resize', measure);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [browserOpen, projectTrusted]);
 
   useEffect(() => {
     if (!enabled) {
@@ -466,7 +503,12 @@ export function MusicPlayerDock() {
   if (!enabled) return null;
 
   return (
-    <div className="music-dock" data-open={open} data-playlist-open={playlistOpen}>
+    <div
+      className="music-dock"
+      data-open={open}
+      data-playlist-open={playlistOpen}
+      style={{ '--music-dock-inset': `${browserInset}px` } as CSSProperties}
+    >
       <aside
         ref={playlistRef}
         id="music-playlist"

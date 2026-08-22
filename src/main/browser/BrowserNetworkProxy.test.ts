@@ -30,7 +30,7 @@ describe('BrowserNetworkProxy', () => {
 
   it('permits a private destination only through an explicit human-navigation authorizer', async () => {
     const policy = interactivePolicy();
-    await expect(resolveTarget(new URL('http://127.0.0.1:4173/'), policy)).rejects.toThrow(/origin grant/u);
+    await expect(resolveTarget(new URL('http://127.0.0.1:4173/'), policy)).rejects.toThrow(/agent permission/u);
     await expect(resolveTarget(
       new URL('http://127.0.0.1:4173/'),
       policy,

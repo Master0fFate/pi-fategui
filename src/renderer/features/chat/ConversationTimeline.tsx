@@ -201,9 +201,10 @@ export function getConversationScrollbarMetrics(
 
 const ConversationFooter = () => <div className="conversation-composer-spacer" aria-hidden="true" />;
 
-// ConversationTimeline owns pinned following below. Item-count following stays
-// disabled so only the session-scoped list and explicit controller move output.
-const preventImplicitTimelineFollow = () => false as const;
+// ConversationTimeline owns pinned following below. Normal item-count following stays
+// disabled, but a newly submitted prompt gets a short settling window so large
+// user rows can finish measuring before the conversation stops at the bottom.
+const PROMPT_FOLLOW_FRAME_BUDGET = 60;
 
 export function followsMessage(previousEntry: { kind: string } | undefined): boolean {
   return previousEntry?.kind === 'message';
@@ -312,6 +313,7 @@ export function ConversationTimeline() {
   const userScrollIntentRef = useRef(false);
   const userScrollIntentFrameRef = useRef<number | null>(null);
   const followFrameRef = useRef<number | null>(null);
+  const promptFollowFrameRef = useRef(0);
   const scrollbarFrameRef = useRef<number | null>(null);
   const [scrollerElement, setScrollerElement] = useState<HTMLElement | null>(null);
   const [scrollbarMetrics, setScrollbarMetrics] = useState<ScrollbarMetrics | null>(null);
@@ -358,14 +360,24 @@ export function ConversationTimeline() {
     });
   }, [refreshScrollbar]);
 
+  const cancelScheduledFollow = useCallback(() => {
+    promptFollowFrameRef.current = 0;
+    if (followFrameRef.current !== null) {
+      window.cancelAnimationFrame(followFrameRef.current);
+      followFrameRef.current = null;
+    }
+  }, []);
+
   const markUserScrollIntent = useCallback(() => {
+    // Manual input always wins over the temporary prompt-follow window.
+    cancelScheduledFollow();
     userScrollIntentRef.current = true;
     if (userScrollIntentFrameRef.current !== null) window.cancelAnimationFrame(userScrollIntentFrameRef.current);
     userScrollIntentFrameRef.current = window.requestAnimationFrame(() => {
       userScrollIntentRef.current = false;
       userScrollIntentFrameRef.current = null;
     });
-  }, []);
+  }, [cancelScheduledFollow]);
 
   const updatePinnedState = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -426,10 +438,34 @@ export function ConversationTimeline() {
   }, []);
 
   useEffect(() => {
-    const cancelScheduledFollow = () => {
-      if (followFrameRef.current === null) return;
-      window.cancelAnimationFrame(followFrameRef.current);
+    const followToBottom = () => {
       followFrameRef.current = null;
+      if (userScrollIntentRef.current) {
+        promptFollowFrameRef.current = 0;
+        return;
+      }
+
+      const forcePromptFollow = promptFollowFrameRef.current > 0;
+      const scroller = scrollerRef.current;
+      const virtuoso = virtuosoRef.current;
+      if ((!pinnedToBottomRef.current && !forcePromptFollow) || !virtuoso) return;
+
+      // Trap Virtuoso's next measured size increase and also correct a size
+      // change that the browser has already committed in this frame. Prompt
+      // rows get several frames because a very large markdown/plain-text row
+      // can be measured after the first scroll attempt.
+      virtuoso.autoscrollToBottom();
+      if (scroller && !scrollerIsAtBottom(scroller)) {
+        virtuoso.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
+      }
+      refreshScrollbar();
+
+      if (forcePromptFollow) {
+        promptFollowFrameRef.current -= 1;
+        if (promptFollowFrameRef.current > 0) {
+          followFrameRef.current = window.requestAnimationFrame(followToBottom);
+        }
+      }
     };
 
     const unsubscribe = useRuntimeStore.subscribe((next, previous) => {
@@ -441,6 +477,23 @@ export function ConversationTimeline() {
         return;
       }
 
+      const lastVisibleId = next.visibleTimelineOrder.at(-1);
+      const previousLastVisibleId = previous.visibleTimelineOrder.at(-1);
+      const lastEntry = lastVisibleId ? next.timelineById[lastVisibleId] : undefined;
+      const promptAppended = next.visibleTimelineOrder.length === previous.visibleTimelineOrder.length + 1
+        && lastVisibleId !== previousLastVisibleId
+        && lastVisibleId !== undefined
+        && !previous.visibleTimelineIds.has(lastVisibleId)
+        && lastEntry?.kind === 'message'
+        && next.messagesById[lastEntry.messageId]?.role === 'user'
+        && (next.runtime.streaming || next.runtime.activeSessionRunning || previous.runtime.streaming || previous.runtime.activeSessionRunning);
+      if (promptAppended && !userScrollIntentRef.current) {
+        // Sending a prompt is an explicit request to see the new prompt and
+        // its response. This override expires as soon as the user scrolls.
+        promptFollowFrameRef.current = PROMPT_FOLLOW_FRAME_BUDGET;
+        pinnedToBottomRef.current = true;
+      }
+
       const outputChanged = next.visibleTimelineOrder !== previous.visibleTimelineOrder
         || next.timelineVersion !== previous.timelineVersion
         || next.messagesVersion !== previous.messagesVersion
@@ -448,25 +501,13 @@ export function ConversationTimeline() {
         || next.toolsVersion !== previous.toolsVersion
         || (previous.runtime.streaming && !next.runtime.streaming);
       if (!outputChanged) return;
-      if (!pinnedToBottomRef.current || followFrameRef.current !== null) {
+      const forcePromptFollow = promptFollowFrameRef.current > 0 && !userScrollIntentRef.current;
+      if ((!pinnedToBottomRef.current && !forcePromptFollow) || followFrameRef.current !== null) {
         scheduleScrollbarRefresh();
         return;
       }
 
-      followFrameRef.current = window.requestAnimationFrame(() => {
-        const scroller = scrollerRef.current;
-        const virtuoso = virtuosoRef.current;
-        if (pinnedToBottomRef.current && virtuoso) {
-          // Trap Virtuoso's next measured size increase and also correct a size
-          // change that the browser has already committed in this frame.
-          virtuoso.autoscrollToBottom();
-          if (scroller && !scrollerIsAtBottom(scroller)) {
-            virtuoso.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
-          }
-          refreshScrollbar();
-        }
-        followFrameRef.current = null;
-      });
+      followFrameRef.current = window.requestAnimationFrame(followToBottom);
     });
 
     return () => {
@@ -478,7 +519,7 @@ export function ConversationTimeline() {
       scrollerRef.current?.removeEventListener('wheel', markUserScrollIntent);
       scrollerRef.current?.removeEventListener('touchmove', markUserScrollIntent);
     };
-  }, [markUserScrollIntent, refreshScrollbar, scheduleScrollbarRefresh, updatePinnedState]);
+  }, [cancelScheduledFollow, markUserScrollIntent, refreshScrollbar, scheduleScrollbarRefresh, updatePinnedState]);
 
   const scrollToThumbOffset = useCallback((offset: number) => {
     const scroller = scrollerRef.current;
@@ -494,6 +535,7 @@ export function ConversationTimeline() {
 
   const handleScrollbarPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
+    markUserScrollIntent();
     const metrics = readScrollbarMetrics();
     const track = scrollbarTrackRef.current;
     if (!metrics || !track) return;
@@ -535,10 +577,15 @@ export function ConversationTimeline() {
     else if (event.key === 'ArrowDown') nextScrollTop = scroller.scrollTop + lineStep;
     if (nextScrollTop === null) return;
     event.preventDefault();
+    markUserScrollIntent();
     scroller.scrollTop = nextScrollTop;
     pinnedToBottomRef.current = scrollerIsAtBottom(scroller);
     refreshScrollbar();
   };
+
+  const followTimelineOutput = useCallback(() => (
+    promptFollowFrameRef.current > 0 && !userScrollIntentRef.current ? 'auto' : false
+  ), []);
 
   return (
     <ConversationImageViewerProvider>
@@ -558,7 +605,7 @@ export function ConversationTimeline() {
         atBottomStateChange={handleAtBottomStateChange}
         atBottomThreshold={BOTTOM_THRESHOLD_PX}
         initialTopMostItemIndex={hasHistoricalTimeline && visibleOrder.length > 0 ? { index: 'LAST', align: 'end', behavior: 'auto' } : undefined}
-        followOutput={preventImplicitTimelineFollow}
+        followOutput={followTimelineOutput}
         increaseViewportBy={{ top: 300, bottom: 500 }}
       />
       <div

@@ -1,20 +1,20 @@
 import {
   ArrowLeft,
   ArrowRight,
-  Bot,
   FileCode2,
   Globe2,
   LoaderCircle,
   RefreshCw,
   ScanSearch,
   ShieldCheck,
+  Smartphone,
   X,
 } from 'lucide-react';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { AppTooltip } from '../../components/AppTooltip';
 import { browserOrigin, currentBrowserTab, grantForOrigin, useBrowserStore } from '../../stores/browserStore';
 import { useUiStore } from '../../stores/uiStore';
-import type { BrowserUiMode } from '../../../shared/contracts/browser';
+import { DEFAULT_DEVICE_EMULATION } from './devicePresets';
 
 export function BrowserToolbar() {
   const state = useBrowserStore((store) => store.state);
@@ -34,13 +34,15 @@ export function BrowserToolbar() {
     if (!addressFocused.current) setAddress(tab?.url === 'about:blank' ? '' : tab?.url ?? '');
   }, [tab?.id, tab?.url]);
 
+  // Agent control is always on; the only reason to prompt for site access is
+  // a missing origin grant, independent of the annotate picker.
   useEffect(() => {
     if (!currentOrigin) {
       lastPromptedOrigin.current = null;
       setAccessOpen(false);
       return;
     }
-    if (state.mode !== 'agent' || state.sessionFullAccess || currentGrant?.interact) {
+    if (state.sessionFullAccess || currentGrant?.interact) {
       setAccessOpen(false);
       return;
     }
@@ -48,7 +50,7 @@ export function BrowserToolbar() {
       lastPromptedOrigin.current = currentOrigin;
       setAccessOpen(true);
     }
-  }, [currentGrant?.interact, currentOrigin, state.mode, state.sessionFullAccess]);
+  }, [currentGrant?.interact, currentOrigin, state.sessionFullAccess]);
 
   const run = async (label: string, operation: () => Promise<unknown>) => {
     if (!('piDesktop' in window) || pending) return;
@@ -73,9 +75,15 @@ export function BrowserToolbar() {
     void run('navigation', () => window.piDesktop.navigateBrowser(address));
   };
 
-  const setMode = (mode: BrowserUiMode) => {
-    if (mode === 'agent' && currentOrigin && !state.sessionFullAccess && !currentGrant?.interact) setAccessOpen(true);
-    void run('mode change', () => window.piDesktop.setBrowserMode(mode));
+  // Annotate is a picker overlay on top of the always-on agent interaction.
+  const toggleAnnotate = () => {
+    void run('mode change', () => window.piDesktop.setBrowserMode(state.mode === 'annotate' ? 'agent' : 'annotate'));
+  };
+
+  // The device toolbar is a separate switch: it never changes the agent or
+  // annotate state, only device emulation for phone-like testing.
+  const toggleDevice = () => {
+    void run('device toolbar', () => window.piDesktop.setBrowserDeviceEmulation(state.deviceEmulation ? null : DEFAULT_DEVICE_EMULATION));
   };
 
   const grant = (interact: boolean) => {
@@ -102,7 +110,6 @@ export function BrowserToolbar() {
   };
 
   const canAnnotate = Boolean(tab && tab.url !== 'about:blank' && tab.semanticAvailable);
-  const agentNeedsAccess = Boolean(currentOrigin && !state.sessionFullAccess && !currentGrant?.interact);
 
   return (
     <>
@@ -126,9 +133,27 @@ export function BrowserToolbar() {
           {pending && <LoaderCircle className="tool-spinner" size={13} aria-label="Browser busy" />}
         </form>
         <AppTooltip content="Open local HTML"><button type="button" className="browser-open-file" aria-label="Open local HTML file" disabled={Boolean(pending)} onClick={openLocalFile}><FileCode2 size={14} /></button></AppTooltip>
-        <div className="browser-interaction-switch" aria-label="Browser mode">
-          <ModeButton mode="agent" active={state.mode === 'agent'} label="Agent" icon={Bot} attention={agentNeedsAccess} onSelect={setMode} />
-          <ModeButton mode="annotate" active={state.mode === 'annotate'} label="Annotate" icon={ScanSearch} disabled={!canAnnotate} onSelect={setMode} />
+        <div className="browser-tool-group" role="group" aria-label="Browser tools">
+          <AppTooltip content={state.mode === 'annotate' ? 'Stop annotating (Esc)' : 'Annotate page elements'}>
+            <button
+              type="button"
+              className="browser-tool-toggle"
+              aria-label="Annotate"
+              aria-pressed={state.mode === 'annotate'}
+              disabled={!canAnnotate || Boolean(pending)}
+              onClick={toggleAnnotate}
+            ><ScanSearch size={15} /></button>
+          </AppTooltip>
+          <AppTooltip content={state.deviceEmulation ? 'Turn off device toolbar' : 'Toggle device toolbar'}>
+            <button
+              type="button"
+              className="browser-tool-toggle"
+              aria-label="Toggle device toolbar"
+              aria-pressed={Boolean(state.deviceEmulation)}
+              disabled={Boolean(pending)}
+              onClick={toggleDevice}
+            ><Smartphone size={15} /></button>
+          </AppTooltip>
         </div>
         <AppTooltip content="Close browser"><button type="button" className="browser-close" aria-label="Close browser" onClick={closeBrowser}><X size={14} /></button></AppTooltip>
       </div>
@@ -143,30 +168,6 @@ export function BrowserToolbar() {
       )}
       {error && <div className="browser-error-strip" role="alert"><span>{error}</span><button type="button" onClick={() => useBrowserStore.getState().setError(null)}>Dismiss</button></div>}
     </>
-  );
-}
-
-function ModeButton({
-  mode,
-  active,
-  label,
-  icon: Icon,
-  attention = false,
-  disabled = false,
-  onSelect,
-}: {
-  mode: BrowserUiMode;
-  active: boolean;
-  label: string;
-  icon: typeof Bot;
-  attention?: boolean;
-  disabled?: boolean;
-  onSelect: (mode: BrowserUiMode) => void;
-}) {
-  return (
-    <button type="button" aria-label={label} aria-pressed={active} data-attention={attention || undefined} disabled={disabled} onClick={() => onSelect(mode)}>
-      <Icon size={12} aria-hidden="true" /><span>{label}</span>
-    </button>
   );
 }
 

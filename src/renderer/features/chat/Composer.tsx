@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Popover from '@radix-ui/react-popover';
-import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, FileText, FolderOpen, GitFork, Globe2, Hash, History, ImagePlus, LoaderCircle, MessageSquarePlus, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
+import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, FileText, FolderOpen, GitFork, Globe2, Hash, History, ImagePlus, LoaderCircle, MessageSquarePlus, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Square, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
 import { type ChangeEvent, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { BrowserAnnotation, FileEntry, PromptInput, QueueMutationInput, SpeechStreamUpdate } from '../../../shared/contracts/ipc';
@@ -54,6 +54,10 @@ const emptySessionDraft = (): SessionDraft => ({
   selectionStart: 0, selectionEnd: 0, scrollTop: 0,
 });
 
+type DraftHistorySnapshot = Pick<SessionDraft, 'text' | 'selectionStart' | 'selectionEnd' | 'scrollTop'>;
+type DraftHistory = { key: string | null; undo: DraftHistorySnapshot[]; redo: DraftHistorySnapshot[] };
+const MAX_DRAFT_HISTORY = 100;
+
 // Keep unfinished identity-keyed drafts when the composer remounts within the renderer.
 const MAX_CACHED_SESSION_DRAFTS = 50;
 const MAX_CACHED_DRAFT_IMAGE_BYTES = 60_000_000;
@@ -89,6 +93,13 @@ export function clearComposerSessionDrafts(): void {
 }
 
 const NEW_SESSION_DRAFT_IDENTITY = ['new-session'] as const;
+/** Extract annotation ids from main's "no longer available" send error so the
+ *  draft can drop them instead of failing every later prompt. */
+function staleBrowserAnnotationIds(message: string): string[] | null {
+  const match = /no longer available:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\s*,\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})*)/iu.exec(message);
+  if (!match) return null;
+  return match[1]!.split(',').map((id) => id.trim()).filter(Boolean);
+}
 const sessionDraftKey = (
   projectPath: string | null,
   sessionId: string | null,
@@ -133,23 +144,11 @@ const STREAM_CHUNK_SAMPLES = 16_000 * 0.3;
 /** When accepted-but-unprocessed live audio reaches this depth, the meter warns
  *  that the machine is falling behind before the hard ten-second limit fails. */
 const VOICE_LAG_WARN_SECONDS = 5;
-const SEND_HOLD_TO_ABORT_MS = 2_000;
 const afterNextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 type VoiceState = 'idle' | 'preparing' | 'downloading' | 'recording' | 'transcribing';
 type VoiceInsertionTarget = { start: number; end: number; scrollTop: number; sessionId: string | null; projectPath: string | null };
 type ActiveRecording = { recorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; timeout: number; cancelled: boolean; insertion: VoiceInsertionTarget; attempt: number };
-type SendHoldGesture = {
-  pointerId: number;
-  timeout: number;
-  startedAt: number;
-  aborted: boolean;
-  target: HTMLButtonElement;
-  detachListeners: () => void;
-};
-type SendClickOutcome = 'submit-follow-up' | 'submit-prompt' | 'cancel';
 const thinkingLabel = (level: string) => level === 'xhigh' ? 'Extra high' : level.charAt(0).toUpperCase() + level.slice(1);
-const normalizedPointerId = (pointerId: number) => Number.isFinite(pointerId) ? pointerId : 1;
-
 export function clampComposerInputHeight(contentHeight: number, maximum: number, minimum = MIN_COMPOSER_INPUT_HEIGHT): number {
   return Math.min(Math.max(minimum, maximum), Math.max(minimum, Math.ceil(contentHeight)));
 }
@@ -269,6 +268,9 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const sessionReferencesRevision = useRef(0);
   const sessionDrafts = useRef(sessionDraftsByIdentity);
   const activeDraftKey = useRef<string | null>(null);
+  const draftHistory = useRef<DraftHistory>({ key: null, undo: [], redo: [] });
+  const historyMutation = useRef(false);
+  const promptOptimizationCancelled = useRef(false);
   const pendingDraftSelection = useRef<{ key: string | null; text: string; start: number; end: number; scrollTop: number; focus?: boolean } | null>(null);
   const forkNoticeRef = useRef(forkNotice);
   const caretPositionRef = useRef(caretPosition);
@@ -281,8 +283,6 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const modelBusyRef = useRef(false);
   const permissionBusyRef = useRef(false);
   const forkingRef = useRef(false);
-  const sendHoldGesture = useRef<SendHoldGesture | null>(null);
-  const sendClickOutcome = useRef<SendClickOutcome | null>(null);
   const voiceRestoreFrames = useRef(new Set<number>());
   const voiceAttempt = useRef(0);
   const voiceStateRef = useRef<VoiceState>('idle');
@@ -355,6 +355,9 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const forkPoint = runtime.forkPoints?.at(-1);
   const activeSessionRunning = runtime.activeSessionRunning ?? runtime.streaming;
   const goalCancelable = Boolean(activeGoal && activeGoal.status !== 'completed' && activeGoal.status !== 'cancelled');
+  const hasPendingPrompt = Boolean(draft.trim() || images.length > 0 || browserAnnotationIds.length > 0 || sessionReferences.length > 0);
+  const liveAgentMessageTarget = liveAgentTarget !== null && liveAgentTarget.kind !== 'session';
+  const sendButtonStops = !liveAgentMessageTarget && !hasPendingPrompt && (activeSessionRunning || goalCancelable);
   const canFork = Boolean(runtime.sessionCapabilities?.fork && forkPoint && !activeSessionRunning && !runtime.sessionOperation);
   const forkTooltip = forking
     ? 'Creating the new session…'
@@ -431,10 +434,45 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const updateDraftForKey = useCallback((key: string | null, next: string) => {
     if (key === null) return;
     const current = sessionDrafts.current.get(key) ?? emptySessionDraft();
+    if (current.text === next) return;
+    if (draftHistory.current.key !== key) draftHistory.current = { key, undo: [], redo: [] };
+    if (!historyMutation.current) {
+      const input = key === activeDraftKey.current ? textarea.current : null;
+      draftHistory.current.undo.push({
+        text: current.text,
+        selectionStart: input?.selectionStart ?? current.selectionStart,
+        selectionEnd: input?.selectionEnd ?? current.selectionEnd,
+        scrollTop: input?.scrollTop ?? current.scrollTop,
+      });
+      if (draftHistory.current.undo.length > MAX_DRAFT_HISTORY) draftHistory.current.undo.shift();
+      draftHistory.current.redo = [];
+    }
     cacheSessionDraft(key, { ...current, text: next, textRevision: current.textRevision + 1 });
   }, []);
   const updateDraft = useCallback((next: string) => {
     updateDraftForKey(activeDraftKey.current, next);
+  }, [updateDraftForKey]);
+  const restoreDraftHistory = useCallback((direction: 'undo' | 'redo'): boolean => {
+    const key = activeDraftKey.current;
+    if (key === null || draftHistory.current.key !== key) return false;
+    const stack = direction === 'undo' ? draftHistory.current.undo : draftHistory.current.redo;
+    const target = stack.pop();
+    if (!target) return false;
+    const current = sessionDrafts.current.get(key) ?? emptySessionDraft();
+    const input = textarea.current;
+    const currentSnapshot: DraftHistorySnapshot = {
+      text: current.text,
+      selectionStart: input?.selectionStart ?? current.selectionStart,
+      selectionEnd: input?.selectionEnd ?? current.selectionEnd,
+      scrollTop: input?.scrollTop ?? current.scrollTop,
+    };
+    (direction === 'undo' ? draftHistory.current.redo : draftHistory.current.undo).push(currentSnapshot);
+    historyMutation.current = true;
+    updateDraftForKey(key, target.text);
+    historyMutation.current = false;
+    pendingDraftSelection.current = { key, text: target.text, start: target.selectionStart, end: target.selectionEnd, scrollTop: target.scrollTop, focus: true };
+    setCaretPosition(target.selectionStart);
+    return true;
   }, [updateDraftForKey]);
   const updateImagesForKey = useCallback((key: string | null, update: Attachment[] | ((current: Attachment[]) => Attachment[])) => {
     if (key === null) return;
@@ -516,17 +554,6 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     liveAnchorRef.current = null;
     liveSpanLenRef.current = 0;
   };
-  const clearSendHoldGesture = useCallback((pointerId?: number) => {
-    const gesture = sendHoldGesture.current;
-    if (!gesture || (pointerId !== undefined && gesture.pointerId !== pointerId)) return null;
-    sendHoldGesture.current = null;
-    window.clearTimeout(gesture.timeout);
-    gesture.detachListeners();
-    try {
-      if (gesture.target.hasPointerCapture(gesture.pointerId)) gesture.target.releasePointerCapture(gesture.pointerId);
-    } catch { /* Capture may already have been released by the browser. */ }
-    return gesture;
-  }, []);
 
   const commandContext = slashCommandContext(editorDraft, caretPosition);
   const commandQuery = commandContext?.query ?? null;
@@ -617,6 +644,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     if (previousKey === activeSessionDraftKey) return;
     if (previousKey !== null) saveActiveDraft(previousKey);
     activeDraftKey.current = activeSessionDraftKey;
+    draftHistory.current = { key: activeSessionDraftKey, undo: [], redo: [] };
     const next = activeSessionDraftKey === null
       ? emptySessionDraft()
       : sessionDrafts.current.get(activeSessionDraftKey) ?? emptySessionDraft();
@@ -785,8 +813,6 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       voiceAttempt.current += 1;
       voiceStateRef.current = 'idle';
       resizeCleanup.current?.();
-      clearSendHoldGesture();
-      sendClickOutcome.current = null;
       submittingRef.current = false;
       queueBusyRef.current = false;
       modelBusyRef.current = false;
@@ -811,12 +837,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
         void window.piDesktop.cancelSpeechStream().catch(() => undefined);
       }
     };
-  }, [clearSendHoldGesture]);
-
-  useEffect(() => {
-    if (runtime.streaming || goalCancelable) return;
-    if (clearSendHoldGesture()) sendClickOutcome.current = 'cancel';
-  }, [clearSendHoldGesture, goalCancelable, runtime.streaming]);
+  }, []);
 
   useEffect(() => {
     const selectionKey = `${runtime.project?.path ?? ''}\u0000${runtime.sessionId ?? ''}`;
@@ -1056,6 +1077,14 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       }
       clearSubmittedDraft();
     } catch (error) {
+      // A stale browser annotation id must never poison every later send.
+      // Main reports exactly which ids it can no longer resolve; drop them
+      // from the draft so the next attempt goes through, and tell the user.
+      const stale = error instanceof Error ? staleBrowserAnnotationIds(error.message) : null;
+      if (stale && originDraftKey !== null) {
+        const staleIds = new Set(stale);
+        updateBrowserAnnotationsForKey(originDraftKey, (current) => current.filter((id) => !staleIds.has(id)));
+      }
       if (mounted.current && activeDraftKey.current === originDraftKey) {
         setComposerError(error instanceof Error ? error.message : 'Pi could not accept this message.');
       }
@@ -1065,80 +1094,25 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     }
   };
 
-  const abortSendGesture = (gesture: SendHoldGesture) => {
-    if (gesture.aborted || sendHoldGesture.current !== gesture) return gesture.aborted;
+  const stopActiveRun = async () => {
     const runtimeNow = useRuntimeStore.getState().runtime;
     const goalNow = useGoalMaxStore.getState().goal;
     const cancellableGoal = Boolean(goalNow && goalNow.status !== 'completed' && goalNow.status !== 'cancelled');
-    if (runtimeNow.status !== 'ready' || (!runtimeNow.streaming && !cancellableGoal) || !('piDesktop' in window)) return false;
-    gesture.aborted = true;
-    const cancellation = cancellableGoal && typeof window.piDesktop.controlGoalMax === 'function'
-      ? window.piDesktop.controlGoalMax({ action: 'cancel', reason: 'Cancelled from the composer hold control.' }).then((goal) => { if (mounted.current) setActiveGoal(goal); })
-      : window.piDesktop.abort().then(() => undefined);
-    void cancellation.catch((error: unknown) => {
+    if (
+      runtimeNow.status !== 'ready'
+      || (!runtimeNow.streaming && !runtimeNow.activeSessionRunning && !cancellableGoal)
+      || !('piDesktop' in window)
+    ) return;
+    try {
+      if (cancellableGoal && typeof window.piDesktop.controlGoalMax === 'function') {
+        const goal = await window.piDesktop.controlGoalMax({ action: 'cancel', reason: 'Cancelled from the composer stop button.' });
+        if (mounted.current) setActiveGoal(goal);
+      } else {
+        await window.piDesktop.abort();
+      }
+    } catch (error) {
       if (mounted.current) setComposerError(error instanceof Error ? error.message : 'Pi could not be stopped.');
-    });
-    return true;
-  };
-
-  const finishSendHold = (pointerId: number) => {
-    const gesture = sendHoldGesture.current;
-    if (!gesture || gesture.pointerId !== pointerId) return;
-    if (!gesture.aborted && performance.now() - gesture.startedAt >= SEND_HOLD_TO_ABORT_MS) abortSendGesture(gesture);
-    const runtimeNow = useRuntimeStore.getState().runtime;
-    const goalNow = useGoalMaxStore.getState().goal;
-    const outcome: SendClickOutcome = !gesture.aborted && runtimeNow.status === 'ready' && runtimeNow.streaming
-      ? 'submit-follow-up'
-      : !gesture.aborted && runtimeNow.status === 'ready' && goalNow && goalNow.status !== 'completed' && goalNow.status !== 'cancelled'
-        ? 'submit-prompt'
-        : 'cancel';
-    clearSendHoldGesture(pointerId);
-    sendClickOutcome.current = outcome;
-  };
-
-  const cancelSendHold = (pointerId: number) => {
-    if (!clearSendHoldGesture(pointerId)) return;
-    sendClickOutcome.current = 'cancel';
-  };
-
-  const startSendHold = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    sendClickOutcome.current = null;
-    // JSDOM/legacy MouseEvent fallbacks expose no pointerType and report a
-    // meaningless false isPrimary; real touch/pen pointers must be primary.
-    if ((Number.isFinite(event.button) && event.button !== 0) || (event.pointerType && event.isPrimary === false) || sendHoldGesture.current) return;
-    const runtimeNow = useRuntimeStore.getState().runtime;
-    const goalNow = useGoalMaxStore.getState().goal;
-    const cancellableGoal = Boolean(goalNow && goalNow.status !== 'completed' && goalNow.status !== 'cancelled');
-    if (runtimeNow.status !== 'ready' || (!runtimeNow.streaming && !cancellableGoal)) return;
-
-    const pointerId = normalizedPointerId(event.pointerId);
-    const target = event.currentTarget;
-    const onWindowPointerUp = (pointerEvent: globalThis.PointerEvent) => {
-      if (normalizedPointerId(pointerEvent.pointerId) !== pointerId) return;
-      const pointerTarget = pointerEvent.target;
-      if (pointerTarget instanceof Node && target.contains(pointerTarget)) finishSendHold(pointerId);
-      else cancelSendHold(pointerId);
-    };
-    const onWindowPointerCancel = (pointerEvent: globalThis.PointerEvent) => cancelSendHold(normalizedPointerId(pointerEvent.pointerId));
-    const gesture: SendHoldGesture = {
-      pointerId,
-      timeout: 0,
-      startedAt: performance.now(),
-      aborted: false,
-      target,
-      detachListeners: () => {
-        window.removeEventListener('pointerup', onWindowPointerUp);
-        window.removeEventListener('pointercancel', onWindowPointerCancel);
-      },
-    };
-    sendHoldGesture.current = gesture;
-    window.addEventListener('pointerup', onWindowPointerUp);
-    window.addEventListener('pointercancel', onWindowPointerCancel);
-    try { target.setPointerCapture(pointerId); } catch { /* Window listeners preserve release handling when capture is unavailable. */ }
-    gesture.timeout = window.setTimeout(() => {
-      if (sendHoldGesture.current !== gesture || gesture.aborted) return;
-      if (!abortSendGesture(gesture)) cancelSendHold(pointerId);
-    }, SEND_HOLD_TO_ABORT_MS);
+    }
   };
 
   const selectSlashCommand = (command: SlashCommand) => {
@@ -1304,6 +1278,14 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return;
     const modifierPressed = event.metaKey || event.ctrlKey;
+    if (modifierPressed && !event.altKey) {
+      const key = event.key.toLowerCase();
+      const direction = key === 'z' ? event.shiftKey ? 'redo' : 'undo' : key === 'y' && !event.shiftKey ? 'redo' : null;
+      if (direction && restoreDraftHistory(direction)) {
+        event.preventDefault();
+        return;
+      }
+    }
     const shouldSend = sendMessageWithModifier
       ? modifierPressed
       : !event.shiftKey && !event.altKey;
@@ -1929,6 +1911,17 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     }
   };
 
+  const cancelOptimizePrompt = async () => {
+    if (!optimizingPromptRef.current || !('piDesktop' in window) || typeof window.piDesktop.abort !== 'function') return;
+    promptOptimizationCancelled.current = true;
+    try {
+      await window.piDesktop.abort();
+    } catch (error) {
+      promptOptimizationCancelled.current = false;
+      if (mounted.current) setComposerError(error instanceof Error ? error.message : 'Prompt improvement could not be cancelled.');
+    }
+  };
+
   const optimizePrompt = async () => {
     if (!('piDesktop' in window) || optimizingPromptRef.current) return;
     const origin = useRuntimeStore.getState().runtime;
@@ -1940,11 +1933,12 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       return;
     }
     optimizingPromptRef.current = true;
+    promptOptimizationCancelled.current = false;
     setOptimizingPrompt(true);
     setComposerError(null);
     try {
       const result = await window.piDesktop.optimizePrompt(originalDraft, { advanced: advancedPromptImprovement });
-      if (!mounted.current) return;
+      if (!mounted.current || promptOptimizationCancelled.current) return;
       const current = useRuntimeStore.getState().runtime;
       const selectionIsOrigin = current.sessionId === origin.sessionId && current.project?.path === origin.project?.path;
       if (!selectionIsOrigin || draftRef.current !== originalDraft) return;
@@ -1956,11 +1950,13 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       });
       showToast({ kind: 'success', title: 'Prompt improved', message: 'Review the selected prompt, then send it when ready.' });
     } catch (error) {
+      if (promptOptimizationCancelled.current) return;
       if (mounted.current && activeDraftKey.current === sessionDraftKey(origin.project?.path ?? null, origin.sessionId, origin.sessions)) {
         setComposerError(error instanceof Error ? error.message : 'Prompt improvement failed. Your draft was not changed.');
       }
     } finally {
       optimizingPromptRef.current = false;
+      promptOptimizationCancelled.current = false;
       if (mounted.current) setOptimizingPrompt(false);
     }
   };
@@ -2259,7 +2255,12 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
           setSessionDropActive(false);
           attachSessionReference(reference);
         }}
-        onSubmit={(event) => { event.preventDefault(); if (liveAgentTarget && liveAgentTarget.kind !== 'session') void sendLiveAgentMessage(); else void submit(runtime.streaming || runtime.activeSessionRunning ? 'followUp' : 'prompt'); }}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (liveAgentMessageTarget) void sendLiveAgentMessage();
+          else if (sendButtonStops) void stopActiveRun();
+          else void submit(runtime.streaming || runtime.activeSessionRunning ? 'followUp' : 'prompt');
+        }}
       >
         <AppTooltip content={'Drag upward to enlarge the message input\nUse ↑ or ↓ while focused'}>
           <div
@@ -2571,7 +2572,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
               </div>
               <AppTooltip
                 content={optimizingPrompt
-                  ? advancedPromptImprovement ? 'Exploring the project, then improving the prompt…' : 'Improving prompt with the selected model…'
+                  ? 'Cancel prompt improvement'
                   : runtime.streaming || runtime.activeSessionRunning
                     ? 'Wait for Pi to finish before improving the prompt'
                     : voiceState !== 'idle'
@@ -2589,10 +2590,10 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                   data-advanced={advancedPromptImprovement || undefined}
                   aria-label={optimizingPrompt ? 'Improving prompt' : 'Improve prompt'}
                   aria-busy={optimizingPrompt}
-                  disabled={!connected || !draft.trim() || optimizingPrompt || runtime.streaming || Boolean(runtime.activeSessionRunning) || Boolean(runtime.sessionOperation) || voiceState !== 'idle'}
-                  onClick={() => void optimizePrompt()}
+                  disabled={!connected || !draft.trim() || runtime.streaming || Boolean(runtime.activeSessionRunning) || Boolean(runtime.sessionOperation) || voiceState !== 'idle'}
+                  onClick={() => void (optimizingPrompt ? cancelOptimizePrompt() : optimizePrompt())}
                 >
-                  {optimizingPrompt ? <LoaderCircle className="tool-spinner" size={17} aria-hidden="true" /> : <Sparkles size={17} aria-hidden="true" />}
+                  {optimizingPrompt ? <><LoaderCircle className="tool-spinner prompt-optimize-spinner" size={17} aria-hidden="true" /><X className="prompt-optimize-cancel-icon" size={17} aria-hidden="true" /></> : <Sparkles size={17} aria-hidden="true" />}
                 </button>
               </AppTooltip>
               {speech.enabled && (
@@ -2614,36 +2615,19 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                   </button>
                 </AppTooltip>
               )}
-              {(runtime.streaming || goalCancelable) && <span id="streaming-send-instructions" className="visually-hidden">Hold continuously for two seconds to {goalCancelable ? 'cancel the persistent goal and stop its work' : 'stop Pi without queuing the draft'}.</span>}
-              <AppTooltip content={liveAgentTarget && liveAgentTarget.kind !== 'session' ? `Send directly to @${liveAgentTarget.handle}` : runtime.streaming || runtime.activeSessionRunning ? `Click queues the message · Hold for 2 seconds to ${goalCancelable ? 'cancel goal' : 'stop Pi'}` : goalCancelable ? 'Send · Hold for 2 seconds to cancel goal' : sendMessageWithModifier ? 'Send · Ctrl/⌘ Enter' : 'Send · Enter'}>
+              {sendButtonStops && <span id="streaming-send-instructions" className="visually-hidden">Click to {goalCancelable ? 'cancel the persistent goal and stop its work' : 'stop Pi'}.</span>}
+              <AppTooltip content={liveAgentMessageTarget ? `Send directly to @${liveAgentTarget.handle}` : sendButtonStops ? goalCancelable ? 'Click to cancel goal' : 'Click to stop Pi' : runtime.streaming || runtime.activeSessionRunning ? 'Send follow-up message' : sendMessageWithModifier ? 'Send · Ctrl/⌘ Enter' : 'Send · Enter'}>
                 <span className="send-tooltip-trigger">
                   <button
                     className="send-button"
                     type="submit"
-                    aria-label={runtime.streaming || runtime.activeSessionRunning ? 'Queue follow-up message' : goalCancelable && !draft.trim() ? 'Goal control; hold to cancel goal' : 'Send message'}
-                    aria-describedby={runtime.streaming || goalCancelable ? 'streaming-send-instructions' : undefined}
+                    data-mode={sendButtonStops ? 'stop' : 'send'}
+                    aria-label={liveAgentMessageTarget ? 'Send message to live agent' : sendButtonStops ? goalCancelable ? 'Cancel goal' : 'Stop Pi' : runtime.streaming || runtime.activeSessionRunning ? 'Send follow-up message' : 'Send message'}
+                    aria-describedby={sendButtonStops ? 'streaming-send-instructions' : undefined}
                     aria-busy={submitting || liveAgentBusy}
-                    disabled={(!connected && runtime.status !== 'auth-required') || liveAgentBusy || (!runtime.streaming && submitting) || (!(liveAgentTarget && liveAgentTarget.kind !== 'session') && !runtime.streaming && !goalCancelable && !draft.trim() && browserAnnotationIds.length === 0 && sessionReferences.length === 0)}
-                    onPointerDown={startSendHold}
-                    onPointerUp={(event) => finishSendHold(normalizedPointerId(event.pointerId))}
-                    onPointerCancel={(event) => cancelSendHold(normalizedPointerId(event.pointerId))}
-                    onLostPointerCapture={(event) => cancelSendHold(normalizedPointerId(event.pointerId))}
-                    onContextMenu={(event) => { if (runtime.streaming) event.preventDefault(); }}
-                    onClick={(event) => {
-                      if (liveAgentTarget && liveAgentTarget.kind !== 'session') {
-                        event.preventDefault();
-                        void sendLiveAgentMessage();
-                        return;
-                      }
-                      const outcome = sendClickOutcome.current;
-                      if (!outcome) return;
-                      sendClickOutcome.current = null;
-                      event.preventDefault();
-                      if (outcome === 'submit-follow-up') void submit('followUp');
-                      else if (outcome === 'submit-prompt') void submit('prompt');
-                    }}
+                    disabled={(!connected && runtime.status !== 'auth-required') || liveAgentBusy || (!runtime.streaming && submitting) || (!liveAgentMessageTarget && !runtime.streaming && !activeSessionRunning && !goalCancelable && !hasPendingPrompt)}
                   >
-                    {submitting && !runtime.streaming ? <LoaderCircle className="tool-spinner" size={16} /> : <ArrowUp size={18} />}
+                    {submitting && !runtime.streaming ? <LoaderCircle className="tool-spinner" size={16} /> : sendButtonStops ? <Square size={16} strokeWidth={2.5} aria-hidden="true" /> : <ArrowUp size={18} aria-hidden="true" />}
                   </button>
                 </span>
               </AppTooltip>

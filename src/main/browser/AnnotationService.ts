@@ -47,7 +47,12 @@ export class AnnotationService {
     // acknowledge the next picker without reactivating hit testing.
     await this.cdp.send('Overlay.disable');
     await this.cdp.send('Overlay.enable');
-    const selection = this.cdp.waitForEvent<{ backendNodeId?: number }>('Overlay.inspectNodeRequested', signal ? { signal } : {});
+    // The picker is human-paced: wait for the click without a timeout. Esc,
+    // mode changes, and navigation cancel through the abort signal.
+    const selection = this.cdp.waitForEvent<{ backendNodeId?: number }>('Overlay.inspectNodeRequested', {
+      ...(signal ? { signal } : {}),
+      timeoutMs: Number.POSITIVE_INFINITY,
+    });
     await this.cdp.send('Overlay.setInspectMode', {
       mode: 'searchForNode',
       highlightConfig: {
@@ -68,7 +73,11 @@ export class AnnotationService {
 
   async selectRegion(context: AnnotationContext, comment: string, signal?: AbortSignal): Promise<BrowserAnnotation> {
     this.requireOverlay();
-    const selection = this.cdp.waitForEvent<{ viewport?: { x: number; y: number; width: number; height: number } }>('Overlay.screenshotRequested', signal ? { signal } : {});
+    // Region selection is a human drag: unbounded wait, abortable at any time.
+    const selection = this.cdp.waitForEvent<{ viewport?: { x: number; y: number; width: number; height: number } }>('Overlay.screenshotRequested', {
+      ...(signal ? { signal } : {}),
+      timeoutMs: Number.POSITIVE_INFINITY,
+    });
     await this.cdp.send('Overlay.setInspectMode', { mode: 'captureAreaScreenshot', highlightConfig: {} });
     try {
       const selected = await selection;

@@ -1,6 +1,7 @@
 import { AlertTriangle, Check, FileCode2, Globe2, LoaderCircle, Plus, X } from 'lucide-react';
 import { useState } from 'react';
 import { useBrowserStore } from '../../stores/browserStore';
+import { BrowserDeviceToolbar } from './BrowserDeviceToolbar';
 import { BrowserToolbar } from './BrowserToolbar';
 import { BrowserViewport } from './BrowserViewport';
 
@@ -59,6 +60,7 @@ export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
         ><Plus size={13} /></button>
       </div>
       <BrowserToolbar />
+      <BrowserDeviceToolbar state={state} />
       {state.mode === 'annotate' && (
         <div className="browser-annotation-hint" role="status">
           <span><span className="browser-annotation-cursor" aria-hidden="true" /> Hover and click any page element</span>
@@ -68,8 +70,21 @@ export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
       {state.mode === 'annotate' && !state.tabs.find((tab) => tab.id === state.activeTabId)?.semanticAvailable && (
         <div className="browser-error-strip" role="alert"><span>Element selection is unavailable for this page.</span></div>
       )}
-      {state.activeTabId && <BrowserViewport visible={visible} />}
-      {!state.activeTabId && <div className="browser-blank-state"><strong>Opening Chromium…</strong></div>}
+      {state.activeTabId ? (
+        <div
+          className={`browser-device-stage${state.deviceEmulation ? ' browser-device-stage--active' : ''}`}
+          data-testid={state.deviceEmulation ? 'browser-device-stage' : undefined}
+        >
+          <div
+            className="browser-device-frame"
+            style={state.deviceEmulation ? { width: `${state.deviceEmulation.width}px`, height: `${state.deviceEmulation.height}px` } : undefined}
+          >
+            <BrowserViewport visible={visible} />
+          </div>
+        </div>
+      ) : (
+        <div className="browser-blank-state"><strong>Opening Chromium…</strong></div>
+      )}
       <BrowserConfirmationBanner />
     </section>
   );

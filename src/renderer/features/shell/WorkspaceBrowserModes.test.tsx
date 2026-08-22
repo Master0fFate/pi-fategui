@@ -19,6 +19,7 @@ const browserState = (overrides: Partial<BrowserState> = {}): BrowserState => ({
   sessionFullAccess: false,
   controlLevel: 'off',
   mode: 'agent',
+  deviceEmulation: null,
   tabs: [],
   grants: [],
   ...overrides,

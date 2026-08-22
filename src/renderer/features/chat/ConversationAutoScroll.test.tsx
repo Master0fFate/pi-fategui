@@ -228,6 +228,36 @@ describe('conversation output auto-scroll', () => {
     expect(virtuosoMock.scrollToIndex).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps a large newly sent prompt pinned while it finishes measuring', () => {
+    render(<ConversationTimeline />);
+    const scroller = screen.getByTestId('virtuoso-scroller');
+    let scrollHeight = 1_000;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+    });
+    scroller.scrollTop = 600;
+    fireEvent.scroll(scroller);
+
+    apply([{ type: 'message.completed', messageId: 'large-prompt', role: 'user', text: 'prompt '.repeat(50_000), timestamp: 1 }]);
+    scrollHeight = 40_000;
+    virtuosoMock.atBottomStateChange?.(false);
+    fireEvent.scroll(scroller);
+    flushAnimationFrames();
+
+    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledOnce();
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
+
+    fireEvent.wheel(scroller, { deltaY: -120 });
+    scroller.scrollTop = 450;
+    fireEvent.scroll(scroller);
+    flushAnimationFrames();
+    apply([{ type: 'assistant.text', messageId: 'assistant-after-prompt', delta: 'Answer', timestamp: 2 }]);
+    flushAnimationFrames();
+
+    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledOnce();
+  });
+
   it('keeps following when a reasoning row changes layout before the scheduled scroll', () => {
     render(<ConversationTimeline />);
     const scroller = screen.getByTestId('virtuoso-scroller');

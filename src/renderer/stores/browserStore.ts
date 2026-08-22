@@ -43,6 +43,7 @@ const initialBrowserState: BrowserState = {
   sessionFullAccess: false,
   controlLevel: 'off',
   mode: 'agent',
+  deviceEmulation: null,
   tabs: [],
   grants: [],
 };

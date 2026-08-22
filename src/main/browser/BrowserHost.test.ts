@@ -11,7 +11,7 @@ function fixture(tabs: Array<{ id: string }>) {
   const currentRoot = vi.fn(() => ({ projectPath: project.path, sessionId: 'session-1' }));
   const ensureTab = vi.fn(async () => undefined);
   const setSessionFullAccess = vi.fn();
-  const service = { getState: () => ({ tabs }), ensureTab, setSessionFullAccess } as unknown as BrowserService;
+  const service = { getState: () => ({ tabs }), ensureTab, setSessionFullAccess, dispose: vi.fn(async () => undefined) } as unknown as BrowserService;
   const host = new BrowserHost({
     currentProject: () => project,
     currentPermissionLevel: () => 'full-access',
@@ -28,6 +28,25 @@ function fixture(tabs: Array<{ id: string }>) {
 }
 
 describe('BrowserHost tab lifecycle', () => {
+  it('keeps one persistent annotation store per project across service resets', async () => {
+    const { host } = fixture([{ id: 'tab-1' }]);
+    const internals = host as unknown as { annotationStoreFor(path: string): unknown; annotationStores: Map<string, unknown>; reset(): Promise<void> };
+
+    const first = internals.annotationStoreFor('/project');
+    const again = internals.annotationStoreFor('/project');
+    expect(again).toBe(first);
+    // Path normalization must not fork stores for the same folder.
+    expect(internals.annotationStoreFor('/project/')).toBe(first);
+
+    await host.reset();
+    expect(internals.annotationStoreFor('/project')).toBe(first);
+    expect(internals.annotationStores.size).toBe(1);
+
+    // A different project gets its own store.
+    expect(internals.annotationStoreFor('/other')).not.toBe(first);
+    expect(internals.annotationStores.size).toBe(2);
+  });
+
   it('does not resurrect the default tab when another managed tab remains', async () => {
     const { host, service, ensureTab, syncService } = fixture([{ id: 'tab-user-created' }]);
 

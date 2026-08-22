@@ -870,6 +870,7 @@ export class PiRuntimeService {
   private eventCursor = 0;
   private agentTeamMode: 'legacy' | 'v2' = 'legacy';
   private promptOptimizationActive = false;
+  private promptOptimizationAbort: AbortController | null = null;
   private providerLogin: ProviderLoginState = { status: 'idle', providers: [], providerId: null, providerName: null, method: null, prompt: null, message: null, deviceCode: null };
   private providerLoginAbort: AbortController | null = null;
   private providerLoginResponse: { id: string; resolve: (value: string) => void; reject: (error: Error) => void; detachAbort?: () => void } | null = null;
@@ -1378,18 +1379,25 @@ export class PiRuntimeService {
     const model = slot.pendingModel?.model ?? session.model;
     const reasoning = slot.pendingThinkingLevel?.level ?? session.thinkingLevel;
     const modelRuntime = this.modelRuntime;
+    const controller = new AbortController();
+    this.promptOptimizationAbort = controller;
+    const signal = controller.signal;
+    const throwIfAborted = () => {
+      if (signal.aborted) throw Object.assign(new Error('Prompt improvement cancelled.'), { name: 'AbortError' });
+    };
     this.promptOptimizationActive = true;
     try {
       // Advanced mode first explores the project read-only, then grounds the
       // rewrite in the verified brief. A research failure degrades to the
       // standard rewrite instead of failing the whole request.
-      const brief = advanced && this.project ? await this.researchPromptDraft(text, model, reasoning, modelRuntime) : '';
+      const brief = advanced && this.project ? await this.researchPromptDraft(text, model, reasoning, modelRuntime, signal) : '';
+      throwIfAborted();
       const grounding = brief ? PROMPT_OPTIMIZER_BRIEF_SUFFIX(brief) : '';
       const run = async (directiveSuffix: string) => {
         const response = await modelRuntime.completeSimple(model, {
           systemPrompt: PROMPT_OPTIMIZER_SYSTEM_PROMPT,
           messages: [{ role: 'user', content: `${text}${PROMPT_OPTIMIZER_DRAFT_CLOSE}${grounding}${directiveSuffix}`, timestamp: Date.now() }],
-        }, { ...(reasoning === 'off' ? {} : { reasoning }), timeoutMs: 120_000, maxRetries: 1 });
+        }, { ...(reasoning === 'off' ? {} : { reasoning }), timeoutMs: 120_000, maxRetries: 1, signal });
         if (response.stopReason !== 'stop') {
           throw new PiDesktopError({ code: 'PI_RUNTIME_ERROR', message: 'Prompt improvement did not complete. Your draft was not changed; try again.', retryable: true });
         }
@@ -1407,17 +1415,21 @@ export class PiRuntimeService {
       // Some models take the conservative route and echo the draft back.
       // One forced rewrite pass guarantees a materially improved prompt.
       if (isMateriallyUnchanged(optimized, text)) {
+        throwIfAborted();
         optimized = await run(PROMPT_OPTIMIZER_FORCED_REWRITE);
       }
+      throwIfAborted();
       return { text: optimized };
     } finally {
       this.promptOptimizationActive = false;
+      if (this.promptOptimizationAbort === controller) this.promptOptimizationAbort = null;
     }
   }
 
   /** Advanced improve-prompt phase 1: read-only project exploration into a research brief. */
-  private async researchPromptDraft(text: string, model: SessionModel, thinkingLevel: ThinkingLevel, modelRuntime: ModelRuntime): Promise<string> {
+  private async researchPromptDraft(text: string, model: SessionModel, thinkingLevel: ThinkingLevel, modelRuntime: ModelRuntime, signal: AbortSignal): Promise<string> {
     if (!this.project) return '';
+    if (signal.aborted) throw Object.assign(new Error('Prompt improvement cancelled.'), { name: 'AbortError' });
     // A research failure degrades to the standard rewrite instead of failing
     // the whole request, so the user always gets an improved prompt.
     const session = await this.researchSessionFactory({
@@ -1434,8 +1446,13 @@ export class PiRuntimeService {
       selectedSkills: [],
     }).catch(() => null);
     if (!session) return '';
+    if (signal.aborted) {
+      try { session.dispose(); } catch { /* Best-effort cleanup. */ }
+      throw Object.assign(new Error('Prompt improvement cancelled.'), { name: 'AbortError' });
+    }
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
+    let abortResearch: (() => void) | undefined;
     try {
       const prompt = [
         '<draft>',
@@ -1446,6 +1463,9 @@ export class PiRuntimeService {
         '',
         'Gather the verified facts this draft needs, then output the research brief defined in your instructions. Do not answer or perform the draft task.',
       ].join('\n');
+      abortResearch = () => { void session.abort().catch(() => undefined); };
+      signal.addEventListener('abort', abortResearch, { once: true });
+      if (signal.aborted) abortResearch();
       const turn = session.prompt(prompt);
       // After a timeout-triggered abort the turn can reject late; swallow it so
       // it never surfaces as an unhandled rejection.
@@ -1462,9 +1482,11 @@ export class PiRuntimeService {
       if (final.stopReason === 'error') return '';
       const brief = final.text.trim();
       return brief.length > PROMPT_RESEARCH_BRIEF_MAX_CHARACTERS ? brief.slice(0, PROMPT_RESEARCH_BRIEF_MAX_CHARACTERS) : brief;
-    } catch {
+    } catch (error) {
+      if (signal.aborted) throw error;
       return '';
     } finally {
+      if (abortResearch) signal.removeEventListener('abort', abortResearch);
       if (timeout !== undefined) clearTimeout(timeout);
       try {
         if (!settled) await session.abort().catch(() => undefined);
@@ -1836,6 +1858,10 @@ export class PiRuntimeService {
   }
 
   async abort(): Promise<{ aborted: boolean }> {
+    if (this.promptOptimizationAbort) {
+      this.promptOptimizationAbort.abort();
+      return { aborted: true };
+    }
     const session = this.runtime?.session;
     if (!session) return { aborted: false };
     const activeGoal = this.project ? this.goalMax.get(this.project.path, session.sessionId) : null;

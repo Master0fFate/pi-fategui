@@ -56,7 +56,7 @@ export function inspectBrowserUrl(value: string, privateNetworkOrigins: Readonly
       normalizedUrl: url.href,
       origin: url.origin,
       privateNetwork,
-      reason: 'Local and private-network addresses require an explicit origin grant.',
+      reason: 'This private-network address needs agent permission first: open it in the built-in browser address bar, then press “Allow agent” on the access strip (or switch the session to Full access).',
     };
   }
   return { allowed: true, normalizedUrl: url.href, origin: url.origin, privateNetwork, reason: 'URL is allowed.' };

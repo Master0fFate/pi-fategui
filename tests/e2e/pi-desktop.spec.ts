@@ -588,13 +588,21 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
 
     await page.screenshot({ path: 'test-results/pi-desktop-browser.png' });
 
-    const agent = page.getByRole('button', { name: 'Agent', exact: true });
-    await agent.click();
-    await expect(agent).toHaveAttribute('aria-pressed', 'true');
+    // Agent control is always on; toggling annotate off returns direct clicks.
+    await annotate.click();
+    await expect(annotate).toHaveAttribute('aria-pressed', 'false');
     await clickNativeElement('#save');
     await expect.poll(readSaveClicks).toBe(1);
-    await expect(page.locator('.browser-interaction-switch').getByRole('button')).toHaveText(['Agent', 'Annotate']);
-    await expect(agent).toHaveAttribute('aria-pressed', 'true');
+
+    const device = page.getByRole('button', { name: 'Toggle device toolbar' });
+    await device.click();
+    const stage = page.getByTestId('browser-device-stage');
+    await expect(stage).toBeVisible();
+    await expect(page.getByRole('toolbar', { name: 'Device toolbar' })).toBeVisible();
+    await expect(device).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('button', { name: 'Annotate' })).toHaveAttribute('aria-pressed', 'false');
+    await device.click();
+    await expect(stage).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Close Fate Local Preview' }).click();
     await expect(page.getByRole('tablist', { name: 'Browser tabs' }).getByRole('tab')).toHaveCount(1);

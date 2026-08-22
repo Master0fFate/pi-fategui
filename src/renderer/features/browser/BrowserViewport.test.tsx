@@ -11,6 +11,7 @@ const blockedState: BrowserState = {
   sessionFullAccess: false,
   controlLevel: 'interact',
   mode: 'agent',
+  deviceEmulation: null,
   tabs: [{
     id: 'browser-main', profileId: 'project', url: 'https://example.test/', title: 'Example', loading: false,
     canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true,

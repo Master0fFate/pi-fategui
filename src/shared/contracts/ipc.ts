@@ -17,6 +17,7 @@ import {
   type BrowserBounds,
   type BrowserConfirmation,
   type BrowserControlLevel,
+  type BrowserDeviceEmulation,
   type BrowserEvent,
   type BrowserOriginGrant,
   type BrowserSnapshotMode,
@@ -87,6 +88,7 @@ export const ipcChannels = {
   browserCloseTab: 'browser:close-tab',
   browserHistory: 'browser:history',
   browserSetMode: 'browser:set-mode',
+  browserSetDeviceEmulation: 'browser:set-device-emulation',
   browserSetControlLevel: 'browser:set-control-level',
   browserSetGrant: 'browser:set-grant',
   browserRevokeGrant: 'browser:revoke-grant',
@@ -1463,6 +1465,7 @@ export interface PiDesktopApi {
   closeBrowserTab: (tabId: string) => Promise<BrowserState>;
   controlBrowserHistory: (action: 'back' | 'forward' | 'reload' | 'stop') => Promise<BrowserState>;
   setBrowserMode: (mode: BrowserUiMode) => Promise<BrowserState>;
+  setBrowserDeviceEmulation: (emulation: BrowserDeviceEmulation | null) => Promise<BrowserState>;
   setBrowserControlLevel: (level: BrowserControlLevel) => Promise<BrowserState>;
   setBrowserOriginGrant: (grant: BrowserOriginGrant) => Promise<BrowserState>;
   revokeBrowserOriginGrant: (origin: string) => Promise<BrowserState>;

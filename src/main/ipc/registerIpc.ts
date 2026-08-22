@@ -189,6 +189,7 @@ import {
   browserOriginGrantSchema,
   browserOriginInputSchema,
   browserOverlayInputSchema,
+  browserSetDeviceEmulationInputSchema,
   browserSnapshotInputSchema,
   browserStateSchema,
   browserTabIdInputSchema,
@@ -709,6 +710,12 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     service.setMode(mode);
     return browserStateSchema.parse(service.getState());
   });
+  handle(ipcChannels.browserSetDeviceEmulation, async (event, input) => {
+    const { emulation } = browserSetDeviceEmulationInputSchema.parse(input);
+    const service = await activeBrowser(event);
+    await service.setDeviceEmulation(emulation);
+    return browserStateSchema.parse(service.getState());
+  });
   handle(ipcChannels.browserSetControlLevel, async (event, input) => {
     const { level } = browserControlLevelInputSchema.parse(input);
     const service = await activeBrowser(event);
@@ -745,8 +752,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   });
   handle(ipcChannels.browserListAnnotations, async (event, input) => {
     emptyInputSchema.parse(input);
-    const { service, tabId } = await activeBrowserTab(event);
-    return browserAnnotationListSchema.parse(service.listAnnotations(tabId));
+    const { service } = await activeBrowserTab(event);
+    // Repo-wide: composer drafts can reference annotations from any tab, and
+    // the chips must render even after tabs close or the service is recreated.
+    return browserAnnotationListSchema.parse(service.listAnnotations());
   });
   handle(ipcChannels.browserUpdateAnnotation, async (event, input) => {
     const update = browserAnnotationUpdateInputSchema.parse(input);

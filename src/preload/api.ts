@@ -154,6 +154,7 @@ import {
   browserOriginGrantSchema,
   browserOriginInputSchema,
   browserOverlayInputSchema,
+  browserSetDeviceEmulationInputSchema,
   browserSnapshotInputSchema,
   browserStateSchema,
   browserTabIdInputSchema,
@@ -162,6 +163,7 @@ import {
   semanticPageSnapshotSchema,
   type BrowserBounds,
   type BrowserControlLevel,
+  type BrowserDeviceEmulation,
   type BrowserEvent,
   type BrowserOriginGrant,
   type BrowserSnapshotMode,
@@ -336,6 +338,13 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   },
   async setBrowserMode(mode: BrowserUiMode) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.browserSetMode, browserUiModeInputSchema.parse({ mode }));
+    return browserStateSchema.parse(result);
+  },
+  async setBrowserDeviceEmulation(emulation: BrowserDeviceEmulation | null) {
+    const result: unknown = await ipcRenderer.invoke(
+      ipcChannels.browserSetDeviceEmulation,
+      browserSetDeviceEmulationInputSchema.parse({ emulation }),
+    );
     return browserStateSchema.parse(result);
   },
   async setBrowserControlLevel(level: BrowserControlLevel) {

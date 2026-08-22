@@ -35,6 +35,15 @@ const finiteNumberSchema = z.number().finite();
 
 export const browserControlLevelSchema = z.enum(['off', 'observe', 'interact']);
 export const browserUiModeSchema = z.enum(['agent', 'annotate']);
+export const browserDeviceEmulationSchema = z.object({
+  width: finiteNumberSchema.int().min(220).max(4_000),
+  height: finiteNumberSchema.int().min(320).max(8_000),
+  mobile: z.boolean().default(true),
+  touch: z.boolean().default(true),
+}).strict();
+export const browserSetDeviceEmulationInputSchema = z.object({
+  emulation: browserDeviceEmulationSchema.nullable(),
+}).strict();
 export const browserGrantScopeSchema = z.enum(['once', 'task', 'always']);
 export const browserOriginGrantSchema = z.object({
   origin: boundedOriginSchema,
@@ -170,6 +179,7 @@ export const browserStateSchema = z.object({
   sessionFullAccess: z.boolean().default(false),
   controlLevel: browserControlLevelSchema,
   mode: browserUiModeSchema.default('agent'),
+  deviceEmulation: browserDeviceEmulationSchema.nullable().default(null),
   tabs: z.array(browserTabStateSchema).max(32),
   grants: z.array(browserOriginGrantSchema).max(256),
 }).strict();
@@ -260,6 +270,7 @@ export const browserAnnotationListSchema = z.array(browserAnnotationSchema).max(
 
 export type BrowserControlLevel = z.infer<typeof browserControlLevelSchema>;
 export type BrowserUiMode = z.infer<typeof browserUiModeSchema>;
+export type BrowserDeviceEmulation = z.infer<typeof browserDeviceEmulationSchema>;
 export type BrowserOriginGrant = z.infer<typeof browserOriginGrantSchema>;
 export type BrowserBounds = z.infer<typeof browserBoundsSchema>;
 export type BrowserSnapshotMode = z.infer<typeof browserSnapshotModeSchema>;

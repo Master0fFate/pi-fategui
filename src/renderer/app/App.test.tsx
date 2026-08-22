@@ -70,7 +70,7 @@ describe('first-launch shell', () => {
       streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
     };
     const browserState = {
-      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off' as const, mode: 'agent' as const,
+      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off' as const, mode: 'agent' as const, deviceEmulation: null,
       tabs: [{ id: 'browser-main', profileId: 'project', url: 'http://localhost:4173/', title: 'Preview', loading: false, canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true }], grants: [],
     };
     let openLink: ((url: string) => void) | undefined;

@@ -433,7 +433,7 @@ describe('Sidebar sessions', () => {
   it('activates real Browser tabs without changing grants or resuming agent control', async () => {
     const browserState = {
       activeTabId: 'tab-1', visible: false, viewBlocked: false, sessionFullAccess: false,
-      controlLevel: 'observe' as const, mode: 'agent' as const, grants: [],
+      controlLevel: 'observe' as const, mode: 'agent' as const, deviceEmulation: null, grants: [],
       tabs: [{ id: 'tab-1', profileId: 'project', url: 'https://example.test/auth', title: 'Auth callback', loading: false, canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true }],
     };
     useBrowserStore.getState().hydrate(browserState, '/project');

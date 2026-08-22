@@ -235,7 +235,7 @@ export async function resolveTarget(
   }
   const privateAddress = addresses.some((address) => isPrivateNetworkHostname(address));
   if (privateAddress && !privateNetworkAllowed) {
-    throw new Error('The browser destination resolved to a private address without an explicit origin grant.');
+    throw new Error('The browser destination resolved to a private address without permission. Open it in the built-in browser address bar, then press “Allow agent” on the access strip, or switch the session to Full access.');
   }
   return {
     url,

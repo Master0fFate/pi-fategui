@@ -17,6 +17,7 @@ import type {
   BrowserBounds,
   BrowserConsequence,
   BrowserControlLevel,
+  BrowserDeviceEmulation,
   BrowserEvent,
   BrowserOriginGrant,
   BrowserSnapshotMode,
@@ -49,6 +50,11 @@ interface AgentNavigationGuard {
 }
 
 type BrowserNavigationSource = 'user' | 'agent' | 'page';
+
+// Consecutive benign picker re-arms before the annotation loop rests until
+// the user re-toggles annotate. Bounds a 250ms retry loop when Chromium keeps
+// failing the same inspect wait.
+const MAX_ANNOTATION_REARMS = 12;
 
 interface BrowserTab {
   id: string;
@@ -83,6 +89,10 @@ export interface BrowserServiceOptions {
   onNavigated?: (url: string) => void;
   /** Page to land on when the main tab is (re)opened without an explicit URL. */
   restoreUrl?: string | null;
+  /** Shared annotation store. Composer drafts reference annotations by id for
+   *  the whole app lifetime, so the store must outlive service recreation
+   *  (project focus switches, worktree sessions) or sends fail forever. */
+  annotations?: BrowserAnnotationRepository;
 }
 
 export type BrowserEventSink = (event: BrowserEvent) => void;
@@ -90,7 +100,7 @@ export type BrowserEventSink = (event: BrowserEvent) => void;
 export class BrowserService {
   readonly policy = new BrowserPolicy();
   readonly lease = new BrowserLease();
-  readonly annotations = new BrowserAnnotationRepository();
+  readonly annotations: BrowserAnnotationRepository;
   private readonly refs = new BrowserRefRegistry();
   private readonly tabs = new Map<string, BrowserTab>();
   private readonly networkProxy = new BrowserNetworkProxy(this.policy, (origin) => this.allowsPrivateNetworkAuthority(origin));
@@ -102,9 +112,19 @@ export class BrowserService {
   private visible = false;
   private readonly viewBlockers = new Set<string>();
   private mode: BrowserUiMode = 'agent';
+  private deviceEmulation: BrowserDeviceEmulation | null = null;
   private actionController = new AbortController();
   private annotationController: AbortController | null = null;
   private annotationLoop = 0;
+  /** Budget for consecutive benign picker re-arms. Bounds the retry loop when
+   *  Chromium keeps dropping the inspect wait; a successful pick resets it. */
+  private annotationRearmBudget = 0;
+  /** Annotation ids queued per owning conversation, mirroring the composer's
+   *  attachment list: created but not yet sent (dismissed) or deleted. The
+   *  browser overlay number must match the input box numbering, which resets
+   *  after every send. */
+  private readonly queuedAnnotationIds = new Map<string, string[]>();
+  private readonly annotationOwnerKeys = new Map<string, string>();
   private readonly activeAgentNavigations = new Set<string>();
   private readonly activeUserNavigations = new Set<string>();
   private readonly userNavigationTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -117,6 +137,7 @@ export class BrowserService {
     private readonly options: BrowserServiceOptions,
   ) {
     this.localPages = new LocalPageRegistry(options.canonicalProjectPath);
+    this.annotations = options.annotations ?? new BrowserAnnotationRepository();
   }
 
   setEventSink(sink: BrowserEventSink | null): void {
@@ -132,6 +153,7 @@ export class BrowserService {
       sessionFullAccess: this.policy.hasSessionFullAccess(),
       controlLevel: this.policy.getControlLevel(),
       mode: this.mode,
+      deviceEmulation: this.deviceEmulation,
       tabs: [...this.tabs.values()].map((tab) => {
         // A tab closed microseconds ago can still emit one last lifecycle
         // event before the map delete runs. Report it as inert instead of
@@ -265,6 +287,7 @@ export class BrowserService {
       // user's first address.
       if (!view.webContents.getURL()) await view.webContents.loadURL('about:blank');
       await cdp.attach();
+      await this.applyDeviceEmulation(tab);
       this.activateTab(tabId);
       if (initialUrl !== 'about:blank') await this.navigate(tabId, initialUrl, source);
     } catch (error) {
@@ -312,6 +335,9 @@ export class BrowserService {
 
   setVisible(visible: boolean): void {
     this.visible = visible;
+    // Device emulation intentionally survives pane toggles and the brief gap
+    // while the last tab is recreated: tabs, grants, and annotations survive
+    // too. A rebuilt service starts fresh and reports deviceEmulation: null.
     if (!visible) this.cancelAnnotationSelection();
     this.applyVisibility();
     if (visible && this.mode === 'annotate') this.startAnnotationLoop();
@@ -345,12 +371,66 @@ export class BrowserService {
     this.mode = mode;
     this.cancelAnnotationSelection();
     if (mode === 'annotate') {
-      this.policy.setControlLevel('observe');
+      // The element picker is an overlay, not a control-level downgrade: agent
+      // interaction stays fully enabled while the user annotates. Agent input
+      // temporarily suspends the picker so dispatched events reach the page.
+      this.annotationRearmBudget = MAX_ANNOTATION_REARMS;
       this.startAnnotationLoop();
     } else {
       this.policy.setControlLevel('interact');
     }
     this.emitState();
+  }
+
+  async setDeviceEmulation(emulation: BrowserDeviceEmulation | null): Promise<void> {
+    if (!emulation) {
+      this.deviceEmulation = null;
+    } else {
+      this.deviceEmulation = {
+        width: Math.round(emulation.width),
+        height: Math.round(emulation.height),
+        mobile: emulation.mobile,
+        touch: emulation.touch,
+      };
+    }
+    // Apply to every live tab so background tabs keep the same device when
+    // activated and the emulation survives tab switches.
+    await Promise.all([...this.tabs.values()].map((tab) => this.applyDeviceEmulation(tab)));
+    this.emitState();
+  }
+
+  private async applyDeviceEmulation(tab: BrowserTab): Promise<void> {
+    if (webContentsGone(tab.view.webContents)) return;
+    const send = (method: string, params: Record<string, unknown> = {}) =>
+      tab.cdp.send(method, params).catch(() => undefined);
+    if (!this.deviceEmulation) {
+      // Restore desktop input: real mouse events, no touch synthesis, and
+      // viewport metrics taken from the actual view size again.
+      await send('Emulation.setEmitTouchEventsForMouse', { enabled: false });
+      await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+      await send('Emulation.clearDeviceMetricsOverride');
+      return;
+    }
+    // Width, height, and scale factor of 0 keep the physical view size (the
+    // renderer frames the device); mobile switches viewport semantics to a
+    // phone so responsive layouts and touch handlers behave like a device.
+    await send('Emulation.setDeviceMetricsOverride', {
+      width: 0,
+      height: 0,
+      deviceScaleFactor: 0,
+      mobile: this.deviceEmulation.mobile,
+    });
+    // Mouse input is translated into touch events, including finger-like
+    // swipe scrolling with fling, matching Chrome's device toolbar.
+    await send('Emulation.setTouchEmulationEnabled', {
+      enabled: true,
+      maxTouchPoints: 5,
+      ...(this.deviceEmulation.mobile ? { configuration: 'mobile' } : {}),
+    });
+    await send('Emulation.setEmitTouchEventsForMouse', {
+      enabled: this.deviceEmulation.touch,
+      ...(this.deviceEmulation.mobile ? { configuration: 'mobile' } : { configuration: 'desktop' }),
+    });
   }
 
   beginTask(taskOrRunId: string): void {
@@ -493,6 +573,7 @@ export class BrowserService {
         origin: browserSecurityOrigin(tab.view.webContents.getURL() || 'about:blank'),
         explicitUserSelection: true,
       }, comment, signal ? AbortSignal.any([controller.signal, signal]) : controller.signal);
+      this.queueAnnotation(annotation.id);
       this.eventSink?.({ type: 'work-log', tabId, action: 'annotate', target: redactPotentialSecretText(annotation.target.accessibleName ?? annotation.kind, 1_200), timestamp: Date.now() });
       return annotation;
     } finally {
@@ -511,6 +592,7 @@ export class BrowserService {
         explicitUserSelection: true,
       }, comment, signal ? AbortSignal.any([controller.signal, signal]) : controller.signal);
       this.eventSink?.({ type: 'work-log', tabId, action: 'annotate', target: 'Selected page region', timestamp: Date.now() });
+      this.queueAnnotation(annotation.id);
       return annotation;
     } finally {
       if (this.annotationController === controller) this.annotationController = null;
@@ -529,9 +611,7 @@ export class BrowserService {
     const tab = this.tabs.get(annotation.tabId);
     if (!tab || tab.documentEpoch !== annotation.documentEpoch) return false;
     this.activateTab(tab.id);
-    const ordered = [...this.annotations.list(tab.id)].reverse();
-    const label = Math.max(1, ordered.findIndex((candidate) => candidate.id === annotation.id) + 1);
-    await tab.annotationOverlay.add(annotation, label);
+    await tab.annotationOverlay.add(annotation, this.annotationLabel(id));
     await tab.annotationOverlay.pulse(id);
     return true;
   }
@@ -539,6 +619,9 @@ export class BrowserService {
   async dismissAnnotationOverlays(ids: readonly string[]): Promise<void> {
     await Promise.all([...new Set(ids)].slice(0, 24).map(async (id) => {
       const annotation = this.annotations.get(id);
+      // Sent annotations leave the queue so the next annotation starts from 1
+      // again, exactly like the composer attachment numbering.
+      this.dequeueAnnotation(id);
       if (!annotation) return;
       await this.tabs.get(annotation.tabId)?.annotationOverlay.remove(id);
     }));
@@ -570,6 +653,7 @@ export class BrowserService {
   removeAnnotation(id: string): boolean {
     const annotation = this.annotations.get(id);
     const removed = this.annotations.remove(id);
+    this.dequeueAnnotation(id);
     if (removed && annotation) void this.tabs.get(annotation.tabId)?.annotationOverlay.remove(id);
     return removed;
   }
@@ -756,14 +840,19 @@ export class BrowserService {
       return { url: allowed.url, origin: allowed.origin, network: allowed.url !== 'about:blank' };
     }
     const parsed = new URL(address.url);
-    const explicitlyApprovedPrivate = parsed.href === 'about:blank' || source !== 'user'
-      ? new Set<string>()
-      : new Set(isPrivateNetworkHostname(parsed.hostname) ? [parsed.origin] : []);
-    const decision = inspectBrowserUrl(address.url, explicitlyApprovedPrivate);
+    // Human intent approves the private network: typing the address approves
+    // every private range for that tab; a page-opened link or popup still
+    // approves loopback (the user's own machine), matching Chrome, while LAN
+    // ranges keep requiring an explicit grant for page-driven flows.
+    const approvedPrivate = new Set<string>();
+    if (source === 'user' ? isPrivateNetworkHostname(parsed.hostname) : isLoopbackHostname(parsed.hostname)) {
+      approvedPrivate.add(parsed.origin);
+    }
+    const decision = inspectBrowserUrl(address.url, approvedPrivate);
     if (!decision.allowed || !decision.normalizedUrl || !decision.origin) {
       throw new BrowserError(decision.privateNetwork ? 'PRIVATE_NETWORK_BLOCKED' : 'INVALID_URL', decision.reason);
     }
-    if (source === 'user' && decision.privateNetwork) tab.humanNetworkOrigins.add(decision.origin);
+    if ((source === 'user' || isLoopbackHostname(parsed.hostname)) && decision.privateNetwork) tab.humanNetworkOrigins.add(decision.origin);
     return { url: decision.normalizedUrl, origin: decision.origin, network: decision.normalizedUrl !== 'about:blank' };
   }
 
@@ -816,17 +905,33 @@ export class BrowserService {
         && !this.activeUserNavigations.has(tab.id)
         && !this.activeAgentNavigations.has(tab.id);
       const decision = this.inspectNavigation(tab, event.url);
-      const guardAllowed = decision.allowed && this.agentNavigationAllowed(tab.id, event.url);
-      if (leavingLocalPreview || !decision.allowed || !guardAllowed) {
+      // A human link click or a page redirect on the MAIN frame is human
+      // intent: approve the private-network destination instead of blocking
+      // it. Cloud metadata stays hard-blocked and subframes keep the guard so
+      // a public page cannot embed or drive local services in a frame.
+      let effective = decision;
+      if (
+        event.isMainFrame
+        && !this.activeAgentNavigations.has(tab.id)
+        && !decision.allowed
+        && decision.privateNetwork
+        && decision.origin
+        && !isCloudMetadataHostname(hostnameOf(event.url))
+      ) {
+        tab.humanNetworkOrigins.add(decision.origin);
+        effective = { ...decision, allowed: true, reason: 'The user opened this private-network origin.' };
+      }
+      const guardAllowed = effective.allowed && this.agentNavigationAllowed(tab.id, event.url);
+      if (leavingLocalPreview || !effective.allowed || !guardAllowed) {
         event.preventDefault();
         this.navigationBlocked(
           tab.id,
           event.url,
           leavingLocalPreview
             ? 'Local previews cannot navigate externally. Enter the address directly to leave the preview.'
-            : decision.allowed
+            : effective.allowed
               ? 'The agent action did not authorize navigation to this origin.'
-              : decision.reason,
+              : effective.reason,
         );
       }
     });
@@ -922,11 +1027,18 @@ export class BrowserService {
   }
 
   private async withAgentInput<T>(operation: () => Promise<T>): Promise<T> {
+    // While the annotation picker is armed, Chromium's inspector intercepts
+    // every input event — including dispatched agent input — as an element
+    // pick. Disarm it for the duration of the agent action and re-arm after;
+    // the agent stays interactive in annotate mode.
+    const suspending = this.agentInputDepth === 0 && this.mode === 'annotate' && this.annotationController !== null;
     this.agentInputDepth += 1;
+    if (suspending) this.cancelAnnotationSelection();
     try {
       return await operation();
     } finally {
       this.agentInputDepth = Math.max(0, this.agentInputDepth - 1);
+      if (suspending && this.agentInputDepth === 0 && this.mode === 'annotate') this.startAnnotationLoop();
     }
   }
 
@@ -1055,9 +1167,11 @@ export class BrowserService {
           explicitUserSelection: true,
         }, '', controller.signal);
         if (controller.signal.aborted || this.mode !== 'annotate' || tab.documentEpoch !== annotation.documentEpoch) return;
-        const ordered = [...this.annotations.list(tab.id)].reverse();
-        const label = Math.max(1, ordered.findIndex((candidate) => candidate.id === annotation.id) + 1);
+        this.queueAnnotation(annotation.id);
+        const label = this.annotationLabel(annotation.id);
         await tab.annotationOverlay.add(annotation, label);
+        // A successful pick earns a fresh retry budget for later hiccups.
+        this.annotationRearmBudget = MAX_ANNOTATION_REARMS;
         this.eventSink?.({ type: 'annotation-created', ...annotationOwner, annotation });
         this.eventSink?.({
           type: 'work-log',
@@ -1073,11 +1187,24 @@ export class BrowserService {
         }, 0);
       } catch (error) {
         if (!isAbortError(error) && loop === this.annotationLoop) {
-          const message = error instanceof Error ? error.message : 'The page element could not be attached.';
-          this.eventSink?.({ type: 'annotation-error', message: message.slice(0, 1_000) });
-          this.mode = 'agent';
-          this.policy.setControlLevel('interact');
-          this.emitState();
+          if (isBenignPickerWait(error)) {
+            // A picker that timed out or was reset mid-flight is not a user
+            // problem: quietly re-arm it and stay in annotate mode instead of
+            // surfacing "Timed out waiting for Overlay…" errors. The budget
+            // bounds the loop when Chromium keeps failing the same wait.
+            if (this.annotationRearmBudget > 0) {
+              this.annotationRearmBudget -= 1;
+              setTimeout(() => {
+                if (this.mode === 'annotate' && this.activeTabId === tab.id && loop === this.annotationLoop) this.startAnnotationLoop();
+              }, 250);
+            }
+          } else {
+            const message = error instanceof Error ? error.message : 'The page element could not be attached.';
+            this.eventSink?.({ type: 'annotation-error', message: message.slice(0, 1_000) });
+            this.mode = 'agent';
+            this.policy.setControlLevel('interact');
+            this.emitState();
+          }
         }
       } finally {
         if (this.annotationController === controller) this.annotationController = null;
@@ -1090,6 +1217,53 @@ export class BrowserService {
     const controller = new AbortController();
     this.annotationController = controller;
     return controller;
+  }
+
+  /** The conversation that owns new annotations; queued numbering is per
+   *  conversation because each session draft numbers its own attachments. */
+  private annotationOwnerKey(): string {
+    const owner = this.options.annotationOwner?.();
+    return owner ? `${owner.projectPath}\u0000${owner.sessionId}` : '\u0000default';
+  }
+
+  private queueAnnotation(id: string): void {
+    const ownerKey = this.annotationOwnerKey();
+    const previousOwner = this.annotationOwnerKeys.get(id);
+    if (previousOwner && previousOwner !== ownerKey) this.dequeueAnnotation(id);
+    // An id already queued keeps its position so the overlay number stays the
+    // same as the composer chip the renderer already shows.
+    const queue = this.queuedAnnotationIds.get(ownerKey) ?? [];
+    if (queue.includes(id)) return;
+    this.annotationOwnerKeys.set(id, ownerKey);
+    queue.push(id);
+    this.queuedAnnotationIds.set(ownerKey, queue);
+  }
+
+  private dequeueAnnotation(id: string): void {
+    const ownerKey = this.annotationOwnerKeys.get(id);
+    if (!ownerKey) return;
+    this.annotationOwnerKeys.delete(id);
+    const queue = this.queuedAnnotationIds.get(ownerKey);
+    if (!queue) return;
+    const next = queue.filter((queued) => queued !== id);
+    if (next.length > 0) this.queuedAnnotationIds.set(ownerKey, next);
+    else this.queuedAnnotationIds.delete(ownerKey);
+  }
+
+  /** The number the composer input shows for this annotation: its position
+   *  among the owning session's queued attachments. Sent (dismissed)
+   *  annotations fall back to where they would sit if re-highlighted. */
+  private annotationLabel(id: string): number {
+    const ownerKey = this.annotationOwnerKeys.get(id) ?? this.annotationOwnerKey();
+    const queue = this.queuedAnnotationIds.get(ownerKey);
+    const position = queue?.indexOf(id) ?? -1;
+    if (position >= 0) return position + 1;
+    const annotation = this.annotations.get(id);
+    if (!annotation || !queue) return 1;
+    return 1 + queue.filter((queued) => {
+      const candidate = this.annotations.get(queued);
+      return candidate ? candidate.createdAt < annotation.createdAt : false;
+    }).length;
   }
 
   private tab(tabId: string): BrowserTab {
@@ -1154,6 +1328,15 @@ export function projectProfilePartition(canonicalProjectPath: string, profileId 
   const digest = createHash('sha256').update(identity).digest('hex').slice(0, 32);
   const profile = createHash('sha256').update(profileId).digest('hex').slice(0, 12);
   return `persist:fate-browser-${digest}-${profile}`;
+}
+
+function hostnameOf(value: string): string {
+  try { return new URL(value).hostname; } catch { return ''; }
+}
+
+function isLoopbackHostname(rawHostname: string): boolean {
+  const hostname = rawHostname.toLowerCase().replace(/^\[|\]$/gu, '').replace(/\.$/u, '');
+  return hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/u.test(hostname);
 }
 
 function webContentsGone(contents: WebContents | null | undefined): contents is null | undefined {
@@ -1229,6 +1412,14 @@ function policyNetworkUrl(value: string): URL | null {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
+}
+
+/** Picker waits that ran out of patience or were reset by Chromium. They are
+ *  transient, not user-actionable: re-arm instead of reporting. */
+function isBenignPickerWait(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error instanceof BrowserError && error.code === 'CDP_UNAVAILABLE') return true;
+  return /timed out waiting for overlay\./iu.test(error.message);
 }
 
 function isSupersededNavigationError(error: unknown): boolean {

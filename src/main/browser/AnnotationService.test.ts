@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AnnotationService } from './AnnotationService';
 import { BrowserAnnotationRepository } from './BrowserAnnotationRepository';
 import type { BrowserCdpEventClient } from './CdpClient';
@@ -90,6 +90,35 @@ function fixture() {
 }
 
 describe('AnnotationService', () => {
+  it('asks Chromium for unbounded, abortable picker waits instead of timing out on the human', async () => {
+    const { policy, refs, repository } = fixture();
+    const waits: Array<{ method: string; options: { timeoutMs?: number; signal?: AbortSignal } }> = [];
+    const cdp: BrowserCdpEventClient = {
+      supports: (domain) => domain === 'Overlay' || domain === 'CSS',
+      send: async <T>() => undefined as T,
+      waitForEvent: <T>(method: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}) => {
+        waits.push({ method, options });
+        return new Promise<T>((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => reject(new DOMException('Browser inspection aborted.', 'AbortError')));
+        });
+      },
+    };
+    const service = new AnnotationService(cdp, policy, repository, refs);
+    const controller = new AbortController();
+    const context = { tabId: 'tab-1', documentEpoch: 1, pageRevision: 2, url: 'https://example.test/' };
+
+    const elementPick = service.selectElement(context, '', controller.signal);
+    const regionPick = service.selectRegion(context, '', controller.signal);
+    // selectElement awaits two Overlay sends before arming its wait; region arms immediately.
+    await vi.waitFor(() => expect(waits.map((wait) => wait.method).sort()).toEqual(['Overlay.inspectNodeRequested', 'Overlay.screenshotRequested']));
+    expect(waits.every((wait) => wait.options.timeoutMs === Number.POSITIVE_INFINITY)).toBe(true);
+    expect(waits.every((wait) => Boolean(wait.options.signal))).toBe(true);
+
+    controller.abort();
+    await expect(elementPick).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(regionPick).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('stores a structured, redacted element annotation with an existing semantic ref', async () => {
     const { policy, refs, ref, cdp, calls, repository } = fixture();
     const service = new AnnotationService(cdp, policy, repository, refs);

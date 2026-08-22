@@ -126,7 +126,7 @@ describe('conversation components', () => {
 
   it('opens HTTP(S) and localhost links in the built-in browser, with a native link menu on right click', async () => {
     const browserState = {
-      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off' as const, mode: 'agent' as const,
+      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off' as const, mode: 'agent' as const, deviceEmulation: null,
       tabs: [{ id: 'browser-main', profileId: 'project', url: 'http://localhost:4173/preview', title: 'Preview', loading: false, canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true }], grants: [],
     };
     const navigateBrowser = vi.fn(async () => browserState);
@@ -509,6 +509,44 @@ describe('conversation components', () => {
     expect(screen.getByRole('button', { name: 'Improve prompt' })).toHaveAttribute('aria-busy', 'false');
   });
 
+  it('cancels an in-flight prompt improvement without changing the draft', async () => {
+    let rejectOptimization: ((reason?: unknown) => void) | undefined;
+    const optimizePrompt = vi.fn(() => new Promise<{ text: string }>((_resolve, reject) => { rejectOptimization = reject; }));
+    const abort = vi.fn(async () => {
+      rejectOptimization?.(Object.assign(new Error('Prompt improvement cancelled.'), { name: 'AbortError' }));
+      return { aborted: true };
+    });
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { optimizePrompt, abort } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    const textarea = screen.getByLabelText('Message Pi');
+    await user.type(textarea, 'keep this draft');
+    await user.click(screen.getByRole('button', { name: 'Improve prompt' }));
+    await user.click(screen.getByRole('button', { name: 'Improving prompt' }));
+
+    expect(abort).toHaveBeenCalledOnce();
+    await waitFor(() => expect(screen.getByLabelText('Message Pi')).toHaveValue('keep this draft'));
+    expect(screen.getByRole('button', { name: 'Improve prompt' })).toHaveAttribute('aria-busy', 'false');
+  });
+
+  it('supports undo and redo around prompt improvement', async () => {
+    const optimizePrompt = vi.fn(async () => ({ text: 'rewritten prompt' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { optimizePrompt } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    const textarea = screen.getByLabelText('Message Pi');
+    await user.type(textarea, 'original prompt');
+    await user.click(screen.getByRole('button', { name: 'Improve prompt' }));
+    await waitFor(() => expect(textarea).toHaveValue('rewritten prompt'));
+
+    fireEvent.keyDown(textarea, { key: 'z', ctrlKey: true });
+    expect(textarea).toHaveValue('original prompt');
+    fireEvent.keyDown(textarea, { key: 'y', ctrlKey: true });
+    expect(textarea).toHaveValue('rewritten prompt');
+  });
+
   it('turns the improve button accent-colored and requests codebase-grounded improvement when advanced mode is enabled', async () => {
     const optimizePrompt = vi.fn(async () => ({ text: 'Grounded rewrite.' }));
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { optimizePrompt } as unknown as PiDesktopApi });
@@ -670,7 +708,7 @@ describe('conversation components', () => {
       comment: 'Use this exact control', semanticCoverage: 1, reattachConfidence: 0.9, createdAt: 1,
     };
     useBrowserStore.getState().hydrate({
-      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off', mode: 'agent', tabs: [], grants: [],
+      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off', mode: 'agent', deviceEmulation: null, tabs: [], grants: [],
     }, '/project');
     useBrowserStore.getState().setAnnotations([annotation]);
     attachBrowserAnnotationToSession('/project', 's1', annotation.id);
@@ -688,6 +726,45 @@ describe('conversation components', () => {
     }));
     await waitFor(() => expect(dismissBrowserAnnotations).toHaveBeenCalledWith([annotation.id]));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove browser annotation 1' })).not.toBeInTheDocument());
+  });
+
+  it('prunes stale annotation ids after a failed send instead of poisoning every later prompt', async () => {
+    const staleId = 'b76a41b3-54df-457a-ad4f-fa3ee0e1e8e6';
+    const annotation: BrowserAnnotation = {
+      id: staleId, tabId: 'browser-main', url: 'https://example.test/', origin: 'https://example.test',
+      documentEpoch: 1, pageRevision: 1, kind: 'element',
+      target: {
+        frameId: 'frame-main', semanticRef: 'e1', role: 'button', accessibleName: 'Save changes', tagName: 'button',
+        rectCssPx: { x: 1, y: 2, width: 30, height: 20 }, rectNormalized: { x: 0, y: 0, width: 0.1, height: 0.1 },
+        locatorHints: {}, fingerprint: { attributesHash: 'a', nearbyTextHash: 'b', ancestorHash: 'c' },
+      },
+      comment: '', semanticCoverage: 1, reattachConfidence: 0.9, createdAt: 1,
+    };
+    useBrowserStore.getState().hydrate({
+      activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off', mode: 'agent', deviceEmulation: null, tabs: [], grants: [],
+    }, '/project');
+    useBrowserStore.getState().setAnnotations([annotation]);
+    attachBrowserAnnotationToSession('/project', 's1', staleId);
+    // The draft keeps the id even though main cannot resolve it anymore.
+    let calls = 0;
+    const prompt = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('Error invoking remote method \'runtime:prompt\': Error: {"code":"PI_RUNTIME_ERROR","message":"Browser annotation attachments are no longer available: ' + staleId + '. Remove them and select those elements again.","retryable":true}');
+      return { accepted: true, runId: 'run-after-prune' };
+    });
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt } as unknown as PiDesktopApi });
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText('Message Pi'), { target: { value: 'Try again' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText(/no longer available/iu)).toBeInTheDocument());
+
+    // The stale id is gone from the draft: the retry sends plain text.
+    fireEvent.change(screen.getByLabelText('Message Pi'), { target: { value: 'Try again' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+    expect(prompt).toHaveBeenLastCalledWith({ text: 'Try again', behavior: 'prompt' });
   });
 
   it('autocompletes project files and folders with canonical # tags', async () => {
@@ -852,7 +929,7 @@ describe('conversation components', () => {
     await user.type(input, 's');
     act(() => deferredFrames.splice(0).forEach((callback) => callback(0)));
     await user.type(input, 'ummarize your findings');
-    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    await user.click(screen.getByRole('button', { name: 'Send message to live agent' }));
     await waitFor(() => expect(controlSubagent).toHaveBeenCalledWith({ action: 'steer', target: '@auth-reviewer-1', message: '@auth-reviewer-1 summarize your findings' }));
     expect(prompt).not.toHaveBeenCalled();
 
@@ -1183,12 +1260,12 @@ describe('conversation components', () => {
     expect(input).toHaveAttribute('placeholder', 'Ask for follow-up changes…');
     await user.type(input, 'change direction{Enter}');
     expect(prompt).toHaveBeenCalledWith({ text: 'change direction', behavior: 'followUp' });
-    expect(screen.getByRole('button', { name: 'Queue follow-up message' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Queue follow-up message' }).querySelector('.lucide-arrow-up')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop Pi' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Stop Pi' }).querySelector('.lucide-square')).toBeInTheDocument();
     expect(abort).not.toHaveBeenCalled();
   });
 
-  it('queues a streaming arrow short-click exactly once', () => {
+  it('sends a drafted follow-up with the arrow button', () => {
     vi.useFakeTimers();
     try {
       const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
@@ -1197,11 +1274,8 @@ describe('conversation components', () => {
       useRuntimeStore.setState({ runtime: ready({ streaming: true }), queue: { steering: 0, followUp: 0, items: [] } });
       render(<Composer onOpenProject={vi.fn()} />);
       fireEvent.change(screen.getByLabelText('Message Pi'), { target: { value: 'Queue this change' } });
-      const send = screen.getByRole('button', { name: 'Queue follow-up message' });
+      const send = screen.getByRole('button', { name: 'Send follow-up message' });
 
-      fireEvent.pointerDown(send, { button: 0, pointerId: 7, isPrimary: true });
-      vi.advanceTimersByTime(1_250);
-      fireEvent.pointerUp(send, { button: 0, pointerId: 7, isPrimary: true });
       fireEvent.click(send);
 
       expect(prompt).toHaveBeenCalledOnce();
@@ -1212,7 +1286,7 @@ describe('conversation components', () => {
     }
   });
 
-  it('aborts once after a two-second streaming arrow hold and suppresses queue submission', () => {
+  it('stops an active run with one click when the draft is empty', () => {
     vi.useFakeTimers();
     try {
       const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
@@ -1220,12 +1294,8 @@ describe('conversation components', () => {
       Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, abort } as unknown as PiDesktopApi });
       useRuntimeStore.setState({ runtime: ready({ streaming: true }), queue: { steering: 0, followUp: 0, items: [] } });
       render(<Composer onOpenProject={vi.fn()} />);
-      const send = screen.getByRole('button', { name: 'Queue follow-up message' });
+      const send = screen.getByRole('button', { name: 'Stop Pi' });
 
-      fireEvent.pointerDown(send, { button: 0, pointerId: 8, isPrimary: true });
-      vi.advanceTimersByTime(2_000);
-      vi.advanceTimersByTime(5_000);
-      fireEvent.pointerUp(send, { button: 0, pointerId: 8, isPrimary: true });
       fireEvent.click(send);
 
       expect(abort).toHaveBeenCalledOnce();
@@ -1235,7 +1305,7 @@ describe('conversation components', () => {
     }
   });
 
-  it('cancels an active goal after the two-second composer hold', () => {
+  it('cancels an active goal with one click', () => {
     vi.useFakeTimers();
     try {
       const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
@@ -1246,19 +1316,16 @@ describe('conversation components', () => {
       useGoalMaxStore.setState({ goal: activeGoalFixture() });
       useRuntimeStore.setState({ runtime: ready({ streaming: true }), queue: { steering: 0, followUp: 0, items: [] } });
       render(<Composer onOpenProject={vi.fn()} />);
-      const send = screen.getByRole('button', { name: 'Queue follow-up message' });
-      fireEvent.pointerDown(send, { button: 0, pointerId: 18, isPrimary: true });
-      vi.advanceTimersByTime(2_000);
-      fireEvent.pointerUp(send, { button: 0, pointerId: 18, isPrimary: true });
+      const send = screen.getByRole('button', { name: 'Cancel goal' });
       fireEvent.click(send);
       expect(controlGoalMax).toHaveBeenCalledOnce();
-      expect(controlGoalMax).toHaveBeenCalledWith({ action: 'cancel', reason: 'Cancelled from the composer hold control.' });
+      expect(controlGoalMax).toHaveBeenCalledWith({ action: 'cancel', reason: 'Cancelled from the composer stop button.' });
       expect(abort).not.toHaveBeenCalled();
       expect(prompt).not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
   });
 
-  it('keeps the hold-to-cancel control available while an active goal is idle and the draft is empty', () => {
+  it('keeps the stop control available while an active goal is idle and the draft is empty', () => {
     vi.useFakeTimers();
     try {
       const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
@@ -1267,12 +1334,9 @@ describe('conversation components', () => {
       useGoalMaxStore.setState({ goal: activeGoalFixture() });
       useRuntimeStore.setState({ runtime: ready({ streaming: false }), queue: { steering: 0, followUp: 0, items: [] } });
       render(<Composer onOpenProject={vi.fn()} />);
-      const send = screen.getByRole('button', { name: 'Goal control; hold to cancel goal' });
+      const send = screen.getByRole('button', { name: 'Cancel goal' });
       expect(send).toBeEnabled();
 
-      fireEvent.pointerDown(send, { button: 0, pointerId: 19, isPrimary: true });
-      vi.advanceTimersByTime(2_000);
-      fireEvent.pointerUp(send, { button: 0, pointerId: 19, isPrimary: true });
       fireEvent.click(send);
 
       expect(controlGoalMax).toHaveBeenCalledOnce();
@@ -1280,37 +1344,25 @@ describe('conversation components', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it('cleans streaming arrow holds on cancellation, lost capture, and unmount', () => {
-    vi.useFakeTimers();
-    try {
-      const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
-      const abort = vi.fn(async () => ({ aborted: true }));
-      Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, abort } as unknown as PiDesktopApi });
-      useRuntimeStore.setState({ runtime: ready({ streaming: true }), queue: { steering: 0, followUp: 0, items: [] } });
-      const view = render(<Composer onOpenProject={vi.fn()} />);
-      fireEvent.change(screen.getByLabelText('Message Pi'), { target: { value: 'Still here' } });
-      const send = screen.getByRole('button', { name: 'Queue follow-up message' });
+  it('switches between send and stop as the draft changes', () => {
+    const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+    const abort = vi.fn(async () => ({ aborted: true }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, abort } as unknown as PiDesktopApi });
+    useRuntimeStore.setState({ runtime: ready({ streaming: true }), queue: { steering: 0, followUp: 0, items: [] } });
+    render(<Composer onOpenProject={vi.fn()} />);
+    const input = screen.getByLabelText('Message Pi');
 
-      fireEvent.pointerDown(send, { button: 0, pointerId: 9, isPrimary: true });
-      vi.advanceTimersByTime(900);
-      fireEvent.pointerCancel(send, { pointerId: 9 });
-      vi.advanceTimersByTime(2_000);
-      fireEvent.click(send);
-      expect(prompt).not.toHaveBeenCalled();
-      expect(abort).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Stop Pi' }).querySelector('.lucide-square')).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'Still here' } });
+    expect(screen.getByRole('button', { name: 'Send follow-up message' }).querySelector('.lucide-arrow-up')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Stop Pi' })).not.toBeInTheDocument();
 
-      fireEvent.pointerDown(send, { button: 0, pointerId: 10, isPrimary: true });
-      fireEvent.lostPointerCapture(send, { pointerId: 10 });
-      vi.advanceTimersByTime(2_000);
-      expect(abort).not.toHaveBeenCalled();
-
-      fireEvent.pointerDown(send, { button: 0, pointerId: 11, isPrimary: true });
-      view.unmount();
-      vi.advanceTimersByTime(2_000);
-      expect(abort).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    fireEvent.change(input, { target: { value: '' } });
+    const stop = screen.getByRole('button', { name: 'Stop Pi' });
+    expect(stop).toBeEnabled();
+    fireEvent.click(stop);
+    expect(abort).toHaveBeenCalledOnce();
+    expect(prompt).not.toHaveBeenCalled();
   });
 
   it('previews a queued follow-up and converts it to steering in place', async () => {

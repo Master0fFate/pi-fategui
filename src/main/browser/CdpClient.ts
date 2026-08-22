@@ -96,12 +96,18 @@ export class CdpClient implements BrowserCdpClient {
       const waiters = this.eventWaiters.get(method) ?? new Set<(params: unknown) => void>();
       const settle = (params: unknown) => { cleanup(); resolve(params as T); };
       const abort = () => { cleanup(); reject(new DOMException('Browser inspection aborted.', 'AbortError')); };
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new BrowserError('UNSUPPORTED_ACTION', `Timed out waiting for ${method}.`, true));
-      }, options.timeoutMs ?? 60_000);
+      // Human-driven waits (element/region pickers) pass timeoutMs: Infinity:
+      // the picker stays armed until the user clicks or the abort signal fires,
+      // exactly like Chrome DevTools. Only bounded waits get a timer.
+      const timeoutMs = options.timeoutMs ?? 60_000;
+      const timer = Number.isFinite(timeoutMs)
+        ? setTimeout(() => {
+          cleanup();
+          reject(new BrowserError('UNSUPPORTED_ACTION', `Timed out waiting for ${method}.`, true));
+        }, timeoutMs)
+        : null;
       const cleanup = () => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         options.signal?.removeEventListener('abort', abort);
         waiters.delete(settle);
         if (waiters.size === 0) this.eventWaiters.delete(method);

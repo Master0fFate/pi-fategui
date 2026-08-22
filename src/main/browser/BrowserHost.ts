@@ -10,6 +10,7 @@ import type {
   PermissionLevel,
 } from '../../shared/contracts/ipc';
 import type { BrowserRuntimeBridge } from '../pi/BrowserRuntimeBridge';
+import { BrowserAnnotationRepository } from './BrowserAnnotationRepository';
 import { BrowserError } from './BrowserErrors';
 import type { BrowserConfirmationBinding } from './BrowserActionExecutor';
 import { BrowserService } from './BrowserService';
@@ -17,6 +18,7 @@ import { BrowserHistoryRepository } from './BrowserHistoryRepository';
 import { redactSnapshotUrl } from './SemanticSnapshotEngine';
 
 const CONFIRMATION_TTL_MS = 30_000;
+const MAX_PERSISTED_ANNOTATION_STORES = 6;
 
 interface PendingConfirmation {
   confirmation: BrowserConfirmation;
@@ -45,6 +47,11 @@ export class BrowserHost {
   private pending: PendingConfirmation | null = null;
   private ensuring: { ownerId: number; projectPath: string; promise: Promise<BrowserService> } | null = null;
   private appOverlayBlocked = false;
+  /** Annotation stores keyed by normalized project path. Composer drafts hold
+   *  annotation ids for the renderer's whole lifetime, so a store must survive
+   *  every service recreation (project focus switches, worktree activation)
+   *  instead of dying with the disposed service. Bounded LRU. */
+  private readonly annotationStores = new Map<string, BrowserAnnotationRepository>();
 
   constructor(private readonly options: BrowserHostOptions) {}
 
@@ -96,6 +103,7 @@ export class BrowserHost {
       onAppShortcut: (command) => this.options.command(owner, command),
       onNavigated: (url) => { void this.options.history?.save(project.path, url).catch(() => undefined); },
       restoreUrl: lastUrl,
+      annotations: this.annotationStoreFor(project.path),
     });
     this.service = service;
     this.owner = owner;
@@ -148,7 +156,30 @@ export class BrowserHost {
     this.owner = null;
     this.projectPath = null;
     this.appOverlayBlocked = false;
+    // Annotation stores survive the reset on purpose: they are referenced by
+    // long-lived composer drafts, not by the disposable Chromium service.
     if (service) await service.dispose();
+  }
+
+  /** Project-scoped annotation store. The same normalized path always maps to
+   *  the same store so annotations outlive focus switches and worktree jumps. */
+  private annotationStoreFor(projectPath: string): BrowserAnnotationRepository {
+    const key = normalizeProjectKey(projectPath);
+    const existing = this.annotationStores.get(key);
+    if (existing) {
+      // Refresh LRU recency.
+      this.annotationStores.delete(key);
+      this.annotationStores.set(key, existing);
+      return existing;
+    }
+    const created = new BrowserAnnotationRepository();
+    this.annotationStores.set(key, created);
+    while (this.annotationStores.size > MAX_PERSISTED_ANNOTATION_STORES) {
+      const oldest = this.annotationStores.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.annotationStores.delete(oldest);
+    }
+    return created;
   }
 
   private requestConfirmation(
@@ -222,9 +253,10 @@ function confirmationDigest(
 
 function samePath(left: string, right: string | null): boolean {
   if (!right) return false;
-  const normalize = (value: string) => {
-    const resolved = path.normalize(path.resolve(value));
-    return process.platform === 'win32' ? resolved.toLocaleLowerCase('en-US') : resolved;
-  };
-  return normalize(left) === normalize(right);
+  return normalizeProjectKey(left) === normalizeProjectKey(right);
+}
+
+function normalizeProjectKey(value: string): string {
+  const resolved = path.normalize(path.resolve(value));
+  return process.platform === 'win32' ? resolved.toLocaleLowerCase('en-US') : resolved;
 }
