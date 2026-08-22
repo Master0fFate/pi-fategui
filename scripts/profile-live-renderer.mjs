@@ -81,8 +81,8 @@ async function runProfile(iteration) {
       const source = location.url ? ` (${location.url}:${location.lineNumber ?? 0})` : '';
       consoleErrors.push(`console: ${message.text().slice(0, 1_000)}${source}`);
     });
-    await page.getByRole('heading', { name: 'What would you like Pi to do?' }).waitFor();
-    await page.locator('.action-card--primary').click();
+    await page.getByRole('heading', { name: 'Start with your AI connection' }).waitFor();
+    await page.getByRole('button', { name: /Open project/u }).first().click();
     const composer = page.getByLabel('Message Pi');
     await composer.waitFor({ state: 'visible' });
     await page.waitForFunction(() => !document.querySelector('#pi-composer')?.hasAttribute('disabled'));
