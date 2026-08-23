@@ -36,6 +36,7 @@ import { GlobalHotkeyService } from './speech/GlobalHotkeyService';
 import { smokeTerminalRuntime, TerminalService } from './terminal/TerminalService';
 import { UpdateService } from './updates/UpdateService';
 import { createProductionUpdateInstallerAdapters, createUpdateInstaller } from './updates/installDownloadedUpdate';
+import { runUpdaterSmoke } from './updates/updaterSmoke';
 import { WindowStateService } from './windowState';
 import { LaunchDispatcher } from './windows/launchDispatcher';
 import { createAppWindowFactory, rememberWindowPlacement } from './windows/appWindows';
@@ -134,7 +135,10 @@ const runtime = piRuntime.asRouter();
 const projects = new ProjectService();
 const files = new FilesystemService();
 const git = new GitService(files);
-const updateInstaller = createUpdateInstaller(createProductionUpdateInstallerAdapters({ quit: () => app.quit() }));
+const updateInstaller = createUpdateInstaller(createProductionUpdateInstallerAdapters({
+  quit: () => app.quit(),
+  warn: (message) => logs.write('warn', 'updates', message),
+}));
 const updates = new UpdateService(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'PRODVER'), {
   openExternal: (url) => shell.openExternal(url),
   downloadDir: app.getPath('temp'),
@@ -211,19 +215,31 @@ const shutdown = new ShutdownCoordinator({
 
 function wireSmoke(window: BrowserWindow): void {
   window.webContents.once('did-finish-load', () => {
-    void runProductionSmoke({
-      speech,
-      music,
-      settings,
-      smokeTerminalRuntime,
-      cwd: process.cwd(),
-      streamSmokeEnabled: process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1',
-      now: () => performance.now(),
-      log: (line) => console.log(line),
-      error: (line) => console.error(line),
-      quit: () => app.quit(),
-      exit: (code) => app.exit(code),
-    });
+    void (async () => {
+      const updaterSmokeDmg = process.env.FATE_UI_UPDATER_SMOKE;
+      if (updaterSmokeDmg) {
+        await runUpdaterSmoke({
+          dmgPath: updaterSmokeDmg,
+          installDir: process.env.FATE_UI_UPDATER_INSTALL_DIR ?? path.join(os.tmpdir(), 'fate-ui-updater-smoke'),
+          log: (line) => console.log(line),
+          error: (line) => console.error(line),
+          exit: (code) => app.exit(code),
+        });
+      }
+      await runProductionSmoke({
+        speech,
+        music,
+        settings,
+        smokeTerminalRuntime,
+        cwd: process.cwd(),
+        streamSmokeEnabled: process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1',
+        now: () => performance.now(),
+        log: (line) => console.log(line),
+        error: (line) => console.error(line),
+        quit: () => app.quit(),
+        exit: (code) => app.exit(code),
+      });
+    })();
   });
 }
 

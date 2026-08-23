@@ -246,28 +246,49 @@ describe('UpdateService download and install', () => {
 describe('resolveMacOSUpdateBundle', () => {
   const entry = (name: string, kind: 'file' | 'dir') => ({ name, isDirectory: kind === 'dir', isFile: kind === 'file' });
 
-  it('prefers the canonical bundle name when it is present in the disk image', async () => {
+  it('installs the shipped bundle under its own name with the canonical launcher', async () => {
     const readDir = vi.fn(async (directoryPath: string) => {
-      if (directoryPath === '/mount') return [entry('Fate UI.app', 'dir'), entry('Applications', 'dir')];
+      if (directoryPath === '/mount') return [entry('fate-ui.app', 'dir'), entry('Applications', 'dir')];
       return [entry('fate-ui', 'file')];
     });
     await expect(resolveMacOSUpdateBundle('/mount', readDir)).resolves.toEqual({
-      sourceApp: '/mount/Fate UI.app',
-      targetApp: '/Applications/Fate UI.app',
+      sourceApp: '/mount/fate-ui.app',
+      targetApp: '/Applications/fate-ui.app',
+      executableName: 'fate-ui',
     });
   });
 
   it('selects the actual staged bundle when its name differs from the expected name', async () => {
     // Models the reported failure: the DMG ships a differently-named bundle,
-    // so the old hardcoded /mount/Fate UI.app path did not exist.
+    // so the target and relaunch paths must derive from the staged name too.
     const readDir = vi.fn(async (directoryPath: string) => {
       if (directoryPath === '/mount') return [entry('Fate GUI.app', 'dir')];
       return [entry('fate-ui', 'file')];
     });
     const result = await resolveMacOSUpdateBundle('/mount', readDir);
     expect(result.sourceApp).toBe('/mount/Fate GUI.app');
-    // Installed under the canonical name so the relaunch path stays stable.
-    expect(result.targetApp).toBe('/Applications/Fate UI.app');
+    expect(result.targetApp).toBe('/Applications/Fate GUI.app');
+    expect(result.executableName).toBe('fate-ui');
+  });
+
+  it('accepts a single alternative launcher executable and honors install dir overrides', async () => {
+    const readDir = vi.fn(async (directoryPath: string) => {
+      if (directoryPath === '/mount') return [entry('fate-ui.app', 'dir')];
+      return [entry('Fate UI', 'file')];
+    });
+    await expect(resolveMacOSUpdateBundle('/mount', readDir, { installDir: '/smoke/apps' })).resolves.toEqual({
+      sourceApp: '/mount/fate-ui.app',
+      targetApp: '/smoke/apps/fate-ui.app',
+      executableName: 'Fate UI',
+    });
+  });
+
+  it('rejects a bundle whose launcher is ambiguous and not the canonical executable', async () => {
+    const readDir = vi.fn(async (directoryPath: string) => {
+      if (directoryPath === '/mount') return [entry('fate-ui.app', 'dir')];
+      return [entry('launcher-a', 'file'), entry('launcher-b', 'file')];
+    });
+    await expect(resolveMacOSUpdateBundle('/mount', readDir)).rejects.toThrow(/exactly one launcher executable/i);
   });
 
   it('rejects an ambiguous disk image that contains multiple unknown bundles', async () => {
@@ -279,7 +300,7 @@ describe('resolveMacOSUpdateBundle', () => {
 
   it('refuses to copy a staged entry that is not a valid application bundle', async () => {
     const readDir = vi.fn(async (directoryPath: string) => {
-      if (directoryPath === '/mount') return [entry('Fate UI.app', 'dir')];
+      if (directoryPath === '/mount') return [entry('fate-ui.app', 'dir')];
       return []; // Contents/MacOS is empty, so this is not a real bundle.
     });
     await expect(resolveMacOSUpdateBundle('/mount', readDir)).rejects.toThrow(/not a valid macOS application/i);
@@ -287,7 +308,7 @@ describe('resolveMacOSUpdateBundle', () => {
 
   it('refuses a staged .app whose Contents/MacOS directory is missing', async () => {
     const readDir = vi.fn(async (directoryPath: string) => {
-      if (directoryPath === '/mount') return [entry('Fate UI.app', 'dir')];
+      if (directoryPath === '/mount') return [entry('fate-ui.app', 'dir')];
       throw new Error('ENOENT');
     });
     await expect(resolveMacOSUpdateBundle('/mount', readDir)).rejects.toThrow(/not a valid macOS application/i);

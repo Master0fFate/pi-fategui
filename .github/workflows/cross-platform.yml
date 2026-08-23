@@ -226,6 +226,44 @@ jobs:
           done
           hdiutil detach "$mount_point" -quiet
           mounted=0
+      - name: Smoke the in-app macOS updater against the DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          dmg="$PWD/artifacts/Fate-UI-$version-macOS-${{ matrix.arch }}.dmg"
+          run_mount="$RUNNER_TEMP/updater-run-mount"
+          install_dir="$RUNNER_TEMP/fate-ui-updater-smoke"
+          rm -rf "$run_mount" "$install_dir"
+          mkdir -p "$run_mount" "$install_dir"
+          mounted=0
+          cleanup() {
+            if [ "$mounted" -eq 1 ]; then hdiutil detach "$run_mount" -quiet || true; fi
+          }
+          trap cleanup EXIT
+
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$run_mount"
+          mounted=1
+          app=$(find "$run_mount" -maxdepth 1 -type d -name '*.app' -print -quit)
+          test -n "$app"
+          # The packaged app mounts the same DMG again through the production
+          # updater, installs the shipped bundle into install_dir, verifies the
+          # launcher, and logs PI_DESKTOP_UPDATER_SMOKE_OK before the standard
+          # production smoke markers run and the app quits cleanly.
+          export FATE_UI_UPDATER_SMOKE="$dmg"
+          export FATE_UI_UPDATER_INSTALL_DIR="$install_dir"
+          export INSTALLED_SMOKE_TIMEOUT_MS=180000
+          node scripts/smoke-executable.mjs "$app/Contents/MacOS/fate-ui"
+
+          installed="$install_dir/fate-ui.app"
+          test -x "$installed/Contents/MacOS/fate-ui"
+          test "$(cat "$installed/Contents/Resources/PRODVER")" = "$version"
+          # The freshly installed bundle must itself launch cleanly.
+          unset FATE_UI_UPDATER_SMOKE FATE_UI_UPDATER_INSTALL_DIR
+          node scripts/smoke-executable.mjs "$installed/Contents/MacOS/fate-ui"
+          hdiutil detach "$run_mount" -quiet
+          mounted=0
       - name: Install and smoke macOS PKG
         if: runner.os == 'macOS'
         shell: bash

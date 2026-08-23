@@ -75,8 +75,12 @@ export const updateVerifyMessages = {
 } as const;
 
 /** Canonical macOS application bundle name and install location. */
-export const MACOS_APP_BUNDLE_NAME = 'Fate UI.app';
+export const MACOS_APP_BUNDLE_NAME = 'fate-ui.app';
 export const MACOS_INSTALL_DIR = '/Applications';
+/** Canonical macOS launcher executable inside a bundle's Contents/MacOS. */
+export const MACOS_EXECUTABLE_NAME = 'fate-ui';
+/** Bundles left behind by earlier updaters; removed best-effort after a successful install. */
+export const MACOS_LEGACY_APP_BUNDLE_NAMES = ['Fate UI.app'] as const;
 
 export interface MacOSBundleDirEntry {
   readonly name: string;
@@ -90,8 +94,10 @@ export type ReadMacOSBundleDir = (directoryPath: string) => Promise<readonly Mac
 export interface MacOSBundleResolution {
   /** Absolute path of the staged .app bundle inside the mount point. */
   readonly sourceApp: string;
-  /** Canonical install destination under the install directory. */
+  /** Install destination derived from the staged bundle's own name. */
   readonly targetApp: string;
+  /** Executable file name inside the bundle's Contents/MacOS directory. */
+  readonly executableName: string;
 }
 
 export interface ResolveMacOSBundleOptions {
@@ -108,8 +114,9 @@ export interface ResolveMacOSBundleOptions {
  * canonical product name, so the staged .app directory is discovered instead
  * of assuming a fixed path. Anything that is not a genuine application bundle
  * (no Contents/MacOS executable) is rejected, so an update never copies an
- * arbitrary file or folder. The bundle is always installed under the canonical
- * name so the relaunch path and desktop integration stay stable.
+ * arbitrary file or folder. The bundle is installed under its own staged name
+ * and the launcher executable is resolved from Contents/MacOS, so the copy and
+ * the relaunch always refer to the bundle that was actually shipped.
  */
 export async function resolveMacOSUpdateBundle(
   mountPoint: string,
@@ -135,10 +142,17 @@ export async function resolveMacOSUpdateBundle(
   } catch {
     throw new Error(`The staged bundle "${chosen.name}" is not a valid macOS application.`);
   }
-  if (!executables.some((entry) => entry.isFile)) {
+  const executableFiles = executables.filter((entry) => entry.isFile);
+  if (executableFiles.length === 0) {
     throw new Error(`The staged bundle "${chosen.name}" is not a valid macOS application.`);
   }
-  return { sourceApp, targetApp: path.posix.join(installDir, expectedName) };
+  const preferred = executableFiles.find((entry) => entry.name === MACOS_EXECUTABLE_NAME);
+  let executableName: string | undefined = preferred?.name;
+  if (!executableName && executableFiles.length === 1) executableName = executableFiles[0]!.name;
+  if (!executableName) {
+    throw new Error(`The staged bundle "${chosen.name}" does not expose exactly one launcher executable.`);
+  }
+  return { sourceApp, targetApp: path.posix.join(installDir, chosen.name), executableName };
 }
 
 export const updateMessages = {
