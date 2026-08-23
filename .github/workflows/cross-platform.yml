@@ -235,7 +235,9 @@ jobs:
           dmg="$PWD/artifacts/Fate-UI-$version-macOS-${{ matrix.arch }}.dmg"
           run_mount="$RUNNER_TEMP/updater-run-mount"
           install_dir="$RUNNER_TEMP/fate-ui-updater-smoke"
+          updater_dmg="$RUNNER_TEMP/updater-smoke-copy.dmg"
           rm -rf "$run_mount" "$install_dir"
+          rm -f "$updater_dmg"
           mkdir -p "$run_mount" "$install_dir"
           mounted=0
           cleanup() {
@@ -247,11 +249,15 @@ jobs:
           mounted=1
           app=$(find "$run_mount" -maxdepth 1 -type d -name '*.app' -print -quit)
           test -n "$app"
-          # The packaged app mounts the same DMG again through the production
-          # updater, installs the shipped bundle into install_dir, verifies the
+          # macOS refuses to attach the same image at a second mount point
+          # ("Resource busy"), so the packaged app installs from a file copy of
+          # the DMG while this step keeps its read-only mount for the host
+          # executable. The app runs the production updater end to end against
+          # the copy, installs the shipped bundle into install_dir, verifies the
           # launcher, and logs PI_DESKTOP_UPDATER_SMOKE_OK before the standard
           # production smoke markers run and the app quits cleanly.
-          export FATE_UI_UPDATER_SMOKE="$dmg"
+          cp "$dmg" "$updater_dmg"
+          export FATE_UI_UPDATER_SMOKE="$updater_dmg"
           export FATE_UI_UPDATER_INSTALL_DIR="$install_dir"
           export INSTALLED_SMOKE_TIMEOUT_MS=180000
           node scripts/smoke-executable.mjs "$app/Contents/MacOS/fate-ui"
