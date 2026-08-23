@@ -2677,7 +2677,7 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 :root[data-compact-mode="true"] .workspace-header { flex: 0 0 36px; }
 :root[data-compact-mode="true"] .workspace-header-drag { padding: 0 8px 0 12px; }
 :root[data-compact-mode="true"] .workspace-header-identity {
-  flex-direction: row; align-items: baseline; gap: 8px; max-width: calc(100% - 156px);
+  flex-direction: row; align-items: center; gap: 8px; max-width: calc(100% - 156px);
 }
 :root[data-compact-mode="true"] .workspace-header .eyebrow {
   display: inline-flex; flex: none; align-items: center; gap: 8px; margin: 0; font-size: 8px; letter-spacing: .08em;

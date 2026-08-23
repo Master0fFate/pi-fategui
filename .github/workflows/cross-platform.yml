@@ -235,7 +235,7 @@ jobs:
           pkg="artifacts/Fate-UI-$version-macOS-${{ matrix.arch }}.pkg"
           installed_app='/Applications/fate-ui.app'
           installed_launcher='/usr/local/bin/fate'
-          launcher_target=''
+          launcher_target="$installed_app/Contents/Resources/cli/fate"
           cleanup() {
             if [ -n "$installed_app" ]; then sudo rm -rf "$installed_app"; fi
             if [ -n "$launcher_target" ] && [ -L "$installed_launcher" ] && [ "$(readlink "$installed_launcher")" = "$launcher_target" ]; then
@@ -244,11 +244,21 @@ jobs:
           }
           trap cleanup EXIT
 
+          # Hosted macOS images can retain Fate UI from an earlier smoke run.
+          # Remove only this app and its owned launcher so this checks the PKG
+          # built in the current job, even when the version is unchanged.
+          sudo rm -rf "$installed_app"
+          if [ -L "$installed_launcher" ] && [ "$(readlink "$installed_launcher")" = "$launcher_target" ]; then
+            sudo rm -f "$installed_launcher"
+          fi
+          if pkgutil --pkg-info dev.pi.desktop >/dev/null 2>&1; then
+            sudo pkgutil --forget dev.pi.desktop
+          fi
+
           sudo installer -pkg "$pkg" -target /
           pkgutil --pkg-info dev.pi.desktop
           test -x "$installed_app/Contents/MacOS/fate-ui"
           test "$(cat "$installed_app/Contents/Resources/PRODVER")" = "$version"
-          launcher_target="$installed_app/Contents/Resources/cli/fate"
           if [ ! -L "$installed_launcher" ]; then
             ls -ld "$installed_launcher" || true
             echo "The PKG did not create the fate launcher symlink." >&2
