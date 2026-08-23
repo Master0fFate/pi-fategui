@@ -8,12 +8,14 @@ import {
 /**
  * Opt-in macOS updater smoke wired on the initial window's first load.
  *
- * Runs the production installer (real hdiutil, resolve, remove, copy, verify,
- * xattr, detach) against a real release DMG, installing into a throwaway
- * directory. Only the final relaunch is recorded instead of spawning, because
- * the app under smoke is itself the process doing the installing. The standard
- * production smoke continues afterwards and quits the app, so a successful
- * updater smoke also proves the freshly installed bundle launches.
+ * Runs the production installer (real hdiutil attach, resolve, remove, cp,
+ * verify, xattr, legacy cleanup, detach) against a real release DMG, installing
+ * into a throwaway directory. The final relaunch is only recorded, never
+ * spawned: the app running this smoke is itself the process doing the
+ * installing, and a detached child would inherit this smoke's environment and
+ * recursively reinstall over itself. The standard production smoke continues
+ * afterwards and quits the app; CI then launches the freshly installed bundle
+ * to prove it starts cleanly.
  */
 export interface UpdaterSmokeDeps {
   dmgPath: string;
@@ -27,9 +29,7 @@ export interface UpdaterSmokeDeps {
 
 /** Spawn adapter that records the relaunch target and reports successful spawn. */
 export function recordingSpawn(record: (command: string) => void): UpdateInstallerAdapters['spawn'] {
-  return (command, args, options) => {
-    void args;
-    void options;
+  return (command, _args, _options) => {
     record(command);
     const listeners: Array<{ event: 'spawn' | 'error'; listener: (error?: Error) => void }> = [];
     queueMicrotask(() => {
@@ -52,23 +52,10 @@ export async function runUpdaterSmoke(deps: UpdaterSmokeDeps): Promise<void> {
       installDir: deps.installDir,
       quit: () => undefined,
     });
-    // Wrap spawn so the recorded relaunch target reflects a successful spawn,
-    // whichever adapter set (production or injected) runs underneath.
+    // The relaunch is recorded, never actually spawned (see the module doc).
     const adapters: UpdateInstallerAdapters = {
       ...base,
-      spawn: (command, args, options) => {
-        const child = base.spawn(command, args, options);
-        const forward = child.on.bind(child);
-        return {
-          unref: () => child.unref(),
-          on: (event, listener) => {
-            forward(event, (error) => {
-              if (event === 'spawn') spawned.push(command);
-              listener(error);
-            });
-          },
-        };
-      },
+      spawn: recordingSpawn((command) => spawned.push(command)),
     };
     await createUpdateInstaller(adapters).install(deps.dmgPath, '0.0.0-smoke');
     if (spawned.length !== 1 || !spawned[0]!.startsWith(`${deps.installDir}/`)) {
