@@ -586,9 +586,15 @@ export function verifyPackagedNativeDeps({ appOutDir, platform, arch }) {
 
 export async function afterPack(context) {
   if (context.electronPlatformName === 'darwin') {
+    // PKG installation on Intel macOS can clear the executable bit inherited
+    // from extraResources. Restore it on the bundled media helper before
+    // electron-builder seals the app so every installer keeps it runnable.
+    const resourcesDir = findResourcesDir(context.appOutDir);
+    const ytDlp = path.join(resourcesDir, 'yt-dlp');
+    if (!existsSync(ytDlp)) throw new Error('[native-deps] bundled yt-dlp is missing');
+    chmodSync(ytDlp, 0o755);
     const nodePtyRoot = path.resolve(import.meta.dirname, '..', 'node_modules', 'node-pty');
     const relativeBases = nodePtyRuntimeRelativeBases('darwin', context.arch);
-    const resourcesDir = findResourcesDir(context.appOutDir);
     for (const relativeBase of relativeBases) {
       if (!existsSync(path.join(nodePtyRoot, relativeBase, 'pty.node'))) continue;
       const source = path.join(nodePtyRoot, relativeBase, 'spawn-helper');
