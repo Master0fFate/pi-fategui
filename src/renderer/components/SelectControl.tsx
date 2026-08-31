@@ -16,6 +16,8 @@ interface SelectControlProps {
   readonly className?: string;
   readonly contentClassName?: string;
   readonly compact?: boolean;
+  readonly placeholder?: string;
+  readonly autoFocus?: boolean;
   /** Which side of the trigger the dropdown opens on. Defaults to 'bottom' (Radix default). */
   readonly side?: 'top' | 'right' | 'bottom' | 'left';
   /** Render a filter input at the top of the dropdown that narrows options by label, detail, or value. */
@@ -37,6 +39,8 @@ export function SelectControl({
   className = '',
   contentClassName = '',
   compact = false,
+  placeholder,
+  autoFocus = false,
   side = 'bottom',
   searchable = false,
   searchPlaceholder = 'Filter options',
@@ -135,8 +139,8 @@ export function SelectControl({
       disabled={disabled}
       onValueChange={onValueChange}
     >
-      <Select.Trigger className={`custom-select-trigger${compact ? ' custom-select-trigger--compact' : ''} ${className}`.trim()} aria-label={label}>
-        <Select.Value />
+      <Select.Trigger className={`custom-select-trigger${compact ? ' custom-select-trigger--compact' : ''} ${className}`.trim()} aria-label={label} autoFocus={autoFocus}>
+        <Select.Value placeholder={placeholder} />
         <Select.Icon className="custom-select-chevron"><ChevronDown size={compact ? 11 : 13} /></Select.Icon>
       </Select.Trigger>
       <Select.Portal>

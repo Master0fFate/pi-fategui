@@ -59,7 +59,7 @@ beforeEach(() => {
     initializeProviderLogin: vi.fn(async () => ({ ...loginState } as never)),
     startProviderLogin: vi.fn(async () => ({ ...loginState } as never)),
     cancelProviderLogin: vi.fn(() => ({ ...loginState } as never)),
-    respondProviderLogin: vi.fn(() => ({ ...loginState } as never)),
+    respondProviderLogin: vi.fn(async () => ({ ...loginState } as never)),
     logoutProvider: vi.fn(async () => ({ ...loginState } as never)),
     listModelsDevProviders: vi.fn(async () => catalog),
     getModelsDevProvider: vi.fn(async (providerId: string) => (providerId === 'nvidia' ? nvidiaDetail : crofDetail)),
@@ -158,6 +158,40 @@ describe('ProviderConnectDialog sign-in flow', () => {
     expect(screen.getByRole('button', { name: /continue/i })).toBeDisabled();
     await userEvent.type(field, 'sk-test');
     expect(screen.getByRole('button', { name: /continue/i })).toBeEnabled();
+  });
+
+  it('uses the themed select for SDK option prompts and submits the selected value', async () => {
+    const user = userEvent.setup();
+    setRuntime({
+      providerLogin: {
+        ...loginState,
+        status: 'awaiting-input',
+        providerId: 'amazon-bedrock',
+        providerName: 'Amazon Bedrock',
+        prompt: {
+          id: 'p1',
+          type: 'select',
+          message: 'Select Amazon Bedrock login method:',
+          options: [
+            { id: 'oauth', label: 'Browser sign-in' },
+            { id: 'api_key', label: 'API key' },
+          ],
+        },
+      },
+    });
+    render(<ProviderConnectDialog open onOpenChange={() => undefined} />);
+    await user.click(await screen.findByText('Amazon Bedrock'));
+
+    const select = await screen.findByRole('combobox', { name: 'Login method' });
+    expect(select).toHaveTextContent('Select…');
+    expect(select).toHaveFocus();
+    expect(screen.getByRole('button', { name: /continue/i })).toBeDisabled();
+
+    await user.click(select);
+    await user.click(await screen.findByRole('option', { name: 'Browser sign-in' }));
+    expect(screen.getByRole('button', { name: /continue/i })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: /continue/i }));
+    expect(bridge.respondProviderLogin).toHaveBeenCalledWith({ promptId: 'p1', value: 'oauth' });
   });
 
   it('offers removal for models.dev-managed providers from the catalog detail', async () => {

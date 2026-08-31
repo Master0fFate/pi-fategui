@@ -78,17 +78,6 @@ function isValidSessionEntry(value: FileEntry): value is SessionEntry {
     && (typeof value.parentId === 'string' || value.parentId === null);
 }
 
-function isDescendantEntry(entryId: string, ancestorId: string, byId: ReadonlyMap<string, SessionEntry>): boolean {
-  let current = byId.get(entryId);
-  const seen = new Set<string>();
-  while (current && !seen.has(current.id)) {
-    if (current.id === ancestorId) return true;
-    seen.add(current.id);
-    current = current.parentId ? byId.get(current.parentId) : undefined;
-  }
-  return false;
-}
-
 function parseEntriesForBranchRewrite(source: string): FileEntry[] {
   const entries: FileEntry[] = [];
   for (const line of source.split(/\r?\n/u)) {
@@ -331,14 +320,6 @@ export class PiSessionRepository {
       if (entries.length !== parsed.filter(isSessionEntry).length) throw new Error('The saved session contains an invalid entry.');
       const byId = new Map(entries.map((entry) => [entry.id, entry]));
       if (byId.size !== entries.length || !byId.has(branchId)) throw new Error('That conversation path is no longer available.');
-      if (branchId === activeLeafId) throw new Error('Switch to a different conversation path before deleting this fork.');
-      if (activeLeafId && isDescendantEntry(activeLeafId, branchId, byId)) {
-        // The branch sits on the active path (it is the active leaf or one of its ancestors).
-        throw new Error('Switch to a different conversation path before deleting this fork.');
-      }
-      // The fork's own entries are its leaf, its descendants, and the ancestors
-      // that are NOT shared with the active path. Removing only descendants of
-      // the leaf would orphan the fork's parent chain into a stale branch.
       const activePath = new Set<string>();
       if (activeLeafId) {
         let current = byId.get(activeLeafId);
@@ -347,10 +328,35 @@ export class PiSessionRepository {
           current = current.parentId ? byId.get(current.parentId) : undefined;
         }
       }
-      const removedIds = new Set<string>();
+      if (activePath.has(branchId)) {
+        // The branch sits on the active path (it is the active leaf or one of its ancestors).
+        throw new Error('Switch to a different conversation path before deleting this fork.');
+      }
+
+      // Index children once, then traverse the fork subtree and its unshared
+      // ancestor chain once. Repeated parent walks make deep histories quadratic.
+      const childrenByParent = new Map<string, string[]>();
       for (const entry of entries) {
-        if (isDescendantEntry(entry.id, branchId, byId)) removedIds.add(entry.id);
-        else if (isDescendantEntry(branchId, entry.id, byId) && !activePath.has(entry.id)) removedIds.add(entry.id);
+        if (!entry.parentId) continue;
+        const children = childrenByParent.get(entry.parentId);
+        if (children) children.push(entry.id);
+        else childrenByParent.set(entry.parentId, [entry.id]);
+      }
+      const removedIds = new Set<string>();
+      const descendants = [branchId];
+      while (descendants.length > 0) {
+        const entryId = descendants.pop()!;
+        if (removedIds.has(entryId)) continue;
+        removedIds.add(entryId);
+        const children = childrenByParent.get(entryId);
+        if (children) for (const child of children) descendants.push(child);
+      }
+      const ancestors = new Set<string>();
+      let ancestor = byId.get(branchId);
+      while (ancestor && !ancestors.has(ancestor.id)) {
+        ancestors.add(ancestor.id);
+        if (!activePath.has(ancestor.id)) removedIds.add(ancestor.id);
+        ancestor = ancestor.parentId ? byId.get(ancestor.parentId) : undefined;
       }
       if (!removedIds.size || (activeLeafId && removedIds.has(activeLeafId))) throw new Error('Switch to a different conversation path before deleting this fork.');
       const next = parsed.filter((entry) => !isValidSessionEntry(entry) || (!removedIds.has(entry.id) && !referencedRemovedEntry(entry, removedIds)));

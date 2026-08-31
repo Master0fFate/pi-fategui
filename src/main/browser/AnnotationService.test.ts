@@ -4,6 +4,7 @@ import { BrowserAnnotationRepository } from './BrowserAnnotationRepository';
 import type { BrowserCdpEventClient } from './CdpClient';
 import { BrowserPolicy } from './BrowserPolicy';
 import { BrowserRefRegistry, fingerprintHash } from './BrowserRefRegistry';
+import { SNAPSHOT_STYLE_PROPERTIES } from './SemanticSnapshotEngine';
 
 function fixture() {
   const policy = new BrowserPolicy();
@@ -150,14 +151,16 @@ describe('AnnotationService', () => {
     policy.beginTask('region-test');
     policy.setGrant({ origin: 'https://example.test', read: true, interact: false, scope: 'task', allowPrivateNetwork: false });
     const repository = new BrowserAnnotationRepository();
+    const snapshotRequests: unknown[] = [];
     const cdp: BrowserCdpEventClient = {
       supports: (domain) => domain === 'Overlay',
       waitForEvent: async <T>() => ({ viewport: { x: 10, y: 20, width: 100, height: 50 } }) as T,
-      send: async <T>(method: string) => {
+      send: async <T>(method: string, params?: unknown) => {
         if (method === 'Page.getLayoutMetrics') {
           return { cssVisualViewport: { pageX: 0, pageY: 1_000, clientWidth: 500, clientHeight: 400 } } as T;
         }
         if (method === 'DOMSnapshot.captureSnapshot') {
+          snapshotRequests.push(params);
           return {
             strings: ['https://example.test/page', 'frame-1', 'DIV', 'block', 'visible', '1'],
             documents: [{
@@ -183,6 +186,12 @@ describe('AnnotationService', () => {
     expect(annotation.target.rectCssPx).toEqual({ x: 10, y: 20, width: 100, height: 50 });
     expect(annotation.domExcerpt).toContain('Scrolled card');
     expect(annotation.semanticCoverage).toBe(1);
+    expect(SNAPSHOT_STYLE_PROPERTIES).toHaveLength(27);
+    expect(snapshotRequests).toEqual([{
+      computedStyles: [...SNAPSHOT_STYLE_PROPERTIES],
+      includeDOMRects: true,
+      includePaintOrder: true,
+    }]);
   });
 
   it('reattaches a class-only element after same-document HMR replacement', async () => {

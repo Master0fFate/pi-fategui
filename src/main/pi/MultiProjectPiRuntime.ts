@@ -44,6 +44,8 @@ export interface MultiProjectPiRuntimeDeps {
   getDisabledModels?: () => readonly string[];
   /** Optional mutation-attestation recorder threaded to root and child confined tools. */
   recordAttestation?: MutationRecorder;
+  /** Native taskbar/Dock attention when any root session settles. */
+  notifySessionSettled?: () => void;
 }
 
 export class MultiProjectPiRuntime {
@@ -294,6 +296,7 @@ export class MultiProjectPiRuntime {
       modelRuntimeProvider,
       this.deps.recordAttestation ?? null,
     );
+    service.setSessionSettledListener(() => this.deps.notifySessionSettled?.());
     if (this.deps.getDisabledModels) service.setDisabledModelsSource(this.deps.getDisabledModels);
     return service;
   }

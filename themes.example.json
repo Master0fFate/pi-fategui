@@ -18,6 +18,8 @@
         "accent": "#6f8cff",
         "accentHover": "#8ca2ff",
         "accentSoft": "#222b49",
+        "currentSession": "#2b3050",
+        "lastActiveSession": "#1c202b",
         "onAccent": "#ffffff",
         "success": "#55c78a",
         "warning": "#d2a94b",

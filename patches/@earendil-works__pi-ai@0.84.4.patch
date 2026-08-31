@@ -1,0 +1,15 @@
+diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
+index b1beb1a..5def3f8 100644
+--- a/dist/api/openai-completions.js
++++ b/dist/api/openai-completions.js
+@@ -695,8 +695,8 @@ function buildParams(model, context, options, compat = getCompat(model), cacheRe
+                 effort: model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort,
+             };
+         }
+-        else if (model.thinkingLevelMap?.off !== null) {
+-            openRouterParams.reasoning = { effort: model.thinkingLevelMap?.off ?? "none" };
++        else if (model.thinkingLevelMap?.off != null) {
++            openRouterParams.reasoning = { effort: model.thinkingLevelMap.off };
+         }
+     }
+     else if (compat.thinkingFormat === "ant-ling" && model.reasoning && options?.reasoningEffort) {

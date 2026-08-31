@@ -16,7 +16,7 @@ import type {
   GitDiff,
   GitWorktree,
 } from '../../shared/contracts/ipc';
-import { FilesystemService, isBinaryBuffer, isSafeExternalPath, languageForPath, MAX_FILE_PREVIEW_BYTES, rasterImageMimeType } from '../files/FilesystemService';
+import { FilesystemService, isBinaryBuffer, isSafeExternalPath, languageForPath, MAX_FILE_PREVIEW_BYTES, previewImageMimeType } from '../files/FilesystemService';
 import { worktreeBranchName } from './GitBranchNames';
 
 const MAX_GIT_OUTPUT = 8 * 1024 * 1024;
@@ -654,7 +654,7 @@ export class GitService {
       if (!stat.isFile()) return { state: 'unavailable' };
       const sample = Buffer.alloc(Math.min(stat.size, 8_192));
       await handle.read(sample, 0, sample.length, 0);
-      const imageMimeType = rasterImageMimeType(sample);
+      const imageMimeType = previewImageMimeType(sample);
       if (stat.size > MAX_FILE_PREVIEW_BYTES) return { state: 'large' };
       const data = await handle.readFile();
       if (imageMimeType) return { state: 'image', data };
@@ -1122,7 +1122,7 @@ export class GitService {
     const originalValue = original ?? Buffer.alloc(0);
     const modifiedValue = modified ?? Buffer.alloc(0);
     const imageValue = modifiedValue.length > 0 ? modifiedValue : originalValue;
-    const imageMimeType = rasterImageMimeType(imageValue.subarray(0, 8_192));
+    const imageMimeType = previewImageMimeType(imageValue.subarray(0, 8_192));
     if (imageMimeType) {
       return {
         path: relativePath,

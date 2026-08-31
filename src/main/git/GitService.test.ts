@@ -246,8 +246,13 @@ describe('GitService', { timeout: 30_000 }, () => {
 
   it('returns bounded raster previews for changed images', async () => {
     const root = await repository();
-    const original = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from([0, 0, 0, 1]), Buffer.from('original')]);
-    const modified = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from([0, 0, 0, 1]), Buffer.from('modified')]);
+    const ihdr = Buffer.alloc(25);
+    ihdr.writeUInt32BE(13, 0);
+    ihdr.write('IHDR', 4, 'ascii');
+    ihdr.writeUInt32BE(1, 8);
+    ihdr.writeUInt32BE(1, 12);
+    const original = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), ihdr, Buffer.from('original')]);
+    const modified = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), ihdr, Buffer.from('modified')]);
     await fs.writeFile(path.join(root, 'icon.png'), original);
     await run('git', ['add', '--', 'icon.png'], { cwd: root });
     await run('git', ['commit', '-m', 'image'], { cwd: root });

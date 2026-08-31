@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { BrowserAnnotationRepository } from './BrowserAnnotationRepository';
 import { BrowserError } from './BrowserErrors';
 import { BrowserService } from './BrowserService';
+import type { LocalPageRegistry } from './LocalPageRegistry';
 
 describe('BrowserService visibility safety', () => {
   it('stays fully available and hidden-state free when the native browser is hidden', async () => {
@@ -240,6 +244,46 @@ describe('BrowserService visibility safety', () => {
 
     createTab.mockRestore();
     await service.dispose();
+  });
+
+  it('persists local previews as their file address, never the capability token', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-local-preview-'));
+    try {
+      const entry = path.join(directory, 'index.html');
+      await fs.writeFile(entry, '<!doctype html><title>preview</title>', { encoding: 'utf8' });
+      const onNavigated = vi.fn();
+      const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+        canonicalProjectPath: directory,
+        onNavigated,
+      });
+      const localPages = (service as unknown as { localPages: LocalPageRegistry }).localPages;
+      const location = await localPages.open('tab-1', entry, 'user');
+      expect(location.displayUrl.startsWith('file://')).toBe(true);
+
+      const listeners = new Map<string, (event: unknown, url: string) => void>();
+      const contents = {
+        setWindowOpenHandler: vi.fn(),
+        on: vi.fn((name: string, listener: (event: unknown, url: string) => void) => listeners.set(name, listener)),
+        getURL: () => location.internalUrl,
+      };
+      (service as unknown as { configureNavigation(tab: unknown): void }).configureNavigation.call(
+        service,
+        { id: 'tab-1', humanNetworkOrigins: new Set<string>(), view: { webContents: contents } },
+      );
+
+      // A committed local page persists its file:// display address.
+      listeners.get('did-navigate')!(undefined, location.internalUrl);
+      expect(onNavigated).toHaveBeenCalledExactlyOnceWith(location.displayUrl);
+
+      // A stale capability token resolves to no display address; the internal
+      // URL is not restorable and must never reach the history store.
+      listeners.get('did-navigate')!(undefined, 'fate-local://deadtoken0000000000000000/index.html');
+      expect(onNavigated).toHaveBeenCalledTimes(1);
+
+      await service.dispose();
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   });
 });
 

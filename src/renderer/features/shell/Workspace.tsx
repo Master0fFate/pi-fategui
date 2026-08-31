@@ -166,21 +166,29 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
       {revealError && <div className="project-reveal-error" role="alert">{revealError}</div>}
       {projectError && <div className="project-reveal-error" role="alert">{projectError}</div>}
 
-      {showBrowser ? (
-        <div className="browser-thread-layout" data-testid="browser-thread-layout">
-          <div className="browser-thread-conversation">{conversationSurface}</div>
-          <ResizeHandle
-            label="Resize chat and browser"
-            value={browserPaneWidth}
-            minimum={BROWSER_PANE_MIN}
-            maximum={BROWSER_PANE_MAX}
-            direction={-1}
-            onChange={setBrowserPaneWidth}
-            onReset={() => setBrowserPaneWidth(520)}
-          />
-          <div className="browser-thread-preview" style={{ flexBasis: `${browserPaneWidth}px` }}><BrowserWorkspace /></div>
-        </div>
-      ) : conversationSurface}
+      {/* The thread column keeps a stable mount here: the browser pane is
+          added and removed as siblings. Swapping the wrapper instead would
+          remount the conversation and reset its scroll position. */}
+      <div
+        className={`browser-thread-layout${showBrowser ? '' : ' browser-thread-layout--idle'}`}
+        data-testid={showBrowser ? 'browser-thread-layout' : undefined}
+      >
+        <div className="browser-thread-conversation">{conversationSurface}</div>
+        {showBrowser && (
+          <>
+            <ResizeHandle
+              label="Resize chat and browser"
+              value={browserPaneWidth}
+              minimum={BROWSER_PANE_MIN}
+              maximum={BROWSER_PANE_MAX}
+              direction={-1}
+              onChange={setBrowserPaneWidth}
+              onReset={() => setBrowserPaneWidth(520)}
+            />
+            <div className="browser-thread-preview" style={{ flexBasis: `${browserPaneWidth}px` }}><BrowserWorkspace /></div>
+          </>
+        )}
+      </div>
       {terminalOpen && <Suspense fallback={<div className="terminal-panel terminal-loading">Starting terminal…</div>}><TerminalPanel /></Suspense>}
     </main>
   );

@@ -438,4 +438,37 @@ describe('generate_image tool', () => {
     await expect(tool.execute('image-3', { prompt: 'A fox' }, controller.signal, undefined, codexContext() as never)).rejects.toThrow('cancelled');
     expect(generator).not.toHaveBeenCalled();
   });
+
+  it('does not mislabel animated PNG or JPEG-XR payloads as their sniff prefixes', async () => {
+    const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const chunk = (type: string, data: Buffer) => {
+      const head = Buffer.alloc(8);
+      head.writeUInt32BE(data.length, 0);
+      head.write(type, 4, 'ascii');
+      return Buffer.concat([head, data, Buffer.alloc(4)]);
+    };
+    const ihdrBody = Buffer.alloc(13);
+    ihdrBody.writeUInt32BE(640, 0);
+    ihdrBody.writeUInt32BE(480, 4);
+    const animatedPng = Buffer.concat([pngSignature, chunk('IHDR', ihdrBody), chunk('acTL', Buffer.alloc(8))]);
+    const jpegXr = Buffer.from([0xff, 0xd8, 0xff, 0xf7, 0x00, 0x10, 0x00, 0x00]);
+
+    const fetchAnimated = vi.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: animatedPng.toString('base64') }] }), { status: 200 }));
+    const generatorAnimated = createConfiguredImageGenerator(
+      () => ({ provider: 'custom', model: 'local-image-model', customProvider: 'local-images' }),
+      fetchAnimated as unknown as typeof fetch,
+    );
+    const context = providerContext('local-images', 'http://127.0.0.1:8000/v1', 'local');
+
+    const generatedAnimated = await generatorAnimated({ prompt: 'A fox', size: 'auto', quality: 'high', outputFormat: 'jpeg', signal: undefined, context: context as never });
+    expect(generatedAnimated.mimeType).toBe('image/jpeg');
+
+    const fetchXr = vi.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: jpegXr.toString('base64') }] }), { status: 200 }));
+    const generatorXr = createConfiguredImageGenerator(
+      () => ({ provider: 'custom', model: 'local-image-model', customProvider: 'local-images' }),
+      fetchXr as unknown as typeof fetch,
+    );
+    const generatedXr = await generatorXr({ prompt: 'A fox', size: 'auto', quality: 'high', outputFormat: 'webp', signal: undefined, context: context as never });
+    expect(generatedXr.mimeType).toBe('image/webp');
+  });
 });

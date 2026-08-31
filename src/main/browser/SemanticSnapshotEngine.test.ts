@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BrowserCdpClient } from './CdpClient';
 import { BrowserRefRegistry } from './BrowserRefRegistry';
 import { isSecretNode, redactPotentialSecretText, redactSnapshotUrl, SemanticSnapshotEngine } from './SemanticSnapshotEngine';
@@ -9,6 +9,26 @@ const cdp: BrowserCdpClient = {
 };
 
 describe('SemanticSnapshotEngine', () => {
+  it('requests only the layout data used by semantic compaction', async () => {
+    const send = vi.fn(async (method: string) => {
+      if (method === 'Accessibility.getFullAXTree') return { nodes: [] };
+      if (method === 'DOMSnapshot.captureSnapshot') return { strings: [], documents: [] };
+      if (method === 'Target.getTargets') return { targetInfos: [] };
+      return {};
+    });
+    const engine = new SemanticSnapshotEngine({ supports: () => true, send } as unknown as BrowserCdpClient, new BrowserRefRegistry());
+
+    await engine.capture({
+      tabId: 'tab-1', targetId: 'target-1', documentEpoch: 1,
+      url: 'https://example.test/', title: 'Page', mode: 'interactive',
+    });
+
+    expect(send).toHaveBeenCalledWith('DOMSnapshot.captureSnapshot', {
+      computedStyles: ['display', 'visibility', 'opacity'],
+      includeDOMRects: true,
+    });
+  });
+
   it('redacts password values and sensitive URL components', () => {
     const engine = new SemanticSnapshotEngine(cdp, new BrowserRefRegistry());
     const strings = ['https://example.test/login?token=secret#otp', 'frame-1', 'INPUT', 'type', 'password', 'block', 'visible', '1'];

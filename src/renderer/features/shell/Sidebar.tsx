@@ -974,7 +974,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       return (
         <div
           key={session.id}
-          className={`session-row session-row--compact${session.active ? ' active' : ''}${draggingSessionId === session.id ? ' dragging' : ''}${dragOverSessionId === session.id ? ' drag-over' : ''}`}
+          className={`session-row session-row--compact${session.active ? ' session-row--current' : ''}${draggingSessionId === session.id ? ' dragging' : ''}${dragOverSessionId === session.id ? ' drag-over' : ''}`} aria-current={session.active ? 'page' : undefined}
           draggable={!query}
           onDragStart={(event) => beginSessionDrag(event, session, runtime.project?.path)}
           onDragEnter={() => { if (draggingSessionId !== session.id) setDragOverSessionId(session.id); }}
@@ -1011,7 +1011,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     return (
       <div
         key={session.id}
-        className={`session-row${session.active ? ' active' : ''}${draggingSessionId === session.id ? ' dragging' : ''}${dragOverSessionId === session.id ? ' drag-over' : ''}`}
+        className={`session-row${session.active ? ' session-row--current' : ''}${draggingSessionId === session.id ? ' dragging' : ''}${dragOverSessionId === session.id ? ' drag-over' : ''}`} aria-current={session.active ? 'page' : undefined}
         draggable={!query}
         onDragStart={(event) => beginSessionDrag(event, session, runtime.project?.path)}
         onDragEnter={() => { if (draggingSessionId !== session.id) setDragOverSessionId(session.id); }}
@@ -1094,7 +1094,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     return (
       <div
         key={session.id}
-        className={`session-row session-row--preview${session.active ? ' active' : ''}${asActiveFolder && draggingSessionId === session.id ? ' dragging' : ''}${asActiveFolder && dragOverSessionId === session.id ? ' drag-over' : ''}`}
+        className={`session-row session-row--preview${session.active ? (asActiveFolder ? ' session-row--current' : ' session-row--last-active') : ''}${asActiveFolder && draggingSessionId === session.id ? ' dragging' : ''}${asActiveFolder && dragOverSessionId === session.id ? ' drag-over' : ''}`} aria-current={asActiveFolder && session.active ? 'page' : undefined}
         draggable={!query}
         onDragStart={(event) => beginSessionDrag(event, session, project.path)}
         onDragEnd={() => { setDraggingSessionId(null); setDragOverSessionId(null); }}

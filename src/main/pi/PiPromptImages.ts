@@ -66,7 +66,25 @@ export function encodedImageSize(buffer: Buffer, mimeType: RuntimeImage['mimeTyp
     return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8) };
   }
   if (mimeType === 'image/jpeg') return jpegSize(buffer);
+  if (mimeType === 'image/bmp') return bmpSize(buffer);
   return webpSize(buffer);
+}
+
+function bmpSize(buffer: Buffer): ImageSize | null {
+  if (buffer.length < 26) return null;
+  const dibHeaderSize = buffer.readUInt32LE(14);
+  if (dibHeaderSize === 12) {
+    // BITMAPCOREHEADER: 16-bit width and height.
+    return { width: buffer.readUInt16LE(18), height: buffer.readUInt16LE(20) };
+  }
+  if (dibHeaderSize >= 40 && dibHeaderSize <= 124) {
+    // BITMAPINFOHEADER and later: signed 32-bit width and height.
+    const width = buffer.readInt32LE(18);
+    const height = buffer.readInt32LE(22);
+    // A negative height means a top-down bitmap; the magnitude is the size.
+    return { width, height: Math.abs(height) };
+  }
+  return null;
 }
 
 export function validatePromptImages(images: readonly PromptImageLike[] | undefined): void {

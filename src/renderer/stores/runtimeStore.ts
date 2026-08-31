@@ -562,15 +562,16 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       toolsById[id] = tool;
       toolsChanged = true;
     };
-    const setSubagent = (run: SubagentRun) => {
+    const setBoundedSubagent = (run: SubagentRun) => {
       if (subagentsById === current.subagentsById) subagentsById = { ...subagentsById };
       if (!subagentsById[run.id]) {
         if (subagentOrder === current.subagentOrder) subagentOrder = [...subagentOrder];
         subagentOrder.push(run.id);
       }
-      subagentsById[run.id] = boundSubagentRun(run);
+      subagentsById[run.id] = run;
       subagentsChanged = true;
     };
+    const setSubagent = (run: SubagentRun) => setBoundedSubagent(boundSubagentRun(run));
     const setTimeline = (entry: TimelineEntity) => {
       timelineById[entry.id] = entry;
       timelineChanged = true;
@@ -782,7 +783,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
             || event.event.type === 'tool.completed';
           subagentImagePayloadChanged ||= (event.event.type === 'message.completed' || event.event.type === 'tool.completed')
             && Boolean(event.event.images?.length);
-          setSubagent(applySubagentChildEvent(existing, event.event));
+          setBoundedSubagent(applySubagentChildEvent(existing, event.event));
         }
       } else if (event.type === 'subagent.liveness') {
         const existing = subagentsById[event.runId];

@@ -85,7 +85,9 @@ describe('Pi theme mapping', () => {
     expect(mapped.colors.canvas).toBe('#18202a');
     expect(mapped.colors.panel).toBe('#303030');
     expect(mapped.colors.text).toBe('#f0f2f7');
-    expect(Object.keys(mapped.colors)).toHaveLength(18);
+    expect(Object.keys(mapped.colors)).toHaveLength(20);
+    expect(mapped.colors.currentSession).toBe('#18202a');
+    expect(mapped.colors.lastActiveSession).toBe('#334455');
     expect(resolvePiColorValue('cyan', input.vars)).toBe(39);
     expect(piColorToHex('terminal', input.vars, '#abcdef')).toBe('#abcdef');
   });

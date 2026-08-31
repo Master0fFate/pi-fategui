@@ -3,6 +3,7 @@ import { subagentRunSchema, type SubagentRun } from './contracts/ipc';
 import {
   MAX_SUBAGENT_ACTIVITY,
   MAX_SUBAGENT_TRANSCRIPT_CHARACTERS,
+  applySubagentChildEvent,
   boundSubagentRun,
   boundSubagentRuns,
 } from './subagents';
@@ -63,6 +64,24 @@ describe('subagent transcript bounds', () => {
     expect(characters).toBeLessThanOrEqual(MAX_SUBAGENT_TRANSCRIPT_CHARACTERS);
     expect(bounded.transcriptTruncated).toBe(true);
     expect(() => subagentRunSchema.parse(bounded)).not.toThrow();
+  });
+
+  it('keeps a near-limit child event bounded without a second pass', () => {
+    const messages = Array.from({ length: MAX_SUBAGENT_ACTIVITY + 10 }, (_, index) => ({
+      id: `message-${index}`,
+      role: 'assistant' as const,
+      text: `${String(index).padStart(3, '0')}:${'x'.repeat(31_995)}`,
+      timestamp: index,
+      timelinePosition: index,
+    }));
+    const bounded = boundSubagentRun(runWith(messages));
+    const updated = applySubagentChildEvent(bounded, {
+      type: 'assistant.text', messageId: `message-${MAX_SUBAGENT_ACTIVITY + 9}`,
+      delta: 'latest delta', timestamp: MAX_SUBAGENT_ACTIVITY + 10,
+    });
+
+    expect(updated.messages.at(-1)?.text).toMatch(/latest delta$/u);
+    expect(boundSubagentRun(updated)).toEqual(updated);
   });
 
   it('keeps only newest images that fit the parent session budget', () => {

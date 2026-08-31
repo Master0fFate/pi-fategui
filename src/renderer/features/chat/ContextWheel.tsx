@@ -10,18 +10,27 @@ function compactTokens(tokens: number): string {
   return `${value >= 100 ? Math.round(value) : value.toFixed(value >= 10 ? 1 : 2).replace(/\.?0+$/, '')}k`;
 }
 
-export function ContextWheel({ usage, fallbackWindow }: {
+export function ContextWheel({ usage, fallbackWindow, windowOverride }: {
   usage: RuntimeState['contextUsage'];
   fallbackWindow?: number;
+  windowOverride?: number;
 }) {
-  const contextWindow = usage?.contextWindow ?? fallbackWindow;
+  // A staged model switch swaps the window before Pi reports usage for it.
+  // Rescale the latest token measurement against the upcoming window so the
+  // meter shows the next message's budget instead of the retired model's.
+  const windowChanged = windowOverride !== undefined
+    && usage?.contextWindow !== undefined
+    && windowOverride !== usage.contextWindow;
+  const contextWindow = windowOverride ?? usage?.contextWindow ?? fallbackWindow;
   if (!contextWindow) return null;
-  const rawPercent = usage?.percent ?? (usage?.tokens === null || usage?.tokens === undefined
+  const rawPercent = usage?.tokens === null || usage?.tokens === undefined
     ? null
-    : usage.tokens / contextWindow * 100);
+    : windowChanged
+      ? usage.tokens / contextWindow * 100
+      : usage?.percent ?? usage.tokens / contextWindow * 100;
   const percent = rawPercent === null ? null : Math.max(0, Math.min(100, rawPercent));
   const level = percent === null ? 'unknown' : percent >= 95 ? 'critical' : percent >= 80 ? 'warning' : 'normal';
-  const estimated = usage?.estimated === true && usage.tokens !== null;
+  const estimated = usage?.tokens !== null && usage?.tokens !== undefined && (windowChanged || usage?.estimated === true);
   const usageText = usage?.tokens === null || usage?.tokens === undefined
     ? `Context updates after the next response · ? / ${compactTokens(contextWindow)}`
     : estimated

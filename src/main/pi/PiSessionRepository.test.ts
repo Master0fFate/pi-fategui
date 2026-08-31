@@ -93,23 +93,95 @@ describe('PiSessionRepository', () => {
     ]);
   });
 
-  it('removes an inactive branch subtree without leaving label references behind', async () => {
+  it('removes an inactive branch, its descendants, and its unshared ancestors without touching siblings', async () => {
     const { sessionsRoot, sessionDir } = sessionStore();
     const sessionPath = path.join(sessionDir, 'branch.jsonl');
+    const header = { type: 'session', version: 3, id: 'branch-session', timestamp: '2025-01-01T00:00:00.000Z', cwd: '/project' };
+    const root = { type: 'message', id: 'root', parentId: null, timestamp: '2025-01-01T00:00:01.000Z', message: { role: 'user', content: 'Root' } };
+    const activeParent = { type: 'message', id: 'active-parent', parentId: 'root', timestamp: '2025-01-01T00:00:02.000Z', message: { role: 'assistant', content: 'Active parent' } };
+    const active = { type: 'message', id: 'active', parentId: 'active-parent', timestamp: '2025-01-01T00:00:03.000Z', message: { role: 'assistant', content: 'Active' } };
+    const removedParent = { type: 'message', id: 'removed-parent', parentId: 'root', timestamp: '2025-01-01T00:00:04.000Z', message: { role: 'assistant', content: 'Removed parent' } };
+    const removed = { type: 'message', id: 'removed', parentId: 'removed-parent', timestamp: '2025-01-01T00:00:05.000Z', message: { role: 'assistant', content: 'Removed' } };
+    const removedChild = { type: 'message', id: 'removed-child', parentId: 'removed', timestamp: '2025-01-01T00:00:06.000Z', message: { role: 'assistant', content: 'Removed child' } };
+    const sibling = { type: 'message', id: 'sibling', parentId: 'root', timestamp: '2025-01-01T00:00:07.000Z', message: { role: 'assistant', content: 'Sibling' } };
+    const removedReference = { type: 'label', id: 'label-remove', parentId: 'active', timestamp: '2025-01-01T00:00:08.000Z', targetId: 'removed-child', label: 'Discarded' };
+    const keptReference = { type: 'label', id: 'label-keep', parentId: 'active', timestamp: '2025-01-01T00:00:09.000Z', targetId: 'active', label: 'Current' };
     try {
-      writeFileSync(sessionPath, [
-        { type: 'session', version: 3, id: 'branch-session', timestamp: '2025-01-01T00:00:00.000Z', cwd: '/project' },
-        { type: 'message', id: 'root', parentId: null, timestamp: '2025-01-01T00:00:01.000Z', message: { role: 'user', content: 'Root' } },
-        { type: 'message', id: 'keep', parentId: 'root', timestamp: '2025-01-01T00:00:02.000Z', message: { role: 'assistant', content: 'Keep' } },
-        { type: 'message', id: 'remove', parentId: 'root', timestamp: '2025-01-01T00:00:03.000Z', message: { role: 'assistant', content: 'Remove' } },
-        { type: 'label', id: 'label-remove', parentId: 'remove', timestamp: '2025-01-01T00:00:04.000Z', targetId: 'remove', label: 'Discarded' },
-      ].map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
+      writeFileSync(sessionPath, [header, root, activeParent, active, removedParent, removed, removedChild, sibling, removedReference, keptReference]
+        .map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
       const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => [info(sessionDir, { id: 'branch-session', path: sessionPath })]) }, sessionsRoot);
-      await repository.deleteBranch('/project', 'branch-session', 'remove', 'keep');
-      const retained = readFileSync(sessionPath, 'utf8');
-      expect(retained).toContain('"keep"');
-      expect(retained).not.toContain('"remove"');
-      expect(retained).not.toContain('label-remove');
+
+      await repository.deleteBranch('/project', 'branch-session', 'removed', 'active');
+
+      expect(readFileSync(sessionPath, 'utf8')).toBe(
+        [header, root, activeParent, active, sibling, keptReference].map((entry) => JSON.stringify(entry)).join('\n').concat('\n'),
+      );
+    } finally {
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('deletes a 10,000-entry inactive branch without recursive stack growth', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'deep-branch.jsonl');
+    const header = { type: 'session', version: 3, id: 'deep-branch-session', timestamp: '2025-01-01T00:00:00.000Z', cwd: '/project' };
+    const root = { type: 'message', id: 'root', parentId: null, timestamp: '2025-01-01T00:00:01.000Z', message: { role: 'user', content: 'Root' } };
+    const active = { type: 'message', id: 'active', parentId: 'root', timestamp: '2025-01-01T00:00:02.000Z', message: { role: 'assistant', content: 'Active' } };
+    try {
+      const entries: unknown[] = [header, root, active];
+      for (let index = 0; index < 10_000; index += 1) {
+        entries.push({
+          type: 'message', id: `fork-${index}`, parentId: index === 0 ? 'root' : `fork-${index - 1}`,
+          timestamp: '2025-01-01T00:00:03.000Z', message: { role: 'assistant', content: 'Fork' },
+        });
+      }
+      writeFileSync(sessionPath, entries.map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
+      const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => [info(sessionDir, { id: 'deep-branch-session', path: sessionPath })]) }, sessionsRoot);
+
+      await repository.deleteBranch('/project', 'deep-branch-session', 'fork-9999', 'active');
+
+      expect(readFileSync(sessionPath, 'utf8')).toBe([header, root, active].map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
+    } finally {
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('terminates on a cyclic inactive branch and removes the complete cycle', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'cyclic-branch.jsonl');
+    const header = { type: 'session', version: 3, id: 'cyclic-session', timestamp: '2025-01-01T00:00:00.000Z', cwd: '/project' };
+    const root = { type: 'message', id: 'root', parentId: null, timestamp: '2025-01-01T00:00:01.000Z', message: { role: 'user', content: 'Root' } };
+    const active = { type: 'message', id: 'active', parentId: 'root', timestamp: '2025-01-01T00:00:02.000Z', message: { role: 'assistant', content: 'Active' } };
+    const cycleA = { type: 'message', id: 'cycle-a', parentId: 'cycle-b', timestamp: '2025-01-01T00:00:03.000Z', message: { role: 'assistant', content: 'Cycle A' } };
+    const cycleB = { type: 'message', id: 'cycle-b', parentId: 'cycle-a', timestamp: '2025-01-01T00:00:04.000Z', message: { role: 'assistant', content: 'Cycle B' } };
+    try {
+      writeFileSync(sessionPath, [header, root, active, cycleA, cycleB].map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
+      const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => [info(sessionDir, { id: 'cyclic-session', path: sessionPath })]) }, sessionsRoot);
+
+      await repository.deleteBranch('/project', 'cyclic-session', 'cycle-a', 'active');
+
+      expect(readFileSync(sessionPath, 'utf8')).toBe([header, root, active].map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
+    } finally {
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('removes an inactive branch whose parent is missing without affecting valid entries', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'orphan-branch.jsonl');
+    const header = { type: 'session', version: 3, id: 'orphan-session', timestamp: '2025-01-01T00:00:00.000Z', cwd: '/project' };
+    const root = { type: 'message', id: 'root', parentId: null, timestamp: '2025-01-01T00:00:01.000Z', message: { role: 'user', content: 'Root' } };
+    const active = { type: 'message', id: 'active', parentId: 'root', timestamp: '2025-01-01T00:00:02.000Z', message: { role: 'assistant', content: 'Active' } };
+    const sibling = { type: 'message', id: 'sibling', parentId: 'root', timestamp: '2025-01-01T00:00:03.000Z', message: { role: 'assistant', content: 'Sibling' } };
+    const orphan = { type: 'message', id: 'orphan', parentId: 'missing', timestamp: '2025-01-01T00:00:04.000Z', message: { role: 'assistant', content: 'Orphan' } };
+    const orphanChild = { type: 'message', id: 'orphan-child', parentId: 'orphan', timestamp: '2025-01-01T00:00:05.000Z', message: { role: 'assistant', content: 'Orphan child' } };
+    try {
+      writeFileSync(sessionPath, [header, root, active, sibling, orphan, orphanChild].map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
+      const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => [info(sessionDir, { id: 'orphan-session', path: sessionPath })]) }, sessionsRoot);
+
+      await repository.deleteBranch('/project', 'orphan-session', 'orphan', 'active');
+
+      expect(readFileSync(sessionPath, 'utf8')).toBe([header, root, active, sibling].map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
     } finally {
       rmSync(sessionsRoot, { recursive: true, force: true });
     }

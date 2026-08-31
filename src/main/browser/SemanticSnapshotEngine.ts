@@ -4,8 +4,10 @@ import type { BrowserCdpClient } from './CdpClient';
 import { BrowserError } from './BrowserErrors';
 import { BrowserRefRegistry, fingerprintHash, type BrowserElementFingerprint } from './BrowserRefRegistry';
 
+const SEMANTIC_VISIBILITY_STYLE_PROPERTIES = ['display', 'visibility', 'opacity'] as const;
+
 export const SNAPSHOT_STYLE_PROPERTIES = [
-  'display', 'visibility', 'opacity', 'position', 'overflow', 'width', 'height',
+  ...SEMANTIC_VISIBILITY_STYLE_PROPERTIES, 'position', 'overflow', 'width', 'height',
   'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
   'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'gap',
   'font-family', 'font-size', 'font-weight', 'line-height', 'color', 'background-color',
@@ -97,7 +99,7 @@ export class SemanticSnapshotEngine {
     const operation = Promise.all([
       this.cdp.send<AxTreeResult>('Accessibility.getFullAXTree'),
       this.cdp.send<DomSnapshotResult>('DOMSnapshot.captureSnapshot', {
-        computedStyles: [...SNAPSHOT_STYLE_PROPERTIES], includePaintOrder: true, includeDOMRects: true,
+        computedStyles: [...SEMANTIC_VISIBILITY_STYLE_PROPERTIES], includeDOMRects: true,
       }),
       this.cdp.send<FrameTreeResult>('Page.getFrameTree'),
       this.cdp.send<LayoutMetricsResult>('Page.getLayoutMetrics'),

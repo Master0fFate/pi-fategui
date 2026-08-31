@@ -377,7 +377,7 @@ export const filePreviewSchema = z.object({
   size: z.number().int().nonnegative(),
   state: z.enum(['text', 'image', 'binary', 'large']),
   content: z.string().max(1_500_000).optional(),
-  mimeType: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp']).optional(),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp']).optional(),
   language: z.string(),
   openable: z.boolean(),
 }).superRefine((preview, context) => {
@@ -414,7 +414,7 @@ export const gitDiffSchema = z.object({
   original: z.string().optional(),
   modified: z.string().optional(),
   imageData: z.string().max(1_500_000).optional(),
-  mimeType: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp']).optional(),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp']).optional(),
   language: z.string(),
   openable: z.boolean(),
   message: z.string().optional(),
@@ -506,7 +506,7 @@ export const recoveryNoticeResultSchema = recoveryNoticeSchema.nullable();
 
 export const runtimeImageSchema = z.object({
   data: z.string().min(1).max(20_000_000),
-  mimeType: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp']),
   alt: z.string().max(500).optional(),
 });
 const boundedImageBase64Schema = z.string().min(4).max(20_000_000)
@@ -871,7 +871,7 @@ export const forkPointSchema = z.object({ entryId: z.string().min(1).max(500), t
 
 export const promptImageSchema = z.object({
   data: z.string().min(1).max(14_000_000),
-  mimeType: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp']),
   name: z.string().min(1).max(255),
 }).strict();
 const promptImagesSchema = z.array(promptImageSchema).max(4).superRefine((images, context) => {

@@ -16,6 +16,36 @@ describe('PiEventNormalizer', () => {
     expect(split.every((item) => item.type === 'assistant.text' && item.delta.length <= 32_000)).toBe(true);
   });
 
+  it('keeps a run active until Pi reports the full lifecycle as settled', () => {
+    let runId: string | null = 'run-1';
+    const normalizer = new PiEventNormalizer(() => runId);
+
+    expect(normalizer.normalize(event({ type: 'agent_start' }))).toEqual([
+      expect.objectContaining({ type: 'run.started', runId: 'run-1' }),
+    ]);
+    runId = null;
+    expect(normalizer.normalize(event({
+      type: 'agent_end',
+      messages: [{ role: 'assistant', content: [], stopReason: 'stop' }],
+    }))).toEqual([]);
+    expect(normalizer.normalize(event({ type: 'agent_settled' }))).toEqual([
+      expect.objectContaining({ type: 'run.completed', runId: 'run-1', aborted: false }),
+    ]);
+  });
+
+  it('preserves the final abort state until Pi settles the run', () => {
+    const normalizer = new PiEventNormalizer(() => 'run-1');
+    normalizer.normalize(event({ type: 'agent_start' }));
+    normalizer.normalize(event({
+      type: 'agent_end',
+      messages: [{ role: 'assistant', content: [], stopReason: 'aborted' }],
+    }));
+
+    expect(normalizer.normalize(event({ type: 'agent_settled' }))).toEqual([
+      expect.objectContaining({ type: 'run.completed', runId: 'run-1', aborted: true }),
+    ]);
+  });
+
   it('namespaces child-attempt message and tool identities without affecting parent normalizers', () => {
     const normalizer = new PiEventNormalizer(() => 'run-1', 'attempt-2:');
     expect(normalizer.normalize(event({ type: 'message_start', message: { role: 'assistant', content: [] } }))[0]).toMatchObject({

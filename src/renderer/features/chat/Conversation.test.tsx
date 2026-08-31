@@ -573,6 +573,38 @@ describe('conversation components', () => {
     expect(meter).not.toHaveTextContent('42');
   });
 
+  it('rescales the context meter against a staged model window', async () => {
+    const user = userEvent.setup();
+    render(<ContextWheel
+      usage={{ tokens: 42_000, contextWindow: 256_000, percent: 16.4 }}
+      fallbackWindow={256_000}
+      windowOverride={1_000_000}
+    />);
+    const meter = screen.getByRole('meter', { name: 'Estimated context usage: 4% of 1000k tokens' });
+    expect(meter).toHaveAttribute('aria-valuenow', '4');
+    await user.hover(meter);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Estimated context ~42k / 1000k · ~4%');
+  });
+
+  it('reflects an idle staged model switch in the composer wheel but not while running', () => {
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {} as PiDesktopApi });
+    const staged = ready({
+      model: { provider: 'test', id: 'gpt', name: 'GPT', reasoning: true, contextWindow: 256_000, supportsImages: false },
+      pendingModel: { provider: 'test', id: 'glm', name: 'GLM', reasoning: true, contextWindow: 1_000_000, supportsImages: false },
+      contextUsage: { tokens: 42_000, contextWindow: 256_000, percent: 16.4 },
+    });
+
+    const { unmount } = render(<Composer onOpenProject={vi.fn()} />);
+    act(() => useRuntimeStore.setState({ runtime: staged }));
+    const idleMeter = screen.getByRole('meter', { name: 'Estimated context usage: 4% of 1000k tokens' });
+    expect(idleMeter).toHaveAttribute('aria-valuenow', '4');
+    unmount();
+
+    act(() => useRuntimeStore.setState({ runtime: ready({ ...staged, streaming: true }) }));
+    render(<Composer onOpenProject={vi.fn()} />);
+    expect(screen.getByRole('meter', { name: 'Context usage: 16% of 256k tokens' })).toHaveAttribute('aria-valuenow', '16');
+  });
+
   it('shows a completed post-compaction estimate instead of an endless recalculating state', async () => {
     const user = userEvent.setup();
     const view = render(<ContextWheel usage={{ tokens: 24_000, contextWindow: 100_000, percent: 24, estimated: true }} />);
@@ -1263,6 +1295,18 @@ describe('conversation components', () => {
     expect(screen.getByRole('button', { name: 'Stop Pi' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Stop Pi' }).querySelector('.lucide-square')).toBeInTheDocument();
     expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('queues a follow-up while an accepted prompt awaits SDK streaming', async () => {
+    const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt } as unknown as PiDesktopApi });
+    useRuntimeStore.setState({ runtime: ready({ streaming: false, activeSessionRunning: true }), queue: { steering: 0, followUp: 0, items: [] } });
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    await userEvent.setup().type(screen.getByLabelText('Message Pi'), 'queue behind the accepted prompt{Enter}');
+
+    expect(prompt).toHaveBeenCalledWith({ text: 'queue behind the accepted prompt', behavior: 'followUp' });
+    expect(screen.getByRole('button', { name: 'Stop Pi' })).toBeEnabled();
   });
 
   it('sends a drafted follow-up with the arrow button', () => {

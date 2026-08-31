@@ -5,11 +5,13 @@ import { describe, expect, it } from 'vitest';
 import { BrowserHistoryRepository, isRestorableBrowserUrl } from './BrowserHistoryRepository';
 
 describe('browser last-URL history', () => {
-  it('classifies only real network pages as restorable', () => {
+  it('classifies real network pages and local preview files as restorable', () => {
     expect(isRestorableBrowserUrl('http://localhost:3000/app')).toBe(true);
     expect(isRestorableBrowserUrl('https://example.com')).toBe(true);
+    expect(isRestorableBrowserUrl('file:///C:/Users/fate/project/index.html')).toBe(true);
     expect(isRestorableBrowserUrl('about:blank')).toBe(false);
-    expect(isRestorableBrowserUrl('fate-local://abc')).toBe(false);
+    expect(isRestorableBrowserUrl('fate-local://abc/page.html')).toBe(false);
+    expect(isRestorableBrowserUrl('chrome://settings')).toBe(false);
     expect(isRestorableBrowserUrl('')).toBe(false);
   });
 
@@ -30,6 +32,28 @@ describe('browser last-URL history', () => {
       // Clearing forgets the URL.
       await reopened.save('/project-a', null);
       expect(await reopened.load('/project-a')).toBeNull();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('remembers a local preview file across a reopen and replaces it with the next page', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-browser-history-'));
+    try {
+      const repo = new BrowserHistoryRepository(root);
+      const localPage = 'file:///C:/Users/fate/project/preview/index.html';
+      await repo.save('/project-a', localPage);
+      expect(await repo.load('/project-a')).toBe(localPage);
+      // The ephemeral capability token never overwrites the remembered file.
+      await repo.save('/project-a', 'fate-local://a1b2c3d4/index.html');
+      expect(await repo.load('/project-a')).toBe(localPage);
+      // Moving on to a network page replaces it.
+      await repo.save('/project-a', 'https://example.com/');
+      expect(await repo.load('/project-a')).toBe('https://example.com/');
+      // A fresh instance still reads the file entry from disk.
+      await repo.save('/project-b', localPage);
+      const reopened = new BrowserHistoryRepository(root);
+      expect(await reopened.load('/project-b')).toBe(localPage);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

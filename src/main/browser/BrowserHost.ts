@@ -70,7 +70,7 @@ export class BrowserHost {
     if (!project?.trusted) throw new BrowserError('ACTION_BLOCKED', 'Open and trust a project before using the built-in browser.');
     const current = this.current(owner);
     if (current) {
-      if (current.getState().tabs.length === 0) await current.ensureTab();
+      if (current.getState().tabs.length === 0) await this.ensureServiceTab(current, project);
       this.options.bridge.syncService();
       return current;
     }
@@ -113,7 +113,7 @@ export class BrowserHost {
       if (this.service === service && this.owner?.webContents.id === owner.webContents.id && !owner.isDestroyed()) this.options.emit(owner, event);
     });
     try {
-      await service.ensureTab();
+      await this.ensureServiceTab(service, project);
       if (this.service !== service) throw new BrowserError('ACTION_BLOCKED', 'The built-in browser was replaced while starting.');
       this.options.bridge.syncService();
       return service;
@@ -121,6 +121,20 @@ export class BrowserHost {
       if (this.service === service) await this.reset();
       else await service.dispose().catch(() => undefined);
       throw error;
+    }
+  }
+
+  /** Open the main tab at the project's remembered page. A remembered local
+   *  preview whose file no longer exists falls back to a blank tab and forgets
+   *  the dead entry instead of failing the whole browser workspace. */
+  private async ensureServiceTab(service: BrowserService, project: ProjectState): Promise<void> {
+    try {
+      await service.ensureTab();
+      return;
+    } catch (error) {
+      if (!(error instanceof BrowserError) || error.code !== 'INVALID_URL') throw error;
+      await this.options.history?.save(project.path, null).catch(() => undefined);
+      await service.ensureTab('browser-main', 'about:blank');
     }
   }
 

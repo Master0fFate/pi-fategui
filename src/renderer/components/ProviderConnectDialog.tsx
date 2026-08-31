@@ -11,6 +11,7 @@ import type {
 import { useRuntimeStore } from '../stores/runtimeStore';
 import { ipcErrorMessage } from '../lib/ipcError';
 import { ProviderLogo, prefetchProviderLogos } from './ProviderLogo';
+import { SelectControl } from './SelectControl';
 
 /**
  * The one provider window in Fate UI. Used by /login ("Connect a provider",
@@ -331,13 +332,19 @@ export function ProviderConnectDialog({ open, onOpenChange, onNotice, onAdded }:
                 <form className="provider-dialog-prompt" onSubmit={(event) => { event.preventDefault(); respond(); }}>
                   <p className="provider-dialog-prompt-message">{blockingPrompt.message}</p>
                   {blockingPrompt.type === 'select' ? (
-                    <label className="provider-dialog-key provider-dialog-key--form">
+                    <div className="provider-dialog-key provider-dialog-key--form">
                       <span>Choose an option</span>
-                      <select value={value} autoFocus onChange={(event) => setValue(event.target.value)}>
-                        <option value="" disabled>Select…</option>
-                        {blockingPrompt.options?.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                      </select>
-                    </label>
+                      <SelectControl
+                        label="Login method"
+                        value={value}
+                        options={(blockingPrompt.options ?? []).map((option) => ({ value: option.id, label: option.label }))}
+                        placeholder="Select…"
+                        autoFocus
+                        className="provider-dialog-select"
+                        contentClassName="provider-dialog-select-content"
+                        onValueChange={setValue}
+                      />
+                    </div>
                   ) : (
                     <label className="provider-dialog-key provider-dialog-key--form">
                       <span>{blockingPrompt.type === 'secret' ? 'Credential' : 'Response'}</span>

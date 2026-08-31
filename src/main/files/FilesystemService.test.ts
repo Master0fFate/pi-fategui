@@ -225,8 +225,10 @@ describe('FilesystemService confinement', () => {
   it('reads a referenced raster image outside the active project', async () => {
     const root = await tempDirectory();
     const outside = await tempDirectory();
-    const png = Buffer.alloc(24);
+    const png = Buffer.alloc(29);
     Buffer.from('89504e470d0a1a0a', 'hex').copy(png);
+    png.writeUInt32BE(13, 8);
+    png.write('IHDR', 12, 'ascii');
     png.writeUInt32BE(1, 16);
     png.writeUInt32BE(1, 20);
     const imagePath = path.join(outside, 'chakra-video-section.png');
@@ -243,7 +245,12 @@ describe('FilesystemService confinement', () => {
 
   it('detects bounded raster previews by file signature while keeping SVG as text', async () => {
     const root = await tempDirectory();
-    const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from('preview-bytes')]);
+    const ihdr = Buffer.alloc(25);
+    ihdr.writeUInt32BE(13, 0);
+    ihdr.write('IHDR', 4, 'ascii');
+    ihdr.writeUInt32BE(1, 8);
+    ihdr.writeUInt32BE(1, 12);
+    const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), ihdr, Buffer.from('preview-bytes')]);
     await fs.writeFile(path.join(root, 'icon.asset'), png);
     await fs.writeFile(path.join(root, 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><circle /></svg>');
     const service = new FilesystemService();

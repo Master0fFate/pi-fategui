@@ -141,4 +141,29 @@ describe('ModelsDevService.refreshManagedProviders', () => {
     expect(await service.refreshManagedProviders()).toEqual([]);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it('overlays the provider /v1/models list so live ids missing from models.dev appear', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('models.dev')) {
+        const body = JSON.stringify(catalogPayload());
+        return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode(body).buffer };
+      }
+      const body = JSON.stringify({
+        data: [
+          { id: 'kimi-k3', name: 'Kimi K3', custom_reasoning: true, context_length: 1_000_000 },
+          { id: 'glm-5.3-flash', name: 'Z.ai: GLM 5.3 Flash', custom_reasoning: true, reasoning_effort: true, context_length: 1_000_000, max_completion_tokens: 131_072 },
+        ],
+      });
+      return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode(body).buffer };
+    }) as unknown as ModelsDevFetch;
+    const service = new ModelsDevService({ store: new ModelsDevStore(dataRoot), fetchImpl, now: () => 42_000 });
+    await service.addProvider('crof');
+    await fs.writeFile(path.join(dataRoot, 'auth.json'), JSON.stringify({ crof: { type: 'api_key', key: 'test-key' } }));
+    const updated = await service.refreshManagedProviders();
+    const ids = updated[0]!.config.models.map((model) => model.id);
+    expect(ids).toEqual(['glm-5.3-flash', 'kimi-k3']);
+    expect(fetchImpl).toHaveBeenCalledWith('https://crof.ai/v1/models', expect.objectContaining({
+      headers: expect.objectContaining({ authorization: 'Bearer test-key', 'user-agent': expect.stringContaining('pi/') }),
+    }));
+  });
 });

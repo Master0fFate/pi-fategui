@@ -15,18 +15,22 @@ export interface BrowserHistoryState {
 }
 
 function isRestorableProtocol(url: string): boolean {
-  return /^https?:\/\//iu.test(url);
+  try {
+    return new Set(['http:', 'https:', 'file:']).has(new URL(url).protocol);
+  } catch {
+    return false;
+  }
 }
 
 /**
  * Decide whether a committed URL is worth restoring on the next browser open.
- * Only real network pages (http/https, including localhost) qualify; blank
- * pages and ephemeral local previews are discarded so reopening lands on a page
- * that can actually reload.
+ * Real network pages (http/https, including localhost) and local previews
+ * (file://, the display address of a local page) qualify; blank pages and the
+ * ephemeral fate-local capability URLs are discarded because a stored token
+ * can never reload after the service that issued it is gone.
  */
 export function isRestorableBrowserUrl(url: string): boolean {
   if (!url || url.length > MAX_URL_CHARACTERS) return false;
-  if (url === 'about:blank') return false;
   return isRestorableProtocol(url);
 }
 

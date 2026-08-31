@@ -6,9 +6,22 @@ import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { Workspace } from './Workspace';
 
+const timelineMounts = vi.hoisted(() => ({ count: 0 }));
+
 vi.mock('../browser/BrowserWorkspace', () => ({ BrowserWorkspace: () => <div data-testid="browser-workspace">Browser surface</div> }));
 vi.mock('../chat/Composer', () => ({ Composer: () => <div data-testid="composer">Composer surface</div> }));
-vi.mock('../chat/ConversationTimeline', () => ({ ConversationTimeline: () => <div>Conversation timeline</div> }));
+vi.mock('../chat/ConversationTimeline', async () => {
+  const React = await import('react');
+  return {
+    ConversationTimeline: () => {
+      React.useEffect(() => {
+        timelineMounts.count += 1;
+        return () => { timelineMounts.count -= 1; };
+      }, []);
+      return <div data-testid="conversation-timeline">Conversation timeline</div>;
+    },
+  };
+});
 vi.mock('../chat/ExtensionStatusRail', () => ({ ExtensionStatusRail: () => null }));
 vi.mock('./WorkspaceActivityPulse', () => ({ WorkspaceActivityPulse: () => null }));
 
@@ -39,6 +52,7 @@ describe('Workspace built-in browser', () => {
     }));
     useBrowserStore.getState().reset();
     useUiStore.setState({ browserOpen: false, browserPaneWidth: 520, terminalOpen: false });
+    timelineMounts.count = 0;
   });
 
   afterEach(() => Reflect.deleteProperty(window, 'piDesktop'));
@@ -69,6 +83,31 @@ describe('Workspace built-in browser', () => {
     expect(useUiStore.getState().browserPaneWidth).toBe(532);
     fireEvent.keyDown(resize, { key: 'ArrowRight' });
     expect(useUiStore.getState().browserPaneWidth).toBe(520);
+  });
+
+  it('keeps the conversation mounted across browser open and close so scroll position survives', () => {
+    const setBrowserMode = vi.fn(async () => browserState({ controlLevel: 'interact' }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { setBrowserMode } as unknown as PiDesktopApi,
+    });
+    useRuntimeStore.setState((current) => ({
+      ...current,
+      timelineOrder: ['message:m1'],
+    }));
+
+    render(<Workspace inspectorCollapsed={false} onToggleInspector={vi.fn()} />);
+    expect(screen.getByTestId('conversation-timeline')).toBeInTheDocument();
+    expect(timelineMounts.count).toBe(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }));
+    expect(screen.getByTestId('browser-thread-layout')).toBeInTheDocument();
+    expect(timelineMounts.count).toBe(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close browser' }));
+    expect(screen.queryByTestId('browser-thread-layout')).not.toBeInTheDocument();
+    expect(screen.getByTestId('conversation-timeline')).toBeInTheDocument();
+    expect(timelineMounts.count).toBe(1);
   });
 
   it('closes the preview without pausing or hiding the browser automation', () => {

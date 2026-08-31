@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
+import { BrowserError } from './BrowserErrors';
 import type { BrowserService } from './BrowserService';
-import { BrowserHost } from './BrowserHost';
+import { BrowserHost, type BrowserHostOptions } from './BrowserHost';
+import type { BrowserHistoryRepository } from './BrowserHistoryRepository';
 
 const project = { path: '/project', name: 'project', trusted: true };
 const owner = { isDestroyed: () => false, webContents: { id: 7 } } as unknown as BrowserWindow;
@@ -70,5 +72,63 @@ describe('BrowserHost tab lifecycle', () => {
     await host.ensure(owner);
 
     expect(setSessionFullAccess).toHaveBeenCalledWith(true);
+  });
+});
+
+describe('BrowserHost restore hardening', () => {
+  function restoreFixture(ensureTab: BrowserService['ensureTab']) {
+    const history = { load: vi.fn(async () => null), save: vi.fn(async () => undefined) };
+    const service = {
+      getState: () => ({ tabs: [] }),
+      ensureTab,
+      setSessionFullAccess: vi.fn(),
+      dispose: vi.fn(async () => undefined),
+    } as unknown as BrowserService;
+    const host = new BrowserHost({
+      currentProject: () => project,
+      currentPermissionLevel: () => 'full-access',
+      bridge: { currentRoot: vi.fn(() => ({ projectPath: project.path, sessionId: 'session-1' })), syncService: vi.fn() },
+      emit: vi.fn(),
+      command: vi.fn(),
+      history: history as unknown as BrowserHistoryRepository,
+    });
+    return { host, service, history };
+  }
+
+  it('forgets a remembered local preview whose file no longer exists', async () => {
+    const ensureTab = vi.fn()
+      .mockRejectedValueOnce(new BrowserError('INVALID_URL', 'That local file does not exist or cannot be opened.'))
+      .mockResolvedValue(undefined);
+    const { host, service, history } = restoreFixture(ensureTab as unknown as BrowserService['ensureTab']);
+
+    await (host as unknown as { ensureServiceTab(service: BrowserService, project: { path: string }): Promise<void> })
+      .ensureServiceTab(service, project);
+
+    expect(history.save).toHaveBeenCalledTimes(1);
+    expect(history.save).toHaveBeenCalledWith(project.path, null);
+    expect(ensureTab).toHaveBeenNthCalledWith(1);
+    expect(ensureTab).toHaveBeenNthCalledWith(2, 'browser-main', 'about:blank');
+  });
+
+  it('propagates failures that are not dead remembered pages', async () => {
+    const ensureTab = vi.fn().mockRejectedValue(new BrowserError('ACTION_BLOCKED', 'Browser tab browser-main already exists.'));
+    const { host, service, history } = restoreFixture(ensureTab as unknown as BrowserService['ensureTab']);
+
+    await expect((host as unknown as { ensureServiceTab(service: BrowserService, project: { path: string }): Promise<void> })
+      .ensureServiceTab(service, project)).rejects.toThrow(/already exists/u);
+    expect(history.save).not.toHaveBeenCalled();
+    expect(ensureTab).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the remembered entry when the first restore attempt succeeds', async () => {
+    const ensureTab = vi.fn().mockResolvedValue(undefined);
+    const { host, service, history } = restoreFixture(ensureTab as unknown as BrowserService['ensureTab']);
+
+    await (host as unknown as { ensureServiceTab(service: BrowserService, project: { path: string }): Promise<void> })
+      .ensureServiceTab(service, project);
+
+    expect(history.save).not.toHaveBeenCalled();
+    expect(ensureTab).toHaveBeenCalledTimes(1);
+    expect(ensureTab).toHaveBeenCalledWith();
   });
 });

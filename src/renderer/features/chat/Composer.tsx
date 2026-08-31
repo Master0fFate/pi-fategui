@@ -26,7 +26,7 @@ import { modelIdentity, visibleModels } from '../../../shared/modelVisibility';
 
 interface Attachment {
   name: string;
-  mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+  mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/bmp';
   data: string;
   bytes: number;
   pixels: number;
@@ -130,7 +130,7 @@ const MAX_ATTACHMENT_BYTES = 10_000_000;
 const MAX_TOTAL_ATTACHMENT_BYTES = 15_000_000;
 const MAX_ATTACHMENT_DIMENSION = 8_192;
 const MAX_TOTAL_ATTACHMENT_PIXELS = 24_000_000;
-const supportedImageTypes = new Set<Attachment['mimeType']>(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const supportedImageTypes = new Set<Attachment['mimeType']>(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp']);
 const thinkingLevels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const MODEL_NAME_MAX_LENGTH = 28;
 const MIN_COMPOSER_INPUT_HEIGHT = 53;
@@ -367,6 +367,12 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
         ? 'Wait for this session to finish before branching'
         : 'Branch into a new session from the latest user message';
   const currentModelName = runtime.model?.name ?? 'No model';
+  // An idle session stages a model switch for the next message. Surface that
+  // window in the context meter right away; live usage panels keep the old
+  // numbers until the switch actually happens.
+  const stagedContextWindow = !runtime.streaming && !runtime.activeSessionRunning
+    ? runtime.pendingModel?.contextWindow
+    : undefined;
   const nextModelName = nextModel?.name ?? 'No model';
   const modelLabel = compactModelName(nextModelName);
   const modelTooltip = `Current: ${currentModelName}\nNext: ${nextModelName}`;
@@ -2463,7 +2469,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                 </Popover.Content>
               </Popover.Portal>
             </Popover.Root>
-            <input ref={fileInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={attachImages} />
+            <input ref={fileInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple onChange={attachImages} />
             {!compactToolbar && (
               <>
                 <AppTooltip content="Tag a project file or folder with #" wrapTrigger><button className="composer-icon-action" type="button" aria-label="Tag project file or folder" disabled={!connected} onClick={startResourceTag}><Hash size={15} aria-hidden="true" /></button></AppTooltip>
@@ -2568,7 +2574,13 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                     </Popover.Content>
                   </Popover.Portal>
                 </Popover.Root>
-                {connected && <ContextWheel usage={runtime.contextUsage} {...(runtime.model ? { fallbackWindow: runtime.model.contextWindow } : {})} />}
+                {connected && (
+                  <ContextWheel
+                    usage={runtime.contextUsage}
+                    {...(runtime.model ? { fallbackWindow: runtime.model.contextWindow } : {})}
+                    {...(stagedContextWindow ? { windowOverride: stagedContextWindow } : {})}
+                  />
+                )}
               </div>
               <AppTooltip
                 content={optimizingPrompt

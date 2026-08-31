@@ -213,14 +213,123 @@ function retainDirectoryEntry(heap: Dirent[], candidate: Dirent): void {
   }
 }
 
-export type RasterImageMimeType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+export type RasterImageMimeType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/bmp';
 
-export function rasterImageMimeType(buffer: Buffer): RasterImageMimeType | null {
-  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
-  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
-  if (buffer.length >= 6 && (buffer.subarray(0, 6).toString('ascii') === 'GIF87a' || buffer.subarray(0, 6).toString('ascii') === 'GIF89a')) return 'image/gif';
-  if (buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+/**
+ * Raster image type detection ported from the Pi SDK `utils/mime.ts` (0.84.4).
+ * The SDK only exports the file-path variant (`detectSupportedImageMimeTypeFromFile`);
+ * Fate UI needs buffer-level detection for git blobs, HTTP payloads, and partial
+ * samples, so the detection logic is mirrored here and kept in parity with the
+ * SDK: JPEG-XR rejection, PNG IHDR structural validation, animated PNG (acTL)
+ * detection, WEBP container checks, and full BMP DIB header validation.
+ */
+interface DetectedRasterType { mime: RasterImageMimeType; animatedPng: boolean }
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const;
+
+function bytesStartWith(buffer: Buffer, bytes: readonly number[]): boolean {
+  if (buffer.length < bytes.length) return false;
+  return bytes.every((byte, index) => buffer[index] === byte);
+}
+
+function asciiStartsWith(buffer: Buffer, offset: number, text: string): boolean {
+  if (buffer.length < offset + text.length) return false;
+  for (let index = 0; index < text.length; index += 1) {
+    if (buffer[offset + index] !== text.charCodeAt(index)) return false;
+  }
+  return true;
+}
+
+function readUint16LE(buffer: Buffer, offset: number): number {
+  return (buffer[offset] ?? 0) + ((buffer[offset + 1] ?? 0) << 8);
+}
+
+function readUint32BE(buffer: Buffer, offset: number): number {
+  return ((buffer[offset] ?? 0) * 0x1000000
+    + ((buffer[offset + 1] ?? 0) << 16)
+    + ((buffer[offset + 2] ?? 0) << 8)
+    + (buffer[offset + 3] ?? 0));
+}
+
+function readUint32LE(buffer: Buffer, offset: number): number {
+  return (buffer[offset] ?? 0)
+    + ((buffer[offset + 1] ?? 0) << 8)
+    + ((buffer[offset + 2] ?? 0) << 16)
+    + ((buffer[offset + 3] ?? 0) * 0x1000000);
+}
+
+function isPngStructure(buffer: Buffer): boolean {
+  return buffer.length >= 16 && readUint32BE(buffer, PNG_SIGNATURE.length) === 13 && asciiStartsWith(buffer, 12, 'IHDR');
+}
+
+function isAnimatedPng(buffer: Buffer): boolean {
+  let offset: number = PNG_SIGNATURE.length;
+  while (offset + 8 <= buffer.length) {
+    const chunkLength = readUint32BE(buffer, offset);
+    const chunkTypeOffset = offset + 4;
+    if (asciiStartsWith(buffer, chunkTypeOffset, 'acTL')) return true;
+    if (asciiStartsWith(buffer, chunkTypeOffset, 'IDAT')) return false;
+    const nextOffset = offset + 8 + chunkLength + 4;
+    if (nextOffset <= offset || nextOffset > buffer.length) return false;
+    offset = nextOffset;
+  }
+  return false;
+}
+
+function isBmpStructure(buffer: Buffer): boolean {
+  if (buffer.length < 26) return false;
+  const declaredFileSize = readUint32LE(buffer, 2);
+  const pixelDataOffset = readUint32LE(buffer, 10);
+  const dibHeaderSize = readUint32LE(buffer, 14);
+  if (declaredFileSize !== 0 && declaredFileSize < 26) return false;
+  if (pixelDataOffset < 14 + dibHeaderSize) return false;
+  if (declaredFileSize !== 0 && pixelDataOffset >= declaredFileSize) return false;
+  let colorPlanes: number;
+  let bitsPerPixel: number;
+  if (dibHeaderSize === 12) {
+    colorPlanes = readUint16LE(buffer, 22);
+    bitsPerPixel = readUint16LE(buffer, 24);
+  } else if (dibHeaderSize >= 40 && dibHeaderSize <= 124) {
+    if (buffer.length < 30) return false;
+    colorPlanes = readUint16LE(buffer, 26);
+    bitsPerPixel = readUint16LE(buffer, 28);
+  } else {
+    return false;
+  }
+  return colorPlanes === 1 && [1, 4, 8, 16, 24, 32].includes(bitsPerPixel);
+}
+
+function detectRasterType(buffer: Buffer): DetectedRasterType | null {
+  if (bytesStartWith(buffer, [0xff, 0xd8, 0xff])) {
+    // 0xF7 marks JPEG-XR (WP file), which providers do not accept as JPEG.
+    return buffer[3] === 0xf7 ? null : { mime: 'image/jpeg', animatedPng: false };
+  }
+  if (bytesStartWith(buffer, PNG_SIGNATURE)) {
+    if (!isPngStructure(buffer)) return null;
+    return { mime: 'image/png', animatedPng: isAnimatedPng(buffer) };
+  }
+  if (asciiStartsWith(buffer, 0, 'GIF')) return { mime: 'image/gif', animatedPng: false };
+  if (asciiStartsWith(buffer, 0, 'RIFF') && asciiStartsWith(buffer, 8, 'WEBP')) return { mime: 'image/webp', animatedPng: false };
+  if (asciiStartsWith(buffer, 0, 'BM') && isBmpStructure(buffer)) return { mime: 'image/bmp', animatedPng: false };
   return null;
+}
+
+/**
+ * Provider-grade detection matching the Pi SDK: animated PNGs and structurally
+ * invalid images are rejected because vision providers refuse them.
+ */
+export function rasterImageMimeType(buffer: Buffer): RasterImageMimeType | null {
+  const detected = detectRasterType(buffer);
+  if (!detected || detected.animatedPng) return null;
+  return detected.mime;
+}
+
+/**
+ * Renderability-grade detection for previews: accepts animated PNGs, which
+ * Chromium renders natively even though providers reject them.
+ */
+export function previewImageMimeType(buffer: Buffer): RasterImageMimeType | null {
+  return detectRasterType(buffer)?.mime ?? null;
 }
 
 export function isBinaryBuffer(buffer: Buffer): boolean {
@@ -623,7 +732,7 @@ export class FilesystemService {
       const sample = Buffer.alloc(length);
       await handle.read(sample, 0, length, 0);
       this.assertRootOperation(operation);
-      const imageMimeType = rasterImageMimeType(sample);
+      const imageMimeType = previewImageMimeType(sample);
       let preview: FilePreview;
       if (stat.size > MAX_FILE_PREVIEW_BYTES) preview = { ...base, state: 'large' };
       else if (imageMimeType) preview = { ...base, state: 'image', content: (await handle.readFile()).toString('base64'), mimeType: imageMimeType };

@@ -83,6 +83,9 @@ describe('SettingsService', () => {
     }] }), 'utf8');
     const themes = await createSettings().loadThemes();
     expect(themes.map((theme) => theme.id)).toEqual(expect.arrayContaining(['catppuccin-mocha', 'catppuccin-latte', 'midnight', 'daylight', 'storm']));
+    const storm = themes.find((theme) => theme.id === 'storm')!;
+    expect(storm.colors.currentSession).toBe('#222b49');
+    expect(storm.colors.lastActiveSession).toBe('#1c202b');
   });
 
   it('merges Pi themes using the explicit Fate project trust decision', async () => {

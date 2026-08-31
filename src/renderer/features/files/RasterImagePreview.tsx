@@ -2,7 +2,7 @@ import { ImageOff } from 'lucide-react';
 
 interface RasterImagePreviewProps {
   data: string | undefined;
-  mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | undefined;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/bmp' | undefined;
   path: string;
   detail?: string | undefined;
 }

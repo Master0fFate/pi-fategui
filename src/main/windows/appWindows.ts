@@ -81,7 +81,10 @@ export function createAppWindowFactory(deps: AppWindowFactoryDeps): AppWindowFac
     });
 
     deps.dispatcher.register(window);
-    window.on('focus', () => deps.dispatcher.setFocused(window));
+    window.on('focus', () => {
+      window.flashFrame(false);
+      deps.dispatcher.setFocused(window);
+    });
 
     window.webContents.setWindowOpenHandler(({ url }) => {
       if (isExternalHttpsUrl(url)) void shell.openExternal(url);

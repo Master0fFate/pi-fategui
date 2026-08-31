@@ -1,9 +1,13 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import type { ModelsDevProviderDetail, ModelsDevProviderSummary } from '../../../shared/contracts/ipc';
 import { ModelsDevStore, type ModelsDevRegistryEntry } from './ModelsDevStore';
 import {
   buildProviderConfig,
   effortValuesOf,
   mapApiKind,
+  mergeLiveOpenAiModels,
+  parseLiveOpenAiModels,
   parseModelsDevCatalog,
   type GeneratedPiProviderConfig,
   type ParsedModelsDevProvider,
@@ -15,9 +19,9 @@ import {
  * Rules (agreed product behaviour):
  * - The Add Provider picker always fetches the FULL live catalog from
  *   models.dev. Nothing about the picker is cached.
- * - Adding a provider writes its complete model list into models.json; that
- *   file is the local cache. Logos are never cached (the renderer loads them
- *   from models.dev directly and hides them when offline).
+ * - Adding a provider writes its model list into models.json; that file is
+ *   the local cache. OpenAI-compatible providers then overlay GET /v1/models
+ *   so the live provider list wins over a stale models.dev snapshot.
  * - `refreshManagedProviders` runs once per Fate GUI start (main bootstrap,
  *   not per agent runtime). Offline or failed refreshes keep the cached list.
  * - PI_OFFLINE disables every network call.
@@ -25,7 +29,11 @@ import {
 
 export const MODELS_DEV_API_URL = 'https://models.dev/api.json';
 const FETCH_TIMEOUT_MS = 12_000;
+const LIVE_MODELS_TIMEOUT_MS = 8_000;
 const MAX_PAYLOAD_BYTES = 24 * 1024 * 1024;
+const LIVE_MODELS_MAX_BYTES = 2 * 1024 * 1024;
+/** Crof (and similar WAFs) reject /v1/models with HTTP 403 when User-Agent is missing. */
+const LIVE_MODELS_USER_AGENT = 'pi/0.84.3 (Fate UI)';
 
 export type ModelsDevFetch = (url: string, init: { signal: AbortSignal; headers: Record<string, string> }) => Promise<{ ok: boolean; status: number; arrayBuffer(): Promise<ArrayBuffer> }>;
 
@@ -172,11 +180,67 @@ export class ModelsDevService {
     return { id: provider.id, name: provider.name, baseUrl: provider.baseUrl, envVar: provider.envVar, api, docUrl: provider.docUrl, models, provider };
   }
 
+  private async readStoredApiKey(providerId: string): Promise<string | null> {
+    try {
+      const content = await fs.readFile(path.join(this.store.storePaths.dataRoot, 'auth.json'), 'utf-8');
+      const parsed: unknown = JSON.parse(content);
+      if (typeof parsed !== 'object' || parsed === null) return null;
+      const entry = (parsed as Record<string, unknown>)[providerId];
+      if (typeof entry !== 'object' || entry === null) return null;
+      const record = entry as { type?: unknown; key?: unknown };
+      if (record.type === 'api_key' && typeof record.key === 'string' && record.key.trim()) return record.key.trim();
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async fetchLiveOpenAiModels(baseUrl: string, apiKey: string): Promise<ReturnType<typeof parseLiveOpenAiModels>> {
+    if (isOffline()) return [];
+    const url = `${baseUrl.replace(/\/+$/, '')}/models`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('provider models request timed out')), LIVE_MODELS_TIMEOUT_MS);
+    try {
+      const response = await this.fetchImpl(url, {
+        signal: controller.signal,
+        headers: {
+          accept: 'application/json',
+          authorization: `Bearer ${apiKey}`,
+          'user-agent': LIVE_MODELS_USER_AGENT,
+        },
+      });
+      if (!response.ok) return [];
+      const body = await response.arrayBuffer();
+      if (body.byteLength > LIVE_MODELS_MAX_BYTES) return [];
+      return parseLiveOpenAiModels(JSON.parse(new TextDecoder().decode(body)));
+    } catch {
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async applyLiveOpenAiOverlay(config: GeneratedPiProviderConfig, apiKey?: string): Promise<GeneratedPiProviderConfig> {
+    if (config.api !== 'openai-completions') return config;
+    const envName = config.apiKey?.startsWith('$') ? config.apiKey.slice(1) : '';
+    const fromEnv = envName ? process.env[envName]?.trim() : '';
+    const key = apiKey?.trim() || (await this.readStoredApiKey(config.id)) || fromEnv || '';
+    if (!key) return config;
+    const live = await this.fetchLiveOpenAiModels(config.baseUrl, key);
+    if (live.length === 0) {
+      this.log(`Live /v1/models for "${config.id}" returned no models; keeping the models.dev list.`);
+      return config;
+    }
+    const merged = mergeLiveOpenAiModels(config, live);
+    this.log(`Merged live /v1/models for "${config.id}": ${config.models.length} catalog → ${merged.models.length} live.`);
+    return merged;
+  }
+
   /** Add a provider: fetch live data, write models.json + registry. */
-  async addProvider(providerId: string): Promise<{ config: GeneratedPiProviderConfig; entry: ModelsDevRegistryEntry }> {
+  async addProvider(providerId: string, options: { apiKey?: string | undefined } = {}): Promise<{ config: GeneratedPiProviderConfig; entry: ModelsDevRegistryEntry }> {
     const catalog = await this.fetchCatalog();
     const provider = this.requireProvider(catalog, providerId);
-    const config = buildProviderConfig(provider);
+    const config = await this.applyLiveOpenAiOverlay(buildProviderConfig(provider), options.apiKey);
     if (config.models.length === 0) throw new ModelsDevError(`"${providerId}" exposes no usable models on models.dev.`);
     const timestamp = this.now();
     const entry: ModelsDevRegistryEntry = {
@@ -238,12 +302,13 @@ export class ModelsDevService {
         continue;
       }
       // Identity stays as the user added it; only the model list refreshes.
-      const config = buildProviderConfig(provider, {
+      // Overlay GET /v1/models so ids missing from models.dev still appear.
+      const config = await this.applyLiveOpenAiOverlay(buildProviderConfig(provider, {
         name: entry.name,
         baseUrl: entry.baseUrl,
         envVar: entry.envVar,
         api: entry.api as GeneratedPiProviderConfig['api'],
-      });
+      }));
       if (config.models.length === 0) continue;
       try {
         await this.store.upsertProviderConfig(config);

@@ -203,6 +203,7 @@ const imageSaveFormats: Record<RuntimeImage['mimeType'], { extension: string; na
   'image/jpeg': { extension: 'jpg', name: 'JPEG image' },
   'image/gif': { extension: 'gif', name: 'GIF image' },
   'image/webp': { extension: 'webp', name: 'WebP image' },
+  'image/bmp': { extension: 'bmp', name: 'Bitmap image' },
 };
 
 function suggestedImageFileName(label: string, extension: string): string {

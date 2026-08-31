@@ -122,6 +122,11 @@ const piRuntime = new MultiProjectPiRuntime({
   createGoalPersistence: () => new GoalMaxRepository(logs),
   browserIntegration: browserBridge,
   recordAttestation,
+  notifySessionSettled: () => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed() && !window.isFocused()) window.flashFrame(true);
+    }
+  },
   defaults: async () => {
     const loaded = await settings.load();
     return {

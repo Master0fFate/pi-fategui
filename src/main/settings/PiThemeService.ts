@@ -388,6 +388,8 @@ export function mapPiThemeToFateTheme(
       accent,
       accentHover: fromColor('borderAccent', mix(accent, tone === 'dark' ? '#ffffff' : '#000000', 0.15)),
       accentSoft: selected ?? mix(canvas, accent, 0.18),
+      currentSession: selected ?? mix(raised, accent, 0.17),
+      lastActiveSession: raised,
       onAccent: luminance(accent) > 0.179 ? '#000000' : '#ffffff',
       success: fromColor('success', '#55c78a'),
       warning: fromColor('warning', '#d2a94b'),

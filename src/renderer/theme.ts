@@ -4,7 +4,8 @@ const cssTokenNames = {
   canvas: '--theme-canvas', panel: '--theme-panel', raised: '--theme-raised', raisedHover: '--theme-raised-hover',
   border: '--theme-border', borderStrong: '--theme-border-strong', text: '--theme-text', textSoft: '--theme-text-soft',
   muted: '--theme-muted', subtle: '--theme-subtle', accent: '--theme-accent', accentHover: '--theme-accent-hover',
-  accentSoft: '--theme-accent-soft', onAccent: '--theme-on-accent', success: '--theme-success', warning: '--theme-warning',
+  accentSoft: '--theme-accent-soft', currentSession: '--theme-current-session', lastActiveSession: '--theme-last-active-session',
+  onAccent: '--theme-on-accent', success: '--theme-success', warning: '--theme-warning',
   danger: '--theme-danger', shadow: '--theme-shadow',
 } as const;
 

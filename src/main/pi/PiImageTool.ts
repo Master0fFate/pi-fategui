@@ -17,6 +17,7 @@ import {
   MAX_PROMPT_IMAGE_TOTAL_PIXELS,
   encodedImageSize,
 } from './PiPromptImages';
+import { rasterImageMimeType } from '../files/FilesystemService';
 
 const IMAGE_GENERATION_TIMEOUT_MS = 180_000;
 const MAX_IMAGE_PROMPT_CHARACTERS = 32_000;
@@ -557,10 +558,11 @@ function responseRasterMime(value: unknown, fallback: ImageOutputFormat): Raster
 }
 
 function rasterMimeFromBase64(data: string, declared: unknown, fallback: ImageOutputFormat): RasterMimeType {
-  const prefix = Buffer.from(data.slice(0, 32), 'base64');
-  if (prefix.length >= 8 && prefix.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
-  if (prefix.length >= 3 && prefix[0] === 0xff && prefix[1] === 0xd8 && prefix[2] === 0xff) return 'image/jpeg';
-  if (prefix.length >= 12 && prefix.subarray(0, 4).toString('ascii') === 'RIFF' && prefix.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  // Decode the same sniff window the Pi SDK uses (4100 bytes) so animated PNG
+  // and structural validation see the same data upstream detection would.
+  const prefix = Buffer.from(data.slice(0, Math.ceil(4100 / 3) * 4), 'base64');
+  const sniffed = rasterImageMimeType(prefix);
+  if (sniffed === 'image/png' || sniffed === 'image/jpeg' || sniffed === 'image/webp') return sniffed;
   return responseRasterMime(declared, fallback);
 }
 

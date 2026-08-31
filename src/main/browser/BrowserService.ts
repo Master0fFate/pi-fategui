@@ -976,7 +976,11 @@ export class BrowserService {
       this.localPages.retainForNavigation(tab.id, url);
       const committedOrigin = networkOrigin(url);
       for (const origin of [...tab.humanNetworkOrigins]) if (origin !== committedOrigin) tab.humanNetworkOrigins.delete(origin);
-      if (isRestorableBrowserUrl(url)) this.options.onNavigated?.(url);
+      // Persist the user-facing address. A local preview stores its file://
+      // display URL; the per-service capability token can never reload after
+      // this service is gone, so it must never reach the history store.
+      const persisted = this.localPages.displayUrl(url, tab.id) ?? url;
+      if (isRestorableBrowserUrl(persisted)) this.options.onNavigated?.(persisted);
     });
     contents.on('did-start-loading', () => this.emitState());
     contents.on('did-stop-loading', () => {

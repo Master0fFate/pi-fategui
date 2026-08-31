@@ -4,11 +4,10 @@
  *
  * models.dev is a community-maintained catalog of AI providers, their models,
  * capabilities, pricing, and API endpoints. Fate UI uses it to power the
- * "Add Provider" picker and to keep the model list of every user-added
- * provider current. The provider's own /v1/models endpoint is NOT used for
- * managed providers: models.dev carries the richer metadata (reasoning effort
- * values, tool-call and structured-output support, exact costs) that pi needs
- * for thinkingLevelMap and compat flags.
+ * "Add Provider" picker and to seed the model list of every user-added
+ * provider. OpenAI-compatible providers then overlay the provider's own
+ * /v1/models list so ids that models.dev has not listed yet still appear.
+ * models.dev metadata wins on overlap.
  *
  * This module is pure: no fs, no network. Everything is defensively parsed
  * because the payload is third-party data.
@@ -332,4 +331,90 @@ export function buildProviderConfig(provider: ParsedModelsDevProvider, overrides
     api: apiKind,
     models,
   };
+}
+
+/** One model advertised by an OpenAI-compatible GET /v1/models payload. */
+export interface LiveOpenAiModel {
+  readonly id: string;
+  readonly name: string;
+  readonly reasoning: boolean;
+  readonly contextWindow: number;
+  readonly maxTokens: number;
+  readonly cost: { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number };
+}
+
+function parseLooseNumber(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value.replace(/,/g, '').trim());
+    return Number.isFinite(parsed) ? parsed : Number.NaN;
+  }
+  return Number.NaN;
+}
+
+/** Parse an OpenAI-style `{ data: [...] }` or `{ models: [...] }` catalog. */
+export function parseLiveOpenAiModels(payload: unknown): LiveOpenAiModel[] {
+  if (!isRecord(payload)) return [];
+  const entries = Array.isArray(payload.data)
+    ? payload.data
+    : Array.isArray(payload.models)
+      ? payload.models
+      : Array.isArray(payload)
+        ? payload
+        : [];
+  const models: LiveOpenAiModel[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (!isRecord(entry)) continue;
+    const id = stringOrNull(entry.id)?.trim();
+    if (!id || id.length > 200 || seen.has(id)) continue;
+    seen.add(id);
+    const pricing = isRecord(entry.pricing) ? entry.pricing : {};
+    const reasoning = entry.reasoning === true || entry.custom_reasoning === true || entry.reasoning_effort === true;
+    models.push({
+      id,
+      name: stringOrNull(entry.name) ?? id,
+      reasoning,
+      contextWindow: positiveIntegerOr(parseLooseNumber(entry.context_length), 128_000),
+      maxTokens: positiveIntegerOr(parseLooseNumber(entry.max_completion_tokens ?? entry.max_tokens), 16_384),
+      cost: {
+        input: nonNegative(parseLooseNumber(pricing.prompt ?? pricing.input)),
+        output: nonNegative(parseLooseNumber(pricing.completion ?? pricing.output)),
+        cacheRead: nonNegative(parseLooseNumber(pricing.cache_prompt ?? pricing.cache_read)),
+        cacheWrite: nonNegative(parseLooseNumber(pricing.cache_write)),
+      },
+    });
+  }
+  return models;
+}
+
+export function mapLiveOpenAiModel(providerName: string, live: LiveOpenAiModel): GeneratedPiModel {
+  return {
+    id: live.id,
+    name: `${providerName}: ${live.name}`,
+    reasoning: live.reasoning,
+    input: ['text'],
+    cost: live.cost,
+    contextWindow: live.contextWindow,
+    maxTokens: live.maxTokens,
+    compat: { ...OPENAI_COMPAT_DEFAULTS, supportsReasoningEffort: live.reasoning, supportsStrictMode: false },
+  };
+}
+
+/**
+ * Overlay a live /v1/models list onto a models.dev-built config.
+ * Live ids are the source of truth. Overlapping ids keep models.dev metadata.
+ */
+export function mergeLiveOpenAiModels(config: GeneratedPiProviderConfig, live: readonly LiveOpenAiModel[]): GeneratedPiProviderConfig {
+  if (live.length === 0) return config;
+  const catalogById = new Map(config.models.map((model) => [model.id, model]));
+  const merged: GeneratedPiModel[] = [];
+  const seen = new Set<string>();
+  for (const entry of live) {
+    if (seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    merged.push(catalogById.get(entry.id) ?? mapLiveOpenAiModel(config.name, entry));
+  }
+  merged.sort((left, right) => left.id.toLowerCase().localeCompare(right.id.toLowerCase()));
+  return { ...config, models: merged.slice(0, MAX_MODELS_PER_PROVIDER) };
 }

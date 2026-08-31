@@ -4,6 +4,8 @@ import {
   buildThinkingLevelMap,
   effortValuesOf,
   mapApiKind,
+  mergeLiveOpenAiModels,
+  parseLiveOpenAiModels,
   parseModelsDevCatalog,
   parseProviderEntry,
 } from './ModelsDevCatalog';
@@ -182,3 +184,29 @@ function configModel(config: ReturnType<typeof buildProviderConfig>, id: string)
   if (!model) throw new Error(`missing model ${id}`);
   return model;
 }
+
+describe('parseLiveOpenAiModels and mergeLiveOpenAiModels', () => {
+  it('parses OpenAI data arrays and string context lengths', () => {
+    const parsed = parseLiveOpenAiModels({
+      data: [
+        { id: 'glm-5.3-flash', name: 'Z.ai: GLM 5.3 Flash', custom_reasoning: true, reasoning_effort: true, context_length: '1,000,000', max_completion_tokens: 131_072, pricing: { prompt: '0.07', completion: '0.22', cache_prompt: '0.01' } },
+        { id: 'glm-5.3-flash' },
+        { name: 'no-id' },
+      ],
+    });
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toMatchObject({ id: 'glm-5.3-flash', reasoning: true, contextWindow: 1_000_000, maxTokens: 131_072, cost: { input: 0.07, output: 0.22, cacheRead: 0.01, cacheWrite: 0 } });
+  });
+
+  it('keeps models.dev metadata on overlap and adds live-only ids', () => {
+    const config = buildProviderConfig(parseProviderEntry('crof', crofLikeProvider())!);
+    const merged = mergeLiveOpenAiModels(config, [
+      { id: 'kimi-k3', name: 'Kimi K3', reasoning: true, contextWindow: 1, maxTokens: 1, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+      { id: 'glm-5.3-flash', name: 'Z.ai: GLM 5.3 Flash', reasoning: true, contextWindow: 1_000_000, maxTokens: 131_072, cost: { input: 0.07, output: 0.22, cacheRead: 0.01, cacheWrite: 0 } },
+    ]);
+    expect(merged.models.map((model) => model.id)).toEqual(['glm-5.3-flash', 'kimi-k3']);
+    expect(configModel(merged, 'kimi-k3').cost.input).toBe(2); // models.dev metadata kept
+    expect(configModel(merged, 'glm-5.3-flash').name).toBe('CrofAI: Z.ai: GLM 5.3 Flash');
+    expect(merged.models.some((model) => model.id === 'glm-4.7')).toBe(false);
+  });
+});

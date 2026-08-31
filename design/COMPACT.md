@@ -256,7 +256,7 @@ SESSION · Session title · Idle  2 files     [palette][browser][folder][term][i
 - One 36px row. Eyebrow, title, and pulse sit on one baseline.
 - Long pulse context is hidden. Chips stay.
 - Icon buttons 24px, 2px gap.
-- Sidebar brand is also one row: `Fate UI · project`.
+- Sidebar brand is one row: logo only. Hide the Fate UI wordmark. Do not put the project name on that row.
 - Settings header is one row: title + description.
 
 ### 11. Category rail

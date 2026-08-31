@@ -167,6 +167,9 @@ export class PiEventNormalizer {
   private readonly messageIds = new WeakMap<object, string>();
   private sequence = 0;
   private activeAssistantId: string | null = null;
+  /** Kept through post-run retry, compaction, and queue draining until Pi settles. */
+  private settlementRunId: string | null = null;
+  private settlementAborted = false;
   private readonly toolProvenance = new Map<string, ToolProvenance>();
 
   constructor(
@@ -177,6 +180,8 @@ export class PiEventNormalizer {
 
   resetSession(): void {
     this.activeAssistantId = null;
+    this.settlementRunId = null;
+    this.settlementAborted = false;
     this.toolProvenance.clear();
   }
 
@@ -189,12 +194,25 @@ export class PiEventNormalizer {
     switch (event.type) {
       case 'agent_start': {
         const runId = this.runId();
-        return runId ? [{ type: 'run.started', runId, timestamp: now }] : [];
+        if (!runId) return [];
+        this.settlementRunId = runId;
+        this.settlementAborted = false;
+        return [{ type: 'run.started', runId, timestamp: now }];
       }
       case 'agent_end': {
-        const runId = this.runId();
+        const runId = this.settlementRunId ?? this.runId();
+        if (!runId) return [];
+        this.settlementRunId = runId;
         const last = event.messages.at(-1) as { stopReason?: string } | undefined;
-        return runId ? [{ type: 'run.completed', runId, aborted: last?.stopReason === 'aborted', timestamp: now }] : [];
+        this.settlementAborted = last?.stopReason === 'aborted';
+        return [];
+      }
+      case 'agent_settled': {
+        const runId = this.settlementRunId ?? this.runId();
+        const aborted = this.settlementAborted;
+        this.settlementRunId = null;
+        this.settlementAborted = false;
+        return runId ? [{ type: 'run.completed', runId, aborted, timestamp: now }] : [];
       }
       case 'message_start': {
         const role = messageRole(event.message);

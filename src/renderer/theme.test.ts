@@ -9,6 +9,14 @@ afterEach(() => {
 });
 
 describe('theme boot persistence', () => {
+  it('gives every built-in theme distinct current and last-active session colors', () => {
+    for (const theme of builtInThemes) {
+      expect(theme.colors.currentSession).toMatch(/^#[0-9a-f]{6}$/iu);
+      expect(theme.colors.lastActiveSession).toMatch(/^#[0-9a-f]{6}$/iu);
+      expect(theme.colors.currentSession).not.toBe(theme.colors.lastActiveSession);
+    }
+  });
+
   it('persists the applied theme and restores it unchanged', () => {
     const theme = builtInThemes[1]!;
     applyTheme(theme);
