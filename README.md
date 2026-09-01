@@ -6,7 +6,6 @@
 
 Run the real Pi coding agent in a focused graphical workspace for durable conversations, transparent agent activity, project files, Git, terminals, and explicit trust controls.
 
-[![Cross-platform](https://github.com/Master0fFate/pi-fategui/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/Master0fFate/pi-fategui/actions/workflows/cross-platform.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-6f63ff.svg)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-252a38.svg)](#get-started-in-60-seconds)
 [![Electron](https://img.shields.io/badge/Electron-43-47848f.svg)](https://www.electronjs.org/)
@@ -83,10 +82,6 @@ Managed provider behavior:
 - The Add Provider picker always fetches fresh catalog data and never uses the cache.
 - Provider logos load live from models.dev; they are never cached and simply stay hidden offline.
 - A managed row shows a **key needed** badge until a credential exists, and ✕ removes the provider again.
-
-#### SuperGrok / xAI
-
-xAI ships with the embedded Pi SDK. Open `/login`, pick **xAI**, and choose **Sign in with SuperGrok or X Premium** (subscription OAuth) or an API key. Then switch models, for example `/model xai/grok-4.3`.
 
 Fate UI bundles and runs the Pi SDK directly. You do not need a separate `pi` installation or a running Pi terminal process. Fate UI keeps compatibility with Pi's shared session, settings, MCP, skill, and extension layout through the SDK; this is resource compatibility, not a terminal dependency. Existing provider credentials are imported once on first run; supported environment credentials remain available through the SDK. Runtime diagnostics load without credentials, but prompting is unavailable until Pi reports an authenticated model.
 
