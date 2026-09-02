@@ -24,6 +24,7 @@ export const LOCAL_PAGE_CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
 ].join('; ');
 const MAX_LOCAL_PAGES_PER_TAB = 12;
+const MAX_BUFFERED_LOCAL_PAGE_BYTES = 8 * 1024 * 1024;
 
 interface LocalPageCapability {
   token: string;
@@ -177,7 +178,12 @@ export class LocalPageRegistry {
       }
       const body = request.method === 'HEAD'
         ? null
-        : Readable.toWeb(createReadStream(canonical)) as ReadableStream<Uint8Array>;
+        : info.size <= MAX_BUFFERED_LOCAL_PAGE_BYTES
+          // Small previews buffer outright: streamed bodies through
+          // protocol.handle die with ERR_FAILED on slow macOS runners, and a
+          // local HTML preview is exactly the case that must never flake.
+          ? new Uint8Array(await fs.readFile(canonical))
+          : Readable.toWeb(createReadStream(canonical)) as ReadableStream<Uint8Array>;
       return new Response(body, { status: 200, statusText: 'OK', headers });
     } catch {
       return new Response('Not found', { status: 404 });
