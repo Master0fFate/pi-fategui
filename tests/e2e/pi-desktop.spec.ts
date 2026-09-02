@@ -481,9 +481,37 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
     await expect(page.locator('.inspector-primary-nav').getByRole('button', { name: /^Browser(?:,|$)/u })).toHaveCount(0);
 
     const addressInput = page.getByRole('textbox', { name: 'Browser address' });
+    await application.evaluate(({ webContents }) => {
+      const tracker = globalThis as { __fateNavEvents?: string[] };
+      tracker.__fateNavEvents ??= [];
+      for (const contents of webContents.getAllWebContents()) {
+        const marked = contents as unknown as { __fateInstrumented?: boolean };
+        if (marked.__fateInstrumented) continue;
+        marked.__fateInstrumented = true;
+        contents.on('did-start-navigation', (_event, url, _isSameDocument, isMainFrame) => {
+          tracker.__fateNavEvents?.push(`start id=${contents.id} main=${isMainFrame} ${url}`);
+        });
+        contents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+          tracker.__fateNavEvents?.push(`fail id=${contents.id} main=${isMainFrame} code=${errorCode} ${errorDescription} ${validatedURL}`);
+        });
+        contents.on('did-navigate', (_event, url) => {
+          tracker.__fateNavEvents?.push(`nav id=${contents.id} ${url}`);
+        });
+      }
+    });
     await addressInput.fill(localEntry);
     await addressInput.press('Enter');
-    await expect(page.getByRole('tab', { name: 'Fate Local Preview' })).toBeVisible({ timeout: 20_000 });
+    try {
+      await expect(page.getByRole('tab', { name: 'Fate Local Preview' })).toBeVisible({ timeout: 20_000 });
+    } catch (failure) {
+      const contentsDump = await application.evaluate(({ webContents }) => webContents.getAllWebContents().map((entry) => ({
+        id: entry.id,
+        url: entry.getURL(),
+        title: entry.getTitle(),
+      })));
+      const eventsDump = await application.evaluate(() => (globalThis as { __fateNavEvents?: string[] }).__fateNavEvents ?? []);
+      throw new Error(`Local preview never opened.\nWebContents: ${JSON.stringify(contentsDump)}\nNavigation events:\n${eventsDump.join('\n')}\n\n${(failure as Error).message}`);
+    }
     await expect.poll(() => application.evaluate(({ webContents }) => (
       webContents.getAllWebContents().some((contents) => contents.getURL().startsWith('fate-local://'))
     ))).toBe(true);
