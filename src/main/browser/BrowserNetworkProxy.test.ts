@@ -28,16 +28,25 @@ describe('BrowserNetworkProxy', () => {
     });
   });
 
-  it('permits a private destination only through an explicit human-navigation authorizer', async () => {
+  it('permits loopback without a grant and still requires one for LAN', async () => {
     const policy = interactivePolicy();
-    await expect(resolveTarget(new URL('http://127.0.0.1:4173/'), policy)).rejects.toThrow(/agent permission/u);
+    await expect(resolveTarget(new URL('http://127.0.0.1:4173/'), policy)).resolves.toMatchObject({
+      addresses: ['127.0.0.1'], port: 4173,
+    });
+    await expect(resolveTarget(new URL('http://localhost:3000/'), policy, undefined, async () => [
+      { address: '::1', family: 6 as const },
+      { address: '127.0.0.1', family: 4 as const },
+    ])).resolves.toMatchObject({
+      addresses: ['127.0.0.1', '::1'], port: 3000,
+    });
+    await expect(resolveTarget(new URL('http://192.168.1.10:8080/'), policy)).rejects.toThrow(/agent permission/u);
     await expect(resolveTarget(
-      new URL('http://127.0.0.1:4173/'),
+      new URL('http://192.168.1.10:8080/'),
       policy,
       undefined,
       undefined,
-      (origin) => origin === 'http://127.0.0.1:4173',
-    )).resolves.toMatchObject({ addresses: ['127.0.0.1'], port: 4173 });
+      (origin) => origin === 'http://192.168.1.10:8080',
+    )).resolves.toMatchObject({ addresses: ['192.168.1.10'], port: 8080 });
   });
 
   it('keeps localhost dev-server and HMR authorities open for a Full-access session', async () => {
@@ -79,7 +88,6 @@ describe('BrowserNetworkProxy', () => {
     const origin = `http://127.0.0.1:${address.port}`;
 
     const policy = interactivePolicy();
-    policy.setGrant({ origin, read: true, interact: false, scope: 'task', allowPrivateNetwork: true });
     const proxy = new BrowserNetworkProxy(policy);
     disposables.push(() => proxy.dispose());
     const proxyUrl = new URL(await proxy.start());
@@ -116,7 +124,6 @@ describe('BrowserNetworkProxy', () => {
     const origin = `http://127.0.0.1:${address.port}`;
 
     const policy = interactivePolicy();
-    policy.setGrant({ origin, read: true, interact: false, scope: 'task', allowPrivateNetwork: true });
     const proxy = new BrowserNetworkProxy(policy);
     disposables.push(() => proxy.dispose());
     const proxyUrl = new URL(await proxy.start());

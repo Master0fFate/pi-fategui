@@ -631,7 +631,13 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.browserSetOverlay, async (event, input) => {
     const { blocked } = browserOverlayInputSchema.parse(input);
     const owner = ownerWindow(event);
-    const service = await activeBrowser(event);
+    const service = browser.current(owner);
+    if (!service) {
+      return browserStateSchema.parse({
+        activeTabId: null, visible: false, viewBlocked: false, sessionFullAccess: false,
+        controlLevel: 'off', mode: 'agent', deviceEmulation: null, tabs: [], grants: [],
+      });
+    }
     browser.setAppOverlay(owner, blocked);
     return browserStateSchema.parse(service.getState());
   });
@@ -860,7 +866,7 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   });
   handle(ipcChannels.projectCloseRuntime, async (_event, input) => {
     const parsed = projectPathInputSchema.parse(input);
-    const canonicalPath = await projects.prepareSessionListPath(parsed.projectPath);
+    const canonicalPath = await projects.prepareKnownProjectCleanupPath(parsed.projectPath);
     if (runtime.getState(false).project?.path === canonicalPath) {
       throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The active project cannot be forgotten.', retryable: false });
     }
@@ -875,7 +881,7 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   });
   handle(ipcChannels.projectDeleteSessions, async (_event, input) => {
     const parsed = projectPathInputSchema.parse(input);
-    const canonicalPath = await projects.prepareSessionListPath(parsed.projectPath);
+    const canonicalPath = await projects.prepareKnownProjectCleanupPath(parsed.projectPath);
     return projectDeleteSessionsResultSchema.parse(await runtime.deleteSessionsForPath(canonicalPath));
   });
   handle(ipcChannels.imageReadLocal, async (_event, input) => {

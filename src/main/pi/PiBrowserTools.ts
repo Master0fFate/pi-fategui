@@ -35,6 +35,9 @@ export interface PiBrowserToolHost {
   press(input: { key: string; reason: string; sessionId: string; signal?: AbortSignal }): Promise<BrowserToolActionOutput>;
   scroll(input: { deltaX: number; deltaY: number; sessionId: string; signal?: AbortSignal }): Promise<BrowserToolActionOutput>;
   tabs(input: { sessionId: string }): Promise<readonly BrowserToolTab[]>;
+  createTab(input: { url?: string; sessionId: string; signal?: AbortSignal }): Promise<{ tabId: string; snapshot: SemanticPageSnapshot | null }>;
+  selectTab(input: { tabId: string; sessionId: string }): Promise<readonly BrowserToolTab[]>;
+  closeTab(input: { tabId: string; sessionId: string }): Promise<readonly BrowserToolTab[]>;
 }
 
 export type BrowserToolHostResolver = () => PiBrowserToolHost | null;
@@ -175,30 +178,77 @@ export function createPiBrowserTools(resolveHost: BrowserToolHostResolver): Tool
     }),
     defineTool({
       name: 'browser_tabs',
-      label: 'List browser tabs',
-      description: 'List bounded, redacted metadata for all Fate-managed browser tabs.',
-      promptSnippet: 'List Fate-managed built-in browser tabs',
+      label: 'Manage browser tabs',
+      description: 'List, create, select, or close Fate-managed built-in browser tabs. Create opens a new tab; omit url for a blank tab.',
+      promptSnippet: 'List, create, select, or close Fate-managed built-in browser tabs',
       promptGuidelines: guidelines,
-      parameters: Type.Object({}, { additionalProperties: false }),
+      parameters: Type.Object({
+        action: Type.Optional(Type.Union([
+          Type.Literal('list'),
+          Type.Literal('create'),
+          Type.Literal('select'),
+          Type.Literal('close'),
+        ])),
+        url: Type.Optional(Type.String({ minLength: 1, maxLength: 8_192 })),
+        tabId: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+      }, { additionalProperties: false }),
       executionMode: 'sequential',
-      async execute(_toolCallId, _params, signal, _onUpdate, context) {
-        if (signal?.aborted) throw new Error('Browser tab inspection was cancelled.');
-        const tabs = await host().tabs({ sessionId: sessionId(context) });
-        const bounded = tabs.slice(0, 20).map((tab) => ({
-          id: tab.id,
-          title: redactPotentialSecretText(tab.title, 500),
-          url: modelSafeUrl(tab.url),
-          active: tab.active,
-        }));
-        return {
-          content: [{ type: 'text', text: bounded.length
-            ? bounded.map((tab) => `${tab.active ? '*' : '-'} ${tab.id} ${JSON.stringify(tab.title)} ${tab.url}`).join('\n')
-            : 'No built-in browser tab is open.' }],
-          details: { tabs: bounded },
-        };
+      async execute(_toolCallId, params, signal, _onUpdate, context) {
+        if (signal?.aborted) throw new Error('Browser tab operation was cancelled.');
+        const current = host();
+        const id = sessionId(context);
+        const action = params.action ?? 'list';
+        if (action === 'create') {
+          const created = await current.createTab({
+            ...(params.url ? { url: params.url } : {}),
+            sessionId: id,
+            ...(signal ? { signal } : {}),
+          });
+          const tabs = tabDetails(await current.tabs({ sessionId: id }));
+          return {
+            content: [{ type: 'text', text: [
+              `Opened tab ${created.tabId}.`,
+              '',
+              created.snapshot?.serialized ?? formatTabList(tabs),
+            ].join('\n') }],
+            details: { tabId: created.tabId, tabs, ...(created.snapshot ? { url: modelSafeUrl(created.snapshot.url), revision: created.snapshot.revision } : {}) },
+          };
+        }
+        if (action === 'select') {
+          if (!params.tabId) throw new Error('tabId is required to select a browser tab.');
+          return tabListResult(await current.selectTab({ tabId: params.tabId, sessionId: id }));
+        }
+        if (action === 'close') {
+          if (!params.tabId) throw new Error('tabId is required to close a browser tab.');
+          return tabListResult(await current.closeTab({ tabId: params.tabId, sessionId: id }));
+        }
+        return tabListResult(await current.tabs({ sessionId: id }));
       },
     }),
   ];
+}
+
+function tabDetails(tabs: readonly BrowserToolTab[]) {
+  return tabs.slice(0, 20).map((tab) => ({
+    id: tab.id,
+    title: redactPotentialSecretText(tab.title, 500),
+    url: modelSafeUrl(tab.url),
+    active: tab.active,
+  }));
+}
+
+function formatTabList(tabs: readonly ReturnType<typeof tabDetails>[number][]): string {
+  return tabs.length
+    ? tabs.map((tab) => `${tab.active ? '*' : '-'} ${tab.id} ${JSON.stringify(tab.title)} ${tab.url}`).join('\n')
+    : 'No built-in browser tab is open.';
+}
+
+function tabListResult(tabs: readonly BrowserToolTab[]) {
+  const bounded = tabDetails(tabs);
+  return {
+    content: [{ type: 'text' as const, text: formatTabList(bounded) }],
+    details: { tabs: bounded },
+  };
 }
 
 function snapshotResult(snapshot: SemanticPageSnapshot) {

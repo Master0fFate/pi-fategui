@@ -23,6 +23,22 @@ interface OwnedTerminal {
   closing: boolean;
 }
 
+/** Device-default shell candidates for every OS: the account's shell when the OS exposes one, newest installed PowerShell on Windows, guaranteed system floor last. */
+export function defaultShellCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
+  if (platform === 'win32') {
+    const programFiles = env.ProgramFiles || 'C:\\Program Files';
+    const programFilesX86 = env['ProgramFiles(x86)'] || `${programFiles} (x86)`;
+    const systemRoot = env.SystemRoot || 'C:\\Windows';
+    return [
+      path.join(programFiles, 'PowerShell', '7', 'pwsh.exe'),
+      path.join(programFilesX86, 'PowerShell', '7', 'pwsh.exe'),
+      path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      env.ComSpec || path.join(systemRoot, 'System32', 'cmd.exe'),
+    ];
+  }
+  return [env.SHELL || '/bin/bash', '/bin/bash', '/bin/zsh'];
+}
+
 export function resolveTerminalShell(configured: string | null | undefined, projectRoot: string): string {
   const requested = configured?.trim();
   const candidates: string[] = [];
@@ -35,10 +51,7 @@ export function resolveTerminalShell(configured: string | null | undefined, proj
       try { candidates.push(...execFileSync('/usr/bin/which', [requested], { cwd: homedir(), encoding: 'utf8' }).split(/\r?\n/u)); } catch { /* Fall through. */ }
     }
   }
-  if (!requested) {
-    if (process.platform === 'win32') candidates.push(process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe');
-    else candidates.push(process.env.SHELL || '/bin/bash', '/bin/bash', '/bin/zsh');
-  }
+  if (!requested) candidates.push(...defaultShellCandidates(process.platform, process.env));
   for (const candidate of candidates) {
     if (!candidate || !path.isAbsolute(candidate) || !existsSync(candidate)) continue;
     const canonical = realpathSync(candidate);

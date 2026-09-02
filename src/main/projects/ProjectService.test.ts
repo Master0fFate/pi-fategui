@@ -80,6 +80,22 @@ describe('ProjectService.select', () => {
     await expect(service.prepareSessionListPath(untrustedPath)).rejects.toMatchObject({ normalized: { code: 'PROJECT_NOT_TRUSTED' } });
   });
 
+  it('resolves a deleted previously trusted project for cleanup without allowing preview access', async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'pi-desktop-state-'));
+    const projectPath = await mkdtemp(path.join(tmpdir(), 'pi-desktop-project-'));
+    temporaryDirectories.push(dataRoot, projectPath);
+    const canonical = await realpath(projectPath);
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 0, checkboxChecked: false });
+    await expect(new ProjectService(dataRoot).openPath(projectPath)).resolves.toMatchObject({ path: canonical, trusted: true });
+    await rm(projectPath, { recursive: true, force: true });
+
+    const restartedService = new ProjectService(dataRoot);
+    await expect(restartedService.prepareKnownProjectCleanupPath(projectPath)).resolves.toBe(canonical);
+    await expect(restartedService.prepareSessionListPath(projectPath)).rejects.toMatchObject({ normalized: { code: 'INVALID_PROJECT' } });
+    await expect(restartedService.prepareKnownProjectCleanupPath(path.join(tmpdir(), 'untrusted-deleted-project')))
+      .rejects.toMatchObject({ normalized: { code: 'PROJECT_NOT_TRUSTED' } });
+  });
+
   it('inherits trust only for a derived worktree of the active trusted project', async () => {
     const dataRoot = await mkdtemp(path.join(tmpdir(), 'pi-desktop-state-'));
     const projectPath = await mkdtemp(path.join(tmpdir(), 'pi-desktop-project-'));

@@ -29,6 +29,9 @@ function fixture() {
     press: vi.fn(async () => ({ action: action('press'), snapshot })),
     scroll: vi.fn(async () => ({ action: action('scroll'), snapshot })),
     tabs: vi.fn(async () => [{ id: 'tab-1', title: 'Tasks', url: snapshot.url, active: true }]),
+    createTab: vi.fn(async () => ({ tabId: 'tab-2', snapshot: null })),
+    selectTab: vi.fn(async () => [{ id: 'tab-2', title: 'New', url: 'about:blank', active: true }]),
+    closeTab: vi.fn(async () => [{ id: 'tab-1', title: 'Tasks', url: snapshot.url, active: true }]),
   };
   const tools = createPiBrowserTools(() => host);
   const context = { sessionManager: { getSessionId: () => 'session-1' } };
@@ -97,6 +100,21 @@ describe('Pi browser tools', () => {
     expect(host.type).toHaveBeenCalledWith(expect.objectContaining({ ref: 'e1', text: secretLikeText, sessionId: 'session-1' }));
     expect(JSON.stringify(result)).not.toContain(secretLikeText);
     expect(result.content[0]).toMatchObject({ type: 'text' });
+  });
+
+  it('creates a new tab through browser_tabs', async () => {
+    const { host, tools, context } = fixture();
+    const result = await tool('browser_tabs', tools).execute(
+      'tabs-create',
+      { action: 'create', url: 'https://example.test/new' },
+      undefined,
+      undefined,
+      context as never,
+    );
+    expect(host.createTab).toHaveBeenCalledWith(expect.objectContaining({
+      url: 'https://example.test/new', sessionId: 'session-1',
+    }));
+    expect(result.details).toMatchObject({ tabId: 'tab-2' });
   });
 
   it('fails clearly when no live browser host is attached', async () => {

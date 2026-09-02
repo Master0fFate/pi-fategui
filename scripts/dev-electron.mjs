@@ -43,6 +43,7 @@ function startElectron() {
   });
   console.log(`[dev-electron] started isolated Electron (pid ${electronProcess.pid ?? 'unknown'})`);
   console.log(`[dev-electron] development profile: ${developmentProfile.profileRoot}`);
+  console.log(`[dev-electron] Fate data: ${developmentProfile.fateGuiData}`);
   electronProcess.once('error', (error) => {
     console.error(`[dev-electron] Electron failed to start: ${error.message}`);
   });

@@ -117,6 +117,28 @@ export class ProjectService {
     });
   }
 
+  /**
+   * Resolve a previously trusted project for local cleanup after it disappears
+   * from disk. This deliberately avoids realpath/stat: closing an idle runtime
+   * and deleting its persisted sessions do not require the project directory.
+   */
+  async prepareKnownProjectCleanupPath(projectPath: string): Promise<string> {
+    if (typeof projectPath !== 'string' || projectPath.trim() === '' || projectPath.includes('\0')) {
+      throw new PiDesktopError({ code: 'INVALID_PROJECT', message: 'A project directory is required.', retryable: false });
+    }
+    const normalized = path.normalize(path.resolve(projectPath));
+    await this.loadTrustedProjects();
+    const knownPaths = [this.currentProject?.path, ...this.trustedProjects].filter((value): value is string => Boolean(value));
+    const known = knownPaths.find((candidate) => this.projectPathsMatch(candidate, normalized));
+    if (known) return known;
+    throw new PiDesktopError({
+      code: 'PROJECT_NOT_TRUSTED',
+      message: 'Trust this project before managing its saved sessions.',
+      actionable: 'Open the folder and choose “Trust and open” first.',
+      retryable: true,
+    });
+  }
+
   async revealPath(projectPath: string): Promise<{ opened: true }> {
     const canonical = await this.prepareSessionListPath(projectPath);
     const failure = await shell.openPath(canonical);
@@ -129,6 +151,14 @@ export class ProjectService {
       });
     }
     return { opened: true };
+  }
+
+  private projectPathsMatch(left: string, right: string): boolean {
+    // Windows filesystems are case-insensitive by contract; macOS and Linux
+    // volumes can be case-sensitive, so do not weaken matching there.
+    return process.platform === 'win32'
+      ? left.toLowerCase() === right.toLowerCase()
+      : left === right;
   }
 
   private async lastProjectPath(): Promise<string | undefined> {

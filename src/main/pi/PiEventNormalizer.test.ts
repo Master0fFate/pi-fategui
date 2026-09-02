@@ -71,6 +71,85 @@ describe('PiEventNormalizer', () => {
     expect(normalizer.messageId(finalObject)).toBe(started && 'messageId' in started ? started.messageId : '');
   });
 
+  it('keeps one assistant ID when cloned SDK deltas arrive before message_start', () => {
+    const normalizer = new PiEventNormalizer(() => 'run-1');
+    const first = normalizer.normalize(event({
+      type: 'message_update',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'H' }] },
+      assistantMessageEvent: { type: 'text_delta', delta: 'H' },
+    }))[0];
+    const second = normalizer.normalize(event({
+      type: 'message_update',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Honest' }] },
+      assistantMessageEvent: { type: 'text_delta', delta: 'onest' },
+    }))[0];
+    const reasoning = normalizer.normalize(event({
+      type: 'message_update',
+      message: { role: 'assistant', content: [] },
+      assistantMessageEvent: { type: 'thinking_delta', delta: 'plan' },
+    }))[0];
+    const started = normalizer.normalize(event({ type: 'message_start', message: { role: 'assistant', content: [] } }))[0];
+    const finalObject = { role: 'assistant', content: [{ type: 'text', text: 'Honest inventory' }] };
+    const completed = normalizer.normalize(event({ type: 'message_end', message: finalObject }))[0];
+
+    const id = first && 'messageId' in first ? first.messageId : '';
+    expect(first).toMatchObject({ type: 'assistant.text', messageId: id, delta: 'H' });
+    expect(second).toMatchObject({ type: 'assistant.text', messageId: id, delta: 'onest' });
+    expect(reasoning).toMatchObject({ type: 'assistant.reasoning', messageId: id, delta: 'plan' });
+    expect(started).toMatchObject({ type: 'message.started', messageId: id });
+    expect(completed).toMatchObject({ type: 'message.completed', messageId: id, text: 'Honest inventory' });
+    expect(normalizer.currentAssistantMessageId()).toBeNull();
+    expect(normalizer.messageId(finalObject)).toBe(id);
+  });
+
+  it('does not reuse an assistant ID across turns separated by message_end', () => {
+    const normalizer = new PiEventNormalizer(() => 'run-1');
+    const firstStart = normalizer.normalize(event({ type: 'message_start', message: { role: 'assistant', content: [] } }))[0];
+    normalizer.normalize(event({
+      type: 'message_update',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'one' }] },
+      assistantMessageEvent: { type: 'text_delta', delta: 'one' },
+    }));
+    const firstEnd = normalizer.normalize(event({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'one' }] },
+    }))[0];
+    const secondDelta = normalizer.normalize(event({
+      type: 'message_update',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'two' }] },
+      assistantMessageEvent: { type: 'text_delta', delta: 'two' },
+    }))[0];
+    const secondEnd = normalizer.normalize(event({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'two' }] },
+    }))[0];
+
+    const firstId = firstStart && 'messageId' in firstStart ? firstStart.messageId : '';
+    const secondId = secondDelta && 'messageId' in secondDelta ? secondDelta.messageId : '';
+    expect(firstEnd).toMatchObject({ messageId: firstId });
+    expect(secondId).not.toBe(firstId);
+    expect(secondEnd).toMatchObject({ messageId: secondId });
+  });
+
+  it('drops a leftover sticky assistant id when a new agent run starts', () => {
+    const normalizer = new PiEventNormalizer(() => 'run-1');
+    const leftover = normalizer.normalize(event({
+      type: 'message_update',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'old' }] },
+      assistantMessageEvent: { type: 'text_delta', delta: 'old' },
+    }))[0];
+    const leftoverId = leftover && 'messageId' in leftover ? leftover.messageId : '';
+    expect(normalizer.currentAssistantMessageId()).toBe(leftoverId);
+    normalizer.normalize(event({ type: 'agent_start' }));
+    expect(normalizer.currentAssistantMessageId()).toBeNull();
+    const next = normalizer.normalize(event({
+      type: 'message_update',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'new' }] },
+      assistantMessageEvent: { type: 'text_delta', delta: 'new' },
+    }))[0];
+    expect(next && 'messageId' in next ? next.messageId : '').not.toBe(leftoverId);
+  });
+
   it('normalizes tool transitions and bounds serialized output without duplicating tool-result messages', () => {
     const normalizer = new PiEventNormalizer(() => 'run-1');
     const runIds = Array.from({ length: 20 }, (_, index) => `subagent-${index}`);

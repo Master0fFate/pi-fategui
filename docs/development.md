@@ -20,7 +20,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-The development launcher uses an isolated Electron profile, so it can run alongside an installed Fate UI without activating the installed process. The profile is stable per checkout under the operating system's temporary directory. Set `PI_DESKTOP_DEV_PROFILE` to override its location; an explicit `FATE_GUI_DATA_DIR` still overrides Fate's development data directory.
+The development launcher uses an isolated Electron profile, so it can run alongside an installed Fate UI without activating the installed process. That Chromium profile is stable per checkout under the operating system's temporary directory. Provider credentials, models, and other Fate data still use the production store (`~/.pi/fateGUI`). Set `PI_DESKTOP_DEV_PROFILE` to override the Electron profile location; set `FATE_GUI_DATA_DIR` only if you actually want a separate Fate data directory.
 
 ## Verification
 

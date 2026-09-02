@@ -95,14 +95,16 @@ export class BrowserHost {
     if (owner.isDestroyed() || !latest?.trusted || !samePath(project.path, latest.path)) {
       throw new BrowserError('ACTION_BLOCKED', 'The trusted project changed while the built-in browser was starting.');
     }
-    const lastUrl = await this.options.history?.load(project.path).catch(() => null) ?? null;
+    const remembered = await this.options.history?.loadSession(project.path).catch(() => null) ?? null;
     const service = new BrowserService(owner, {
       canonicalProjectPath: project.path,
       confirmAction: (action, reason, binding) => this.requestConfirmation(owner, action, reason, binding),
       annotationOwner: () => this.options.bridge.currentRoot(),
       onAppShortcut: (command) => this.options.command(owner, command),
-      onNavigated: (url) => { void this.options.history?.save(project.path, url).catch(() => undefined); },
-      restoreUrl: lastUrl,
+      onTabsChanged: (tabs, activeIndex) => {
+        void this.options.history?.save(project.path, tabs.length ? { tabs: [...tabs], activeIndex } : null).catch(() => undefined);
+      },
+      ...(remembered?.tabs.length ? { restoreTabs: remembered.tabs, restoreActiveIndex: remembered.activeIndex } : {}),
       annotations: this.annotationStoreFor(project.path),
     });
     this.service = service;
@@ -114,6 +116,7 @@ export class BrowserHost {
     });
     try {
       await this.ensureServiceTab(service, project);
+      service.setMode('agent');
       if (this.service !== service) throw new BrowserError('ACTION_BLOCKED', 'The built-in browser was replaced while starting.');
       this.options.bridge.syncService();
       return service;

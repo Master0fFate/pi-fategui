@@ -69,13 +69,13 @@ describe('BrowserService visibility safety', () => {
     willFrameNavigate({ preventDefault: () => prevented.push('main'), url: 'http://localhost:8081/', isMainFrame: true });
     expect(prevented).toEqual([]);
     expect(navigationBlocked).not.toHaveBeenCalled();
-    expect([...humanNetworkOrigins]).toEqual(['http://localhost:8081']);
+    expect(humanNetworkOrigins.has('http://localhost:8081')).toBe(false);
 
-    // A subframe (iframe) to a private origin stays guarded.
-    willFrameNavigate({ preventDefault: () => prevented.push('sub'), url: 'http://localhost:9999/', isMainFrame: false });
+    // A subframe (iframe) to LAN stays guarded. Loopback is the user's own machine.
+    willFrameNavigate({ preventDefault: () => prevented.push('sub'), url: 'http://192.168.1.10:8080/', isMainFrame: false });
     expect(prevented).toEqual(['sub']);
-    expect(navigationBlocked).toHaveBeenCalledWith('tab-1', 'http://localhost:9999/', expect.stringMatching(/needs agent permission/u));
-    expect(humanNetworkOrigins.has('http://localhost:9999')).toBe(false);
+    expect(navigationBlocked).toHaveBeenCalledWith('tab-1', 'http://192.168.1.10:8080/', expect.stringMatching(/needs agent permission/u));
+    expect(humanNetworkOrigins.has('http://192.168.1.10:8080')).toBe(false);
 
     // Cloud metadata stays hard-blocked even on the main frame.
     willFrameNavigate({ preventDefault: () => prevented.push('meta'), url: 'http://169.254.169.254/latest', isMainFrame: true });
@@ -419,6 +419,49 @@ describe('BrowserService disposal hardening', () => {
     // doomed tab is gone and closeTab resolved cleanly.
     expect(service.getState().tabs.map((entry) => entry.id)).toEqual([]);
     createTab.mockRestore();
+    await service.dispose();
+  });
+
+  it('replaces a closed last tab with a blank page instead of the remembered URL', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const onTabsChanged = vi.fn();
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(),
+      restoreUrl: 'https://github.com/Master0fFate/pi-fategui/releases/tag/v0.9.2-beta1',
+      onTabsChanged,
+    });
+    const createTab = vi.spyOn(service, 'createTab').mockResolvedValue(undefined);
+    const tabs = (service as unknown as { tabs: Map<string, unknown> }).tabs;
+    tabs.set('browser-main', {
+      id: 'browser-main',
+      cdp: { dispose: vi.fn(async () => undefined) },
+      view: { webContents: { isDestroyed: () => false, close: vi.fn() } },
+    });
+
+    await service.closeTab('browser-main');
+
+    expect(createTab).toHaveBeenCalledWith('browser-main', 'project', 'about:blank');
+    expect(createTab).not.toHaveBeenCalledWith('browser-main', 'project', 'https://github.com/Master0fFate/pi-fategui/releases/tag/v0.9.2-beta1');
+    expect(onTabsChanged).toHaveBeenCalledWith([], 0);
+    createTab.mockRestore();
+    await service.dispose();
+  });
+
+  it('restores every remembered tab onto first main-tab open', async () => {
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(),
+      restoreTabs: ['https://one.example/', 'https://two.example/'],
+      restoreActiveIndex: 1,
+    });
+    const createTab = vi.spyOn(service, 'createTab').mockResolvedValue(undefined);
+    const createUserTab = vi.spyOn(service, 'createUserTab').mockResolvedValue('tab-2');
+
+    await service.ensureTab('browser-main');
+
+    expect(createTab).toHaveBeenCalledWith('browser-main', 'project', 'https://one.example/');
+    expect(createUserTab).toHaveBeenCalledWith('https://two.example/');
+    createTab.mockRestore();
+    createUserTab.mockRestore();
     await service.dispose();
   });
 

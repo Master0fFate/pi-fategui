@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 
 export function resolveDevelopmentProfile(projectRoot, env = process.env) {
@@ -14,6 +14,6 @@ export function resolveDevelopmentProfile(projectRoot, env = process.env) {
   return {
     profileRoot,
     electronUserData: path.join(profileRoot, 'electron'),
-    fateGuiData: configuredDataRoot ? path.resolve(configuredDataRoot) : path.join(profileRoot, 'fateGUI'),
+    fateGuiData: configuredDataRoot ? path.resolve(configuredDataRoot) : path.join(homedir(), '.pi', 'fateGUI'),
   };
 }

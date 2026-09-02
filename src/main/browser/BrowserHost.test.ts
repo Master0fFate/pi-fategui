@@ -8,7 +8,7 @@ import type { BrowserHistoryRepository } from './BrowserHistoryRepository';
 const project = { path: '/project', name: 'project', trusted: true };
 const owner = { isDestroyed: () => false, webContents: { id: 7 } } as unknown as BrowserWindow;
 
-function fixture(tabs: Array<{ id: string }>) {
+function fixture(tabs: Array<{ id: string }>, permissionLevel: 'read-only' | 'full-access' = 'full-access') {
   const syncService = vi.fn();
   const currentRoot = vi.fn(() => ({ projectPath: project.path, sessionId: 'session-1' }));
   const ensureTab = vi.fn(async () => undefined);
@@ -16,7 +16,7 @@ function fixture(tabs: Array<{ id: string }>) {
   const service = { getState: () => ({ tabs }), ensureTab, setSessionFullAccess, dispose: vi.fn(async () => undefined) } as unknown as BrowserService;
   const host = new BrowserHost({
     currentProject: () => project,
-    currentPermissionLevel: () => 'full-access',
+    currentPermissionLevel: () => permissionLevel,
     bridge: { currentRoot, syncService },
     emit: vi.fn(),
     command: vi.fn(),
@@ -72,6 +72,14 @@ describe('BrowserHost tab lifecycle', () => {
     await host.ensure(owner);
 
     expect(setSessionFullAccess).toHaveBeenCalledWith(true);
+  });
+
+  it('keeps browser grants enforced for a restricted session', async () => {
+    const { host, setSessionFullAccess } = fixture([{ id: 'tab-1' }], 'read-only');
+
+    await host.ensure(owner);
+
+    expect(setSessionFullAccess).toHaveBeenCalledWith(false);
   });
 });
 

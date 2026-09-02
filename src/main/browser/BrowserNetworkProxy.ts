@@ -4,7 +4,7 @@ import { lookup } from 'node:dns/promises';
 import { connect as connectTcp, type Socket } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import type { BrowserPolicy } from './BrowserPolicy';
-import { isCloudMetadataHostname, isPrivateNetworkHostname } from './BrowserPolicy';
+import { isCloudMetadataHostname, isLoopbackHostname, isPrivateNetworkHostname } from './BrowserPolicy';
 
 const DNS_TIMEOUT_MS = 5_000;
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -32,7 +32,7 @@ type PrivateNetworkAuthorizer = (origin: string) => boolean;
  */
 export class BrowserNetworkProxy {
   private readonly server = createServer((request, response) => {
-    void this.forwardHttp(request, response).catch(() => denyHttp(response));
+    void this.forwardHttp(request, response).catch((error) => denyHttp(response, error));
   });
   private readonly controller = new AbortController();
   private readonly sockets = new Set<Socket>();
@@ -50,15 +50,15 @@ export class BrowserNetworkProxy {
     this.server.on('connect', (request, client, head) => {
       const socket = client as Socket;
       this.track(socket);
-      void this.openTunnel(request.url ?? '', socket, head).catch(() => {
-        if (!socket.destroyed) socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      void this.openTunnel(request.url ?? '', socket, head).catch((error) => {
+        if (!socket.destroyed) socket.end(proxySocketError(error));
       });
     });
     this.server.on('upgrade', (request, client, head) => {
       const socket = client as Socket;
       this.track(socket);
-      void this.forwardWebSocket(request, socket, head).catch(() => {
-        if (!socket.destroyed) socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      void this.forwardWebSocket(request, socket, head).catch((error) => {
+        if (!socket.destroyed) socket.end(proxySocketError(error));
       });
     });
   }
@@ -230,11 +230,15 @@ export async function resolveTarget(
     ? [{ address: hostname }]
     : await withTimeout(resolve(hostname, { all: true, verbatim: true }), DNS_TIMEOUT_MS, signal);
   const addresses = [...new Set(resolved.map(({ address }) => address.toLowerCase()))];
+  if (!isIP(hostname) && isLoopbackHostname(hostname)) {
+    for (const extra of ['127.0.0.1', '::1']) if (!addresses.includes(extra)) addresses.push(extra);
+    addresses.sort((left, right) => Number(isIP(right) === 4) - Number(isIP(left) === 4));
+  }
   if (addresses.length === 0 || addresses.some((address) => isCloudMetadataHostname(address))) {
     throw new Error('The browser destination did not resolve to an approved address.');
   }
   const privateAddress = addresses.some((address) => isPrivateNetworkHostname(address));
-  if (privateAddress && !privateNetworkAllowed) {
+  if (privateAddress && !isLoopbackHostname(hostname) && !privateNetworkAllowed) {
     throw new Error('The browser destination resolved to a private address without permission. Open it in the built-in browser address bar, then press “Allow agent” on the access strip, or switch the session to Full access.');
   }
   return {
@@ -268,13 +272,28 @@ function serializeUpgradeRequest(requestPath: string, headers: IncomingHttpHeade
   return Buffer.from(`${lines.join('\r\n')}\r\n\r\n`, 'latin1');
 }
 
-function denyHttp(response: ServerResponse): void {
+function denyHttp(response: ServerResponse, error?: unknown): void {
   if (response.headersSent || response.destroyed) {
     response.destroy();
     return;
   }
-  response.writeHead(403, { Connection: 'close', 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
-  response.end('Browser destination blocked by Fate UI policy.');
+  const { status, body } = proxyError(error);
+  response.writeHead(status, { Connection: 'close', 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+  response.end(body);
+}
+
+function proxySocketError(error: unknown): string {
+  const { status, body } = proxyError(error);
+  return `HTTP/1.1 ${status} ${status === 403 ? 'Forbidden' : 'Bad Gateway'}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${body}`;
+}
+
+function proxyError(error: unknown): { status: number; body: string } {
+  const message = error instanceof Error ? error.message : 'Browser destination blocked by Fate UI policy.';
+  const policy = /permission|credentials are blocked|protocol is blocked|Cloud metadata|not a valid url|Only credential-free|did not resolve to an approved address/iu.test(message);
+  return {
+    status: policy ? 403 : 502,
+    body: policy ? message : `Browser destination unreachable: ${message}`,
+  };
 }
 
 function withTimeout<T>(operation: Promise<T>, milliseconds: number, signal?: AbortSignal): Promise<T> {

@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserState, PiDesktopApi } from '../../../shared/contracts/ipc';
 import { useBrowserStore } from '../../stores/browserStore';
+import { useRuntimeStore } from '../../stores/runtimeStore';
 import { BrowserToolbar } from './BrowserToolbar';
 
 const state = (grant = false, mode: BrowserState['mode'] = 'agent'): BrowserState => ({
@@ -16,10 +17,25 @@ const state = (grant = false, mode: BrowserState['mode'] = 'agent'): BrowserStat
 
 describe('BrowserToolbar', () => {
   beforeEach(() => {
+    useRuntimeStore.setState((current) => ({
+      runtime: { ...current.runtime, project: { path: 'C:/project', name: 'project', trusted: true } },
+    }));
     useBrowserStore.getState().reset();
-    useBrowserStore.getState().hydrate(state());
+    useBrowserStore.getState().hydrate(state(), 'C:/project');
   });
   afterEach(() => Reflect.deleteProperty(window, 'piDesktop'));
+
+  it('disables browser input until the project browser is initialized', async () => {
+    useBrowserStore.getState().hydrate(state(), null);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: {} as PiDesktopApi });
+    render(<BrowserToolbar />);
+
+    expect(screen.getByRole('textbox', { name: 'Browser address' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Open local HTML file' })).toBeDisabled();
+
+    useBrowserStore.getState().hydrate(state(), 'C:/project');
+    await vi.waitFor(() => expect(screen.getByRole('textbox', { name: 'Browser address' })).toBeEnabled());
+  });
 
   it('keeps agent control always on and requests scoped access without a mode switch', async () => {
     const setBrowserOriginGrant = vi.fn(async () => state(true));

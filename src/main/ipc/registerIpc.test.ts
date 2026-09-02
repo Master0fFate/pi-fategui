@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, ipcMain } from 'electron';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({
@@ -12,7 +12,7 @@ vi.mock('electron', () => ({
   webContents: { fromId: vi.fn() },
 }));
 
-import type { ProjectState } from '../../shared/contracts/ipc';
+import { ipcChannels, type ProjectState } from '../../shared/contracts/ipc';
 import type { MutationAttestationLedger } from '../pi/provenance/MutationAttestationLedger';
 import type { ProjectActivation } from '../projects/ProjectService';
 import { activatePreparedProject, assertProjectActivationIdle, createProjectActivationQueue, createProjectPathFocuser, createProjectPathOpener, discardCreatedWorktreeAfterFailure, registerIpc, resolveAttestationQuery } from './registerIpc';
@@ -122,6 +122,45 @@ describe('runtime event sink transport hardening', () => {
 
     getAllWindows.mockReset();
     getAllWindows.mockReturnValue([]);
+  });
+});
+
+describe('project cleanup IPC', () => {
+  it('uses the missing-directory-safe trusted cleanup resolver for forget and bulk session deletion', async () => {
+    const handlers = new Map<string, (event: Electron.IpcMainInvokeEvent, input: unknown) => Promise<unknown>>();
+    vi.mocked(ipcMain.handle).mockImplementation((channel, handler) => {
+      handlers.set(channel, handler as (event: Electron.IpcMainInvokeEvent, input: unknown) => Promise<unknown>);
+    });
+    const cleanupPath = vi.fn(async () => '/deleted-trusted-project');
+    const sessionListPath = vi.fn();
+    const closeProjectPath = vi.fn(async () => undefined);
+    const deleteSessionsForPath = vi.fn(async () => ({ deleted: 3, skipped: 0 }));
+    const runtime = {
+      getState: vi.fn(() => state(previousProject)),
+      closeProjectPath,
+      deleteSessionsForPath,
+      setEventSink: vi.fn(),
+      setGoalEventSink: vi.fn(),
+      setTaskEventSink: vi.fn(),
+    };
+    registerIpc({
+      runtime,
+      projects: { prepareKnownProjectCleanupPath: cleanupPath, prepareSessionListPath: sessionListPath },
+      files: {}, git: {}, settings: {}, terminal: { setEventSink: vi.fn() }, logs: { write: vi.fn() },
+      music: { setDurationSink: vi.fn() }, speech: { setEventSink: vi.fn(), setStreamSink: vi.fn() },
+      hotkey: {}, updates: {}, browser: {}, automations: {}, attestations: {},
+      rendererPolicy: { documentUrl: 'file:///fate/index.html', developmentOrigin: null },
+    } as never);
+    const frame = { url: 'file:///fate/index.html' } as Electron.WebFrameMain;
+    const event = { sender: { mainFrame: frame }, senderFrame: frame } as Electron.IpcMainInvokeEvent;
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue({ isDestroyed: () => false } as Electron.BrowserWindow);
+
+    await expect(handlers.get(ipcChannels.projectCloseRuntime)!(event, { projectPath: '/deleted-trusted-project' })).resolves.toBeUndefined();
+    await expect(handlers.get(ipcChannels.projectDeleteSessions)!(event, { projectPath: '/deleted-trusted-project' })).resolves.toEqual({ deleted: 3, skipped: 0 });
+    expect(cleanupPath).toHaveBeenCalledTimes(2);
+    expect(closeProjectPath).toHaveBeenCalledWith('/deleted-trusted-project');
+    expect(deleteSessionsForPath).toHaveBeenCalledWith('/deleted-trusted-project');
+    expect(sessionListPath).not.toHaveBeenCalled();
   });
 });
 

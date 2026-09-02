@@ -64,6 +64,32 @@ describe('first-launch shell', () => {
     expect(screen.getByRole('button', { name: 'Model and reasoning settings' })).toBeDisabled();
   });
 
+  it('does not start the built-in browser until the workspace is opened', async () => {
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    };
+    const initializeBrowser = vi.fn(async () => {
+      throw new Error('The built-in browser should not start until it is opened.');
+    });
+    const setBrowserOverlayBlocked = vi.fn(async () => {
+      throw new Error('Browser overlay should not start the built-in browser.');
+    });
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => runtime), onEvents: vi.fn(() => () => undefined),
+        initializeBrowser, setBrowserOverlayBlocked,
+      } as unknown as PiDesktopApi,
+    });
+    useRuntimeStore.getState().setRuntime(runtime);
+    render(<App />);
+    await act(async () => { await Promise.resolve(); });
+    expect(initializeBrowser).not.toHaveBeenCalled();
+    expect(setBrowserOverlayBlocked).not.toHaveBeenCalled();
+    expect(useUiStore.getState().browserOpen).toBe(false);
+  });
+
   it('opens a link in the Browser workspace when the native link menu requests it', async () => {
     const runtime: RuntimeState = {
       status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,

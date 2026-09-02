@@ -166,6 +166,12 @@ button:disabled { cursor: not-allowed; }
 .brand-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; line-height: 1.25; }
 .brand-title-line { display: flex; min-width: 0; align-items: center; gap: 9px; }
 .brand-copy strong { font-size: 14px; letter-spacing: -0.01em; }
+.brand-dev-tag {
+  flex: 0 0 auto; color: var(--theme-accent);
+  font: 600 10px/1 var(--font-code); letter-spacing: 0.08em; text-transform: uppercase;
+  user-select: none;
+}
+.brand-dev-tag::before { content: '│'; margin-right: 6px; color: color-mix(in srgb, var(--theme-text) 25%, transparent); }
 .brand-copy span { overflow: hidden; color: var(--theme-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .music-equalizer { display: flex; width: 14px; height: 12px; align-items: center; gap: 2px; opacity: .82; }
 .music-equalizer i {
@@ -2680,6 +2686,7 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 :root[data-compact-mode="true"] .brand-row { min-height: 28px; margin-bottom: 4px; gap: 8px; }
 :root[data-compact-mode="true"] .brand-mark { flex-basis: 28px; height: 28px; font-size: 24px; }
 :root[data-compact-mode="true"] .brand-copy strong,
+:root[data-compact-mode="true"] .brand-dev-tag,
 :root[data-compact-mode="true"] .brand-copy span { display: none; }
 :root[data-compact-mode="true"] .icon-button,
 :root[data-compact-mode="true"] .sidebar-settings-button { width: 26px; height: 26px; flex-basis: 26px; }

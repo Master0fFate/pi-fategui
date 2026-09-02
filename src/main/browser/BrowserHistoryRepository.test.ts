@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,6 +33,7 @@ describe('browser last-URL history', () => {
       // Clearing forgets the URL.
       await reopened.save('/project-a', null);
       expect(await reopened.load('/project-a')).toBeNull();
+      expect(await reopened.loadSession('/project-a')).toBeNull();
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -54,6 +56,41 @@ describe('browser last-URL history', () => {
       await repo.save('/project-b', localPage);
       const reopened = new BrowserHistoryRepository(root);
       expect(await reopened.load('/project-b')).toBe(localPage);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('persists every restorable tab and the active index', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-browser-history-'));
+    try {
+      const repo = new BrowserHistoryRepository(root);
+      await repo.save('/project-a', {
+        tabs: ['https://one.example/', 'https://two.example/', 'about:blank', 'https://three.example/'],
+        activeIndex: 2,
+      });
+      expect(await repo.loadSession('/project-a')).toEqual({
+        tabs: ['https://one.example/', 'https://two.example/', 'https://three.example/'],
+        activeIndex: 2,
+      });
+      expect(await repo.load('/project-a')).toBe('https://three.example/');
+      await repo.save('/project-a', { tabs: [], activeIndex: 0 });
+      expect(await repo.loadSession('/project-a')).toBeNull();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates a v1 single-url history file into a one-tab session', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-browser-history-'));
+    try {
+      const key = createHash('sha256').update('/project-a').digest('hex');
+      await fs.writeFile(path.join(root, 'browser-history.json'), JSON.stringify({
+        schemaVersion: 1,
+        urls: { [key]: 'https://legacy.example/' },
+      }), { encoding: 'utf8' });
+      const repo = new BrowserHistoryRepository(root);
+      expect(await repo.loadSession('/project-a')).toEqual({ tabs: ['https://legacy.example/'], activeIndex: 0 });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

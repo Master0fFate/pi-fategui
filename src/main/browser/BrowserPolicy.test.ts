@@ -8,9 +8,13 @@ describe('browser URL and origin policy', () => {
     expect(inspectBrowserUrl('file:///etc/passwd').allowed).toBe(false);
     expect(inspectBrowserUrl('javascript:alert(1)').allowed).toBe(false);
     expect(inspectBrowserUrl('https://user:pass@example.test').allowed).toBe(false);
-    expect(inspectBrowserUrl('http://127.0.0.1:5173').allowed).toBe(false);
-    expect(inspectBrowserUrl('http://[::1]:3000').allowed).toBe(false);
-    expect(inspectBrowserUrl('http://0x7f000001').allowed).toBe(false);
+    expect(inspectBrowserUrl('http://127.0.0.1:5173').allowed).toBe(true);
+    expect(inspectBrowserUrl('http://localhost:3000').allowed).toBe(true);
+    expect(inspectBrowserUrl('http://[::1]:3000').allowed).toBe(true);
+    expect(inspectBrowserUrl('http://192.168.1.10:8080').allowed).toBe(false);
+    expect(inspectBrowserUrl('http://0x7f000001').allowed).toBe(true);
+    expect(new BrowserPolicy().allowsPrivateNetworkForOrigin('http://localhost:3000')).toBe(true);
+    expect(new BrowserPolicy().allowsPrivateNetworkForOrigin('http://192.168.1.10:8080')).toBe(false);
     expect(isPrivateNetworkHostname('127.0.0.1')).toBe(true);
     expect(isPrivateNetworkHostname('::ffff:7f00:1')).toBe(true);
     expect(isPrivateNetworkHostname('0:0:0:0:0:ffff:c0a8:1')).toBe(true);

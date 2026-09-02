@@ -50,7 +50,7 @@ export function inspectBrowserUrl(value: string, privateNetworkOrigins: Readonly
     return { allowed: false, normalizedUrl: url.href, origin: url.origin, privateNetwork: true, reason: 'Cloud metadata endpoints are always blocked.' };
   }
   const privateNetwork = isPrivateNetworkHostname(url.hostname);
-  if (privateNetwork && !privateNetworkOrigins.has(url.origin)) {
+  if (privateNetwork && !isLoopbackHostname(url.hostname) && !privateNetworkOrigins.has(url.origin)) {
     return {
       allowed: false,
       normalizedUrl: url.href,
@@ -73,9 +73,21 @@ export function isCloudMetadataHostname(rawHostname: string): boolean {
     || Boolean(mappedIpv4 && isCloudMetadataHostname(mappedIpv4));
 }
 
+export function isLoopbackHostname(rawHostname: string): boolean {
+  const hostname = rawHostname.toLowerCase().replace(/^\[|\]$/gu, '').replace(/\.$/u, '');
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === 'localhost.localdomain' || hostname === '::1') return true;
+  const ipKind = isIP(hostname);
+  if (ipKind === 4) return hostname.split('.')[0] === '127';
+  if (ipKind === 6) {
+    const mapped = embeddedIpv4FromIpv6(hostname);
+    return mapped ? isLoopbackHostname(mapped) : false;
+  }
+  return false;
+}
+
 export function isPrivateNetworkHostname(rawHostname: string): boolean {
   const hostname = rawHostname.toLowerCase().replace(/^\[|\]$/gu, '').replace(/\.$/u, '');
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === 'localhost.localdomain') return true;
+  if (isLoopbackHostname(hostname)) return true;
 
   const ipKind = isIP(hostname);
   if (ipKind === 4) {
@@ -235,7 +247,9 @@ export class BrowserPolicy {
   allowsPrivateNetworkForOrigin(origin: string): boolean {
     try {
       const normalized = normalizeNetworkOrigin(origin);
-      if (this.sessionFullAccess && !isCloudMetadataHostname(new URL(normalized).hostname)) return true;
+      const hostname = new URL(normalized).hostname;
+      if (isCloudMetadataHostname(hostname)) return false;
+      if (isLoopbackHostname(hostname) || this.sessionFullAccess) return true;
       const entry = this.grants.get(normalized);
       return Boolean(entry && this.isActive(entry) && entry.grant.allowPrivateNetwork);
     } catch { return false; }

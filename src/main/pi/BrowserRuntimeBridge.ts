@@ -32,7 +32,10 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
   private activeRoot: ActiveBrowserRoot | null = null;
   private focusedProjectPath: string | null = null;
 
-  constructor(private readonly resolveService: () => BrowserService | null) {}
+  constructor(
+    private readonly resolveService: () => BrowserService | null,
+    private readonly ensureService?: () => Promise<BrowserService>,
+  ) {}
 
   createTools(): ToolDefinition[] {
     return createPiBrowserTools(() => this);
@@ -147,32 +150,84 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
 
   async tabs(input: Parameters<PiBrowserToolHost['tabs']>[0]): Promise<readonly BrowserToolTab[]> {
     const service = await this.serviceFor(input.sessionId);
-    const state = service.getState();
-    return state.tabs.map((tab) => ({
-      id: tab.id,
-      title: tab.title,
-      url: tab.url,
-      active: tab.id === state.activeTabId,
-    }));
+    return listedTabs(service);
+  }
+
+  async createTab(input: Parameters<PiBrowserToolHost['createTab']>[0]) {
+    const service = await this.serviceFor(input.sessionId);
+    const tabId = await service.createUserTab('about:blank');
+    const url = input.url?.trim();
+    if (!url || url === 'about:blank') return { tabId, snapshot: null };
+    try {
+      await service.navigate(tabId, url, 'agent', input.signal);
+      await waitForPage(service, tabId, input.signal);
+      return { tabId, snapshot: await service.snapshot(tabId) };
+    } catch (error) {
+      await service.closeTab(tabId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async selectTab(input: Parameters<PiBrowserToolHost['selectTab']>[0]) {
+    const service = await this.serviceFor(input.sessionId);
+    service.activateTab(input.tabId);
+    return listedTabs(service);
+  }
+
+  async closeTab(input: Parameters<PiBrowserToolHost['closeTab']>[0]) {
+    const service = await this.serviceFor(input.sessionId);
+    await service.closeTab(input.tabId);
+    return listedTabs(service);
   }
 
   private async serviceFor(sessionId: string): Promise<BrowserService> {
     const root = this.activeRoot;
-    if (!root || root.sessionId !== sessionId) {
-      throw new Error('The active root session does not own the built-in browser. Switch back to that session or take over manually.');
+    if (!root || root.sessionId !== sessionId) throw browserOwnershipError();
+    const expectedRoot = { ...root };
+    let service = this.resolveService();
+    if (!service) {
+      if (!this.ensureService) throw new Error('Open the Browser workspace for the active trusted project before using browser tools.');
+      service = await this.ensureService();
+      this.assertActiveRoot(expectedRoot);
+      if (this.resolveService() !== service) throw browserOwnershipError();
     }
-    const service = this.resolveService();
-    if (!service) throw new Error('Open the Browser workspace for the active trusted project before using browser tools.');
-    service.beginTask(root.sessionId);
+    service.setControlLevel('interact');
+    service.beginTask(expectedRoot.sessionId);
     const lease = service.lease.getState();
-    if (lease?.ownerSessionId !== root.sessionId) {
+    if (lease?.ownerSessionId !== expectedRoot.sessionId) {
       if (lease) service.lease.release(lease.ownerSessionId);
-      service.lease.acquire(root.sessionId);
+      service.lease.acquire(expectedRoot.sessionId);
     }
-    service.lease.assertOwner(root.sessionId);
-    if (!service.getState().activeTabId) await service.ensureTab();
+    service.lease.assertOwner(expectedRoot.sessionId);
+    if (!service.getState().activeTabId) {
+      await service.ensureTab();
+      this.assertActiveRoot(expectedRoot);
+      if (this.resolveService() !== service) throw browserOwnershipError();
+      service.lease.assertOwner(expectedRoot.sessionId);
+    }
     return service;
   }
+
+  private assertActiveRoot(expected: ActiveBrowserRoot): void {
+    const current = this.activeRoot;
+    if (!current || current.projectPath !== expected.projectPath || current.sessionId !== expected.sessionId) {
+      throw browserOwnershipError();
+    }
+  }
+}
+
+function browserOwnershipError(): Error {
+  return new Error('The active root session does not own the built-in browser. Switch back to that session or take over manually.');
+}
+
+function listedTabs(service: BrowserService): BrowserToolTab[] {
+  const state = service.getState();
+  return state.tabs.map((tab) => ({
+    id: tab.id,
+    title: tab.title,
+    url: tab.url,
+    active: tab.id === state.activeTabId,
+  }));
 }
 
 function activeTabId(service: BrowserService): string {

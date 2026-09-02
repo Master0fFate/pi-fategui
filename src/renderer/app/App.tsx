@@ -103,6 +103,7 @@ import { AppShell } from './AppShell';
 function BrowserInitializer() {
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
   const projectTrusted = useRuntimeStore((state) => state.runtime.project?.trusted ?? false);
+  const browserOpen = useUiStore((state) => state.browserOpen);
   const hydrate = useBrowserStore((state) => state.hydrate);
   const applyEvents = useBrowserStore((state) => state.applyEvents);
   const setAnnotations = useBrowserStore((state) => state.setAnnotations);
@@ -128,9 +129,11 @@ function BrowserInitializer() {
 
   useEffect(() => {
     const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
-    if (!projectPath || !projectTrusted || typeof desktop?.initializeBrowser !== 'function') {
-      reset();
-      if (!projectPath || !projectTrusted) setBrowserOpen(false);
+    if (!projectPath || !projectTrusted || !browserOpen || typeof desktop?.initializeBrowser !== 'function') {
+      if (!projectPath || !projectTrusted) {
+        reset();
+        setBrowserOpen(false);
+      }
       return undefined;
     }
     let active = true;
@@ -147,7 +150,7 @@ function BrowserInitializer() {
       if (active) useBrowserStore.getState().setError(error instanceof Error ? error.message : 'The built-in browser could not start.');
     });
     return () => { active = false; };
-  }, [hydrate, projectPath, projectTrusted, reset, setAnnotations, setBrowserOpen]);
+  }, [browserOpen, hydrate, projectPath, projectTrusted, reset, setAnnotations, setBrowserOpen]);
 
   return null;
 }
@@ -229,14 +232,14 @@ export function App() {
 
   useEffect(() => {
     const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
-    if (!projectPath || !projectTrusted || typeof desktop?.setBrowserOverlayBlocked !== 'function') return undefined;
+    if (!browserOpen || !projectPath || !projectTrusted || typeof desktop?.setBrowserOverlayBlocked !== 'function') return undefined;
     let active = true;
     void desktop.setBrowserOverlayBlocked(paletteOpen || settingsOpen || goalEditorOpen || portalDialogOpen).then((state) => {
       const project = useRuntimeStore.getState().runtime.project;
       if (active && project?.path === projectPath && project.trusted) useBrowserStore.getState().hydrate(state, projectPath);
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [goalEditorOpen, paletteOpen, portalDialogOpen, projectPath, projectTrusted, settingsOpen]);
+  }, [browserOpen, goalEditorOpen, paletteOpen, portalDialogOpen, projectPath, projectTrusted, settingsOpen]);
 
   useEffect(() => {
     const jump = useUiStore.getState().flightDeckJump;

@@ -111,6 +111,25 @@ describe('ProjectPathPolicy', () => {
     await expect(readTool.execute('read-huge', { path: 'huge.txt' }, undefined, undefined, {} as never)).rejects.toThrow(/limited.*8 MiB/i);
   });
 
+  it('returns raster images as vision attachments instead of binary text', async () => {
+    const { project, outside } = await fixture();
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    await writeFile(path.join(project, 'pixel.png'), png);
+    await writeFile(path.join(outside, 'secret.png'), png);
+    const tools = await createProjectConfinedTools(project);
+    const readTool = tools.find((tool) => tool.name === 'read') as ReturnType<typeof createReadToolDefinition>;
+    const visionModel = { input: ['text', 'image'] } as never;
+
+    await expect(readTool.execute('read-image', { path: 'pixel.png' }, undefined, undefined, { model: visionModel } as never)).resolves.toMatchObject({
+      content: [
+        { type: 'text', text: expect.stringContaining('image/png') },
+        { type: 'image', mimeType: 'image/png', data: expect.stringMatching(/^[A-Za-z0-9+/]+=*$/) },
+      ],
+    });
+    await expect(readTool.execute('read-secret-image', { path: path.join(outside, 'secret.png') }, undefined, undefined, { model: visionModel } as never))
+      .rejects.toThrow(/loaded skill resources|active project/i);
+  });
+
   it('unlocks host paths only while explicit full access is active', async () => {
     const { project, outside } = await fixture();
     const access = { fullAccess: false };

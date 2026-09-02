@@ -8,6 +8,13 @@ function serviceFixture() {
     beginTask: vi.fn(),
     endTask: vi.fn(),
     cancelAnnotationSelection: vi.fn(),
+    setControlLevel: vi.fn(),
+    setMode: vi.fn(),
+    createUserTab: vi.fn(async () => 'tab-2'),
+    navigate: vi.fn(async () => undefined),
+    activateTab: vi.fn(),
+    closeTab: vi.fn(async () => undefined),
+    snapshot: vi.fn(async () => ({ tabId: 'tab-2', serialized: 'page', url: 'https://example.test/new', revision: 1 })),
     ensureTab: vi.fn(async () => undefined),
     getState: vi.fn(() => ({
       activeTabId: 'browser-main', visible: false, viewBlocked: false, sessionFullAccess: false, controlLevel: 'off' as const,
@@ -82,5 +89,72 @@ describe('BrowserRuntimeBridge', () => {
     const bridge = new BrowserRuntimeBridge(() => null);
     bridge.setActiveRoot({ projectPath: '/project', sessionId: 'root' });
     await expect(bridge.tabs({ sessionId: 'root' })).rejects.toThrow(/Open the Browser workspace/u);
+  });
+
+  it('starts the built-in browser when tools run before the workspace is opened', async () => {
+    const service = serviceFixture();
+    let currentService: BrowserService | null = null;
+    const ensure = vi.fn(async () => {
+      currentService = service;
+      return service;
+    });
+    const bridge = new BrowserRuntimeBridge(() => currentService, ensure);
+    bridge.setActiveRoot({ projectPath: '/project', sessionId: 'root' });
+    await expect(bridge.tabs({ sessionId: 'root' })).resolves.toEqual([
+      expect.objectContaining({ id: 'browser-main', active: true }),
+    ]);
+    expect(ensure).toHaveBeenCalledOnce();
+    expect(service.setControlLevel).toHaveBeenCalledWith('interact');
+  });
+
+  it('does not reclaim the browser after the active root changes during startup', async () => {
+    const service = serviceFixture();
+    let currentService: BrowserService | null = null;
+    let resolveEnsure!: (service: BrowserService) => void;
+    const ensure = vi.fn(() => new Promise<BrowserService>((resolve) => { resolveEnsure = resolve; }));
+    const bridge = new BrowserRuntimeBridge(() => currentService, ensure);
+    bridge.setActiveRoot({ projectPath: '/project', sessionId: 'root-a' });
+
+    const pending = bridge.tabs({ sessionId: 'root-a' });
+    bridge.setActiveRoot({ projectPath: '/project', sessionId: 'root-b' });
+    currentService = service;
+    resolveEnsure(service);
+
+    await expect(pending).rejects.toThrow(/does not own/u);
+    expect(service.beginTask).not.toHaveBeenCalled();
+    expect(service.lease.acquire).not.toHaveBeenCalledWith('root-a');
+  });
+
+  it('opens a new tab for the owning root session', async () => {
+    const service = serviceFixture();
+    vi.mocked(service.getState).mockReturnValue({
+      activeTabId: 'tab-2', visible: false, viewBlocked: false, sessionFullAccess: true, controlLevel: 'interact',
+      mode: 'agent', deviceEmulation: null,
+      tabs: [{
+        id: 'tab-2', profileId: 'project', url: 'https://example.test/new', title: 'New', loading: false,
+        canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true,
+      }],
+      grants: [],
+    });
+    const bridge = new BrowserRuntimeBridge(() => service);
+    bridge.setActiveRoot({ projectPath: '/project', sessionId: 'root-a' });
+    await expect(bridge.createTab({ sessionId: 'root-a', url: 'https://example.test/new' })).resolves.toMatchObject({
+      tabId: 'tab-2',
+    });
+    expect(service.createUserTab).toHaveBeenCalledWith('about:blank');
+    expect(service.navigate).toHaveBeenCalledWith('tab-2', 'https://example.test/new', 'agent', undefined);
+  });
+
+  it('closes a new tab when its agent navigation is blocked', async () => {
+    const service = serviceFixture();
+    vi.mocked(service.navigate).mockRejectedValueOnce(new Error('The browser navigation was not confirmed.'));
+    const bridge = new BrowserRuntimeBridge(() => service);
+    bridge.setActiveRoot({ projectPath: '/project', sessionId: 'root-a' });
+
+    await expect(bridge.createTab({ sessionId: 'root-a', url: 'https://blocked.example/' }))
+      .rejects.toThrow(/not confirmed/u);
+    expect(service.createUserTab).toHaveBeenCalledWith('about:blank');
+    expect(service.navigate).toHaveBeenCalledWith('tab-2', 'https://blocked.example/', 'agent', undefined);
+    expect(service.closeTab).toHaveBeenCalledWith('tab-2');
   });
 });

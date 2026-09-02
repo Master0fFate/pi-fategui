@@ -13,6 +13,7 @@ import {
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { AppTooltip } from '../../components/AppTooltip';
 import { browserOrigin, currentBrowserTab, grantForOrigin, useBrowserStore } from '../../stores/browserStore';
+import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { DEFAULT_DEVICE_EMULATION } from './devicePresets';
 
@@ -20,7 +21,10 @@ export function BrowserToolbar() {
   const state = useBrowserStore((store) => store.state);
   const pending = useBrowserStore((store) => store.pending);
   const error = useBrowserStore((store) => store.error);
+  const initializedProjectPath = useBrowserStore((store) => store.initializedProjectPath);
+  const projectPath = useRuntimeStore((store) => store.runtime.project?.path ?? null);
   const tab = currentBrowserTab(state);
+  const browserReady = Boolean(projectPath && initializedProjectPath === projectPath);
   const setBrowserOpen = useUiStore((store) => store.setBrowserOpen);
   const [address, setAddress] = useState(tab?.url === 'about:blank' ? '' : tab?.url ?? '');
   const [accessOpen, setAccessOpen] = useState(false);
@@ -53,7 +57,7 @@ export function BrowserToolbar() {
   }, [currentGrant?.interact, currentOrigin, state.sessionFullAccess]);
 
   const run = async (label: string, operation: () => Promise<unknown>) => {
-    if (!('piDesktop' in window) || pending) return;
+    if (!('piDesktop' in window) || !browserReady || pending) return;
     useBrowserStore.getState().setPending(label);
     useBrowserStore.getState().setError(null);
     try {
@@ -126,13 +130,14 @@ export function BrowserToolbar() {
             aria-label="Browser address"
             placeholder="URL, search, or C:\\path\\to\\index.html"
             spellCheck={false}
+            disabled={!browserReady || Boolean(pending)}
             onFocus={(event) => { addressFocused.current = true; event.currentTarget.select(); }}
             onBlur={() => { addressFocused.current = false; }}
             onChange={(event) => setAddress(event.target.value)}
           />
           {pending && <LoaderCircle className="tool-spinner" size={13} aria-label="Browser busy" />}
         </form>
-        <AppTooltip content="Open local HTML"><button type="button" className="browser-open-file" aria-label="Open local HTML file" disabled={Boolean(pending)} onClick={openLocalFile}><FileCode2 size={14} /></button></AppTooltip>
+        <AppTooltip content="Open local HTML"><button type="button" className="browser-open-file" aria-label="Open local HTML file" disabled={!browserReady || Boolean(pending)} onClick={openLocalFile}><FileCode2 size={14} /></button></AppTooltip>
         <div className="browser-tool-group" role="group" aria-label="Browser tools">
           <AppTooltip content={state.mode === 'annotate' ? 'Stop annotating (Esc)' : 'Annotate page elements'}>
             <button
@@ -150,7 +155,7 @@ export function BrowserToolbar() {
               className="browser-tool-toggle"
               aria-label="Toggle device toolbar"
               aria-pressed={Boolean(state.deviceEmulation)}
-              disabled={Boolean(pending)}
+              disabled={!browserReady || Boolean(pending)}
               onClick={toggleDevice}
             ><Smartphone size={15} /></button>
           </AppTooltip>

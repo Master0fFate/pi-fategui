@@ -112,7 +112,16 @@ app.on('render-process-gone', (_event, _contents, details) => {
 });
 const automations = new AutomationRepository(logs);
 let browserHost: BrowserHost | null = null;
-const browserBridge = new BrowserRuntimeBridge(() => browserHost?.current() ?? null);
+const browserBridge = new BrowserRuntimeBridge(
+  () => browserHost?.current() ?? null,
+  async () => {
+    const owner = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((window) => !window.isDestroyed()) ?? null;
+    if (!browserHost || !owner) throw new Error('Open a Fate UI window before using browser tools.');
+    const service = await browserHost.ensure(owner);
+    service.setMode('agent');
+    return service;
+  },
+);
 const attestationLedger = new MutationAttestationLedger(logs, undefined, { instanceSlot: instanceProfile.slot });
 const recordAttestation = createMutationRecorder(attestationLedger, logs);
 const piRuntime = new MultiProjectPiRuntime({

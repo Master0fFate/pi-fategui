@@ -11,6 +11,7 @@ import {
   createWriteToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type { PermissionLevel } from '../../shared/contracts/ipc';
+import { rasterImageMimeType } from '../files/FilesystemService';
 import { PiDesktopError } from './errors';
 import { createConfiguredImageGenerator, createGenerateImageTool, type ImageGenerationSettingsResolver } from './PiImageTool';
 import {
@@ -404,7 +405,7 @@ export async function createProjectConfinedTools(
   const canonicalCwd = path.normalize(await fs.realpath(cwd));
   const { attestations, maxPreHashBytes = MAX_PRE_HASH_BYTES } = options;
   const policy = await ProjectPathPolicy.create(canonicalCwd, access, readableRoots);
-  const withReadable = async (filePath: string, read: boolean): Promise<Buffer | undefined> => {
+  const withReadable = async (filePath: string, read: boolean, maxBytes?: number): Promise<Buffer | undefined> => {
     const target = await policy.readable(filePath);
     const handle = await fs.open(target, 'r');
     try {
@@ -418,7 +419,11 @@ export async function createProjectConfinedTools(
       }
       const verifiedTarget = await policy.readable(target);
       if (path.relative(target, verifiedTarget) !== '') throw new PiDesktopError({ code: 'INVALID_PROJECT', message: 'Pi refused a concurrently replaced project or skill file.', retryable: true });
-      return read ? await handle.readFile() : undefined;
+      if (!read) return undefined;
+      if (maxBytes === undefined) return handle.readFile();
+      const sample = Buffer.alloc(Math.min(stat.size, maxBytes));
+      const { bytesRead } = await handle.read(sample, 0, sample.length, 0);
+      return sample.subarray(0, bytesRead);
     } finally {
       await handle.close();
     }
@@ -426,6 +431,7 @@ export async function createProjectConfinedTools(
   const readOperations = {
     readFile: async (filePath: string) => (await withReadable(filePath, true))!,
     access: async (filePath: string) => { await withReadable(filePath, false); },
+    detectImageMimeType: async (filePath: string) => rasterImageMimeType((await withReadable(filePath, true, 4_100))!),
   };
   const secureWriteFile = createSecureWriteFile({
     policy,

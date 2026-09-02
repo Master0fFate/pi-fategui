@@ -18,7 +18,29 @@ const ptyMock = vi.hoisted(() => {
 
 vi.mock('node-pty', () => ({ spawn: ptyMock.spawn }));
 
-import { smokeTerminalRuntime, TerminalService } from './TerminalService';
+import { defaultShellCandidates, smokeTerminalRuntime, TerminalService } from './TerminalService';
+
+describe('defaultShellCandidates', () => {
+  it('prefers the newest installed PowerShell on Windows with cmd as the floor', () => {
+    expect(defaultShellCandidates('win32', { ProgramFiles: 'C:\\Program Files', SystemRoot: 'C:\\Windows', ComSpec: 'C:\\Windows\\System32\\cmd.exe' })).toEqual([
+      'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+      'C:\\Program Files (x86)\\PowerShell\\7\\pwsh.exe',
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      'C:\\Windows\\System32\\cmd.exe',
+    ]);
+  });
+
+  it('falls back to the Windows PowerShell and cmd floors when the environment is sparse', () => {
+    const ladder = defaultShellCandidates('win32', {});
+    expect(ladder).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+    expect(ladder.at(-1)).toBe('C:\\Windows\\System32\\cmd.exe');
+  });
+
+  it('uses the login shell on macOS and Linux', () => {
+    expect(defaultShellCandidates('darwin', { SHELL: '/opt/homebrew/bin/fish' })[0]).toBe('/opt/homebrew/bin/fish');
+    expect(defaultShellCandidates('linux', {})).toEqual(['/bin/bash', '/bin/bash', '/bin/zsh']);
+  });
+});
 
 function createService(trusted = true) {
   const logs = new AppLogService();

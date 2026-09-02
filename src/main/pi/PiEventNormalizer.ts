@@ -193,6 +193,7 @@ export class PiEventNormalizer {
     const now = timestamp();
     switch (event.type) {
       case 'agent_start': {
+        this.activeAssistantId = null;
         const runId = this.runId();
         if (!runId) return [];
         this.settlementRunId = runId;
@@ -217,21 +218,19 @@ export class PiEventNormalizer {
       case 'message_start': {
         const role = messageRole(event.message);
         if (role === 'tool' || role === 'hidden') return [];
-        const id = this.messageId(event.message);
-        if (role === 'assistant') this.activeAssistantId = id;
+        const id = role === 'assistant' ? this.ensureAssistantId(event.message) : this.messageId(event.message);
         return [{ type: 'message.started', messageId: id, role, timestamp: now }];
       }
       case 'message_update': {
         const update = event.assistantMessageEvent;
-        const messageId = this.activeAssistantId ?? this.messageId(event.message);
-        if (update.type === 'text_delta' && update.delta) {
-          return deltaEvents('assistant.text', messageId, update.delta, now);
-        }
-        if (update.type === 'thinking_delta' && update.delta) {
-          return deltaEvents('assistant.reasoning', messageId, update.delta, now);
-        }
         if (update.type === 'error') {
           return [{ type: 'error', error: normalizeError(new Error(update.error.errorMessage ?? 'The model request failed.')), timestamp: now }];
+        }
+        if (update.type === 'text_delta' && update.delta) {
+          return deltaEvents('assistant.text', this.ensureAssistantId(event.message), update.delta, now);
+        }
+        if (update.type === 'thinking_delta' && update.delta) {
+          return deltaEvents('assistant.reasoning', this.ensureAssistantId(event.message), update.delta, now);
         }
         return [];
       }
@@ -330,6 +329,16 @@ export class PiEventNormalizer {
       return created;
     }
     return `${this.idPrefix}message-${++this.sequence}`;
+  }
+
+  private ensureAssistantId(message: unknown): string {
+    if (this.activeAssistantId) {
+      if (message && typeof message === 'object') this.messageIds.set(message, this.activeAssistantId);
+      return this.activeAssistantId;
+    }
+    const id = this.messageId(message);
+    this.activeAssistantId = id;
+    return id;
   }
 
   private toolId(toolCallId: string): string {

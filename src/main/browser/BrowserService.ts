@@ -34,7 +34,7 @@ import { BrowserAnnotationRepository } from './BrowserAnnotationRepository';
 import { CdpClient } from './CdpClient';
 import { BrowserError } from './BrowserErrors';
 import { BrowserLease } from './BrowserLease';
-import { BrowserActionGate, BrowserPolicy, inspectBrowserUrl, isCloudMetadataHostname, isPrivateNetworkHostname } from './BrowserPolicy';
+import { BrowserActionGate, BrowserPolicy, inspectBrowserUrl, isCloudMetadataHostname, isLoopbackHostname, isPrivateNetworkHostname } from './BrowserPolicy';
 import { BrowserRefRegistry } from './BrowserRefRegistry';
 import { isRestorableBrowserUrl } from './BrowserHistoryRepository';
 import { BrowserNetworkProxy, resolveTarget } from './BrowserNetworkProxy';
@@ -87,7 +87,12 @@ export interface BrowserServiceOptions {
   onAppShortcut?: (shortcut: BrowserAppShortcut) => void;
   /** Notified with every restorable committed navigation so the host can persist the last URL. */
   onNavigated?: (url: string) => void;
-  /** Page to land on when the main tab is (re)opened without an explicit URL. */
+  /** Snapshot of restorable open tabs after navigation, tab close, or tab creation. */
+  onTabsChanged?: (tabs: readonly string[], activeIndex: number) => void;
+  /** Pages to restore when the main tab is first opened without an explicit URL. */
+  restoreTabs?: readonly string[];
+  restoreActiveIndex?: number;
+  /** Page to land on when the main tab is first opened without an explicit URL. */
   restoreUrl?: string | null;
   /** Shared annotation store. Composer drafts reference annotations by id for
    *  the whole app lifetime, so the store must outlive service recreation
@@ -199,8 +204,18 @@ export class BrowserService {
       if (this.tabs.has(tabId)) this.activateTab(tabId);
       return;
     }
-    // Reopening the main tab without an explicit address returns to the last
-    // restorable page for this project (e.g. an accidental close of localhost).
+    // Reopening the main tab without an explicit address restores the last
+    // restorable tab set for this project (e.g. an accidental close of localhost).
+    if (!initialUrl && tabId === 'browser-main' && this.options.restoreTabs?.length) {
+      const creation = this.restoreOpenTabs();
+      this.tabCreations.set(tabId, creation);
+      try {
+        await creation;
+      } finally {
+        if (this.tabCreations.get(tabId) === creation) this.tabCreations.delete(tabId);
+      }
+      return;
+    }
     const resolvedUrl = initialUrl ?? this.options.restoreUrl ?? 'about:blank';
     const creation = this.createTab(tabId, 'project', resolvedUrl);
     this.tabCreations.set(tabId, creation);
@@ -290,6 +305,7 @@ export class BrowserService {
       await this.applyDeviceEmulation(tab);
       this.activateTab(tabId);
       if (initialUrl !== 'about:blank') await this.navigate(tabId, initialUrl, source);
+      this.persistOpenTabs();
     } catch (error) {
       await this.destroyTab(tab);
       this.tabs.delete(tabId);
@@ -720,10 +736,11 @@ export class BrowserService {
     if (this.tabs.size === 0) {
       this.mode = 'agent';
       this.policy.setControlLevel('interact');
-      await this.ensureTab();
+      await this.ensureTab('browser-main', 'about:blank');
     } else {
       this.setVisible(this.visible);
     }
+    this.persistOpenTabs();
   }
 
   async dispose(): Promise<void> {
@@ -803,7 +820,7 @@ export class BrowserService {
     const decision = this.policy.inspectUrl(url.href);
     if (!decision.allowed && !(decision.privateNetwork && humanApprovedPrivate)) return false;
     if (isPrivateNetworkHostname(url.hostname)) {
-      return humanApprovedPrivate || this.policy.allowsPrivateNetworkForOrigin(url.origin);
+      return this.policy.allowsPrivateNetworkForOrigin(url.origin) || humanApprovedPrivate;
     }
     try {
       // Bound the DNS lookup. On macOS, AAAA/IPv6 resolution for some hosts can
@@ -981,6 +998,7 @@ export class BrowserService {
       // this service is gone, so it must never reach the history store.
       const persisted = this.localPages.displayUrl(url, tab.id) ?? url;
       if (isRestorableBrowserUrl(persisted)) this.options.onNavigated?.(persisted);
+      this.persistOpenTabs();
     });
     contents.on('did-start-loading', () => this.emitState());
     contents.on('did-stop-loading', () => {
@@ -1124,6 +1142,7 @@ export class BrowserService {
     this.applyVisibility();
     if (this.mode === 'annotate') this.startAnnotationLoop();
     this.emitState();
+    if (changed) this.persistOpenTabs();
   }
 
   private applyVisibility(): void {
@@ -1270,6 +1289,28 @@ export class BrowserService {
     }).length;
   }
 
+  private async restoreOpenTabs(): Promise<void> {
+    const urls = (this.options.restoreTabs ?? []).filter((url) => isRestorableBrowserUrl(url)).slice(0, 16);
+    if (urls.length === 0) {
+      await this.createTab('browser-main', 'project', this.options.restoreUrl ?? 'about:blank');
+      return;
+    }
+    const activeIndex = Math.min(Math.max(0, this.options.restoreActiveIndex ?? 0), urls.length - 1);
+    await this.createTab('browser-main', 'project', urls[0]!);
+    for (const url of urls.slice(1)) await this.createUserTab(url);
+    const ids = [...this.tabs.keys()];
+    const activeId = ids[activeIndex];
+    if (activeId) this.activateTab(activeId);
+  }
+
+  private persistOpenTabs(): void {
+    if (!this.options.onTabsChanged) return;
+    const live = this.getState().tabs.filter((tab) => isRestorableBrowserUrl(tab.url));
+    const activeId = this.activeTabId;
+    const activeIndex = Math.max(0, live.findIndex((tab) => tab.id === activeId));
+    this.options.onTabsChanged(live.map((tab) => tab.url), live.length === 0 ? 0 : Math.min(activeIndex, live.length - 1));
+  }
+
   private tab(tabId: string): BrowserTab {
     const tab = this.tabs.get(tabId);
     // A tab whose contents died mid-close is gone for every practical
@@ -1336,11 +1377,6 @@ export function projectProfilePartition(canonicalProjectPath: string, profileId 
 
 function hostnameOf(value: string): string {
   try { return new URL(value).hostname; } catch { return ''; }
-}
-
-function isLoopbackHostname(rawHostname: string): boolean {
-  const hostname = rawHostname.toLowerCase().replace(/^\[|\]$/gu, '').replace(/\.$/u, '');
-  return hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/u.test(hostname);
 }
 
 function webContentsGone(contents: WebContents | null | undefined): contents is null | undefined {

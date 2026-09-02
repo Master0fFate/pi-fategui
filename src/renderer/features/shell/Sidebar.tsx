@@ -1305,6 +1305,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <div className="brand-copy sidebar-expanded-only">
             <div className="brand-title-line">
               <strong>Fate UI</strong>
+              {import.meta.env.DEV && (
+                <span className="brand-dev-tag" title="Development build — running from the Vite dev server">dev</span>
+              )}
               {musicPlaying && (
                 <div className="music-equalizer" aria-hidden="true">
                   <i /><i /><i /><i />
