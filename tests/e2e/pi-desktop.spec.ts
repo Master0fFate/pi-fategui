@@ -437,7 +437,12 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
   const privateOrigin = `http://127.0.0.1:${privateAddress.port}`;
   const application = await electron.launch({
     args: [path.resolve('.test-dist/main/index.js')],
-    env: { ...process.env, PI_DESKTOP_E2E_PROJECT: fixture.root, PI_DESKTOP_E2E_USER_DATA: userData, FATE_GUI_DATA_DIR: path.join(userData, 'fateGUI'), PI_OFFLINE: '1' },
+    env: { ...process.env, PI_DESKTOP_E2E_PROJECT: fixture.root, PI_DESKTOP_E2E_USER_DATA: userData, FATE_GUI_DATA_DIR: path.join(userData, 'fateGUI'), PI_OFFLINE: '1', FATE_NAV_DEBUG: '1' },
+  });
+  const mainProcessLogs: string[] = [];
+  application.process().stderr?.setEncoding('utf8');
+  application.process().stderr?.on('data', (chunk) => {
+    for (const line of String(chunk).split(/\r?\n/u)) if (line.trim()) mainProcessLogs.push(line);
   });
 
   const clickNativeElement = async (selector: string) => application.evaluate(async ({ webContents }, targetSelector) => {
@@ -489,13 +494,13 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
         if (marked.__fateInstrumented) continue;
         marked.__fateInstrumented = true;
         contents.on('did-start-navigation', (_event, url, _isSameDocument, isMainFrame) => {
-          tracker.__fateNavEvents?.push(`start id=${contents.id} main=${isMainFrame} ${url}`);
+          tracker.__fateNavEvents?.push(`${Date.now()} start id=${contents.id} main=${isMainFrame} ${url}`);
         });
         contents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-          tracker.__fateNavEvents?.push(`fail id=${contents.id} main=${isMainFrame} code=${errorCode} ${errorDescription} ${validatedURL}`);
+          tracker.__fateNavEvents?.push(`${Date.now()} fail id=${contents.id} main=${isMainFrame} code=${errorCode} ${errorDescription} ${validatedURL}`);
         });
         contents.on('did-navigate', (_event, url) => {
-          tracker.__fateNavEvents?.push(`nav id=${contents.id} ${url}`);
+          tracker.__fateNavEvents?.push(`${Date.now()} nav id=${contents.id} ${url}`);
         });
       }
     });
@@ -510,8 +515,9 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
         title: entry.getTitle(),
       })));
       const eventsDump = await application.evaluate(() => (globalThis as { __fateNavEvents?: string[] }).__fateNavEvents ?? []);
-      throw new Error(`Local preview never opened.\nWebContents: ${JSON.stringify(contentsDump)}\nNavigation events:\n${eventsDump.join('\n')}\n\n${(failure as Error).message}`);
+      throw new Error(`Local preview never opened.\nWebContents: ${JSON.stringify(contentsDump)}\nNavigation events:\n${eventsDump.join('\n')}\nMain process trace:\n${mainProcessLogs.filter((line) => line.includes('fate-nav')).join('\n')}\nMain process stderr (tail):\n${mainProcessLogs.slice(-20).join('\n')}\n\n${(failure as Error).message}`);
     }
+    console.log(`[nav-trace] captured ${mainProcessLogs.filter((line) => line.includes('fate-nav')).length} main-process navigation trace lines`);
     await expect.poll(() => application.evaluate(({ webContents }) => (
       webContents.getAllWebContents().some((contents) => contents.getURL().startsWith('fate-local://'))
     ))).toBe(true);

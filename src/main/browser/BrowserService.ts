@@ -301,12 +301,17 @@ export class BrowserService {
       // its initial document. CDP domain enables then wait forever. Commit the
       // blank document before attaching, and await it so it cannot race the
       // user's first address.
+      navDebug(`create-tab tab=${tabId} initial=${initialUrl} source=${source}`);
       if (!view.webContents.getURL()) await view.webContents.loadURL('about:blank');
+      navDebug(`create-tab tab=${tabId} blank-committed`);
       await cdp.attach();
+      navDebug(`create-tab tab=${tabId} cdp-attached`);
       await this.applyDeviceEmulation(tab);
       this.activateTab(tabId);
+      navDebug(`create-tab tab=${tabId} activated`);
       if (initialUrl !== 'about:blank') await this.navigate(tabId, initialUrl, source);
       this.persistOpenTabs();
+      navDebug(`create-tab tab=${tabId} complete`);
     } catch (error) {
       await this.destroyTab(tab);
       this.tabs.delete(tabId);
@@ -480,8 +485,10 @@ export class BrowserService {
 
   async navigate(tabId: string, value: string, source: BrowserNavigationSource = 'user', signal?: AbortSignal): Promise<void> {
     const tab = this.tab(tabId);
+    navDebug(`navigate tab=${tabId} source=${source} value=${safeLogUrl(value)}`);
     if (source === 'user') this.clearAgentNavigationGuard(tabId);
     const destination = await this.resolveNavigation(tab, value, source);
+    navDebug(`navigate tab=${tabId} resolved=${safeLogUrl(destination.url)}`);
     if (source === 'agent') {
       const activeSignal = signal ? AbortSignal.any([this.actionController.signal, signal]) : this.actionController.signal;
       assertBrowserOperationActive(activeSignal);
@@ -525,17 +532,14 @@ export class BrowserService {
     const releaseUserNavigation = source === 'user' ? this.beginUserNavigation(tabId) : null;
     const preNavigationUrl = tab.view.webContents.getURL() || 'about:blank';
     try {
+      navDebug(`user-load tab=${tabId} from=${preNavigationUrl} to=${destination.url}`);
       await tab.view.webContents.loadURL(destination.url);
+      navDebug(`user-loaded tab=${tabId} url=${tab.view.webContents.getURL()}`);
       this.logNavigation(tab, destination.url);
     } catch (error) {
-      // Electron rejects loadURL with ERR_ABORTED when Stop, a redirect, HMR,
-      // or a newer address supersedes it. That is browser lifecycle—not a
-      // stopped Pi run—but only when another document actually replaced this
-      // load, or the user explicitly pressed Stop. An abort that leaves the
-      // tab on its previous URL is a real load failure and must reach the UI
-      // instead of resolving as a silent trip to nowhere.
       if (source !== 'user' || !isSupersededNavigationError(error)) throw error;
       const currentUrl = tab.view.webContents.getURL();
+      navDebug(`user-aborted tab=${tabId} error=${error instanceof Error ? error.message : String(error)} url=${currentUrl}`);
       if (currentUrl && currentUrl !== preNavigationUrl) {
         this.logNavigation(tab, currentUrl);
       } else if (!this.consumeRecentUserStop(tabId)) {
@@ -1314,6 +1318,7 @@ export class BrowserService {
 
   private async restoreOpenTabs(): Promise<void> {
     const urls = (this.options.restoreTabs ?? []).filter((url) => isRestorableBrowserUrl(url)).slice(0, 16);
+    navDebug(`restore tabs=${JSON.stringify(urls)} restoreUrl=${this.options.restoreUrl ?? 'none'}`);
     if (urls.length === 0) {
       await this.createTab('browser-main', 'project', this.options.restoreUrl ?? 'about:blank');
       return;
@@ -1437,7 +1442,17 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 function safeLogUrl(value: string): string {
-  return redactSnapshotUrl(value).slice(0, 8_192);
+  try {
+    const url = new URL(value);
+    return url.protocol === 'fate-local:' ? value : `${url.protocol}//${url.hostname}${url.pathname}`;
+  } catch {
+    return value;
+  }
+}
+
+/** Opt-in navigation tracing for E2E diagnosis; set FATE_NAV_DEBUG=1. */
+function navDebug(message: string): void {
+  if (process.env.FATE_NAV_DEBUG === '1') console.error(`[fate-nav ${Date.now()}] ${message}`);
 }
 
 function browserSecurityOrigin(value: string): string {
