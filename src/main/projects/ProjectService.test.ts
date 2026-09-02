@@ -90,7 +90,7 @@ describe('ProjectService.select', () => {
     await rm(projectPath, { recursive: true, force: true });
 
     const restartedService = new ProjectService(dataRoot);
-    await expect(restartedService.prepareKnownProjectCleanupPath(projectPath)).resolves.toBe(canonical);
+    await expect(restartedService.prepareKnownProjectCleanupPath(canonical)).resolves.toBe(canonical);
     await expect(restartedService.prepareSessionListPath(projectPath)).rejects.toMatchObject({ normalized: { code: 'INVALID_PROJECT' } });
     await expect(restartedService.prepareKnownProjectCleanupPath(path.join(tmpdir(), 'untrusted-deleted-project')))
       .rejects.toMatchObject({ normalized: { code: 'PROJECT_NOT_TRUSTED' } });

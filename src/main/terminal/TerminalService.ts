@@ -30,10 +30,10 @@ export function defaultShellCandidates(platform: NodeJS.Platform, env: NodeJS.Pr
     const programFilesX86 = env['ProgramFiles(x86)'] || `${programFiles} (x86)`;
     const systemRoot = env.SystemRoot || 'C:\\Windows';
     return [
-      path.join(programFiles, 'PowerShell', '7', 'pwsh.exe'),
-      path.join(programFilesX86, 'PowerShell', '7', 'pwsh.exe'),
-      path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-      env.ComSpec || path.join(systemRoot, 'System32', 'cmd.exe'),
+      path.win32.join(programFiles, 'PowerShell', '7', 'pwsh.exe'),
+      path.win32.join(programFilesX86, 'PowerShell', '7', 'pwsh.exe'),
+      path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      env.ComSpec || path.win32.join(systemRoot, 'System32', 'cmd.exe'),
     ];
   }
   return [env.SHELL || '/bin/bash', '/bin/bash', '/bin/zsh'];
