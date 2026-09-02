@@ -133,6 +133,7 @@ export class BrowserService {
   private readonly activeAgentNavigations = new Set<string>();
   private readonly activeUserNavigations = new Set<string>();
   private readonly userNavigationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly userStops = new Map<string, number>();
   private readonly agentNavigationGuards = new Map<string, AgentNavigationGuard>();
   private agentInputDepth = 0;
   private eventSink: BrowserEventSink | null = null;
@@ -522,16 +523,24 @@ export class BrowserService {
       return;
     }
     const releaseUserNavigation = source === 'user' ? this.beginUserNavigation(tabId) : null;
+    const preNavigationUrl = tab.view.webContents.getURL() || 'about:blank';
     try {
       await tab.view.webContents.loadURL(destination.url);
       this.logNavigation(tab, destination.url);
     } catch (error) {
       // Electron rejects loadURL with ERR_ABORTED when Stop, a redirect, HMR,
       // or a newer address supersedes it. That is browser lifecycle—not a
-      // stopped Pi run—and the address bar should simply reflect current state.
+      // stopped Pi run—but only when another document actually replaced this
+      // load, or the user explicitly pressed Stop. An abort that leaves the
+      // tab on its previous URL is a real load failure and must reach the UI
+      // instead of resolving as a silent trip to nowhere.
       if (source !== 'user' || !isSupersededNavigationError(error)) throw error;
       const currentUrl = tab.view.webContents.getURL();
-      if (currentUrl) this.logNavigation(tab, currentUrl);
+      if (currentUrl && currentUrl !== preNavigationUrl) {
+        this.logNavigation(tab, currentUrl);
+      } else if (!this.consumeRecentUserStop(tabId)) {
+        throw error;
+      }
     } finally {
       releaseUserNavigation?.();
     }
@@ -554,7 +563,10 @@ export class BrowserService {
     }
   }
   reload(tabId: string): void { this.clearAgentNavigationGuard(tabId); this.tab(tabId).view.webContents.reload(); }
-  stop(tabId: string): void { this.tab(tabId).view.webContents.stop(); }
+  stop(tabId: string): void {
+    this.userStops.set(tabId, Date.now());
+    this.tab(tabId).view.webContents.stop();
+  }
 
   async snapshot(tabId: string, input: { mode?: BrowserSnapshotMode; scopeRef?: string; query?: string } = {}): Promise<SemanticPageSnapshot> {
     const tab = this.tab(tabId);
@@ -1026,6 +1038,16 @@ export class BrowserService {
     return [...this.tabs.values()].some((tab) => [...tab.humanNetworkOrigins].some(authorityMatches));
   }
 
+  /** A Stop press aborts the in-flight load at the same URL; the resulting
+   *  ERR_ABORTED is the user's own doing, so consume it instead of surfacing
+   *  a fake navigation error. */
+  private consumeRecentUserStop(tabId: string): boolean {
+    const stoppedAt = this.userStops.get(tabId);
+    if (!stoppedAt || Date.now() - stoppedAt > 2_000) return false;
+    this.userStops.delete(tabId);
+    return true;
+  }
+
   private beginUserNavigation(tabId: string): () => void {
     this.endUserNavigation(tabId);
     this.activeUserNavigations.add(tabId);
@@ -1045,6 +1067,7 @@ export class BrowserService {
   }
 
   private clearUserNavigations(): void {
+    this.userStops.clear();
     for (const tabId of [...this.activeUserNavigations]) this.endUserNavigation(tabId);
   }
 

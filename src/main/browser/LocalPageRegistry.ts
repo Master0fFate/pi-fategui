@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
-import { net, type Session } from 'electron';
+import { type Session } from 'electron';
 import { BrowserError } from './BrowserErrors';
 import { isPathInside } from './BrowserAddress';
 
@@ -157,20 +158,27 @@ export class LocalPageRegistry {
       if (!isPathInside(resolved.capability.root, canonical)) return new Response('Forbidden', { status: 403 });
       const info = await fs.stat(canonical);
       if (!info.isFile()) return new Response('Not found', { status: 404 });
-      const response = await net.fetch(pathToFileURL(canonical).href, {
-        method: request.method,
-        headers: request.headers,
+      // Serve straight from Node's filesystem. Piping the request through a
+      // nested net.fetch(file://…) inside protocol.handle never commits on
+      // macOS — the load aborts before the response arrives — so the preview
+      // tab silently dies on about:blank. A Node stream with an explicit
+      // content type and length is the same shape the media protocol ships.
+      const headers = new Headers({
+        'Cache-Control': 'no-store',
+        'Content-Length': String(info.size),
+        'Content-Type': localPageContentType(canonical),
+        'Cross-Origin-Resource-Policy': 'same-origin',
+        'X-Content-Type-Options': 'nosniff',
+        'X-DNS-Prefetch-Control': 'off',
       });
-      const headers = new Headers(response.headers);
-      headers.set('Cache-Control', 'no-store');
-      headers.set('Cross-Origin-Resource-Policy', 'same-origin');
-      headers.set('X-Content-Type-Options', 'nosniff');
-      headers.set('X-DNS-Prefetch-Control', 'off');
       if (/\.(?:html?|xhtml|svg)$/iu.test(canonical)) {
         headers.set('Content-Security-Policy', LOCAL_PAGE_CONTENT_SECURITY_POLICY);
         headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=()');
       }
-      return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+      const body = request.method === 'HEAD'
+        ? null
+        : Readable.toWeb(createReadStream(canonical)) as ReadableStream<Uint8Array>;
+      return new Response(body, { status: 200, statusText: 'OK', headers });
     } catch {
       return new Response('Not found', { status: 404 });
     }
@@ -197,6 +205,39 @@ async function resolveLocalEntry(requestedPath: string): Promise<string> {
     throw new BrowserError('INVALID_URL', 'Choose an HTML, XHTML, or SVG file to preview.');
   }
   return canonical;
+}
+
+const LOCAL_PAGE_MEDIA_TYPES = new Map<string, string>([
+  ['.avif', 'image/avif'],
+  ['.bmp', 'image/bmp'],
+  ['.css', 'text/css; charset=utf-8'],
+  ['.gif', 'image/gif'],
+  ['.htm', 'text/html; charset=utf-8'],
+  ['.html', 'text/html; charset=utf-8'],
+  ['.ico', 'image/x-icon'],
+  ['.jpeg', 'image/jpeg'],
+  ['.jpg', 'image/jpeg'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.json', 'application/json; charset=utf-8'],
+  ['.map', 'application/json; charset=utf-8'],
+  ['.mjs', 'text/javascript; charset=utf-8'],
+  ['.mp3', 'audio/mpeg'],
+  ['.mp4', 'video/mp4'],
+  ['.ogg', 'audio/ogg'],
+  ['.opus', 'audio/opus'],
+  ['.png', 'image/png'],
+  ['.svg', 'image/svg+xml'],
+  ['.webm', 'video/webm'],
+  ['.webp', 'image/webp'],
+  ['.wasm', 'application/wasm'],
+  ['.wav', 'audio/wav'],
+  ['.woff', 'font/woff'],
+  ['.woff2', 'font/woff2'],
+  ['.xhtml', 'application/xhtml+xml'],
+]);
+
+function localPageContentType(filePath: string): string {
+  return LOCAL_PAGE_MEDIA_TYPES.get(path.extname(filePath).toLowerCase()) ?? 'application/octet-stream';
 }
 
 function isPreviewResourcePath(filePath: string): boolean {

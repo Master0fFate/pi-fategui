@@ -104,14 +104,77 @@ describe('BrowserService visibility safety', () => {
       canonicalProjectPath: process.cwd(),
     });
     const aborted = Object.assign(new Error("ERR_ABORTED (-3) loading 'https://example.test/'"), { code: 'ERR_ABORTED', errno: -3 });
+    let committedUrl = 'about:blank';
     const tab = {
       id: 'tab-1',
       humanNetworkOrigins: new Set<string>(),
-      view: { webContents: { loadURL: vi.fn(async () => { throw aborted; }), getURL: () => 'https://example.test/', isDestroyed: () => false } },
+      // A newer address commits while this load is aborted: real supersession.
+      view: {
+        webContents: {
+          loadURL: vi.fn(async () => { committedUrl = 'https://example.test/'; throw aborted; }),
+          getURL: () => committedUrl,
+          isDestroyed: () => false,
+        },
+      },
     };
     const tabs = (service as unknown as { tabs: Map<string, unknown> }).tabs;
     tabs.set(tab.id, tab);
 
+    await expect(service.navigate(tab.id, 'https://example.test/', 'user')).resolves.toBeUndefined();
+
+    tabs.delete(tab.id);
+    await service.dispose();
+  });
+
+  it('surfaces a user navigation that Electron aborted without committing any URL', async () => {
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(),
+    });
+    const aborted = Object.assign(new Error("ERR_ABORTED (-3) loading 'fate-local://token/index.html'"), { code: 'ERR_ABORTED', errno: -3 });
+    const tab = {
+      id: 'tab-1',
+      humanNetworkOrigins: new Set<string>(),
+      // Nothing commits: the tab stays where it was, so the abort is the
+      // load failing — exactly the silent macOS local-preview failure.
+      view: {
+        webContents: {
+          loadURL: vi.fn(async () => { throw aborted; }),
+          getURL: () => 'about:blank',
+          stop: vi.fn(),
+          isDestroyed: () => false,
+        },
+      },
+    };
+    const tabs = (service as unknown as { tabs: Map<string, unknown> }).tabs;
+    tabs.set(tab.id, tab);
+
+    await expect(service.navigate(tab.id, 'https://example.test/', 'user')).rejects.toThrow(/ERR_ABORTED/u);
+
+    tabs.delete(tab.id);
+    await service.dispose();
+  });
+
+  it('stays quiet when an explicit Stop aborts the in-flight user navigation', async () => {
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(),
+    });
+    const aborted = Object.assign(new Error("ERR_ABORTED (-3) loading 'https://example.test/'"), { code: 'ERR_ABORTED', errno: -3 });
+    const tab = {
+      id: 'tab-1',
+      humanNetworkOrigins: new Set<string>(),
+      view: {
+        webContents: {
+          loadURL: vi.fn(async () => { throw aborted; }),
+          getURL: () => 'about:blank',
+          stop: vi.fn(),
+          isDestroyed: () => false,
+        },
+      },
+    };
+    const tabs = (service as unknown as { tabs: Map<string, unknown> }).tabs;
+    tabs.set(tab.id, tab);
+
+    service.stop(tab.id);
     await expect(service.navigate(tab.id, 'https://example.test/', 'user')).resolves.toBeUndefined();
 
     tabs.delete(tab.id);

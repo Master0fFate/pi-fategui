@@ -1,13 +1,9 @@
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { LOCAL_PAGE_CONTENT_SECURITY_POLICY, LocalPageRegistry } from './LocalPageRegistry';
-
-vi.mock('electron', () => ({
-  net: { fetch: vi.fn(async () => new Response('fixture', { status: 200, headers: { 'content-type': 'text/html' } })) },
-}));
 
 const temporaryRoots: string[] = [];
 
@@ -50,15 +46,19 @@ describe('LocalPageRegistry capabilities', () => {
   it('isolates local documents from outbound content and requires same-capability resource referrers', async () => {
     const root = await temporaryProject();
     const registry = new LocalPageRegistry(root);
-    const location = await registry.open('tab-1', path.join(root, 'preview/index.html'), 'agent');
+    const entry = path.join(root, 'preview/index.html');
+    const location = await registry.open('tab-1', entry, 'agent');
     const handle = (registry as unknown as { handle(request: Request): Promise<Response> }).handle.bind(registry);
 
     const entryResponse = await handle({
       method: 'GET', url: location.internalUrl, referrer: '', headers: new Headers(),
     } as Request);
     expect(entryResponse.status).toBe(200);
+    expect(entryResponse.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(entryResponse.headers.get('content-length')).toBe(String((await readFile(entry)).length));
     expect(entryResponse.headers.get('content-security-policy')).toBe(LOCAL_PAGE_CONTENT_SECURITY_POLICY);
     expect(entryResponse.headers.get('x-dns-prefetch-control')).toBe('off');
+    await expect(entryResponse.text()).resolves.toBe('<!doctype html><title>Preview</title>');
 
     const assetUrl = new URL('asset.js', location.internalUrl).href;
     await expect(handle({ method: 'GET', url: assetUrl, referrer: '', headers: new Headers() } as Request))
