@@ -70,8 +70,7 @@ export function BrowserToolbar() {
     }
   };
 
-  const navigate = (event: FormEvent) => {
-    event.preventDefault();
+  const navigate = () => {
     if (!address.trim()) {
       useBrowserStore.getState().setError('Enter a URL, search, or local HTML path.');
       return;
@@ -123,7 +122,7 @@ export function BrowserToolbar() {
           <AppTooltip content="Forward"><button type="button" aria-label="Go forward" disabled={!tab?.canGoForward || Boolean(pending)} onClick={() => void run('forward', () => window.piDesktop.controlBrowserHistory('forward'))}><ArrowRight size={15} /></button></AppTooltip>
           <AppTooltip content={tab?.loading ? 'Stop loading' : 'Reload'}><button type="button" aria-label={tab?.loading ? 'Stop loading' : 'Reload page'} disabled={!tab || Boolean(pending)} onClick={() => void run(tab?.loading ? 'stop' : 'reload', () => window.piDesktop.controlBrowserHistory(tab?.loading ? 'stop' : 'reload'))}>{tab?.loading ? <X size={14} /> : <RefreshCw size={14} />}</button></AppTooltip>
         </div>
-        <form className="browser-address" onSubmit={navigate}>
+        <form className="browser-address" onSubmit={(event: FormEvent) => { event.preventDefault(); navigate(); }}>
           {isLocalPage ? <FileCode2 size={13} aria-hidden="true" /> : <Globe2 size={13} aria-hidden="true" />}
           <input
             value={address}
@@ -134,6 +133,11 @@ export function BrowserToolbar() {
             onFocus={(event) => { addressFocused.current = true; event.currentTarget.select(); }}
             onBlur={() => { addressFocused.current = false; }}
             onChange={(event) => setAddress(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+              event.preventDefault();
+              navigate();
+            }}
           />
           {pending && <LoaderCircle className="tool-spinner" size={13} aria-label="Browser busy" />}
         </form>

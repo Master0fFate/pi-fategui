@@ -37,6 +37,18 @@ describe('BrowserToolbar', () => {
     await vi.waitFor(() => expect(screen.getByRole('textbox', { name: 'Browser address' })).toBeEnabled());
   });
 
+  it('navigates on Enter without relying on implicit form submission', async () => {
+    const navigateBrowser = vi.fn(async () => state());
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { navigateBrowser } as unknown as PiDesktopApi });
+    render(<BrowserToolbar />);
+
+    const address = screen.getByRole('textbox', { name: 'Browser address' });
+    fireEvent.change(address, { target: { value: '/tmp/preview/index.html' } });
+    fireEvent.keyDown(address, { key: 'Enter' });
+
+    await vi.waitFor(() => expect(navigateBrowser).toHaveBeenCalledWith('/tmp/preview/index.html'));
+  });
+
   it('keeps agent control always on and requests scoped access without a mode switch', async () => {
     const setBrowserOriginGrant = vi.fn(async () => state(true));
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: {
