@@ -604,7 +604,14 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   const activeBrowser = async (event: Electron.IpcMainInvokeEvent) => browser.ensure(ownerWindow(event));
   const activeBrowserTab = async (event: Electron.IpcMainInvokeEvent) => {
     const service = await activeBrowser(event);
-    const tabId = service.getState().activeTabId;
+    let tabId = service.getState().activeTabId;
+    if (!tabId) {
+      // The toolbar goes live before the first tab finishes creating, and a
+      // fast first address can land inside that window. Wait for the tab
+      // instead of rejecting the user's navigation as a silent non-event.
+      await service.ensureTab();
+      tabId = service.getState().activeTabId;
+    }
     if (!tabId) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'The built-in browser has no active tab.', retryable: true });
     return { service, tabId };
   };
