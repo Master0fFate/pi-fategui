@@ -48,5 +48,10 @@ The cross-platform GitHub Actions package matrix runs for pull requests, pushes 
 - Native hosted runners build, install or mount, and smoke-test Windows x64, macOS Apple Silicon and Intel, and Linux x64 packages: Windows NSIS, macOS DMG and PKG, Linux AppImage and DEB.
 - A release tag must be `v<package.json version>` and point to history contained in `main`.
 - After every native job passes, a version tag publishes seven installers and `SHA256SUMS` to its GitHub Release.
+- A manual dispatch with empty promotion inputs stages the same seven installers and `SHA256SUMS` as `verified-prerelease-installers`, retained for 14 days. It does not create a tag or publish a release.
+
+The Renderer performance profiles workflow compares normal, Performance, and Holy sh*t modes on all four native targets. It freezes the candidate's profiling harness for both revisions; manual runs accept `baseline_ref`, defaulting to the nearest version tag. CPU work is timed separately from post-GC retained-heap measurements and final-output checks.
 
 Cross-platform or native dependency changes must pass the GitHub Actions matrix. Do not claim another operating system was verified solely from a cross-compiled artifact.
+
+The [Pi SDK 0.85.0 integration notes](sdk-upgrade-0.85.0.md) record upstream changes, compatibility decisions, and dependency constraints. [Beta3 performance evidence](performance-0.9.7-beta3.md) records the before/after workload and measurements. Main-process and SDK-backed logic tests run in Node; renderer DOM tests run in jsdom. When validating from inside an installed Fate UI, unset `TRANSCRIBE_LIBRARY` only in the validation subprocess so it loads the checkout's native speech library.

@@ -15,6 +15,11 @@ on:
       - 'vite.preload.config.ts'
       - 'vite.renderer.config.ts'
   workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: Version tag or commit to compare against (defaults to the nearest version tag)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -36,6 +41,9 @@ jobs:
           - label: macOS Apple Silicon
             os: macos-15
             artifact: macos-arm64
+          - label: macOS Intel
+            os: macos-15-intel
+            artifact: macos-x64
           - label: Linux x64
             os: ubuntu-22.04
             artifact: linux-x64
@@ -46,6 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Configure isolated performance data directory
         shell: bash
@@ -60,18 +69,31 @@ jobs:
       - name: Linux native prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential python3 xvfb
-      - name: Install dependencies
+      - name: Compare all visual modes on the same native runner
         shell: bash
-        run: pnpm install --frozen-lockfile
-      - name: Build Electron E2E runtime
-        run: pnpm build:e2e
-      - name: Profile live renderer
-        if: runner.os != 'Linux'
-        shell: bash
-        run: node scripts/profile-live-renderer.mjs --runs 1 --label "${{ matrix.artifact }}" --out ".parallax/performance/${{ matrix.artifact }}.json"
-      - name: Profile live renderer on Linux display
-        if: runner.os == 'Linux'
-        run: xvfb-run -a node scripts/profile-live-renderer.mjs --runs 1 --label "${{ matrix.artifact }}" --out ".parallax/performance/${{ matrix.artifact }}.json"
+        env:
+          BASELINE_REF: ${{ inputs.baseline_ref }}
+        run: |
+          set -euo pipefail
+          candidate=$(git rev-parse HEAD)
+          baseline=$(git rev-parse --verify --end-of-options "${BASELINE_REF:-$(git describe --tags --match 'v*' --abbrev=0)}^{commit}")
+          mkdir -p .parallax/performance
+          cp scripts/profile-live-renderer.mjs .parallax/performance/profile-compare.mjs
+          printf '{"baseline":"%s","candidate":"%s"}\n' "$baseline" "$candidate" > .parallax/performance/revisions.json
+          display=()
+          if [ "$RUNNER_OS" = Linux ]; then display=(xvfb-run -a); fi
+          for phase in before after; do
+            revision="$baseline"
+            if [ "$phase" = after ]; then revision="$candidate"; fi
+            git checkout --detach "$revision"
+            pnpm install --frozen-lockfile
+            pnpm build:e2e
+            for mode in normal performance holy; do
+              output=".parallax/performance/${{ matrix.artifact }}-$phase-$mode.json"
+              "${display[@]}" node .parallax/performance/profile-compare.mjs --runs 3 --mode "$mode" --idle-ms 2000 --label "$phase-$mode" --out "$output"
+              node --input-type=module -e 'import fs from "node:fs"; const p = JSON.parse(fs.readFileSync(process.argv[1])); if (p.summary.totalConsoleErrors) throw new Error("Renderer errors during profile");' "$output"
+            done
+          done
       - name: Upload performance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

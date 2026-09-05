@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { Check, Copy, Download, Expand, Image as ImageIcon, ImageOff, X } from 'lucide-react';
-import { Children, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { Children, createContext, isValidElement, memo, useCallback, useContext, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { normalizeBrowserWebUrl } from '../../../shared/contracts/browser';
@@ -344,7 +344,7 @@ export function MessageImages({ images }: { images: RuntimeImage[] }) {
   ))}</>;
 }
 
-export function AssistantMarkdown({ text, images = [] }: { text: string; images?: RuntimeImage[] | undefined }) {
+export const AssistantMarkdown = memo(function AssistantMarkdown({ text, images = [] }: { text: string; images?: RuntimeImage[] | undefined }) {
   return (
     <div className="markdown-content">
       <ReactMarkdown
@@ -361,4 +361,4 @@ export function AssistantMarkdown({ text, images = [] }: { text: string; images?
       <MessageImages images={images} />
     </div>
   );
-}
+});

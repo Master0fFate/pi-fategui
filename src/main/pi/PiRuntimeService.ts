@@ -1561,13 +1561,28 @@ export class PiRuntimeService {
       throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for the active Pi operation to finish before improving the prompt.', retryable: true });
     }
     const model = slot.pendingModel?.model ?? session.model;
-    const reasoning = slot.pendingThinkingLevel?.level ?? session.thinkingLevel;
+    // Basic rewriting does not need the coding session's extended reasoning budget.
+    const reasoning = advanced ? slot.pendingThinkingLevel?.level ?? session.thinkingLevel : 'off';
     const modelRuntime = this.modelRuntime;
     const controller = new AbortController();
     this.promptOptimizationAbort = controller;
     const signal = controller.signal;
+    const cancellationError = () => Object.assign(new Error('Prompt improvement cancelled.'), { name: 'AbortError' });
     const throwIfAborted = () => {
-      if (signal.aborted) throw Object.assign(new Error('Prompt improvement cancelled.'), { name: 'AbortError' });
+      if (signal.aborted) throw cancellationError();
+    };
+    const waitFor = async <T>(operation: Promise<T>): Promise<T> => {
+      let onAbort!: () => void;
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(cancellationError());
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      });
+      try {
+        return await Promise.race([operation, cancelled]);
+      } finally {
+        signal.removeEventListener('abort', onAbort);
+      }
     };
     this.promptOptimizationActive = true;
     try {
@@ -1576,33 +1591,15 @@ export class PiRuntimeService {
       // standard rewrite instead of failing the whole request.
       const brief = advanced && this.project ? await this.researchPromptDraft(text, model, reasoning, modelRuntime, signal) : '';
       throwIfAborted();
-      // Race the shared identity sniff against cancellation so abort is immediate
-      // even while filesystem work is stuck. The sniff promise never rejects and
-      // keeps running in the background; a late settle only warms or evicts the
-      // memoized entry safely.
-      let identity: ProjectIdentityContext | null = null;
-      if (!advanced && this.project) {
-        const identityPromise = this.identityContextFor(this.project.path);
-        let abortListener: (() => void) | undefined;
-        const abortPromise = new Promise<never>((_, reject) => {
-          abortListener = () => reject(Object.assign(new Error('Prompt improvement cancelled.'), { name: 'AbortError' }));
-          signal.addEventListener('abort', abortListener, { once: true });
-        });
-        if (signal.aborted) abortListener?.();
-        try {
-          identity = await Promise.race([identityPromise, abortPromise]);
-        } finally {
-          if (abortListener) signal.removeEventListener('abort', abortListener);
-        }
-      }
+      const identity = !advanced && this.project ? await waitFor(this.identityContextFor(this.project.path)) : null;
       throwIfAborted();
       let grounding = identity ? PROMPT_OPTIMIZER_IDENTITY_SUFFIX(identity) : '';
       if (brief) grounding += PROMPT_OPTIMIZER_BRIEF_SUFFIX(brief);
       const run = async (directiveSuffix: string) => {
-        const response = await modelRuntime.completeSimple(model, {
+        const response = await waitFor(modelRuntime.completeSimple(model, {
           systemPrompt: PROMPT_OPTIMIZER_SYSTEM_PROMPT,
           messages: [{ role: 'user', content: `${text}${PROMPT_OPTIMIZER_DRAFT_CLOSE}${grounding}${directiveSuffix}`, timestamp: Date.now() }],
-        }, { ...(reasoning === 'off' ? {} : { reasoning }), timeoutMs: 120_000, maxRetries: 1, signal });
+        }, { ...(reasoning === 'off' ? {} : { reasoning }), timeoutMs: 120_000, maxRetries: 1, signal }));
         if (response.stopReason !== 'stop') {
           throw new PiDesktopError({ code: 'PI_RUNTIME_ERROR', message: 'Prompt improvement did not complete. Your draft was not changed; try again.', retryable: true });
         }
@@ -2091,7 +2088,9 @@ export class PiRuntimeService {
     const goalPaused = Boolean(activeGoal && (activeGoal.status === 'active' || activeGoal.status === 'verifying'));
     if (goalPaused) await this.goalMax.control({ action: 'pause', reason: 'Interrupted by the user.' });
     const hasChildren = this.subagents.hasActiveRuns(session.sessionId) || this.agentTeams.hasActiveWork(session.sessionId);
-    if (!session.isStreaming && !hasChildren) return { aborted: goalPaused };
+    const compacting = session.isCompacting === true;
+    if (compacting) session.abortCompaction();
+    if (!session.isStreaming && !hasChildren) return { aborted: goalPaused || compacting };
     const [parentAbort] = await Promise.allSettled([
       session.isStreaming ? session.abort() : Promise.resolve(),
       this.subagents.cancelParent(session.sessionId),

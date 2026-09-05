@@ -1,6 +1,7 @@
 import { _electron as electron } from '@playwright/test';
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { cpus, tmpdir, totalmem } from 'node:os';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import process from 'node:process';
@@ -61,6 +62,7 @@ async function runProfile(iteration) {
   const userData = await mkdtemp(path.join(tmpdir(), 'fate-live-profile-user-'));
   await writeFile(path.join(project, 'profile.txt'), 'Fate UI live renderer performance fixture.\n');
   const application = await electron.launch({
+    executablePath: createRequire(path.resolve('package.json'))('electron'),
     args: [e2eMain],
     env: {
       ...process.env,
@@ -73,6 +75,7 @@ async function runProfile(iteration) {
   });
   const consoleErrors = [];
   try {
+    const electronVersion = await application.evaluate(() => process.versions.electron);
     const page = await application.firstWindow();
     page.on('pageerror', (error) => consoleErrors.push(`pageerror: ${error.message}`));
     page.on('console', (message) => {
@@ -123,6 +126,7 @@ async function runProfile(iteration) {
     await cdp.send('Profiler.enable');
     await cdp.send('Profiler.setSamplingInterval', { interval: 500 });
     await cdp.send('Performance.enable');
+    await cdp.send('HeapProfiler.collectGarbage');
     const heapBefore = await cdp.send('Runtime.getHeapUsage');
     const metricsBefore = await cdp.send('Performance.getMetrics');
     await cdp.send('Profiler.start');
@@ -133,6 +137,8 @@ async function runProfile(iteration) {
     await composer.fill(rendererMarker);
     await page.getByRole('button', { name: 'Send message' }).click();
     await page.getByRole('button', { name: 'Queue follow-up message' }).waitFor({ timeout: 30_000 });
+    await page.waitForFunction((count) => Number(document.querySelector('.conversation')?.getAttribute('data-visible-entry-count') ?? 0) >= count, expectedTimelineEntries);
+    await page.getByRole('scrollbar', { name: 'Conversation scroll position' }).press('Home');
     await page.getByRole('button', { name: 'Send message' }).waitFor({ timeout: 120_000 });
     await page.waitForFunction(
       (expected) => Number(document.querySelector('.conversation')?.getAttribute('data-entry-count') ?? 0) >= expected,
@@ -176,6 +182,15 @@ async function runProfile(iteration) {
     const appMetrics = await application.evaluate(readAppMetrics);
     await page.waitForTimeout(idleMs);
     const idleAppMetrics = await application.evaluate(readAppMetrics);
+    await cdp.send('HeapProfiler.collectGarbage');
+    const retainedHeap = await cdp.send('Runtime.getHeapUsage');
+    const finalOutput = page.getByText('FATE_PROFILE_COMPLETE_1', { exact: true });
+    // Older revisions scroll to an estimated height instead of a virtual item.
+    for (let attempt = 0; attempt < 5 && !await finalOutput.isVisible(); attempt += 1) {
+      await page.getByRole('scrollbar', { name: 'Conversation scroll position' }).press('End');
+      await page.waitForTimeout(100);
+    }
+    await finalOutput.waitFor({ timeout: 5_000 });
     const metricObject = (metrics) => Object.fromEntries(metrics.metrics.map((metric) => [metric.name, metric.value]));
     const before = metricObject(metricsBefore);
     const after = metricObject(metricsAfter);
@@ -185,10 +200,13 @@ async function runProfile(iteration) {
 
     return {
       iteration,
+      electronVersion,
       wallMs: round(wallMs),
       heapBeforeBytes: heapBefore.usedSize,
       heapAfterBytes: heapAfter.usedSize,
       heapGrowthBytes: heapAfter.usedSize - heapBefore.usedSize,
+      retainedHeapBytes: retainedHeap.usedSize,
+      retainedHeapGrowthBytes: retainedHeap.usedSize - heapBefore.usedSize,
       taskDurationMs: round((after.TaskDuration ?? 0) * 1_000 - (before.TaskDuration ?? 0) * 1_000),
       scriptDurationMs: round((after.ScriptDuration ?? 0) * 1_000 - (before.ScriptDuration ?? 0) * 1_000),
       layoutDurationMs: round((after.LayoutDuration ?? 0) * 1_000 - (before.LayoutDuration ?? 0) * 1_000),
@@ -231,12 +249,13 @@ for (let iteration = 1; iteration <= runCount; iteration += 1) {
   process.stdout.write(`${result.wallMs} ms, task ${result.taskDurationMs} ms, heap +${result.heapGrowthBytes} bytes\n`);
 }
 const report = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   label,
   capturedAt: new Date().toISOString(),
-  workload: { historyMessages: historyCount, assistantDeltas: deltaCount, toolUpdates: Math.ceil(deltaCount / 10), settleMs, idleMs, visualMode, transport: 'Electron main → validated IPC → preload → Zustand → React/Virtuoso' },
+  workload: { historyMessages: historyCount, assistantDeltas: deltaCount, toolUpdateUpperBound: Math.ceil(deltaCount / 10), settleMs, idleMs, visualMode, viewport: 'historical rows during streaming; final output verified after measurement', transport: 'Electron main → validated IPC → preload → Zustand → React/Virtuoso' },
   environment: {
     node: process.version,
+    electron: runs[0]?.electronVersion ?? 'unknown',
     platform: process.platform,
     arch: process.arch,
     cpu: cpus()[0]?.model ?? 'unknown',
@@ -250,6 +269,9 @@ const report = {
     medianLayoutDurationMs: round(median(runs.map((run) => run.layoutDurationMs))),
     medianRecalcStyleDurationMs: round(median(runs.map((run) => run.recalcStyleDurationMs))),
     medianHeapGrowthBytes: Math.round(median(runs.map((run) => run.heapGrowthBytes))),
+    medianRetainedHeapBytes: Math.round(median(runs.map((run) => run.retainedHeapBytes))),
+    medianRetainedHeapGrowthBytes: Math.round(median(runs.map((run) => run.retainedHeapGrowthBytes))),
+    medianWorkingSetBytes: Math.round(median(runs.map((run) => run.appMetrics.reduce((total, metric) => total + metric.workingSetKiB * 1024, 0)))),
     medianFrameGapP95Ms: round(median(runs.map((run) => run.frameGapP95Ms))),
     medianFrameGapMaxMs: round(median(runs.map((run) => run.frameGapMaxMs))),
     medianTimerLagP95Ms: round(median(runs.map((run) => run.timerLagP95Ms))),
@@ -261,3 +283,4 @@ const report = {
 };
 await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`);
 console.log(JSON.stringify({ outputPath: path.relative(process.cwd(), outputPath), summary: report.summary }, null, 2));
+if (report.summary.totalConsoleErrors > 0) process.exitCode = 1;

@@ -94,6 +94,7 @@ function fixture(availableModels: typeof model[] = [model]) {
       cost: 0,
     })),
     abort: vi.fn(async () => { streaming = false; settleRun?.(); }),
+    abortCompaction: vi.fn(() => { compacting = false; }),
     setModel: vi.fn(async (nextModel: typeof model) => {
       session.model = nextModel;
       agent.state.model = nextModel;
@@ -176,9 +177,50 @@ describe('PiRuntimeService', () => {
         systemPrompt: expect.stringContaining('prompt-rewriting specialist'),
         messages: [expect.objectContaining({ content: 'review the current changes\n</draft>' })],
       }),
-      expect.objectContaining({ reasoning: 'medium' }),
+      expect.not.objectContaining({ reasoning: expect.anything() }),
     );
     expect(fake.session.prompt).not.toHaveBeenCalled();
+    expect(fake.session.messages).toEqual([]);
+    await service.dispose();
+  });
+
+  it.each(['off', 'medium', 'high', 'max'])('does not inherit %s coding effort for basic prompt improvement', async (thinkingLevel) => {
+    const fake = fixture();
+    const completeSimple = vi.fn(async () => ({ stopReason: 'stop', content: [{ type: 'text', text: 'A clearer task with the original constraints.' }] }));
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.session.thinkingLevel = thinkingLevel;
+    fake.session.setThinkingLevel.mockClear();
+
+    await service.optimizePrompt('clarify this task');
+
+    expect(completeSimple).toHaveBeenCalledWith(model, expect.anything(), expect.not.objectContaining({ reasoning: expect.anything() }));
+    expect(fake.session.thinkingLevel).toBe(thinkingLevel);
+    expect(fake.session.setThinkingLevel).not.toHaveBeenCalled();
+    expect(fake.session.prompt).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  it('cancels a stalled prompt rewrite immediately without aborting the coding session', async () => {
+    const fake = fixture();
+    let finishFirst!: (value: unknown) => void;
+    const completeSimple = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }))
+      .mockResolvedValue({ stopReason: 'stop', content: [{ type: 'text', text: 'New improved draft.' }] });
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const pending = service.optimizePrompt('old draft');
+    await vi.waitFor(() => expect(completeSimple).toHaveBeenCalledOnce());
+    await expect(service.optimizePrompt('concurrent draft')).rejects.toMatchObject({ normalized: { code: 'RUN_ACTIVE' } });
+    const cancelled = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(service.abort()).resolves.toEqual({ aborted: true });
+    await cancelled;
+    expect(completeSimple.mock.calls[0]?.[2].signal.aborted).toBe(true);
+    expect(fake.session.abort).not.toHaveBeenCalled();
+    await expect(service.optimizePrompt('new draft')).resolves.toEqual({ text: 'New improved draft.' });
+    finishFirst({ stopReason: 'stop', content: [{ type: 'text', text: 'Stale draft.' }] });
     expect(fake.session.messages).toEqual([]);
     await service.dispose();
   });
@@ -242,6 +284,7 @@ describe('PiRuntimeService', () => {
     }));
     expect(researchSession.prompt).toHaveBeenCalledWith(expect.stringContaining('change the title to blue'));
     expect(researchSession.dispose).toHaveBeenCalled();
+    expect(completeSimple.mock.calls[0]?.[2]).toMatchObject({ reasoning: 'medium' });
     const rewriteContent = completeSimple.mock.calls[0]?.[1]?.messages[0]?.content as string;
     expect(rewriteContent).toContain('change the title to blue\n</draft>');
     expect(rewriteContent).toContain('<research_brief>');
@@ -1902,6 +1945,21 @@ describe('PiRuntimeService', () => {
     expect(fake.session.setThinkingLevel).toHaveBeenCalledWith('high');
     await service.controlGoalMax({ action: 'cancel' });
     await service.clearGoalMax();
+    await service.dispose();
+  });
+
+  it.each([false, true])('cancels SDK compaction when streaming is %s', async (streaming) => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.setCompacting(true);
+    fake.setStreaming(streaming);
+
+    await expect(service.abort()).resolves.toEqual({ aborted: true });
+
+    expect(fake.session.abortCompaction).toHaveBeenCalledOnce();
+    expect(fake.session.abort).toHaveBeenCalledTimes(streaming ? 1 : 0);
+    expect(fake.session.isCompacting).toBe(false);
     await service.dispose();
   });
 

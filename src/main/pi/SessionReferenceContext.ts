@@ -1,4 +1,6 @@
-import { SessionManager, type SessionEntry } from '@earendil-works/pi-coding-agent';
+import { closeSync, openSync, readSync } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
+import { parseSessionEntries, sessionEntryToContextMessages, SessionManager, type FileEntry, type SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { SessionSummary } from '../../shared/contracts/ipc';
 import { messageText } from './PiEventNormalizer';
 import { redactSecretLikeText } from './BrowserAnnotationContext';
@@ -11,6 +13,7 @@ const MAX_REFERENCE_TITLE_CHARACTERS = 200;
 
 export interface SessionReferenceSession {
   buildContextEntries(): SessionEntry[];
+  getSessionId?(): string;
 }
 
 export type OpenSessionReference = (path: string) => SessionReferenceSession;
@@ -21,14 +24,63 @@ function compact(value: string, maximum: number): string {
   return `${normalized.slice(0, Math.max(0, maximum - 1)).trimEnd()}…`;
 }
 
-function latestText(entries: readonly SessionEntry[], role: 'user' | 'assistant', maximum: number): string {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (entry?.type !== 'message' || entry.message.role !== role) continue;
-    const text = compact(messageText(entry.message), maximum);
-    if (text) return text;
+function openReadOnlySession(filePath: string): SessionReferenceSession {
+  const entries: FileEntry[] = [];
+  const decoder = new StringDecoder('utf8');
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  const descriptor = openSync(filePath, 'r');
+  let pending = '';
+  try {
+    while (true) {
+      const bytes = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (!bytes) break;
+      pending += decoder.write(buffer.subarray(0, bytes));
+      const boundary = pending.lastIndexOf('\n');
+      if (boundary < 0) continue;
+      entries.push(...parseSessionEntries(pending.slice(0, boundary + 1)));
+      pending = pending.slice(boundary + 1);
+    }
+    entries.push(...parseSessionEntries(pending + decoder.end()));
+  } finally {
+    closeSync(descriptor);
   }
-  return '';
+  const header = entries[0];
+  if (!header || header.type !== 'session' || typeof header.id !== 'string') throw new Error('The selected file is not a valid saved session.');
+  const manager = SessionManager.inMemory(typeof header.cwd === 'string' ? header.cwd : undefined, undefined, entries);
+  const visited = new Set<string>();
+  for (let entry = manager.getLeafEntry(); entry; entry = entry.parentId ? manager.getEntry(entry.parentId) : undefined) {
+    if (visited.has(entry.id)) throw new Error('The selected session contains a cyclic conversation path.');
+    visited.add(entry.id);
+  }
+  return {
+    getSessionId: () => manager.getSessionId(),
+    buildContextEntries: () => {
+      const context = manager.buildContextEntries();
+      const checkpoint = context[0];
+      if (checkpoint?.type !== 'compaction' || !Array.isArray((checkpoint as SessionEntry & { retainedTail?: unknown }).retainedTail)) return context;
+      const branch = manager.getBranch();
+      return branch.slice(branch.findIndex((entry) => entry.id === checkpoint.id));
+    },
+  };
+}
+
+function latestText(entries: readonly SessionEntry[]): { rawUser: string; rawAssistant: string } {
+  let rawUser = '';
+  let rawAssistant = '';
+  for (let index = entries.length - 1; index >= 0 && (!rawUser || !rawAssistant); index -= 1) {
+    const entry = entries[index]!;
+    // The stable SDK restores the tree; newer harness checkpoints embed their retained messages.
+    const tail: unknown = entry.type === 'compaction' ? (entry as SessionEntry & { retainedTail?: unknown }).retainedTail : undefined;
+    const messages: readonly unknown[] = Array.isArray(tail) ? tail : sessionEntryToContextMessages(entry);
+    for (let messageIndex = messages.length - 1; messageIndex >= 0 && (!rawUser || !rawAssistant); messageIndex -= 1) {
+      const message = messages[messageIndex];
+      if (!message || typeof message !== 'object') continue;
+      const role = (message as { role?: unknown }).role;
+      if (role === 'user' && !rawUser) rawUser = compact(messageText(message), MAX_SESSION_REFERENCE_CONTEXT_CHARACTERS);
+      if (role === 'assistant' && !rawAssistant) rawAssistant = compact(messageText(message), MAX_SESSION_REFERENCE_CONTEXT_CHARACTERS);
+    }
+  }
+  return { rawUser, rawAssistant };
 }
 
 /**
@@ -37,11 +89,11 @@ function latestText(entries: readonly SessionEntry[], role: 'user' | 'assistant'
  */
 export function buildSessionReferenceContext(
   summary: Pick<SessionSummary, 'id' | 'title' | 'path'>,
-  openSession: OpenSessionReference = SessionManager.open,
+  openSession: OpenSessionReference = openReadOnlySession,
 ): string {
-  const entries = openSession(summary.path).buildContextEntries();
-  const rawUser = latestText(entries, 'user', MAX_SESSION_REFERENCE_CONTEXT_CHARACTERS);
-  const rawAssistant = latestText(entries, 'assistant', MAX_SESSION_REFERENCE_CONTEXT_CHARACTERS);
+  const session = openSession(summary.path);
+  if (session.getSessionId && session.getSessionId() !== summary.id) throw new Error('The selected session changed since it was listed. Select it again.');
+  const { rawUser, rawAssistant } = latestText(session.buildContextEntries());
   if (!rawUser && !rawAssistant) {
     throw new Error('The selected session has no usable user or assistant text.');
   }

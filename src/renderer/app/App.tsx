@@ -11,6 +11,7 @@ import { useBrowserStore } from '../stores/browserStore';
 import { fallbackThemes } from '../theme';
 import { attachBrowserAnnotationToSession } from '../features/chat/Composer';
 import { openBrowserLink } from '../features/browser/browserLink';
+import { RuntimeEventBuffer, streamPresentationDelay } from '../lib/RuntimeEventBuffer';
 
 const MAX_HYDRATION_BUFFER_EVENTS = 1_000;
 const MAX_HYDRATION_BUFFER_BYTES = 32 * 1024 * 1024;
@@ -363,9 +364,14 @@ export function App() {
     const bufferedSizes: number[] = [];
     let bufferedBytes = 0;
     let bufferOverflowed = false;
+    const presentation = new RuntimeEventBuffer(applyEvents, streamPresentationDelay, (id) => Boolean(useRuntimeStore.getState().toolsById[id]));
+    const unsubscribePresentation = useRuntimeStore.subscribe((next, previous) => {
+      if (next.runtime.sessionId !== previous.runtime.sessionId || next.runtime.project?.path !== previous.runtime.project?.path) presentation.clear();
+    });
     const unsubscribe = window.piDesktop.onEvents((events) => {
+      if (cancelled) return;
       if (!hydrating) {
-        applyEvents(events);
+        presentation.enqueue(events);
         return;
       }
       for (const event of events) {
@@ -426,6 +432,7 @@ export function App() {
       }
       setHydrationError(null);
     }).catch((error: unknown) => {
+      if (cancelled) return;
       hydrating = false;
       if (bufferedEvents.length > 0) applyEvents(bufferedEvents);
       bufferedEvents.length = 0;
@@ -437,6 +444,10 @@ export function App() {
     return () => {
       cancelled = true;
       unsubscribe();
+      unsubscribePresentation();
+      presentation.clear();
+      bufferedEvents.length = 0;
+      bufferedSizes.length = 0;
     };
   }, [applyEvents, hydrateRuntime, hydrationAttempt]);
 

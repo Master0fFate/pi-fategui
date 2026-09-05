@@ -33,7 +33,7 @@ const LIVE_MODELS_TIMEOUT_MS = 8_000;
 const MAX_PAYLOAD_BYTES = 24 * 1024 * 1024;
 const LIVE_MODELS_MAX_BYTES = 2 * 1024 * 1024;
 /** Crof (and similar WAFs) reject /v1/models with HTTP 403 when User-Agent is missing. */
-const LIVE_MODELS_USER_AGENT = 'pi/0.84.3 (Fate UI)';
+const LIVE_MODELS_USER_AGENT = 'pi/0.85.0 (Fate UI)';
 
 export type ModelsDevFetch = (url: string, init: { signal: AbortSignal; headers: Record<string, string> }) => Promise<{ ok: boolean; status: number; arrayBuffer(): Promise<ArrayBuffer> }>;
 

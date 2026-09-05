@@ -36,6 +36,9 @@ describe('first-launch shell', () => {
     localStorage.clear();
     clearComposerSessionDrafts();
     delete document.documentElement.dataset.platform;
+    delete document.documentElement.dataset.performanceMode;
+    delete document.documentElement.dataset.reduceMotion;
+    delete document.documentElement.dataset.holyShitMode;
     useUiStore.setState({
       sidebarCollapsed: false, sidebarTab: 'sessions', inspectorCollapsed: false, leftWidth: 264, rightWidth: 332,
       inspectorTab: 'changes', inspectorLastViews: { work: 'changes', run: 'goal', system: 'context' }, selectedAgent: null,
@@ -570,6 +573,57 @@ describe('first-launch shell', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('hydrate failed');
     act(() => listener?.([{ type: 'assistant.text', messageId: 'after-failure', delta: 'still bounded', timestamp: 2, cursor: 2 }]));
     expect(useRuntimeStore.getState().messagesById['after-failure']?.text).toBe('still bounded');
+  });
+
+  it('does not replay a failed hydration after its subscription has been disposed', async () => {
+    let rejectState!: (error: Error) => void;
+    let listener!: (events: PiEvent[]) => void;
+    const statePromise = new Promise<RuntimeState>((_resolve, reject) => { rejectState = reject; });
+    const unsubscribe = vi.fn();
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(() => statePromise),
+        onEvents: vi.fn((next: (events: PiEvent[]) => void) => { listener = next; return unsubscribe; }),
+      } as unknown as PiDesktopApi,
+    });
+    const view = render(<App />);
+    await act(async () => { await Promise.resolve(); });
+    act(() => listener([{ type: 'assistant.text', messageId: 'stale', delta: 'old session', timestamp: 1 }]));
+    view.unmount();
+    await act(async () => { rejectState(new Error('late failure')); await statePromise.catch(() => undefined); });
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(useRuntimeStore.getState().messagesById.stale).toBeUndefined();
+  });
+
+  it('flushes Holy sh*t completion and discards presentation across session switches and unmounts', async () => {
+    let listener!: (events: PiEvent[]) => void;
+    const initial = useRuntimeStore.getState().runtime;
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => initial),
+        onEvents: vi.fn((next: (events: PiEvent[]) => void) => { listener = next; return () => undefined; }),
+      } as unknown as PiDesktopApi,
+    });
+    const view = render(<App />);
+    await act(async () => { await Promise.resolve(); });
+    document.documentElement.dataset.holyShitMode = 'true';
+    try {
+      act(() => listener([{ type: 'assistant.text', messageId: 'live', delta: 'not lost', timestamp: 1, cursor: 1 }]));
+      expect(useRuntimeStore.getState().messagesById.live).toBeUndefined();
+      act(() => listener([{ type: 'run.completed', runId: 'run', aborted: false, timestamp: 2, cursor: 2 }]));
+      expect(useRuntimeStore.getState().messagesById.live?.text).toBe('not lost');
+      act(() => listener([{ type: 'assistant.text', messageId: 'old-session', delta: 'old', timestamp: 3, cursor: 3 }]));
+      act(() => useRuntimeStore.getState().setRuntime({ ...initial, sessionId: 'other-session' }));
+      act(() => listener([{ type: 'run.completed', runId: 'other-run', aborted: false, timestamp: 4, cursor: 4 }]));
+      expect(useRuntimeStore.getState().messagesById['old-session']).toBeUndefined();
+      act(() => listener([{ type: 'assistant.text', messageId: 'stale', delta: 'disposed', timestamp: 5, cursor: 5 }]));
+      view.unmount();
+      expect(useRuntimeStore.getState().messagesById.stale).toBeUndefined();
+    } finally {
+      delete document.documentElement.dataset.holyShitMode;
+    }
   });
 
   it('applies platform information from the existing bridge', async () => {

@@ -9,6 +9,7 @@ const virtuosoMock = vi.hoisted(() => ({
   autoscrollToBottom: vi.fn(),
   scrollToIndex: vi.fn(),
   atBottomStateChange: null as ((atBottom: boolean) => void) | null,
+  totalListHeightChanged: null as ((height: number) => void) | null,
 }));
 
 vi.mock('react-virtuoso', async () => {
@@ -21,6 +22,7 @@ vi.mock('react-virtuoso', async () => {
     followOutput?: MockFollowOutput;
     initialTopMostItemIndex?: { index: number | 'LAST'; align?: 'start' | 'center' | 'end'; behavior?: 'auto' | 'smooth' };
     scrollerRef?: (target: HTMLElement | Window | null) => void;
+    totalListHeightChanged?: (height: number) => void;
   };
 
   const Virtuoso = React.forwardRef<MockHandle, MockProps>((props, ref) => {
@@ -41,12 +43,14 @@ vi.mock('react-virtuoso', async () => {
     React.useEffect(() => {
       props.scrollerRef?.(scroller.current);
       virtuosoMock.atBottomStateChange = props.atBottomStateChange ?? null;
+      virtuosoMock.totalListHeightChanged = props.totalListHeightChanged ?? null;
       props.atBottomStateChange?.(true);
       return () => {
         props.scrollerRef?.(null);
         virtuosoMock.atBottomStateChange = null;
+        virtuosoMock.totalListHeightChanged = null;
       };
-    }, [props.atBottomStateChange, props.scrollerRef]);
+    }, [props.atBottomStateChange, props.scrollerRef, props.totalListHeightChanged]);
     return React.createElement('div', {
       ref: scroller,
       'data-testid': 'virtuoso-scroller',
@@ -85,6 +89,22 @@ const apply = (events: PiEvent[]) => {
   act(() => useRuntimeStore.getState().applyEvents(events));
 };
 
+function viewport() {
+  const scroller = screen.getByTestId('virtuoso-scroller');
+  const dimensions = { height: 1_000, top: 600 };
+  Object.defineProperties(scroller, {
+    clientHeight: { configurable: true, value: 400 },
+    scrollHeight: { configurable: true, get: () => dimensions.height },
+    scrollTop: {
+      configurable: true,
+      get: () => dimensions.top,
+      set: (value: number) => { dimensions.top = Math.max(0, Math.min(value, dimensions.height - 400)); },
+    },
+  });
+  fireEvent.scroll(scroller);
+  return { scroller, dimensions };
+}
+
 describe('conversation scrollbar metrics', () => {
   it('maps the full conversation range into the bounded visual track', () => {
     expect(getConversationScrollbarMetrics(2_000, 500, 320, 750)).toEqual({
@@ -104,6 +124,7 @@ describe('conversation output auto-scroll', () => {
     virtuosoMock.autoscrollToBottom.mockReset();
     virtuosoMock.scrollToIndex.mockReset();
     virtuosoMock.atBottomStateChange = null;
+    virtuosoMock.totalListHeightChanged = null;
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       const id = nextAnimationFrameId++;
       animationFrames.set(id, callback);
@@ -119,6 +140,18 @@ describe('conversation output auto-scroll', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('uses the virtual final item for End and scrolls Home directly to zero', () => {
+    render(<ConversationTimeline />);
+    const scrollbar = screen.getByRole('scrollbar', { name: 'Conversation scroll position' });
+    fireEvent.keyDown(scrollbar, { key: 'End' });
+    expect(virtuosoMock.scrollToIndex).toHaveBeenLastCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
+    const scroller = screen.getByTestId('virtuoso-scroller');
+    scroller.scrollTop = 600;
+    fireEvent.keyDown(scrollbar, { key: 'Home' });
+    expect(scroller.scrollTop).toBe(0);
+    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledOnce();
   });
 
   it('positions an unseen session at the final historical item exactly once', () => {
@@ -178,26 +211,22 @@ describe('conversation output auto-scroll', () => {
 
   it('follows streaming text, reasoning, and tool updates while pinned to the bottom', () => {
     render(<ConversationTimeline />);
-
-    apply([{ type: 'assistant.text', messageId: 'assistant-1', delta: 'Answer', timestamp: 1 }]);
-    flushAnimationFrames();
-    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledTimes(1);
-
-    apply([{ type: 'assistant.reasoning', messageId: 'assistant-1', delta: 'Checking', timestamp: 2 }]);
-    flushAnimationFrames();
-    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledTimes(2);
-
-    apply([{ type: 'assistant.reasoning', messageId: 'assistant-1', delta: ' files', timestamp: 3 }]);
-    flushAnimationFrames();
-    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledTimes(3);
-
-    apply([{ type: 'tool.started', toolCallId: 'read-1', name: 'read', input: '{}', timestamp: 4 }]);
-    flushAnimationFrames();
-    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledTimes(4);
-
-    apply([{ type: 'tool.updated', toolCallId: 'read-1', output: 'README contents', timestamp: 5 }]);
-    flushAnimationFrames();
-    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledTimes(5);
+    const { dimensions } = viewport();
+    const events: PiEvent[] = [
+      { type: 'assistant.text', messageId: 'assistant-1', delta: 'Answer', timestamp: 1 },
+      { type: 'assistant.reasoning', messageId: 'assistant-1', delta: 'Checking', timestamp: 2 },
+      { type: 'assistant.reasoning', messageId: 'assistant-1', delta: ' files', timestamp: 3 },
+      { type: 'tool.started', toolCallId: 'read-1', name: 'read', input: '{}', timestamp: 4 },
+      { type: 'tool.updated', toolCallId: 'read-1', output: 'README contents', timestamp: 5 },
+    ];
+    for (const event of events) {
+      apply([event]);
+      dimensions.height += 20;
+      flushAnimationFrames();
+      expect(dimensions.top).toBe(dimensions.height - 400);
+      expect(animationFrames.size).toBe(0);
+    }
+    expect(virtuosoMock.autoscrollToBottom).not.toHaveBeenCalled();
     expect(virtuosoMock.scrollToIndex).not.toHaveBeenCalled();
   });
 
@@ -228,80 +257,91 @@ describe('conversation output auto-scroll', () => {
     expect(virtuosoMock.scrollToIndex).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps a large newly sent prompt pinned while it finishes measuring', () => {
+  it('follows late prompt and image measurements without polling or overriding manual scrolling', () => {
     render(<ConversationTimeline />);
-    const scroller = screen.getByTestId('virtuoso-scroller');
-    let scrollHeight = 1_000;
-    Object.defineProperties(scroller, {
-      clientHeight: { configurable: true, value: 400 },
-      scrollHeight: { configurable: true, get: () => scrollHeight },
-    });
-    scroller.scrollTop = 600;
-    fireEvent.scroll(scroller);
-
+    const { scroller, dimensions } = viewport();
     apply([{ type: 'message.completed', messageId: 'large-prompt', role: 'user', text: 'prompt '.repeat(50_000), timestamp: 1 }]);
-    scrollHeight = 40_000;
+    dimensions.height = 40_000;
     virtuosoMock.atBottomStateChange?.(false);
     fireEvent.scroll(scroller);
     flushAnimationFrames();
+    expect(dimensions.top).toBe(39_600);
+    expect(animationFrames.size).toBe(0);
 
-    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledOnce();
-    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
+    dimensions.height = 60_000;
+    act(() => virtuosoMock.totalListHeightChanged?.(60_000));
+    flushAnimationFrames();
+    expect(dimensions.top).toBe(59_600);
+    expect(animationFrames.size).toBe(0);
 
     fireEvent.wheel(scroller, { deltaY: -120 });
     scroller.scrollTop = 450;
     fireEvent.scroll(scroller);
     flushAnimationFrames();
+    dimensions.height = 80_000;
+    act(() => {
+      virtuosoMock.totalListHeightChanged?.(80_000);
+      virtuosoMock.atBottomStateChange?.(true);
+    });
     apply([{ type: 'assistant.text', messageId: 'assistant-after-prompt', delta: 'Answer', timestamp: 2 }]);
     flushAnimationFrames();
+    expect(dimensions.top).toBe(450);
+    expect(virtuosoMock.autoscrollToBottom).not.toHaveBeenCalled();
+  });
 
-    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledOnce();
+  it('follows a sent prompt when its response and tool arrive in the same batch', () => {
+    render(<ConversationTimeline />);
+    const { scroller, dimensions } = viewport();
+    fireEvent.wheel(scroller, { deltaY: -120 });
+    scroller.scrollTop = 0;
+    fireEvent.scroll(scroller);
+    flushAnimationFrames();
+    apply([
+      { type: 'message.completed', messageId: 'batched-prompt', role: 'user', text: 'Do the work', timestamp: 1 },
+      { type: 'assistant.text', messageId: 'batched-response', delta: 'Working', timestamp: 2 },
+      { type: 'tool.started', toolCallId: 'batched-tool', name: 'read', input: '{}', timestamp: 3 },
+    ]);
+    flushAnimationFrames();
+    expect(dimensions.top).toBe(600);
+    expect(animationFrames.size).toBe(0);
+
+    fireEvent.wheel(scroller, { deltaY: -120 });
+    scroller.scrollTop = 0;
+    fireEvent.scroll(scroller);
+    flushAnimationFrames();
+    apply([{ type: 'assistant.text', messageId: 'batched-response', delta: ' more', timestamp: 4 }]);
+    flushAnimationFrames();
+    expect(dimensions.top).toBe(0);
   });
 
   it('keeps following when a reasoning row changes layout before the scheduled scroll', () => {
     render(<ConversationTimeline />);
-    const scroller = screen.getByTestId('virtuoso-scroller');
-    let scrollHeight = 1_000;
-    Object.defineProperties(scroller, {
-      clientHeight: { configurable: true, value: 400 },
-      scrollHeight: { configurable: true, get: () => scrollHeight },
-    });
-    scroller.scrollTop = 600;
-    fireEvent.scroll(scroller);
-
+    const { scroller, dimensions } = viewport();
     apply([{ type: 'assistant.reasoning', messageId: 'assistant-1', delta: 'Checking', timestamp: 1 }]);
-    scrollHeight = 1_120;
+    dimensions.height = 1_120;
     virtuosoMock.atBottomStateChange?.(false);
     fireEvent.scroll(scroller);
     flushAnimationFrames();
-
-    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledOnce();
-    expect(virtuosoMock.scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
+    expect(dimensions.top).toBe(720);
+    expect(virtuosoMock.autoscrollToBottom).not.toHaveBeenCalled();
   });
 
   it('stops following when the user scrolls up and resumes after they return to the bottom', () => {
     render(<ConversationTimeline />);
-    const scroller = screen.getByTestId('virtuoso-scroller');
-    Object.defineProperties(scroller, {
-      clientHeight: { configurable: true, value: 400 },
-      scrollHeight: { configurable: true, value: 1_000 },
-    });
-
-    scroller.scrollTop = 600;
-    fireEvent.scroll(scroller);
+    const { scroller, dimensions } = viewport();
     apply([{ type: 'assistant.text', messageId: 'assistant-1', delta: 'First', timestamp: 1 }]);
-
     fireEvent.wheel(scroller, { deltaY: -120 });
     scroller.scrollTop = 450;
     fireEvent.scroll(scroller);
     flushAnimationFrames();
-    expect(virtuosoMock.autoscrollToBottom).not.toHaveBeenCalled();
+    expect(dimensions.top).toBe(450);
 
     fireEvent.wheel(scroller, { deltaY: 120 });
     scroller.scrollTop = 600;
     fireEvent.scroll(scroller);
     apply([{ type: 'assistant.text', messageId: 'assistant-1', delta: ' second', timestamp: 2 }]);
+    dimensions.height = 1_120;
     flushAnimationFrames();
-    expect(virtuosoMock.autoscrollToBottom).toHaveBeenCalledTimes(1);
+    expect(dimensions.top).toBe(720);
   });
 });

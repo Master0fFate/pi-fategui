@@ -2438,8 +2438,7 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 :root[data-reduce-motion="true"] *, :root[data-reduce-motion="true"] *::before, :root[data-reduce-motion="true"] *::after,
 :root[data-performance-mode="true"] *, :root[data-performance-mode="true"] *::before, :root[data-performance-mode="true"] *::after {
   scroll-behavior: auto !important;
-  transition-duration: 0.01ms !important;
-  transition-delay: 0s !important;
+  transition: none !important;
   animation: none !important;
   animation-delay: 0s !important;
 }

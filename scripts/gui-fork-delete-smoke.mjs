@@ -10,7 +10,7 @@
 // What it does:
 //   1. Creates an isolated environment: temp agent dir (real auth + model
 //      config copied), temp Fate data dir (real settings copied), temp git
-//      project, and wipes the multi-instance test profile for a clean sidebar.
+//      project, and a private Chromium profile for a clean sidebar.
 //   2. Seeds a real 3-branch session with the real SDK SessionManager.
 //   3. Launches the real app as a NEW INSTANCE (never touches the running app),
 //      opens the project through the real openProject IPC, expands the folder.
@@ -28,6 +28,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 
 const exec = promisify(execFile);
@@ -54,7 +55,7 @@ function textMessage(role, text) {
 function launchEnv(agentDir, dataDir) {
   const env = { ...process.env };
   // Never leak the runner's own session/model bindings into the app.
-  for (const key of ['PI_SESSION_FILE', 'PI_SESSION_ID', 'PI_MODEL', 'PI_PROVIDER', 'PI_REASONING_LEVEL', 'PI_AGENT_DIR']) delete env[key];
+  for (const key of ['PI_SESSION_FILE', 'PI_SESSION_ID', 'PI_MODEL', 'PI_PROVIDER', 'PI_REASONING_LEVEL', 'PI_AGENT_DIR', 'TRANSCRIBE_LIBRARY']) delete env[key];
   env[AGENT_DIR_ENV] = agentDir;
   env.FATE_GUI_DATA_DIR = dataDir;
   env.FATE_NEW_INSTANCE = '1';
@@ -70,15 +71,6 @@ async function setup() {
   await mkdir(agentDir, { recursive: true });
   await mkdir(dataDir, { recursive: true });
   await mkdir(projectPath, { recursive: true });
-
-  // The spawned app runs as a multi-instance slot under the shared Electron
-  // userData (%APPDATA%/pi-fategui/instances/<slot>). Earlier runs persisted
-  // their temp projects there, which makes the sidebar poll deleted folders.
-  // Wipe every test slot profile so this run starts from a clean renderer store.
-  const sharedUserData = process.env.APPDATA
-    ? path.join(process.env.APPDATA, 'pi-fategui', 'instances')
-    : null;
-  if (sharedUserData) await rm(sharedUserData, { recursive: true, force: true }).catch(() => undefined);
 
   let authCopied = false;
   try {
@@ -148,13 +140,13 @@ async function setup() {
   return { root, agentDir, dataDir, projectPath, sessionFile, authCopied };
 }
 
-async function launchApp(agentDir, dataDir) {
+export async function launchApp(agentDir, dataDir) {
   // NOTE: do not pass --project here. Playwright's electron launcher prepends
   // its own Chromium switches, and Electron re-parses argv so a following
   // switch can be mistaken for the --project value. The app auto-opens the
   // trusted recent project from recent-project.json instead.
   return electron.launch({
-    args: [repoRoot, '--new-instance'],
+    args: [`--user-data-dir=${path.join(dataDir, 'chromium')}`, repoRoot, '--new-instance'],
     cwd: repoRoot,
     env: launchEnv(agentDir, dataDir),
     timeout: 150_000,
@@ -320,4 +312,4 @@ async function run() {
   }
 }
 
-run();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) void run();
