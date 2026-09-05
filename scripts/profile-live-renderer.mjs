@@ -89,6 +89,11 @@ async function runProfile(iteration) {
     const composer = page.getByLabel('Message Pi');
     await composer.waitFor({ state: 'visible' });
     await page.waitForFunction(() => !document.querySelector('#pi-composer')?.hasAttribute('disabled'));
+    const positionTimeline = (bottom) => page.locator('.conversation-virtuoso').evaluate((scroller, bottom) => {
+      scroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: bottom ? 1 : -1 }));
+      scroller.scrollTop = bottom ? scroller.scrollHeight : 0;
+      scroller.dispatchEvent(new Event('scroll'));
+    }, bottom);
 
     await page.evaluate(() => {
       const state = {
@@ -137,7 +142,7 @@ async function runProfile(iteration) {
     await composer.fill(rendererMarker);
     await page.getByRole('button', { name: 'Send message' }).click();
     await page.waitForFunction((count) => Number(document.querySelector('.conversation')?.getAttribute('data-visible-entry-count') ?? 0) >= count, expectedTimelineEntries);
-    await page.getByRole('scrollbar', { name: 'Conversation scroll position' }).press('Home');
+    await positionTimeline(false);
     await page.getByRole('button', { name: 'Send message' }).waitFor({ timeout: 120_000 });
     await page.waitForFunction(
       (expected) => Number(document.querySelector('.conversation')?.getAttribute('data-entry-count') ?? 0) >= expected,
@@ -186,7 +191,7 @@ async function runProfile(iteration) {
     const finalOutput = page.getByText('FATE_PROFILE_COMPLETE_1', { exact: true });
     // Older revisions scroll to an estimated height instead of a virtual item.
     for (let attempt = 0; attempt < 5 && !await finalOutput.isVisible(); attempt += 1) {
-      await page.getByRole('scrollbar', { name: 'Conversation scroll position' }).press('End');
+      await positionTimeline(true);
       await page.waitForTimeout(100);
     }
     await finalOutput.waitFor({ timeout: 5_000 });
