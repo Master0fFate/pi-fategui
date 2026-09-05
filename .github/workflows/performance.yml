@@ -80,8 +80,8 @@ jobs:
           mkdir -p .parallax/performance
           cp scripts/profile-live-renderer.mjs .parallax/performance/profile-compare.mjs
           printf '{"baseline":"%s","candidate":"%s"}\n' "$baseline" "$candidate" > .parallax/performance/revisions.json
-          display=()
-          if [ "$RUNNER_OS" = Linux ]; then display=(xvfb-run -a); fi
+          runner=(node)
+          if [ "$RUNNER_OS" = Linux ]; then runner=(xvfb-run -a node); fi
           for phase in before after; do
             revision="$baseline"
             if [ "$phase" = after ]; then revision="$candidate"; fi
@@ -90,7 +90,7 @@ jobs:
             pnpm build:e2e
             for mode in normal performance holy; do
               output=".parallax/performance/${{ matrix.artifact }}-$phase-$mode.json"
-              "${display[@]}" node .parallax/performance/profile-compare.mjs --runs 3 --mode "$mode" --idle-ms 2000 --label "$phase-$mode" --out "$output"
+              "${runner[@]}" .parallax/performance/profile-compare.mjs --runs 3 --mode "$mode" --idle-ms 2000 --label "$phase-$mode" --out "$output"
               node --input-type=module -e 'import fs from "node:fs"; const p = JSON.parse(fs.readFileSync(process.argv[1])); if (p.summary.totalConsoleErrors) throw new Error("Renderer errors during profile");' "$output"
             done
           done

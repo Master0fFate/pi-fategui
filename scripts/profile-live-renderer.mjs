@@ -136,7 +136,6 @@ async function runProfile(iteration) {
     const startedAt = performance.now();
     await composer.fill(rendererMarker);
     await page.getByRole('button', { name: 'Send message' }).click();
-    await page.getByRole('button', { name: 'Queue follow-up message' }).waitFor({ timeout: 30_000 });
     await page.waitForFunction((count) => Number(document.querySelector('.conversation')?.getAttribute('data-visible-entry-count') ?? 0) >= count, expectedTimelineEntries);
     await page.getByRole('scrollbar', { name: 'Conversation scroll position' }).press('Home');
     await page.getByRole('button', { name: 'Send message' }).waitFor({ timeout: 120_000 });

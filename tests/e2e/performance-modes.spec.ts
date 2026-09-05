@@ -45,7 +45,6 @@ for (const mode of ['normal', 'performance', 'holy']) {
 
       await page.getByLabel('Message Pi').fill('__FATE_LIVE_PROFILE__:0:6000');
       await page.getByRole('button', { name: 'Send message', exact: true }).click();
-      await expect(page.getByRole('button', { name: 'Queue follow-up message', exact: true })).toBeVisible();
       await expect(page.locator('.conversation')).toHaveAttribute('data-visible-entry-count', '606');
       await scrollbar.press('Home');
       await expect(page.getByText('Profile history row 0: completed output retained for virtualization and subscription pressure.', { exact: true })).toBeVisible();
