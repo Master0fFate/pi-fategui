@@ -2328,7 +2328,7 @@ describe('PiRuntimeService', () => {
       const state = service.getState(false).providerLogin;
       expect(state).toMatchObject({ status: 'working', prompt: { type: 'manual_code' }, message: 'A secure browser window opened. Complete sign-in there, then return to Fate UI.' });
     });
-    expect(shellOpenExternal).toHaveBeenCalledWith('https://auth.openai.com/oauth/authorize');
+    await vi.waitFor(() => expect(shellOpenExternal).toHaveBeenCalledWith('https://auth.openai.com/oauth/authorize'));
 
     const manualPromptId = service.getState(false).providerLogin!.prompt!.id;
     service.respondProviderLogin({ promptId: manualPromptId, value: 'http://localhost:1455/auth/callback?code=abc&state=s' });
