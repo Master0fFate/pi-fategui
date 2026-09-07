@@ -77,6 +77,8 @@ import {
   sessionListSchema,
   sessionSearchInputSchema,
   projectPathInputSchema,
+  projectOpenInputSchema,
+  type ProjectSessionTarget,
   projectSessionListInputSchema,
   projectDeleteSessionsResultSchema,
   speechCancelResultSchema,
@@ -312,15 +314,19 @@ export function createProjectActivationQueue() {
 
 export function createProjectPathOpener(
   projects: Pick<ProjectService, 'prepareOpenPath'>,
-  activationServices: ProjectActivationServices,
+  activationServices: ProjectActivationServices & { runtime: Pick<PiRuntimeService, 'switchSession' | 'newSession'> },
   queueProjectActivation = createProjectActivationQueue(),
 ) {
-  return (projectPath: string, owner?: BrowserWindow) => queueProjectActivation.run(async () => {
-    // Switching the focused folder is safe while another folder streams; the
-    // activation queue still serializes filesystem/runtime rewiring.
+  return (projectPath: string, owner?: BrowserWindow, target?: ProjectSessionTarget) => queueProjectActivation.run(async () => {
+    // Keep project activation and its destination session in the same queue turn.
     const activation = await projects.prepareOpenPath(projectPath, owner);
     if (!activation) return runtimeStateSchema.parse(activationServices.runtime.getState());
-    return runtimeStateSchema.parse(await activatePreparedProject(activation, activationServices, 'changing projects'));
+    const state = await activatePreparedProject(activation, activationServices, 'changing projects');
+    if (target && state.status !== 'error' && state.project) {
+      if ('newSession' in target) return runtimeStateSchema.parse(await activationServices.runtime.newSession());
+      if (state.sessionId !== target.sessionId) return runtimeStateSchema.parse(await activationServices.runtime.switchSession(target.sessionId));
+    }
+    return runtimeStateSchema.parse(state);
   });
 }
 
@@ -862,8 +868,9 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     return revealProjectResultSchema.parse(await projects.revealPath(parsed.projectPath));
   });
   handle(ipcChannels.projectOpenPath, async (event, input) => {
-    const parsed = projectPathInputSchema.parse(input);
-    await openProjectPath(parsed.projectPath, BrowserWindow.fromWebContents(event.sender) ?? undefined);
+    const parsed = projectOpenInputSchema.parse(input);
+    const state = await openProjectPath(parsed.projectPath, BrowserWindow.fromWebContents(event.sender) ?? undefined, parsed.target);
+    if (parsed.target) return state;
     await applyPendingRecovery(runtime, recovery);
     return runtimeStateSchema.parse(runtime.getState());
   });
@@ -1122,6 +1129,10 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   handle(ipcChannels.filesRead, async (_event, input) => {
     const parsed = filePathInputSchema.parse(input);
     return filePreviewSchema.parse(await files.read(parsed.path));
+  });
+  handle(ipcChannels.filesRevealLink, async (_event, input) => {
+    const parsed = filePathInputSchema.parse(input);
+    return openFileResultSchema.parse(await files.revealLink(parsed.path));
   });
   handle(ipcChannels.filesOpen, async (_event, input) => {
     const parsed = filePathInputSchema.parse(input);

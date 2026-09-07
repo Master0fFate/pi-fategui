@@ -8,6 +8,7 @@ import type { RuntimeImage } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
 import { writeClipboardText } from '../../lib/clipboard';
 import { AgentMentionLink, remarkAgentMentions } from './AgentMention';
+import { isLocalMarkdownLink } from '../../../shared/markdownLinks';
 
 let mermaidQueue: Promise<void> = Promise.resolve();
 let pendingMermaidRenders = 0;
@@ -291,6 +292,7 @@ function safeMarkdownUrl(url: string, key: string): string {
   if (key !== 'src') {
     const browserUrl = normalizeBrowserWebUrl(trimmed);
     if (browserUrl) return browserUrl;
+    if (isLocalMarkdownLink(trimmed)) return trimmed;
   }
   try {
     const parsed = new URL(trimmed);

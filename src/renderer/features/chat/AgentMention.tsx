@@ -1,4 +1,5 @@
 import { Fragment, type AnchorHTMLAttributes, type ClassAttributes, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { isLocalMarkdownLink } from '../../../shared/markdownLinks';
 import { normalizeBrowserWebUrl } from '../../../shared/contracts/browser';
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { openBrowserLink } from '../browser/browserLink';
@@ -85,7 +86,29 @@ export function AgentMentionLink({ href, children, node: _node, onClick, onConte
     return <AgentMentionChip handle={handle}>{children}</AgentMentionChip>;
   }
   const browserUrl = href ? normalizeBrowserWebUrl(href) : null;
-  if (!browserUrl) return <a {...props} href={href} onClick={onClick} onContextMenu={onContextMenu} onAuxClick={onAuxClick} target="_blank" rel="noreferrer">{children}</a>;
+  if (!browserUrl && href && isLocalMarkdownLink(href)) {
+    const reveal = async () => {
+      try {
+        if (!('piDesktop' in window) || typeof window.piDesktop.revealFileLink !== 'function') throw new Error('The desktop file bridge is unavailable.');
+        const result = await window.piDesktop.revealFileLink(href);
+        if (!result.opened) throw new Error(result.error ?? 'The file could not be located.');
+      } catch (error) {
+        useUiStore.getState().showToast({ kind: 'error', title: 'Could not open file link', message: error instanceof Error ? error.message : String(error) });
+      }
+    };
+    return <a {...props} href={href} title="Show file in folder" onClick={(event) => {
+      onClick?.(event);
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      void reveal();
+    }} onAuxClick={(event) => {
+      onAuxClick?.(event);
+      if (event.defaultPrevented || event.button !== 1) return;
+      event.preventDefault();
+      void reveal();
+    }}>{children}</a>;
+  }
+  if (!browserUrl) return <a {...props} href={href || undefined} onClick={onClick} onContextMenu={onContextMenu} onAuxClick={onAuxClick} target="_blank" rel="noreferrer">{children}</a>;
 
   const openInBrowser = (event: ReactMouseEvent<HTMLAnchorElement>) => {
     onClick?.(event);

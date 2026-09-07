@@ -56,6 +56,24 @@ describe('PiEventNormalizer', () => {
     });
   });
 
+  it('requires live execution evidence and clears it on completion or lifecycle reset', () => {
+    const normalizer = new PiEventNormalizer(() => null, 'attempt:');
+    const start = () => normalizer.normalize(event({ type: 'tool_execution_start', toolCallId: 'edit-1', toolName: 'edit', args: {} }));
+    expect(normalizer.isToolRunning('edit-1')).toBe(false);
+    start();
+    expect(normalizer.isToolRunning('edit-1')).toBe(true);
+    normalizer.normalize(event({ type: 'tool_execution_end', toolCallId: 'edit-1', toolName: 'edit', result: {}, isError: false }));
+    expect(normalizer.isToolRunning('edit-1')).toBe(false);
+    for (const type of ['agent_end', 'agent_settled', 'agent_start']) {
+      start();
+      normalizer.normalize(event({ type, messages: [] }));
+      expect(normalizer.isToolRunning('edit-1')).toBe(false);
+    }
+    start();
+    normalizer.resetSession();
+    expect(normalizer.isToolRunning('edit-1')).toBe(false);
+  });
+
   it('keeps one assistant ID across fresh SDK update, streaming, and final objects', () => {
     const normalizer = new PiEventNormalizer(() => 'run-1');
     const started = normalizer.normalize(event({ type: 'message_start', message: { role: 'assistant', content: [] } }))[0];

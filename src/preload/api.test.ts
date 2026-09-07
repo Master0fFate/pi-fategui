@@ -157,6 +157,22 @@ describe('preload desktop bridge', () => {
     await expect(piDesktopApi.openProject('/project')).rejects.toThrow();
   });
 
+  it('validates and forwards an unambiguous project session destination', async () => {
+    const state = {
+      status: 'ready', project: { path: '/project', name: 'project', trusted: true }, sessionId: 's2', sessionFile: '/sessions/s2.jsonl',
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', permissionLevel: 'read-only', messages: [], error: null,
+    };
+    for (const target of [{ sessionId: 's2' }, { newSession: true }] as const) {
+      electron.invoke.mockResolvedValueOnce(state);
+      await piDesktopApi.openProject('/project', target);
+      expect(electron.invoke).toHaveBeenLastCalledWith(ipcChannels.projectOpenPath, { projectPath: '/project', target });
+    }
+    electron.invoke.mockClear();
+    await expect(piDesktopApi.openProject('/project', { sessionId: 's2', newSession: true })).rejects.toThrow();
+    await expect(piDesktopApi.openProject('/project', { sessionId: '' })).rejects.toThrow();
+    expect(electron.invoke).not.toHaveBeenCalled();
+  });
+
   it('focuses a known project path without forcing a runtime spawn in the preload contract', async () => {
     const state = {
       status: 'disconnected', project: { path: '/other', name: 'other', trusted: true }, sessionId: null, sessionFile: null,

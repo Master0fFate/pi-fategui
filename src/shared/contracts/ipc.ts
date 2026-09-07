@@ -195,6 +195,7 @@ export const ipcChannels = {
   filesSearch: 'files:search',
   filesRead: 'files:read',
   filesOpen: 'files:open',
+  filesRevealLink: 'files:reveal-link',
   gitStatus: 'git:status',
   gitDiff: 'git:diff',
   gitCombinedDiff: 'git:combined-diff',
@@ -1102,6 +1103,12 @@ export const sessionDirectMessageInputSchema = z.object({
 }).strict();
 export type SessionDirectMessageInput = z.infer<typeof sessionDirectMessageInputSchema>;
 export const projectPathInputSchema = z.object({ projectPath: z.string().min(1).max(32_768) }).strict();
+export const projectSessionTargetSchema = z.union([
+  z.object({ sessionId: z.string().min(1).max(500) }).strict(),
+  z.object({ newSession: z.literal(true) }).strict(),
+]);
+export type ProjectSessionTarget = z.infer<typeof projectSessionTargetSchema>;
+export const projectOpenInputSchema = projectPathInputSchema.extend({ target: projectSessionTargetSchema.optional() });
 export const projectSessionListInputSchema = z.object({ projectPath: z.string().min(1).max(32_768), query: z.string().max(500).default('') }).strict();
 export const projectDeleteSessionsResultSchema = z.object({ deleted: z.number().int().nonnegative().max(100_000), skipped: z.number().int().nonnegative().max(100_000) }).strict();
 export const sessionIdInputSchema = z.object({ sessionId: z.string().min(1).max(500) }).strict();
@@ -1442,7 +1449,7 @@ export interface PiDesktopApi {
   newWindow: () => Promise<void>;
   onWindowState: (listener: (state: WindowState) => void) => () => void;
   selectProject: () => Promise<RuntimeState>;
-  openProject: (projectPath: string) => Promise<RuntimeState>;
+  openProject: (projectPath: string, target?: ProjectSessionTarget) => Promise<RuntimeState>;
   focusProject: (projectPath: string) => Promise<RuntimeState>;
   closeProjectRuntime: (projectPath: string) => Promise<void>;
   selectProjectFile: () => Promise<string | null>;
@@ -1536,6 +1543,7 @@ export interface PiDesktopApi {
   searchFiles: (query: string, limit?: number) => Promise<{ entries: FileEntry[]; truncated: boolean }>;
   readFile: (path: string) => Promise<FilePreview>;
   openFile: (path: string) => Promise<{ opened: boolean; error?: string | undefined }>;
+  revealFileLink: (path: string) => Promise<{ opened: boolean; error?: string | undefined }>;
   getGitStatus: () => Promise<GitStatus>;
   getGitDiff: (path: string) => Promise<GitDiff>;
   getGitCombinedDiff: () => Promise<GitCombinedDiff>;

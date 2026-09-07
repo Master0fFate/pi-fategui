@@ -147,6 +147,31 @@ describe('conversation components', () => {
     expect(showBrowserLinkContextMenu).toHaveBeenCalledWith('http://localhost:4173/preview');
   });
 
+  it.each(['./handoff.zip', 'dist/handoff%20bundle.zip', '/project/handoff.zip', 'C:/project/handoff.zip', 'file:///project/handoff.zip', 'sandbox:/mnt/data/handoff.zip'])('activates Markdown artifact link %s through the desktop bridge', async (href) => {
+    const revealFileLink = vi.fn(async () => ({ opened: true }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { revealFileLink } });
+    render(<AssistantMarkdown text={`[**Download the developer handoff ZIP — 7.43 MB**](${href})`} />);
+    const link = screen.getByRole('link', { name: 'Download the developer handoff ZIP — 7.43 MB' });
+    expect(link).toHaveAttribute('href', href);
+    await userEvent.setup().click(link);
+    expect(revealFileLink).toHaveBeenCalledWith(href);
+    fireEvent(link, new MouseEvent('auxclick', { bubbles: true, button: 1 }));
+    expect(revealFileLink).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports unavailable artifacts rather than silently swallowing file-link clicks', async () => {
+    const revealFileLink = vi.fn(async () => { throw new Error('The requested project file no longer exists.'); });
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { revealFileLink } });
+    render(<AssistantMarkdown text="[Download](missing.zip)" />);
+    await userEvent.setup().click(screen.getByRole('link', { name: 'Download' }));
+    expect(useUiStore.getState().toast).toMatchObject({ kind: 'error', title: 'Could not open file link', message: 'The requested project file no longer exists.' });
+  });
+
+  it.each(['javascript:alert%281%29', 'data:text/html;base64,PHNjcmlwdD4=', '//untrusted.example/file.zip'])('does not activate unsafe Markdown link %s', (href) => {
+    render(<AssistantMarkdown text={`[Unsafe](${href})`} />);
+    expect(screen.queryByRole('link', { name: 'Unsafe' })).not.toBeInTheDocument();
+  });
+
   it('links agent mentions in Markdown without touching inline code', () => {
     useRuntimeStore.getState().hydrateRuntime(ready({ subagents: [childRun] }));
     render(<AssistantMarkdown text={'Ping @auth-reviewer-1, then run `@auth-reviewer-1`.'} />);

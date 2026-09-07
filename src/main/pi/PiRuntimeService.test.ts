@@ -3346,6 +3346,47 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('restores unfinished tool calls as inactive without resuming execution', async () => {
+    const fake = fixture();
+    fake.session.sessionManager.getBranch.mockReturnValue([
+      {
+        type: 'message', id: 'interrupted', parentId: null, timestamp: '2025-01-01T00:00:00.000Z',
+        message: { role: 'assistant', timestamp: 1, content: [
+          { type: 'toolCall', id: 'old-edit', name: 'edit', arguments: { path: 'app.ts' } },
+          { type: 'toolCall', id: 'old-bash', name: 'bash', arguments: { command: 'shutdown' } },
+        ] },
+      },
+    ]);
+    const service = new PiRuntimeService(fake.adapter);
+    const state = await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    expect(state).toMatchObject({ streaming: false, activeSessionRunning: false, runningSessionCount: 0 });
+    expect(state.tools).toHaveLength(2);
+    expect(state.tools?.every((tool) => tool.status === 'error' && tool.output.includes('has not been resumed'))).toBe(true);
+    expect(fake.session.prompt).not.toHaveBeenCalled();
+    expect(fake.session.steer).not.toHaveBeenCalled();
+    expect(fake.session.followUp).not.toHaveBeenCalled();
+    expect(service.getHydrationState().tools).toEqual(state.tools);
+
+    await service.prompt({ text: 'A new explicit request', behavior: 'prompt' });
+    fake.emitSession({ type: 'agent_start' });
+    fake.session.sessionManager.getBranch().push({
+      type: 'message', id: 'live', parentId: 'interrupted', timestamp: '2025-01-01T00:00:01.000Z',
+      message: { role: 'assistant', timestamp: 2, content: [
+        { type: 'toolCall', id: 'live-read', name: 'read', arguments: { path: 'app.ts' } },
+      ] },
+    });
+    fake.emitSession({ type: 'tool_execution_start', toolCallId: 'live-read', toolName: 'read', args: { path: 'app.ts' } });
+    const live = service.getHydrationState();
+    expect(live.tools?.find((tool) => tool.id === 'live-read')?.status).toBe('running');
+    expect(live.tools?.filter((tool) => tool.id.startsWith('old-')).map((tool) => tool.status)).toEqual(['error', 'error']);
+
+    fake.emitSession({ type: 'agent_end', messages: [] });
+    fake.settle();
+    expect(service.getHydrationState().tools?.every((tool) => tool.status !== 'running')).toBe(true);
+    await service.dispose();
+  });
+
   it('enforces an aggregate hydration budget for pathological persisted history', async () => {
     const fake = fixture();
     Object.assign(fake.session.sessionManager, {

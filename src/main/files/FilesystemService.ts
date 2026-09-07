@@ -745,6 +745,36 @@ export class FilesystemService {
     }
   }
 
+  async revealLink(reference: string): Promise<{ opened: boolean; error?: string }> {
+    const operation = this.rootOperation();
+    let decoded: string;
+    try {
+      const value = reference.trim().replace(/^sandbox:/iu, '');
+      if (/^file:/iu.test(value)) {
+        const url = new URL(value);
+        if (url.hostname || url.search || url.hash) invalidPath('Only local file URLs are supported.');
+        decoded = fileURLToPath(url);
+      } else {
+        decoded = decodeURIComponent(value.split(/[?#]/u, 1)[0] ?? '');
+      }
+    } catch {
+      invalidPath('The file link is invalid.');
+    }
+    if (!decoded || decoded.includes('\0') || /^[/\\]{2}/u.test(decoded)
+      || (/^[a-z][a-z\d+.-]*:/iu.test(decoded) && !/^[a-z]:[\\/]/iu.test(decoded))) {
+      invalidPath('Only local project file links are supported.');
+    }
+    const candidate = path.resolve(operation.root, decoded);
+    this.ensureConfined(candidate);
+    const relative = path.relative(operation.root, candidate).split(path.sep).join('/');
+    const absolute = await this.resolvePath(relative);
+    this.assertRootOperation(operation);
+    if (!(await fs.stat(absolute)).isFile()) invalidPath('The file link does not point to a file.');
+    this.assertRootOperation(operation);
+    shell.showItemInFolder(absolute);
+    return { opened: true };
+  }
+
   async open(relativePath: string): Promise<{ opened: boolean; error?: string }> {
     const operation = this.rootOperation();
     if (await this.pathKind(relativePath) === 'symlink') {

@@ -2,11 +2,12 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const electronMocks = vi.hoisted(() => ({ openPath: vi.fn() }));
+const electronMocks = vi.hoisted(() => ({ openPath: vi.fn(), showItemInFolder: vi.fn() }));
 
-vi.mock('electron', () => ({ shell: { openPath: electronMocks.openPath } }));
+vi.mock('electron', () => ({ shell: electronMocks }));
 
 import { FilesystemService, MAX_FILE_PREVIEW_BYTES } from './FilesystemService';
 
@@ -21,10 +22,32 @@ async function tempDirectory(): Promise<string> {
 afterEach(async () => {
   vi.useRealTimers();
   electronMocks.openPath.mockReset();
+  electronMocks.showItemInFolder.mockReset();
   await Promise.all(temporary.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
 
 describe('FilesystemService confinement', () => {
+  it('reveals Markdown artifacts without executing them, confined to the active project', async () => {
+    const root = await tempDirectory();
+    const outside = await tempDirectory();
+    const artifact = path.join(root, 'handoff bundle.zip');
+    await fs.writeFile(artifact, 'archive');
+    await fs.writeFile(path.join(outside, 'secret.zip'), 'private');
+    await fs.symlink(outside, path.join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+    const service = new FilesystemService();
+    await service.setRoot(root);
+
+    for (const reference of ['handoff%20bundle.zip', artifact, pathToFileURL(artifact).href, `sandbox:${artifact.replaceAll('\\', '/')}`]) {
+      await expect(service.revealLink(reference)).resolves.toEqual({ opened: true });
+      expect(electronMocks.showItemInFolder).toHaveBeenLastCalledWith(await fs.realpath(artifact));
+    }
+    for (const reference of ['../secret.zip', path.join(outside, 'secret.zip'), 'escape/secret.zip', 'missing.zip', 'https://example.com/file.zip', 'file://server/share/file.zip', '%00.zip', '//server/share/file.zip']) {
+      await expect(service.revealLink(reference)).rejects.toThrow();
+    }
+    expect(electronMocks.showItemInFolder).toHaveBeenCalledTimes(4);
+    expect(electronMocks.openPath).not.toHaveBeenCalled();
+  });
+
   it('rejects absolute paths, traversal, and symlinks escaping the root', async () => {
     const root = await tempDirectory();
     const outside = await tempDirectory();

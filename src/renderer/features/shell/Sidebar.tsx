@@ -307,24 +307,27 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   // another folder must work even while the focused folder is still starting
   // or streaming. The project-navigation generation discards superseded
   // results, and the activation queue serializes the actual opens safely.
-  const pendingFolderFocusRef = useRef<{ path: string; generation: number } | null>(null);
-  const runFolderFocus = (targetPath: string, operation: () => Promise<ReturnType<typeof useRuntimeStore.getState>['runtime'] | null>): void => {
+  const pendingFolderFocusRef = useRef<{ path: string; destination: string; generation: number } | null>(null);
+  const runFolderFocus = (targetPath: string, operation: () => Promise<ReturnType<typeof useRuntimeStore.getState>['runtime'] | null>, destination = 'folder'): void => {
     const navigationGeneration = projectNavigationGeneration.current;
     const current = pendingFolderFocusRef.current;
-    if (current && current.path === targetPath && current.generation === navigationGeneration) return; // same click already in flight
-    pendingFolderFocusRef.current = { path: targetPath, generation: navigationGeneration };
+    if (current?.path === targetPath && current.destination === destination && current.generation === navigationGeneration) return;
+    const request = { path: targetPath, destination, generation: navigationGeneration };
+    pendingFolderFocusRef.current = request;
     let pending: ReturnType<typeof operation>;
     try { pending = operation(); }
     catch (error) { pending = Promise.reject(error); }
     void pending
       .then((state) => {
-        if (pendingFolderFocusRef.current?.path === targetPath) pendingFolderFocusRef.current = null;
+        if (pendingFolderFocusRef.current !== request) return;
+        pendingFolderFocusRef.current = null;
         if (!state || !mounted.current) return;
         if (navigationGeneration !== projectNavigationGeneration.current) return;
         setRuntime(state);
       })
       .catch((error: unknown) => {
-        if (pendingFolderFocusRef.current?.path === targetPath) pendingFolderFocusRef.current = null;
+        if (pendingFolderFocusRef.current !== request) return;
+        pendingFolderFocusRef.current = null;
         if (!mounted.current) return;
         if (navigationGeneration === projectNavigationGeneration.current) showToast({ kind: 'error', title: 'Switching folder failed', message: sidebarErrorMessage(error, 'The project could not be opened.') });
       });
@@ -333,6 +336,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     if (!('piDesktop' in window) || navigationBusyRef.current || actionBusyRef.current) return;
     const store = useRuntimeStore.getState();
     const origin = store.runtime;
+    if (pendingFolderFocusRef.current && origin.project) {
+      const projectPath = origin.project.path;
+      runFolderFocus(projectPath, () => window.piDesktop.openProject(projectPath, { sessionId: session.id }), `session:${session.id}`);
+      return;
+    }
     const generation = store.beginSessionSwitch(session.id);
     if (generation === null) return;
     navigationBusyRef.current = true;
@@ -376,6 +384,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   };
   const createSession = () => {
     if (!('piDesktop' in window)) return;
+    if (pendingFolderFocusRef.current && runtime.project) {
+      createSessionInFolder(runtime.project);
+      return;
+    }
     invokeState('Creating session', () => window.piDesktop.newSession(), 'navigation');
   };
   const beginRename = (session: SessionSummary) => {
@@ -819,55 +831,20 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     if (!isActiveProject(project.path)) switchToProject(project.path);
   };
   const createSessionInFolder = (project: KnownProject) => {
-    if (isActiveProject(project.path) && runtime.status !== 'disconnected') {
+    if (isActiveProject(project.path) && runtime.status !== 'disconnected' && !pendingFolderFocusRef.current) {
       createSession();
       return;
     }
     if (!('piDesktop' in window) || typeof window.piDesktop.openProject !== 'function' || replacementBusy) return;
     if (navigationBusyRef.current || actionBusyRef.current) return;
-    navigationBusyRef.current = true;
-    setNavigationBusy(true);
-    const navigationGeneration = projectNavigationGeneration.current;
-    void window.piDesktop.openProject(project.path)
-      .then((state) => {
-        if (!mounted.current || navigationGeneration !== projectNavigationGeneration.current) return null;
-        if (state.status === 'error' || !state.project) return null;
-        return window.piDesktop.newSession();
-      })
-      .then((state) => {
-        if (state && mounted.current && navigationGeneration === projectNavigationGeneration.current) {
-          setRuntime(state);
-        }
-      })
-      .catch((error) => {
-        if (mounted.current && navigationGeneration === projectNavigationGeneration.current) showToast({ kind: 'error', title: 'Creating session failed', message: sidebarErrorMessage(error, 'The session could not be created.') });
-      })
-      .finally(() => {
-        navigationBusyRef.current = false;
-        if (mounted.current) setNavigationBusy(false);
-      });
+    runFolderFocus(project.path, () => window.piDesktop.openProject(project.path, { newSession: true }), 'new-session');
   };
   const focusForeignSession = (project: KnownProject, session: SessionSummary) => {
     if (!('piDesktop' in window) || typeof window.piDesktop.openProject !== 'function' || actionBusyRef.current) return;
     // Folder sessions are isolated Pi agents: clicking a session in another
     // folder must work even while the focused folder is starting/streaming.
     // Uses the non-blocking folder-focus helper (generation-guarded, queued).
-    runFolderFocus(project.path, async () => {
-      const state = await window.piDesktop.openProject(project.path);
-      if (!mounted.current) return state;
-      // Do not paint the project's default session between the folder focus
-      // and the requested session switch. Only the final destination is
-      // authoritative for this click.
-      if (state.status === 'error' || !state.project) return state;
-      if (state.sessionId !== session.id) {
-        try { return await window.piDesktop.switchSession(session.id); }
-        catch (error) {
-          if (mounted.current) showToast({ kind: 'error', title: 'Opening session failed', message: sidebarErrorMessage(error, 'The session could not be opened.') });
-          return state;
-        }
-      }
-      return state;
-    });
+    runFolderFocus(project.path, () => window.piDesktop.openProject(project.path, { sessionId: session.id }), `session:${session.id}`);
   };
   const forgetFolder = (project: KnownProject) => {
     if (!('piDesktop' in window) || typeof window.piDesktop.closeProjectRuntime !== 'function' || isActiveProject(project.path) || navigationBusyRef.current || actionBusyRef.current) return;

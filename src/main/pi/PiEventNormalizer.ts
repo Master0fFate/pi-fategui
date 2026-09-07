@@ -171,6 +171,7 @@ export class PiEventNormalizer {
   private settlementRunId: string | null = null;
   private settlementAborted = false;
   private readonly toolProvenance = new Map<string, ToolProvenance>();
+  private readonly runningToolIds = new Set<string>();
 
   constructor(
     private readonly runId: () => string | null,
@@ -183,6 +184,11 @@ export class PiEventNormalizer {
     this.settlementRunId = null;
     this.settlementAborted = false;
     this.toolProvenance.clear();
+    this.runningToolIds.clear();
+  }
+
+  isToolRunning(toolCallId: string): boolean {
+    return this.runningToolIds.has(this.toolId(toolCallId));
   }
 
   currentAssistantMessageId(): string | null {
@@ -193,6 +199,7 @@ export class PiEventNormalizer {
     const now = timestamp();
     switch (event.type) {
       case 'agent_start': {
+        this.runningToolIds.clear();
         this.activeAssistantId = null;
         const runId = this.runId();
         if (!runId) return [];
@@ -201,6 +208,7 @@ export class PiEventNormalizer {
         return [{ type: 'run.started', runId, timestamp: now }];
       }
       case 'agent_end': {
+        this.runningToolIds.clear();
         const runId = this.settlementRunId ?? this.runId();
         if (!runId) return [];
         this.settlementRunId = runId;
@@ -209,6 +217,7 @@ export class PiEventNormalizer {
         return [];
       }
       case 'agent_settled': {
+        this.runningToolIds.clear();
         const runId = this.settlementRunId ?? this.runId();
         const aborted = this.settlementAborted;
         this.settlementRunId = null;
@@ -256,6 +265,7 @@ export class PiEventNormalizer {
       }
       case 'tool_execution_start': {
         const toolCallId = this.toolId(event.toolCallId);
+        this.runningToolIds.add(toolCallId);
         const provenance = createToolProvenance(event.toolName, event.args, this.actor());
         if (provenance) {
           this.toolProvenance.set(toolCallId, provenance);
@@ -289,6 +299,7 @@ export class PiEventNormalizer {
       }
       case 'tool_execution_end': {
         const toolCallId = this.toolId(event.toolCallId);
+        this.runningToolIds.delete(toolCallId);
         const explicitImageAlt = toolImageAlt(event.result);
         const images = messageImages(event.result, explicitImageAlt ?? 'Generated image');
         if (explicitImageAlt && images.length === 1) images[0]!.alt = explicitImageAlt;

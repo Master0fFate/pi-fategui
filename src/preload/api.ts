@@ -69,6 +69,8 @@ import {
   sessionListSchema,
   sessionSearchInputSchema,
   projectPathInputSchema,
+  projectOpenInputSchema,
+  type ProjectSessionTarget,
   projectSessionListInputSchema,
   projectDeleteSessionsResultSchema,
   speechCancelResultSchema,
@@ -243,8 +245,8 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     const result: unknown = await ipcRenderer.invoke(ipcChannels.projectSelect, emptyInputSchema.parse({}));
     return runtimeStateSchema.parse(result);
   },
-  async openProject(projectPath: string) {
-    const result: unknown = await ipcRenderer.invoke(ipcChannels.projectOpenPath, projectPathInputSchema.parse({ projectPath }));
+  async openProject(projectPath: string, target?: ProjectSessionTarget) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.projectOpenPath, projectOpenInputSchema.parse({ projectPath, target }));
     return runtimeStateSchema.parse(result);
   },
   async focusProject(projectPath: string) {
@@ -627,6 +629,10 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async readFile(path: string) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.filesRead, filePathInputSchema.parse({ path }));
     return filePreviewSchema.parse(result);
+  },
+  async revealFileLink(path: string) {
+    const result: unknown = await ipcRenderer.invoke(ipcChannels.filesRevealLink, filePathInputSchema.parse({ path }));
+    return openFileResultSchema.parse(result);
   },
   async openFile(path: string) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.filesOpen, filePathInputSchema.parse({ path }));

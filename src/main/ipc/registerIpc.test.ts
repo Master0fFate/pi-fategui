@@ -12,7 +12,7 @@ vi.mock('electron', () => ({
   webContents: { fromId: vi.fn() },
 }));
 
-import { ipcChannels, type ProjectState } from '../../shared/contracts/ipc';
+import { ipcChannels, type ProjectState, type RuntimeState } from '../../shared/contracts/ipc';
 import type { MutationAttestationLedger } from '../pi/provenance/MutationAttestationLedger';
 import type { ProjectActivation } from '../projects/ProjectService';
 import { activatePreparedProject, assertProjectActivationIdle, createProjectActivationQueue, createProjectPathFocuser, createProjectPathOpener, discardCreatedWorktreeAfterFailure, registerIpc, resolveAttestationQuery } from './registerIpc';
@@ -46,10 +46,18 @@ function activation(project = nextProject): ProjectActivation & { commit: Return
 }
 
 function services() {
-  let current = state(previousProject);
+  let current: RuntimeState = state(previousProject);
   let root: string | null = previousProject.path;
   const runtime = {
     getState: vi.fn(() => current),
+    newSession: vi.fn(async () => {
+      current = { ...current, sessionId: 'new-session' };
+      return current;
+    }),
+    switchSession: vi.fn(async (sessionId: string) => {
+      current = { ...current, sessionId };
+      return current;
+    }),
     openProject: vi.fn(async (project: ProjectState) => {
       current = state(project);
       return current;
@@ -177,6 +185,68 @@ describe('transactional project activation', () => {
     expect(deps.files.setRoot).toHaveBeenCalledWith(nextProject.path);
     expect(deps.runtime.openProject).toHaveBeenCalledWith(nextProject, { thinkingLevel: 'medium', defaultModel: null });
     expect(candidate.commit).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a requested session switch inside its project activation queue turn', async () => {
+    const deps = services();
+    const queue = createProjectActivationQueue();
+    const projects = { prepareOpenPath: vi.fn(async (path: string) => activation({ path, name: path, trusted: true })) };
+    const open = createProjectPathOpener(projects, deps, queue);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    deps.runtime.switchSession.mockImplementationOnce(async (sessionId) => {
+      expect(deps.runtime.getState().project?.path).toBe('/first');
+      await gate;
+      expect(deps.runtime.getState().project?.path).toBe('/first');
+      return state({ path: '/first', name: '/first', trusted: true }, 'ready', { sessionId });
+    });
+    const first = open('/first', undefined, { sessionId: 'first-session' });
+    const second = open('/second', undefined, { sessionId: 'second-session' });
+    await vi.waitFor(() => expect(deps.runtime.switchSession).toHaveBeenCalledWith('first-session'));
+    expect(projects.prepareOpenPath).not.toHaveBeenCalledWith('/second', undefined);
+    release();
+    await expect(first).resolves.toMatchObject({ project: { path: '/first' }, sessionId: 'first-session' });
+    await expect(second).resolves.toMatchObject({ project: { path: '/second' }, sessionId: 'second-session' });
+  });
+
+  it('creates a session before the next queued project activation', async () => {
+    const deps = services();
+    const projects = { prepareOpenPath: vi.fn(async (path: string) => activation({ path, name: path, trusted: true })) };
+    const open = createProjectPathOpener(projects, deps);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    deps.runtime.newSession.mockImplementationOnce(async () => {
+      await gate;
+      expect(deps.runtime.getState().project?.path).toBe('/first');
+      return state({ path: '/first', name: '/first', trusted: true }, 'ready', { sessionId: 'created' });
+    });
+    const first = open('/first', undefined, { newSession: true });
+    const second = open('/second');
+    await vi.waitFor(() => expect(deps.runtime.newSession).toHaveBeenCalledOnce());
+    expect(projects.prepareOpenPath).not.toHaveBeenCalledWith('/second', undefined);
+    release();
+    await expect(first).resolves.toMatchObject({ project: { path: '/first' }, sessionId: 'created' });
+    await expect(second).resolves.toMatchObject({ project: { path: '/second' } });
+  });
+
+  it('continues queued navigation after a session destination fails', async () => {
+    const deps = services();
+    const projects = { prepareOpenPath: vi.fn(async (path: string) => activation({ path, name: path, trusted: true })) };
+    const open = createProjectPathOpener(projects, deps);
+    deps.runtime.switchSession.mockRejectedValueOnce(new Error('missing session'));
+    const failed = expect(open('/first', undefined, { sessionId: 'missing' })).rejects.toThrow('missing session');
+    const next = open('/second', undefined, { newSession: true });
+    await failed;
+    await expect(next).resolves.toMatchObject({ project: { path: '/second' }, sessionId: 'new-session' });
+  });
+
+  it('does not switch sessions when project trust is cancelled', async () => {
+    const deps = services();
+    const open = createProjectPathOpener({ prepareOpenPath: vi.fn(async () => null) }, deps);
+    await expect(open('/next', undefined, { sessionId: 'target' })).resolves.toMatchObject({ project: previousProject });
+    expect(deps.runtime.switchSession).not.toHaveBeenCalled();
+    await open('/next', undefined, { newSession: true });
+    expect(deps.runtime.newSession).not.toHaveBeenCalled();
   });
 
   it('focuses a known launcher path without spawning a runtime', async () => {

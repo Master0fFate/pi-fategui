@@ -684,7 +684,7 @@ function toMessage(message: unknown, id: string, timelinePosition: number): Runt
   return result;
 }
 
-function toTools(messages: readonly unknown[]): RuntimeTool[] {
+function toTools(messages: readonly unknown[], isToolRunning: (toolCallId: string) => boolean): RuntimeTool[] {
   const tools = new Map<string, RuntimeTool>();
   messages.forEach((message, messageIndex) => {
     if (!message || typeof message !== 'object') return;
@@ -697,13 +697,14 @@ function toTools(messages: readonly unknown[]): RuntimeTool[] {
         const block = part as { type?: unknown; id?: unknown; name?: unknown; arguments?: unknown };
         if (block.type !== 'toolCall' || typeof block.id !== 'string' || typeof block.name !== 'string') return;
         const provenance = createToolProvenance(block.name, block.arguments, { kind: 'root' });
+        const running = isToolRunning(block.id);
         tools.set(block.id, {
           id: block.id,
           name: block.name,
           input: safeToolInput(block.name, block.arguments ?? {}),
-          output: '',
+          output: running ? '' : 'No result was recorded for this tool call. Execution may have been interrupted; it has not been resumed.',
           outputTruncated: false,
-          status: 'running',
+          status: running ? 'running' : 'error',
           startedAt: timestamp,
           updatedAt: timestamp,
           timelinePosition: messageIndex + (partIndex + 1) / (content.length + 1),
@@ -1284,7 +1285,7 @@ export class PiRuntimeService {
         index,
       ))
       .filter((message): message is RuntimeMessage => message !== null);
-    const tools = toTools(allMessages);
+    const tools = toTools(allMessages, (toolCallId) => this.normalizer.isToolRunning(toolCallId));
     const activeGoal = session && this.project ? this.goalMax.get(this.project.path, session.sessionId) : null;
     let objective = activeGoal?.objective ?? this.objective;
     if (includeMessages && !activeGoal) {

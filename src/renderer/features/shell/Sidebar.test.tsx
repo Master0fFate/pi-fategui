@@ -806,18 +806,17 @@ describe('Sidebar sessions', () => {
     const target = session('other-session', 'Other session', true);
     useRuntimeStore.getState().setRuntime(ready({ status: 'disconnected', project: other, sessionId: null, sessionFile: null, sessions: [target] }));
     useProjectStore.setState({ projects: [other], expandedByPath: { '/other': true } });
-    const opened = ready({ project: other, sessionId: 'default', sessions: [session('default', 'Default', true), { ...target, active: false }] });
     const switched = ready({ project: other, sessionId: target.id, sessions: [{ ...target, active: true }] });
-    const openProject = vi.fn(async () => opened);
-    const switchSession = vi.fn(async () => switched);
+    const openProject = vi.fn(async () => switched);
+    const switchSession = vi.fn();
     const listProjectSessions = vi.fn(async () => [target]);
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { openProject, switchSession, listProjectSessions } as unknown as PiDesktopApi });
     const user = userEvent.setup();
     render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
 
     await user.click(screen.getByRole('button', { name: /^Other session/u }));
-    await waitFor(() => expect(openProject).toHaveBeenCalledWith('/other'));
-    await waitFor(() => expect(switchSession).toHaveBeenCalledWith(target.id));
+    await waitFor(() => expect(openProject).toHaveBeenCalledWith('/other', { sessionId: target.id }));
+    expect(switchSession).not.toHaveBeenCalled();
     expect(useRuntimeStore.getState().runtime.sessionId).toBe(target.id);
   });
 
@@ -840,11 +839,10 @@ describe('Sidebar sessions', () => {
     const other = { path: '/other', name: 'other' };
     useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }, other], expandedByPath: { '/project': true, '/other': true } });
     const target = session('other-session', 'Other session', false, 'running');
-    const opened = ready({ project: { ...other, trusted: true }, sessionId: 'other-default', sessions: [session('other-default', 'Default', true), target] });
     const switched = ready({ project: { ...other, trusted: true }, sessionId: target.id, sessions: [session('other-default', 'Default', false), session(target.id, target.title, true, 'running')] });
     let finishSwitch!: (state: RuntimeState) => void;
-    const openProject = vi.fn(async () => opened);
-    const switchSession = vi.fn(() => new Promise<RuntimeState>((resolve) => { finishSwitch = resolve; }));
+    const openProject = vi.fn(() => new Promise<RuntimeState>((resolve) => { finishSwitch = resolve; }));
+    const switchSession = vi.fn();
     const listProjectSessions = vi.fn(async () => [target]);
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { openProject, switchSession, listProjectSessions } as unknown as PiDesktopApi });
     const user = userEvent.setup();
@@ -852,8 +850,8 @@ describe('Sidebar sessions', () => {
 
     expect(await screen.findByRole('img', { name: 'Session running' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /^Other session/u }));
-    await waitFor(() => expect(openProject).toHaveBeenCalledWith('/other'));
-    await waitFor(() => expect(switchSession).toHaveBeenCalledWith(target.id));
+    await waitFor(() => expect(openProject).toHaveBeenCalledWith('/other', { sessionId: target.id }));
+    expect(switchSession).not.toHaveBeenCalled();
     expect(useRuntimeStore.getState().runtime.project?.path).toBe('/project');
     expect(useRuntimeStore.getState().runtime.sessionId).toBe('s1');
 
@@ -867,21 +865,68 @@ describe('Sidebar sessions', () => {
     expect(container.querySelector('.folder-group--active .folder-name')).toHaveTextContent('other');
   });
 
+  it.each(['resolve', 'reject'] as const)('keeps the latest same-folder session click when an older request %ss late', async (outcome) => {
+    const other = { path: '/other', name: 'other', trusted: true };
+    const first = session('first-preview', 'First preview', false);
+    const last = session('last-preview', 'Last preview', false);
+    useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }, other], expandedByPath: { '/project': true, '/other': true } });
+    let resolveFirst!: (state: RuntimeState) => void;
+    let rejectFirst!: (error: Error) => void;
+    let resolveLast!: (state: RuntimeState) => void;
+    const openProject = vi.fn()
+      .mockImplementationOnce(() => new Promise<RuntimeState>((resolve, reject) => { resolveFirst = resolve; rejectFirst = reject; }))
+      .mockImplementationOnce(() => new Promise<RuntimeState>((resolve) => { resolveLast = resolve; }));
+    const listProjectSessions = vi.fn(async () => [first, last]);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { openProject, listProjectSessions } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+    await user.click(await screen.findByRole('button', { name: /^First preview/u }));
+    await user.click(screen.getByRole('button', { name: /^First preview/u }));
+    expect(openProject).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: /^Last preview/u }));
+    expect(openProject).toHaveBeenNthCalledWith(1, '/other', { sessionId: first.id });
+    expect(openProject).toHaveBeenNthCalledWith(2, '/other', { sessionId: last.id });
+    await act(async () => { resolveLast(ready({ project: other, sessionId: last.id, sessions: [first, { ...last, active: true }] })); });
+    await act(async () => {
+      if (outcome === 'reject') rejectFirst(new Error('obsolete failure'));
+      else resolveFirst(ready({ project: other, sessionId: first.id, sessions: [{ ...first, active: true }, last] }));
+    });
+    expect(useRuntimeStore.getState().runtime.sessionId).toBe(last.id);
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it('does not let an earlier session creation overwrite a later folder focus', async () => {
+    const other = { path: '/other', name: 'other', trusted: true };
+    const last = { path: '/last', name: 'last', trusted: true };
+    useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }, other, last], expandedByPath: { '/project': true, '/other': true, '/last': true } });
+    let finishCreate!: (state: RuntimeState) => void;
+    const openProject = vi.fn(() => new Promise<RuntimeState>((resolve) => { finishCreate = resolve; }));
+    const focusProject = vi.fn(async () => ready({ project: last, sessionId: 'last-session' }));
+    const listProjectSessions = vi.fn(async () => []);
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { openProject, focusProject, listProjectSessions } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: 'New session in other' }));
+    await user.click(screen.getByRole('button', { name: /^last 0$/u }));
+    await waitFor(() => expect(useRuntimeStore.getState().runtime.project?.path).toBe('/last'));
+    await act(async () => { finishCreate(ready({ project: other, sessionId: 'created' })); });
+    expect(useRuntimeStore.getState().runtime.project?.path).toBe('/last');
+  });
+
   it('applies the returned state when creating a session in a foreign folder', async () => {
     const other = { path: '/other', name: 'other' };
     useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }, other], expandedByPath: { '/project': true, '/other': true } });
-    const opened = ready({ project: { ...other, trusted: true }, sessionId: 'other-default', sessions: [session('other-default', 'Default', true)] });
     const created = ready({ project: { ...other, trusted: true }, sessionId: 'other-new', sessions: [session('other-new', 'New session', true)] });
-    const openProject = vi.fn(async () => opened);
-    const newSession = vi.fn(async () => created);
+    const openProject = vi.fn(async () => created);
+    const newSession = vi.fn();
     const listProjectSessions = vi.fn(async () => []);
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { openProject, newSession, listProjectSessions } as unknown as PiDesktopApi });
     const user = userEvent.setup();
     render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
 
     await user.click(screen.getByRole('button', { name: 'New session in other' }));
-    await waitFor(() => expect(openProject).toHaveBeenCalledWith('/other'));
-    await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+    await waitFor(() => expect(openProject).toHaveBeenCalledWith('/other', { newSession: true }));
+    expect(newSession).not.toHaveBeenCalled();
     expect(useRuntimeStore.getState().runtime.project?.path).toBe('/other');
     expect(useRuntimeStore.getState().runtime.sessionId).toBe('other-new');
   });
