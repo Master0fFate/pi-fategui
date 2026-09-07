@@ -48,6 +48,24 @@ describe('FilesystemService confinement', () => {
     expect(electronMocks.openPath).not.toHaveBeenCalled();
   });
 
+  it('accepts absolute project aliases only when their real path stays inside the root', async () => {
+    const root = await tempDirectory();
+    const aliases = await tempDirectory();
+    const alias = path.join(aliases, 'project-alias');
+    const artifact = path.join(root, 'handoff.zip');
+    await fs.writeFile(artifact, 'archive');
+    await fs.symlink(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const service = new FilesystemService();
+    await service.setRoot(root);
+    for (const reference of [path.join(alias, 'handoff.zip'), pathToFileURL(path.join(alias, 'handoff.zip')).href]) {
+      await expect(service.revealLink(reference)).resolves.toEqual({ opened: true });
+      expect(electronMocks.showItemInFolder).toHaveBeenLastCalledWith(await fs.realpath(artifact));
+    }
+    await fs.writeFile(path.join(aliases, 'outside.zip'), 'private');
+    await expect(service.revealLink(path.join(aliases, 'outside.zip'))).rejects.toThrow('outside the active project');
+    expect(electronMocks.showItemInFolder).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects absolute paths, traversal, and symlinks escaping the root', async () => {
     const root = await tempDirectory();
     const outside = await tempDirectory();

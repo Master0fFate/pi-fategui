@@ -765,10 +765,11 @@ export class FilesystemService {
       invalidPath('Only local project file links are supported.');
     }
     const candidate = path.resolve(operation.root, decoded);
-    this.ensureConfined(candidate);
-    const relative = path.relative(operation.root, candidate).split(path.sep).join('/');
-    const absolute = await this.resolvePath(relative);
+    if (!path.isAbsolute(decoded)) this.ensureConfined(candidate);
+    // Absolute links may use a project alias, such as macOS /var versus /private/var.
+    const absolute = path.normalize(await fs.realpath(candidate));
     this.assertRootOperation(operation);
+    this.ensureConfined(absolute);
     if (!(await fs.stat(absolute)).isFile()) invalidPath('The file link does not point to a file.');
     this.assertRootOperation(operation);
     shell.showItemInFolder(absolute);
