@@ -195,14 +195,14 @@ export class BrowserService {
   }
 
   async ensureTab(tabId = 'browser-main', initialUrl?: string): Promise<void> {
-    if (this.tabs.has(tabId)) {
-      this.activateTab(tabId);
-      return;
-    }
     const pending = this.tabCreations.get(tabId);
     if (pending) {
       await pending;
       if (this.tabs.has(tabId)) this.activateTab(tabId);
+      return;
+    }
+    if (this.tabs.has(tabId)) {
+      this.activateTab(tabId);
       return;
     }
     // Reopening the main tab without an explicit address restores the last

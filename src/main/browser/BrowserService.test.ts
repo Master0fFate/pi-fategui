@@ -278,6 +278,31 @@ describe('BrowserService visibility safety', () => {
     await service.dispose();
   });
 
+  it('waits for a partially registered tab to finish creating before activating it', async () => {
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, { canonicalProjectPath: process.cwd() });
+    const internals = service as unknown as { tabs: Map<string, unknown> };
+    let finish!: () => void;
+    const startup = new Promise<void>((resolve) => { finish = resolve; });
+    const createTab = vi.spyOn(service, 'createTab').mockImplementation(async (id) => {
+      internals.tabs.set(id, {});
+      await startup;
+    });
+    const activateTab = vi.spyOn(service, 'activateTab').mockImplementation(() => undefined);
+    const first = service.ensureTab();
+    const returned = vi.fn();
+    const second = service.ensureTab().then(returned);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(returned).not.toHaveBeenCalled();
+    expect(activateTab).not.toHaveBeenCalled();
+    finish();
+    await Promise.all([first, second]);
+    expect(createTab).toHaveBeenCalledOnce();
+    expect(activateTab).toHaveBeenCalledWith('browser-main');
+    internals.tabs.clear();
+    await service.dispose();
+  });
+
   it('reopens the main tab at the remembered restore URL when no explicit address is given', async () => {
     const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
       canonicalProjectPath: process.cwd(),

@@ -49,6 +49,22 @@ describe('BrowserHost tab lifecycle', () => {
     expect(internals.annotationStores.size).toBe(2);
   });
 
+  it('waits for startup even after the service exposes its first tab', async () => {
+    const { host, service, syncService } = fixture([{ id: 'browser-main' }]);
+    let finish!: (service: BrowserService) => void;
+    const startup = new Promise<BrowserService>((resolve) => { finish = resolve; });
+    Object.assign(host, { ensuring: { ownerId: owner.webContents.id, projectPath: project.path, promise: startup } });
+    const returned = vi.fn();
+    const pending = host.ensure(owner).then(returned);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(returned).not.toHaveBeenCalled();
+    expect(syncService).not.toHaveBeenCalled();
+    finish(service);
+    await pending;
+    expect(returned).toHaveBeenCalledWith(service);
+  });
+
   it('does not resurrect the default tab when another managed tab remains', async () => {
     const { host, service, ensureTab, syncService } = fixture([{ id: 'tab-user-created' }]);
 

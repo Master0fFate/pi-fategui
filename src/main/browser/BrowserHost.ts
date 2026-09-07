@@ -68,17 +68,17 @@ export class BrowserHost {
     if (owner.isDestroyed()) throw new BrowserError('ACTION_BLOCKED', 'The application window is unavailable.');
     const project = this.options.currentProject();
     if (!project?.trusted) throw new BrowserError('ACTION_BLOCKED', 'Open and trust a project before using the built-in browser.');
-    const current = this.current(owner);
-    if (current) {
-      if (current.getState().tabs.length === 0) await this.ensureServiceTab(current, project);
-      this.options.bridge.syncService();
-      return current;
-    }
     const pending = this.ensuring;
     if (pending) {
       if (pending.ownerId === owner.webContents.id && samePath(project.path, pending.projectPath)) return pending.promise;
       await pending.promise.catch(() => undefined);
       return this.ensure(owner);
+    }
+    const current = this.current(owner);
+    if (current) {
+      if (current.getState().tabs.length === 0) await this.ensureServiceTab(current, project);
+      this.options.bridge.syncService();
+      return current;
     }
     const operation = this.createService(owner, project);
     this.ensuring = { ownerId: owner.webContents.id, projectPath: project.path, promise: operation };
