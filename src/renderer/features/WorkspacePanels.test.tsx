@@ -353,6 +353,7 @@ describe('workspace inspector panels', () => {
     useRuntimeStore.setState((state) => ({ runtime: { ...state.runtime, commands: [], skills: [] } }));
     const { rerender } = render(<ResourcesPanel />);
     expect(screen.getByText('No Pi resources loaded')).toBeInTheDocument();
+    expect(screen.queryByText(/MCP is unavailable/)).not.toBeInTheDocument();
 
     useRuntimeStore.setState((state) => ({
       runtime: {
@@ -366,6 +367,9 @@ describe('workspace inspector panels', () => {
       },
     }));
     rerender(<ResourcesPanel />);
+    expect(screen.queryByLabelText('MCP servers')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Pinned project facts')).not.toBeInTheDocument();
+    expect(screen.queryByText(/MCP is unavailable|magic memory/)).not.toBeInTheDocument();
     const extensions = screen.getByLabelText('Extension commands');
     const prompts = screen.getByLabelText('Prompt templates');
     const skillGroup = screen.getByLabelText('Skills');
