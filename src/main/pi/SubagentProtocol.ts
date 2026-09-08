@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import type {
@@ -396,8 +397,7 @@ export function modelKey(model: Pick<ParentModel, 'provider' | 'id'>): string {
 }
 
 export function modelThinkingLevels(model: ParentModel): ThinkingLevel[] {
-  if (!model.reasoning) return ['off'];
-  return thinkingLevels.filter((level) => level === 'off' || model.thinkingLevelMap?.[level] !== null);
+  return getSupportedThinkingLevels(model);
 }
 
 export function deterministicRunId(parentSessionId: string, toolCallId: string, index: number): string {

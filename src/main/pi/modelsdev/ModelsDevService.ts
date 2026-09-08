@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { VERSION as PI_VERSION } from '@earendil-works/pi-coding-agent';
 import type { ModelsDevProviderDetail, ModelsDevProviderSummary } from '../../../shared/contracts/ipc';
 import { ModelsDevStore, type ModelsDevRegistryEntry } from './ModelsDevStore';
 import {
@@ -33,7 +34,7 @@ const LIVE_MODELS_TIMEOUT_MS = 8_000;
 const MAX_PAYLOAD_BYTES = 24 * 1024 * 1024;
 const LIVE_MODELS_MAX_BYTES = 2 * 1024 * 1024;
 /** Crof (and similar WAFs) reject /v1/models with HTTP 403 when User-Agent is missing. */
-const LIVE_MODELS_USER_AGENT = 'pi/0.85.0 (Fate UI)';
+const LIVE_MODELS_USER_AGENT = `pi/${PI_VERSION} (Fate UI)`;
 
 export type ModelsDevFetch = (url: string, init: { signal: AbortSignal; headers: Record<string, string> }) => Promise<{ ok: boolean; status: number; arrayBuffer(): Promise<ArrayBuffer> }>;
 

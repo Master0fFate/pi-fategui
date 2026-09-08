@@ -161,10 +161,11 @@ test('left sidebar unifies real resources and persisted project automations', as
     await expect(page.getByText(path.basename(fixture.root)).first()).toBeVisible();
 
     const voiceButton = page.getByRole('button', { name: 'Start voice recording' });
-    const voiceBox = await voiceButton.boundingBox();
-    if (!voiceBox) throw new Error('Voice input button was not rendered.');
-    await page.mouse.move(voiceBox.x + voiceBox.width / 2, voiceBox.y + voiceBox.height / 2);
+    await page.bringToFront();
+    await expect(voiceButton).toBeEnabled();
+    await voiceButton.hover();
     await page.mouse.down();
+    await expect.poll(() => voiceButton.evaluate((button) => button.matches(':active'))).toBe(true);
     await page.waitForTimeout(200);
     const pressedVoiceStyle = await voiceButton.evaluate((button) => {
       const probe = document.createElement('span');
