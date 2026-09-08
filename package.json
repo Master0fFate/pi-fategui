@@ -1,6 +1,6 @@
 {
   "name": "pi-fategui",
-  "version": "0.9.8-beta2",
+  "version": "0.9.8-beta3",
   "description": "A local-first desktop interface for the Pi coding agent",
   "type": "module",
   "main": "dist/main/index.js",
@@ -46,8 +46,8 @@
     "dist": "pnpm verify:speech-runtime && pnpm prepare:yt-dlp && pnpm build && electron-builder --publish never"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.85.0",
-    "@earendil-works/pi-server": "0.85.0",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/montserrat": "^5.3.0",
