@@ -30,6 +30,7 @@ export interface ProductionSmokeDeps {
   music: MusicStatusSurface;
   settings: ThemesSurface;
   smokeTerminalRuntime: (cwd: string) => Promise<string>;
+  smokeRenderer: () => Promise<void>;
   cwd: string;
   streamSmokeEnabled: boolean;
   now(): number;
@@ -61,6 +62,8 @@ async function smokeBatchSpeech(speech: SpeechSmokeSurface): Promise<void> {
 
 export async function runProductionSmoke(deps: ProductionSmokeDeps): Promise<void> {
   try {
+    await deps.smokeRenderer();
+    deps.log('PI_DESKTOP_RENDERER_OK');
     const [speechStatus, musicStatus, themes, terminalShell] = await Promise.all([
       deps.speech.getStatus(),
       deps.music.getStatus(),

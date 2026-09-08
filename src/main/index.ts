@@ -247,6 +247,23 @@ function wireSmoke(window: BrowserWindow): void {
         music,
         settings,
         smokeTerminalRuntime,
+        smokeRenderer: async () => {
+          await window.webContents.executeJavaScript(`new Promise((resolve, reject) => {
+            const deadline = Date.now() + 10000;
+            let readySince = null;
+            const check = () => {
+              const shell = document.querySelector('#root .app-shell');
+              const ready = shell && shell.getBoundingClientRect().height > 0
+                && document.querySelector('[data-bridge-status="ready"]');
+              if (!ready) readySince = null;
+              else if (readySince === null) readySince = Date.now();
+              if (readySince !== null && Date.now() - readySince >= 500) return resolve();
+              if (Date.now() >= deadline) return reject(new Error('Application interface did not render'));
+              setTimeout(check, 50);
+            };
+            check();
+          })`);
+        },
         cwd: process.cwd(),
         streamSmokeEnabled: process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1',
         now: () => performance.now(),

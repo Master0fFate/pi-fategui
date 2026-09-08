@@ -74,7 +74,7 @@ const child = spawn(executable, applicationArguments, {
   env: { ...process.env, FATE_NEW_INSTANCE: '1', PI_DESKTOP_SMOKE: '1', PI_OFFLINE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
-const requiredMarkers = ['PI_DESKTOP_SPEECH_OK', 'PI_DESKTOP_YT_DLP_OK', 'PI_DESKTOP_THEMES_OK', 'PI_DESKTOP_TERMINAL_OK', 'PI_DESKTOP_SMOKE_OK'];
+const requiredMarkers = ['PI_DESKTOP_RENDERER_OK', 'PI_DESKTOP_SPEECH_OK', 'PI_DESKTOP_YT_DLP_OK', 'PI_DESKTOP_THEMES_OK', 'PI_DESKTOP_TERMINAL_OK', 'PI_DESKTOP_SMOKE_OK'];
 if (process.env.PI_DESKTOP_SPEECH_STREAM_SMOKE === '1') requiredMarkers.push('PI_DESKTOP_PARAKEET_STREAM_OK', 'PI_DESKTOP_BATCH_SPEECH_OK');
 const seenMarkers = new Set();
 let output = '';
@@ -98,6 +98,7 @@ const [exitCode, exitSignal] = await new Promise((resolve, reject) => {
 });
 clearTimeout(timeout);
 if (timedOut) throw new Error(`Packaged smoke test timed out after ${timeoutMs} ms.`);
+if (!seenMarkers.has('PI_DESKTOP_RENDERER_OK')) throw new Error('Packaged application interface did not render.');
 if (!seenMarkers.has('PI_DESKTOP_SPEECH_OK')) throw new Error(`Packaged speech runtime did not initialize (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
 if (!seenMarkers.has('PI_DESKTOP_YT_DLP_OK')) throw new Error(`Packaged yt-dlp runtime did not initialize (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);
 if (!seenMarkers.has('PI_DESKTOP_THEMES_OK')) throw new Error(`Packaged Pi themes did not load (exit ${exitCode}${exitSignal ? `, signal ${exitSignal}` : ''}).`);

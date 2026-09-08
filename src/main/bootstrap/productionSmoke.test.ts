@@ -21,6 +21,7 @@ function makeDeps(overrides: Partial<ProductionSmokeDeps> = {}): { deps: Product
     music: { getStatus: async () => ({ available: true, version: '2024.01.01', message: undefined }) },
     settings: { loadThemes: async () => [{ name: 'Pi · Midnight', tone: 'dark' }, { name: 'Pi · Daylight', tone: 'light' }] },
     smokeTerminalRuntime: async () => 'bash',
+    smokeRenderer: async () => undefined,
     cwd: '.',
     streamSmokeEnabled: false,
     now: () => 0,
@@ -40,6 +41,7 @@ describe('runProductionSmoke', () => {
     await runProductionSmoke(deps);
 
     expect(log).toHaveBeenCalledWith('PI_DESKTOP_SMOKE_OK');
+    expect(log).toHaveBeenCalledWith('PI_DESKTOP_RENDERER_OK');
     expect(log).toHaveBeenCalledWith('PI_DESKTOP_SPEECH_OK cpu');
     expect(log).toHaveBeenCalledWith('PI_DESKTOP_YT_DLP_OK 2024.01.01');
     expect(log).toHaveBeenCalledWith('PI_DESKTOP_THEMES_OK');
@@ -57,6 +59,17 @@ describe('runProductionSmoke', () => {
 
     expect(error).toHaveBeenCalledWith(expect.stringContaining('PI_DESKTOP_RUNTIME_SMOKE_FAILED'));
     expect(error).toHaveBeenCalledWith(expect.stringContaining('missing'));
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(quit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a blank renderer even when backend services are healthy', async () => {
+    const { deps, log, error, exit, quit } = makeDeps({
+      smokeRenderer: async () => { throw new Error('Application interface did not render'); },
+    });
+    await runProductionSmoke(deps);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('Application interface did not render'));
+    expect(log).not.toHaveBeenCalledWith('PI_DESKTOP_SMOKE_OK');
     expect(exit).toHaveBeenCalledWith(1);
     expect(quit).not.toHaveBeenCalled();
   });

@@ -32,8 +32,9 @@ function ResourceGroup({ id, title, kind, items }: { id: string; title: string; 
 }
 
 export function ResourcesPanel() {
-  const commands = useRuntimeStore((state) => state.runtime.commands ?? []);
-  const discoveredSkills = useRuntimeStore((state) => state.runtime.skills ?? []);
+  // Store snapshots must stay stable while startup discovery is still pending.
+  const commands = useRuntimeStore((state) => state.runtime.commands) ?? [];
+  const discoveredSkills = useRuntimeStore((state) => state.runtime.skills) ?? [];
   const extensionCommands = commands.filter((command) => command.source === 'extension');
   const promptTemplates = commands.filter((command) => command.source === 'prompt' || command.source === undefined);
   const skills = new Map(discoveredSkills.map((skill) => [skill.name, skill]));
