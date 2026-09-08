@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createFindToolDefinition, createLsToolDefinition, createReadToolDefinition, createWriteToolDefinition } from '@earendil-works/pi-coding-agent';
-import { activeToolsForPermission, createProjectConfinedTools, ProjectPathPolicy } from './PiToolPolicy';
+import { activeToolsForPermission, createProjectConfinedTools, ProjectPathPolicy, requiredPermissionForTool, toolNamesForPermission } from './PiToolPolicy';
+import { TASK_TOOL_NAMES } from './tasks/TaskTools';
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -44,6 +45,14 @@ describe('ProjectPathPolicy', () => {
     const browserTools = ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_tabs'];
 
     expect(activeToolsForPermission(browserTools, 'read-only')).toEqual(expect.arrayContaining(browserTools));
+  });
+
+  it.each(['read-only', 'edit', 'full-access'] as const)('keeps root task metadata tools available at %s without granting them to children', (permission) => {
+    expect(activeToolsForPermission(TASK_TOOL_NAMES, permission)).toEqual(expect.arrayContaining([...TASK_TOOL_NAMES]));
+    for (const name of TASK_TOOL_NAMES) {
+      expect(requiredPermissionForTool(name)).toBeUndefined();
+      expect(toolNamesForPermission(permission)).not.toContain(name);
+    }
   });
 
   it('registers Bash so explicit Full access can activate command execution', async () => {

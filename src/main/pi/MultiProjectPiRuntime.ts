@@ -8,6 +8,7 @@ import { MultiProjectRuntimeManager } from './MultiProjectRuntimeManager';
 import { createDefaultModelRuntime, PiRuntimeService, type ModelRuntimeProvider, type PiSdkAdapter, type SessionDefaults } from './PiRuntimeService';
 import type { MutationRecorder } from './provenance/mutationRecorder';
 import type { SessionPermissionPersistence } from './SessionPermissionStore';
+import type { SessionQueuePersistence } from './SessionQueueRepository';
 
 const noopEventSink = (_events: PiEvent[]) => undefined;
 const noopGoalSink = (_event: GoalMaxEvent) => undefined;
@@ -39,6 +40,7 @@ export interface MultiProjectPiRuntimeDeps {
   sessionPermissions: SessionPermissionPersistence;
   getImageGenerationSettings: ImageGenerationSettingsResolver;
   createGoalPersistence: () => GoalMaxPersistence;
+  createQueuePersistence?: () => SessionQueuePersistence;
   browserIntegration: PiBrowserRuntimeIntegration | null;
   defaults: () => Promise<SessionDefaults>;
   getDisabledModels?: () => readonly string[];
@@ -295,6 +297,10 @@ export class MultiProjectPiRuntime {
       this.deps.browserIntegration,
       modelRuntimeProvider,
       this.deps.recordAttestation ?? null,
+      undefined,
+      undefined,
+      undefined,
+      this.deps.createQueuePersistence?.(),
     );
     service.setSessionSettledListener(() => this.deps.notifySessionSettled?.());
     if (this.deps.getDisabledModels) service.setDisabledModelsSource(this.deps.getDisabledModels);

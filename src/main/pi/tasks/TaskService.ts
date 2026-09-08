@@ -142,6 +142,9 @@ export class TaskService {
     const parsed = taskUpdateInputSchema.parse(input);
     await this.ensure(projectPath, sessionId);
     await this.mutate(projectPath, sessionId, (list, now) => {
+      const existing = list.tasks.find((task) => task.id === parsed.id);
+      if (!existing) throw new Error('That task no longer exists.');
+      if (existing.source === 'goalmax') throw new Error('GoalMax tasks are managed by the active goal. Edit or clear the goal instead.');
       const tasks = list.tasks.map((task) => {
         if (task.id !== parsed.id) return task;
         const status = parsed.status ?? task.status;

@@ -778,7 +778,10 @@ export function SubagentSessionsPanel() {
       <div className="agent-tree-root">
         <span className="agent-tree-root-mark"><Bot size={15} aria-hidden="true" /></span>
         <span className="agent-tree-root-copy">
-          <strong>Main agent</strong>
+          <span className="agent-tree-root-title">
+            <strong>Main agent</strong>
+            {goalProjection.hasGoal ? <span className="goalmax-root-marker" title="Main agent is linked to the current goal" aria-label="Main agent linked to GoalMax"><Target size={11} /></span> : null}
+          </span>
           <small>{activeSession?.title ?? runtime.objective ?? 'Current Pi session'}</small>
           {runtime.model ? (
             <small className="agent-tree-root-meta" title={`${runtime.model.provider}/${runtime.model.id}`}>
@@ -787,7 +790,6 @@ export function SubagentSessionsPanel() {
           ) : null}
         </span>
         {hasChildren ? <span className="agent-tree-overview">{totalAgents + teamAgents} {totalAgents + teamAgents === 1 ? 'agent' : 'agents'}{activeAgents + teamActive ? ` · ${activeAgents + teamActive} active` : ''}</span> : null}
-        {goalProjection.hasGoal ? <span className="goalmax-root-marker" title="Main agent is linked to the current goal" aria-label="Main agent linked to GoalMax"><Target size={11} /></span> : null}
         <CreateAgentTeamButton />
       </div>
       {!hasChildren ? (

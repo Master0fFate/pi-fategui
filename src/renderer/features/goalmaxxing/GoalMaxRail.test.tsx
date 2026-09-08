@@ -33,6 +33,8 @@ describe('GoalMax rail', () => {
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { controlGoalMax } as unknown as PiDesktopApi });
     render(<GoalMaxRail />);
     expect(screen.getByRole('region', { name: 'Current GoalMax goal' })).toHaveTextContent('Implement the durable goal control plane');
+    expect(screen.getByRole('button', { name: 'Open Goal Flight Deck' })).toHaveTextContent('Implement the durable goal control plane');
+    expect(screen.getAllByRole('button')).toHaveLength(4);
     await user.click(screen.getByRole('button', { name: 'Open Goal Flight Deck' }));
     expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'goal', inspectorCollapsed: false });
     await user.click(screen.getByRole('button', { name: 'Pause goal' }));
@@ -51,7 +53,10 @@ describe('GoalMax rail', () => {
     } });
     const { container } = render(<GoalMaxRail />);
 
-    expect(screen.getByRole('region', { name: 'Current GoalMax goal' })).toHaveTextContent('Achieved · handoff · 1/1');
+    const rail = screen.getByRole('region', { name: 'Current GoalMax goal' });
+    expect(rail).toHaveTextContent('Achieved');
+    expect(rail).not.toHaveTextContent('handoff');
+    expect(rail).not.toHaveTextContent('1/1');
     expect(container.querySelector('.goalmax-rail[data-status="completed"] .lucide-check')).toBeInTheDocument();
     expect(container.querySelector('.goalmax-rail .lucide-circle-alert')).not.toBeInTheDocument();
   });

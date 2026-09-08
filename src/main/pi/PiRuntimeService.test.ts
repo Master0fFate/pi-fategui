@@ -21,6 +21,8 @@ import type { SessionTitleGenerator } from './PiSessionTitleGenerator';
 import { InMemorySessionPermissionStore } from './SessionPermissionStore';
 import { ModelsDevService } from './modelsdev/ModelsDevService';
 import { ModelsDevStore } from './modelsdev/ModelsDevStore';
+import { TASK_TOOL_NAMES } from './tasks/TaskTools';
+import { InMemorySessionQueueRepository, type SessionQueuePersistence } from './SessionQueueRepository';
 
 const model = { provider: 'test', id: 'model', name: 'Test Model', reasoning: true, contextWindow: 1000, input: ['text', 'image'] as const };
 
@@ -683,7 +685,7 @@ describe('PiRuntimeService', () => {
   });
 
   it('activates one orchestration protocol surface while registering both for restored sessions', async () => {
-    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'message_session', 'goalmax_status', 'goalmax_report', 'goalmax_complete'];
+    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'message_session', 'goalmax_status', 'goalmax_report', 'goalmax_complete', ...TASK_TOOL_NAMES];
     const legacy = fixture();
     const legacyService = new PiRuntimeService(legacy.adapter);
     await legacyService.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'medium', defaultModel: null, agentTeamMode: 'legacy' });
@@ -882,6 +884,61 @@ describe('PiRuntimeService', () => {
     } finally {
       await service.dispose();
       rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  it('registers and activates canonical task tools for ordinary root sessions at every permission level', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const tools = (fake.adapter.createRuntime as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as ToolDefinition[];
+    const call = (name: typeof TASK_TOOL_NAMES[number], params = {}, sessionId = 'session-1') => tools.find((tool) => tool.name === name)!
+      .execute('call', params, undefined, undefined, { sessionManager: { getSessionId: () => sessionId } } as never);
+    try {
+      expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([...TASK_TOOL_NAMES]));
+      expect(fake.session.getActiveToolNames()).not.toContain('goalmax_status');
+      for (const level of ['read-only', 'edit', 'full-access'] as const) {
+        await service.setPermissionLevel(level);
+        expect(fake.session.getActiveToolNames()).toEqual(expect.arrayContaining([...TASK_TOOL_NAMES]));
+        await call('create_task', { title: `Task at ${level}`, detail: 'Visible without an active goal.' });
+        const list = (await service.getTaskList())!;
+        expect(list.goalId).toBeNull();
+        const id = list.tasks[0]!.id;
+        await call('update_task', { id, status: 'in-progress' });
+        await expect(call('list_tasks')).resolves.toMatchObject({ details: { list: { tasks: [expect.objectContaining({ id, status: 'in-progress' })] } } });
+        await call('delete_task', { id });
+        expect((await service.getTaskList())!.tasks).toEqual([]);
+      }
+      await expect(call('create_task', { title: 'Not a root' }, 'child-session')).rejects.toThrow(/live root/);
+    } finally {
+      await service.dispose();
+    }
+    await expect(call('create_task', { title: 'Disposed root' })).rejects.toThrow(/live root/);
+  });
+
+  it('keeps background root task calls bound to their caller instead of the selected tab', async () => {
+    const first = fixture();
+    const second = fixture();
+    second.session.sessionId = 'session-2';
+    (first.adapter.createRuntime as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(first.runtime)
+      .mockResolvedValueOnce(second.runtime);
+    const service = new PiRuntimeService(first.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const tools = (first.adapter.createRuntime as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as ToolDefinition[];
+    first.setStreaming(true);
+    try {
+      await service.newSession();
+      expect(service.getState().sessionId).toBe('session-2');
+      const create = tools.find((tool) => tool.name === 'create_task')!;
+      await expect(create.execute('call', { title: 'Background work' }, undefined, undefined, {
+        sessionManager: { getSessionId: () => 'session-1' },
+      } as never)).resolves.toMatchObject({ details: { list: { sessionId: 'session-1', tasks: [expect.objectContaining({ title: 'Background work' })] } } });
+      expect(await service.getTaskList()).toBeNull();
+      expect(service.getState().sessionId).toBe('session-2');
+    } finally {
+      first.setStreaming(false);
+      await service.dispose();
     }
   });
 
@@ -1192,6 +1249,117 @@ describe('PiRuntimeService', () => {
       images: [{ type: 'image', mimeType: 'image/png', data }],
     }));
     fake.settle();
+    await service.dispose();
+  });
+
+  it('persists before SDK delivery and restores uncertain drafts without replaying them', async () => {
+    const persistence = new InMemorySessionQueueRepository();
+    const create = (fake: ReturnType<typeof fixture>, store: SessionQueuePersistence = persistence) => new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, store);
+    const fake = fixture();
+    const service = create(fake);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'work', behavior: 'prompt' });
+    await service.prompt({ text: 'follow-up', behavior: 'followUp' });
+    const queued = service.getState(false).queue!.items![0]!;
+    expect(await persistence.load('/project', 'session-1')).toEqual([queued]);
+    fake.settle();
+    await service.dispose();
+
+    const restarted = fixture();
+    const restored = create(restarted);
+    await restored.openProject({ path: '/project', name: 'project', trusted: true });
+    expect(restored.getState(false).queue?.recovered).toEqual([queued]);
+    expect(restarted.session.prompt).not.toHaveBeenCalled();
+    await expect(restored.mutateQueuedMessage({ id: queued.id, action: 'steer' })).rejects.toThrow(/restore/i);
+    const result = await restored.mutateQueuedMessage({ id: queued.id, action: 'edit' });
+    expect(result.restored?.text).toBe('follow-up');
+    expect(result.state.pendingModel).toMatchObject({ provider: 'test', id: 'model' });
+    expect(await persistence.load('/project', 'session-1')).toEqual([queued]);
+    await restored.mutateQueuedMessage({ id: queued.id, action: 'cancel' });
+    expect(await persistence.load('/project', 'session-1')).toEqual([]);
+    expect(restarted.session.prompt).not.toHaveBeenCalled();
+    await restored.dispose();
+  });
+
+  it('fences an in-flight queued admission when the user aborts', async () => {
+    const fake = fixture();
+    const persistence = new InMemorySessionQueueRepository();
+    const save = persistence.save.bind(persistence);
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(persistence, 'save').mockImplementationOnce(async (...args) => { await save(...args); await barrier; });
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, persistence);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'work', behavior: 'prompt' });
+    const queued = service.prompt({ text: 'cancelled before delivery', behavior: 'followUp' });
+    const rejected = expect(queued).rejects.toThrow();
+    await vi.waitFor(() => expect(persistence.save).toHaveBeenCalledOnce());
+    await service.abort();
+    release();
+    await rejected;
+    expect(fake.session.prompt).toHaveBeenCalledTimes(1);
+    expect(await persistence.load('/project', 'session-1')).toEqual([]);
+    await service.dispose();
+  });
+
+  it('single-flights held compaction delivery and keeps original draft text', async () => {
+    const fake = fixture();
+    const persistence = new InMemorySessionQueueRepository();
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, persistence);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.setStreaming(true);
+    fake.setCompacting(true);
+    await service.prompt({ text: 'original draft', behavior: 'followUp' });
+    const slot = (service as unknown as { selectedSlot: { heldCompactionMessages: { transportText: string }[] } }).selectedSlot;
+    slot.heldCompactionMessages[0]!.transportText = 'original draft plus expanded attachment context';
+    const save = persistence.save.bind(persistence);
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(persistence, 'save').mockImplementationOnce(async (...args) => { await save(...args); await barrier; });
+    fake.setCompacting(false);
+    fake.emitSession({ type: 'compaction_end', reason: 'threshold', result: {}, aborted: false, willRetry: false });
+    fake.emitSession({ type: 'compaction_end', reason: 'threshold', result: {}, aborted: false, willRetry: false });
+    await vi.waitFor(() => expect(persistence.save).toHaveBeenCalledOnce());
+    expect(fake.session.prompt).not.toHaveBeenCalled();
+    release();
+    await vi.waitFor(() => expect(fake.session.prompt).toHaveBeenCalledOnce());
+    expect(service.getState(false).queue?.items?.[0]?.text).toBe('original draft');
+    expect((await persistence.load('/project', 'session-1'))[0]?.text).toBe('original draft');
+    fake.setStreaming(false);
+    await service.dispose();
+  });
+
+  it('does not submit a queued message when durable admission fails', async () => {
+    const fake = fixture();
+    const persistence = new InMemorySessionQueueRepository();
+    vi.spyOn(persistence, 'save').mockRejectedValue(new Error('Disk full'));
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, persistence);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'work', behavior: 'prompt' });
+    await expect(service.prompt({ text: 'must not vanish', behavior: 'followUp' })).rejects.toThrow('Disk full');
+    expect(fake.session.prompt).toHaveBeenCalledTimes(1);
+    expect(service.getState(false).queue?.items).toEqual([]);
+    fake.settle();
+    await service.dispose();
+  });
+
+  it('acknowledges one duplicate queue identity only when the user message is consumed', async () => {
+    const fake = fixture();
+    const persistence = new InMemorySessionQueueRepository();
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, persistence);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'work', behavior: 'prompt' });
+    await service.prompt({ text: 'same', behavior: 'followUp' });
+    await service.prompt({ text: 'same', behavior: 'followUp' });
+    const [, second] = service.getState(false).queue!.items!;
+    fake.setQueue([], ['same']);
+    fake.emitSession({ type: 'queue_update', steering: [], followUp: ['same'] });
+    expect(await persistence.load('/project', 'session-1')).toHaveLength(2);
+    await fake.emitAgent({ type: 'message_start', message: { role: 'user', content: 'same' } });
+    expect(await persistence.load('/project', 'session-1')).toEqual([second]);
+    await service.abort();
+    expect(await persistence.load('/project', 'session-1')).toEqual([]);
+    expect(fake.session.getFollowUpMessages()).toEqual([]);
     await service.dispose();
   });
 
@@ -1778,19 +1946,19 @@ describe('PiRuntimeService', () => {
     const initial = await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     expect(initial.permissionLevel).toBe('full-access');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen', 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog']);
 
     const readOnly = await service.setPermissionLevel('read-only');
     expect(readOnly.permissionLevel).toBe('read-only');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog']);
 
     const fullAccess = await service.setPermissionLevel('full-access');
     expect(fullAccess.permissionLevel).toBe('full-access');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'write', 'edit', 'bash']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'write', 'edit', 'bash']);
 
     const editable = await service.setPermissionLevel('edit');
     expect(editable.permissionLevel).toBe('edit');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'write', 'edit']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'write', 'edit']);
     await service.dispose();
   });
 
@@ -1866,8 +2034,8 @@ describe('PiRuntimeService', () => {
 
     fake.settle();
     await service.prompt({ text: 'Use the compact rail for controls', behavior: 'prompt' });
-    // GoalMax updates are delivered as steering, never queued follow-ups.
-    expect((await service.getGoalMax())?.steering).toContainEqual(expect.objectContaining({ text: 'Use the compact rail for controls', behavior: 'steer' }));
+    expect(fake.session.prompt).toHaveBeenCalledWith('Use the compact rail for controls', expect.any(Object));
+    expect((await service.getGoalMax())?.steering).toEqual([]);
     expect(fake.session.sendCustomMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({ customType: 'fate-goalmax-capsule', details: expect.objectContaining({ goalId: goal.id }) }),
       { triggerTurn: false, deliverAs: 'nextTurn' },
@@ -3547,17 +3715,17 @@ describe('PiRuntimeService', () => {
 
     const acceptance = await service.prompt({ text: 'also run C as part of this goal', behavior: 'prompt' });
     expect(acceptance.accepted).toBe(true);
-    expect(fake.session.prompt).not.toHaveBeenCalledWith('also run C as part of this goal', expect.anything());
-    expect((await service.getGoalMax())?.steering.at(-1)?.text).toBe('also run C as part of this goal');
-    expect(service.getState(false).queue?.held ?? []).toEqual([]);
-    await vi.waitFor(() => expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(
+    expect(fake.session.prompt).toHaveBeenCalledWith('also run C as part of this goal', expect.anything());
+    expect((await service.getGoalMax())?.steering).toEqual([]);
+    expect(service.getState(false).queue?.items ?? []).toEqual([]);
+    expect(fake.session.sendCustomMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ customType: 'fate-goalmax-continuation' }),
       { triggerTurn: true },
-    ));
+    );
     await service.dispose();
   });
 
-  it('steers an active GoalMax root immediately without adding a phantom SDK queue item', async () => {
+  it.each(['steer', 'followUp'] as const)('uses the ordinary %s queue during GoalMax with editable, removable messages', async (behavior) => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
@@ -3566,13 +3734,82 @@ describe('PiRuntimeService', () => {
     fake.setStreaming(true);
     fake.emitSession({ type: 'agent_start' });
 
-    const acceptance = await service.prompt({ text: 'also include C in the remaining work', behavior: 'prompt' });
+    const text = 'also include C in the remaining work';
+    const acceptance = await service.prompt({ text, behavior });
     expect(acceptance.accepted).toBe(true);
-    expect(fake.session.followUp).not.toHaveBeenCalledWith('also include C in the remaining work', expect.anything());
-    expect(fake.session.steer).not.toHaveBeenCalledWith('also include C in the remaining work', expect.anything());
-    expect((await service.getGoalMax())?.steering.at(-1)?.text).toBe('also include C in the remaining work');
-    expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: 'fate-goalmax-update' }), expect.objectContaining({ deliverAs: 'steer' }));
-    expect(service.getState(false).queue?.held ?? []).toEqual([]);
+    expect(fake.session.prompt).toHaveBeenLastCalledWith(text, expect.objectContaining({ streamingBehavior: behavior }));
+    expect((await service.getGoalMax())?.steering).toEqual([]);
+    const queued = service.getState(false).queue!.items![0]!;
+    expect(queued).toMatchObject({ text, behavior });
+    const switched = await service.mutateQueuedMessage({ id: queued.id, action: behavior === 'steer' ? 'followUp' : 'steer' });
+    expect(switched.state.queue?.items?.[0]?.behavior).not.toBe(behavior);
+    const edited = await service.mutateQueuedMessage({ id: queued.id, action: 'edit' });
+    expect(edited.restored?.text).toBe(text);
+    expect(service.getState(false).queue?.items).toEqual([]);
+    await service.prompt({ text, behavior });
+    const replacement = service.getState(false).queue!.items![0]!;
+    await service.mutateQueuedMessage({ id: replacement.id, action: 'cancel' });
+    expect(service.getState(false).queue?.items).toEqual([]);
+    expect((await service.getGoalMax())?.steering).toEqual([]);
+    await service.dispose();
+  });
+
+  it.each(['prompt', 'steer', 'followUp'] as const)('records one durable user update when the SDK delivers a GoalMax %s message', async (behavior) => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.createGoalMax({ objective: 'Respect the SDK message lifecycle', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    if (behavior === 'prompt') fake.settle();
+    const send = fake.session.prompt.getMockImplementation()!;
+    const deliver = (text: string) => fake.emitSession({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() } });
+    fake.session.prompt.mockImplementation((text, options) => {
+      const result = send(text, options);
+      if (!options.streamingBehavior) deliver(text);
+      return result;
+    });
+    const before = (await service.getGoalMax())!;
+    const text = 'Keep this message as one visible user action';
+    await service.prompt({ text, behavior });
+    if (behavior !== 'prompt') {
+      fake.setQueue([], []);
+      fake.emitSession({ type: 'queue_update', steering: [], followUp: [] });
+      deliver(text);
+    }
+    const after = (await service.getGoalMax())!;
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.timeline.filter((event) => event.summary === 'User message submitted through the session queue.')).toHaveLength(1);
+    expect(after.steering).toEqual([]);
+    expect(service.getState(false).queue?.items).toEqual([]);
+    await service.dispose();
+  });
+
+  it('preserves attachments in GoalMax follow-ups and restores them when edited', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.createGoalMax({ objective: 'Check the UI', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    const images = [{ name: 'screen.png', mimeType: 'image/png' as const, data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' }];
+    await service.prompt({ text: 'Check this screenshot too', behavior: 'followUp', images });
+    const queued = service.getState(false).queue!.items![0]!;
+    expect(queued.images).toEqual(images);
+    const edited = await service.mutateQueuedMessage({ id: queued.id, action: 'edit' });
+    expect(edited.restored).toMatchObject({ text: 'Check this screenshot too', images });
+    await service.dispose();
+  });
+
+  it('holds GoalMax input during compaction in the ordinary cancellable queue', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.createGoalMax({ objective: 'Survive compaction', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    fake.setCompacting(true);
+    await service.prompt({ text: 'Keep this message', behavior: 'followUp' });
+    const queued = service.getState(false).queue!.held!.find((item) => item.text === 'Keep this message')!;
+    expect(queued).toBeDefined();
+    expect((service as unknown as { goalRuntimeSnapshot(id: string): { queuedUserMessages: number } }).goalRuntimeSnapshot('session-1').queuedUserMessages).toBeGreaterThan(0);
+    await service.mutateQueuedMessage({ id: queued.id, action: 'cancel' });
+    expect(service.getState(false).queue?.items).toEqual([]);
+    expect((await service.getGoalMax())?.steering).toEqual([]);
     await service.dispose();
   });
 
@@ -3594,7 +3831,8 @@ describe('PiRuntimeService', () => {
     await service.createGoalMax({ objective: 'Implement and verify the result', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
     fake.settle();
     await service.prompt({ text: 'also include C in this goal', behavior: 'prompt' });
-    expect((await service.getGoalMax())?.steering.at(-1)?.text).toBe('also include C in this goal');
+    expect(fake.session.prompt).toHaveBeenCalledWith('also include C in this goal', expect.anything());
+    expect((await service.getGoalMax())?.steering).toEqual([]);
     await service.controlGoalMax({ action: 'cancel' });
     expect(service.getState(false).queue?.held ?? []).toEqual([]);
     expect(service.getState(false).queue?.items?.map((item) => item.text) ?? []).not.toContain('also include C in this goal');

@@ -888,6 +888,8 @@ export const queuedMessageSchema = z.object({
   browserAnnotations: z.array(browserAnnotationReferenceSchema).max(24).optional(),
   sessionReferences: promptSessionReferencesSchema.optional(),
   createdAt: z.number().finite(),
+  requestedModel: z.object({ provider: z.string().min(1), id: z.string().min(1) }).optional(),
+  requestedThinkingLevel: thinkingLevelSchema.optional(),
 });
 export const runtimeQueueSchema = z.object({
   steering: z.number().int().nonnegative(),
@@ -895,6 +897,7 @@ export const runtimeQueueSchema = z.object({
   items: z.array(queuedMessageSchema).max(100).optional(),
   /** Messages held by the strict GoalMax/task gate until verification passes. */
   held: z.array(queuedMessageSchema).max(100).optional(),
+  recovered: z.array(queuedMessageSchema).max(100).optional(),
 });
 
 export const extensionUiStateSchema = z.object({

@@ -12,7 +12,7 @@ import { requiredPermissionForTool, toolNamesForPermission } from '../PiToolPoli
 import { createToolProvenance } from '../ToolProvenance';
 import { discoverSubagentProfiles, resolveSubagentProfile } from '../SubagentProfiles';
 import { assertSkillTools, selectSubagentSkills } from '../SubagentSkills';
-import { childToolNames, modelInfo, type ChildToolName, type ParentModel } from '../SubagentProtocol';
+import { childToolNames, modelInfo, modelThinkingLevels, permissions, thinkingLevels, type ChildToolName, type ParentModel } from '../SubagentProtocol';
 import { disabledModelMessage, isModelDisabled, visibleModels } from '../../../shared/modelVisibility';
 import { createAgentCollaborationTools } from './AgentCollaborationTools';
 import { sanitizedRecentTurns } from './AgentContextForker';
@@ -929,17 +929,35 @@ export class AgentTeamCoordinator {
     if (!raw || typeof raw !== 'object') throw new Error('spawn_agent requires an object specification.');
     const value = raw as Record<string, unknown>;
     if (typeof value.task !== 'string' || !value.task.trim()) throw new Error('spawn_agent requires a non-empty task.');
-    const permission = value.permission === 'edit' || value.permission === 'full-access' || value.permission === 'read-only' ? value.permission : undefined;
-    const thinkingLevel = typeof value.thinkingLevel === 'string' ? value.thinkingLevel as ThinkingLevel : undefined;
+    if ('permission' in value && !(permissions as readonly unknown[]).includes(value.permission)) {
+      throw new Error(`spawn_agent permission must be one of: ${permissions.join(', ')}.`);
+    }
+    if ('thinkingLevel' in value && !(thinkingLevels as readonly unknown[]).includes(value.thinkingLevel)) {
+      throw new Error(`spawn_agent thinkingLevel must be one of: ${thinkingLevels.join(', ')}.`);
+    }
+    if ('model' in value) {
+      const model = value.model as Record<string, unknown> | null;
+      if (!model || typeof model !== 'object' || Array.isArray(model)
+        || typeof model.provider !== 'string' || !model.provider.trim() || model.provider.length > 200
+        || typeof model.id !== 'string' || !model.id.trim() || model.id.length > 500
+        || Object.keys(model).some((key) => key !== 'provider' && key !== 'id')) {
+        throw new Error('spawn_agent model requires exact non-empty provider and id strings (maximum 200 and 500 characters).');
+      }
+    }
+    if ('tools' in value && (!Array.isArray(value.tools) || value.tools.some((tool) => !(childToolNames as readonly unknown[]).includes(tool)))) {
+      throw new Error(`spawn_agent tools must be an array of supported child tools: ${childToolNames.join(', ')}.`);
+    }
+    const permission = value.permission as PermissionLevel | undefined;
+    const thinkingLevel = value.thinkingLevel as ThinkingLevel | undefined;
     return {
       task: value.task.trim(),
       ...(typeof value.name === 'string' ? { name: value.name.trim() } : {}),
       ...(typeof value.role === 'string' ? { role: value.role.trim() } : {}),
       ...(typeof value.agent === 'string' ? { agent: value.agent.trim() } : {}),
       ...(permission ? { permission } : {}),
-      ...(value.model && typeof value.model === 'object' && typeof (value.model as { provider?: unknown }).provider === 'string' && typeof (value.model as { id?: unknown }).id === 'string' ? { model: value.model as { provider: string; id: string } } : {}),
+      ...('model' in value ? { model: value.model as { provider: string; id: string } } : {}),
       ...(thinkingLevel ? { thinkingLevel } : {}),
-      ...(Array.isArray(value.tools) ? { tools: value.tools.filter((tool): tool is ChildToolName => typeof tool === 'string' && (childToolNames as readonly string[]).includes(tool)) } : {}),
+      ...('tools' in value ? { tools: value.tools as ChildToolName[] } : {}),
       ...(typeof value.instructions === 'string' ? { instructions: value.instructions } : {}),
       ...(Array.isArray(value.skills) ? { skills: value.skills.filter((skill): skill is string => typeof skill === 'string') } : {}),
       ...(value.skillMode === 'all' || value.skillMode === 'selected' || value.skillMode === 'none' ? { skillMode: value.skillMode } : {}),
@@ -984,6 +1002,9 @@ export class AgentTeamCoordinator {
         throw new Error(disabledModelMessage(selected.provider, selected.id));
       }
     }
+    if (request.thinkingLevel !== undefined && !modelThinkingLevels(selected).includes(request.thinkingLevel)) {
+      throw new Error(`Model ${selected.provider}/${selected.id} does not support requested thinking level '${request.thinkingLevel}'. Supported levels: ${modelThinkingLevels(selected).join(', ')}.`);
+    }
     const permitted = childToolsForPermission(permission);
     const callerCap = caller.depth === 0 ? new Set(permitted) : new Set(caller.enabledTools);
     const requested = request.tools ? new Set(request.tools) : null;
@@ -999,6 +1020,10 @@ export class AgentTeamCoordinator {
       const deniedByCaller = [...requested].filter((tool) => permitted.includes(tool) && !callerCap.has(tool));
       if (deniedByCaller.length) {
         throw new Error(`Requested child tool${deniedByCaller.length === 1 ? '' : 's'} ${deniedByCaller.map((tool) => `'${tool}'`).join(', ')} ${deniedByCaller.length === 1 ? 'is' : 'are'} not enabled for the calling node; a child can only grant tools its caller already holds.`);
+      }
+      const deniedByProfile = [...requested].filter((tool) => profileTools && !profileTools.has(tool));
+      if (deniedByProfile.length) {
+        throw new Error(`Requested child tools ${deniedByProfile.map((tool) => `'${tool}'`).join(', ')} are not enabled by agent profile '${profile.selector}'. Select a profile that grants these tools.`);
       }
     }
     const tools = permitted.filter((tool) => callerCap.has(tool) && (!requested || requested.has(tool)) && (!profileTools || profileTools.has(tool)));
@@ -1180,6 +1205,7 @@ export class AgentTeamCoordinator {
         return;
       }
       if (event.type === 'message_end') {
+        this.observeDeliveredMessage(runtime.state.rootSessionId, session, event.message);
         const message = event.message as { role?: unknown; stopReason?: unknown; isError?: unknown };
         if (message.role !== 'assistant') return;
         const failed = message.stopReason === 'error' || message.isError === true;
@@ -1277,7 +1303,23 @@ export class AgentTeamCoordinator {
     }
   }
 
+  observeDeliveredMessage(rootSessionId: string, session: AgentSession, message: unknown): void {
+    if (!message || typeof message !== 'object') return;
+    const custom = message as { role?: string; customType?: string; details?: { envelopeId?: string } };
+    if (custom.role !== 'custom' || !['fate-live-agent-reply', 'fate-agent-team-envelope'].includes(custom.customType ?? '') || !custom.details?.envelopeId) return;
+    for (const runtime of this.runtimesForRoot(rootSessionId)) {
+      const envelope = runtime.envelopes.get(custom.details.envelopeId);
+      if (!envelope || envelope.state !== 'dispatching' || this.sessionForNode(runtime, envelope.recipientNodeId) !== session) continue;
+      envelope.state = 'delivered';
+      envelope.deliveredAt = Date.now();
+      const target = this.requireNode(runtime, envelope.recipientNodeId);
+      target.unreadMessages += 1;
+      this.changed(runtime, `${envelope.kind} acknowledged by ${target.path}.`);
+    }
+  }
+
   private async deliverEnvelope(runtime: AgentTeamRuntime, envelope: AgentTeamEnvelope, finalAnswer: boolean, allowSteer = true): Promise<void> {
+    if (envelope.state !== 'queued') return;
     const target = this.requireNode(runtime, envelope.recipientNodeId);
     const session = this.sessionForNode(runtime, target.id);
     if (!session?.model) {
@@ -1297,17 +1339,24 @@ export class AgentTeamCoordinator {
       display: directReply,
       details: { envelopeId: envelope.id, kind: envelope.kind, authorNodeId: sender.id, taskId: envelope.taskId },
     };
-    if (target.id === runtime.state.rootNodeId && directReply) {
-      await this.host.sendRootMessage?.(runtime.state.rootSessionId, message, 'steer', false);
-    } else if (target.id === runtime.state.rootNodeId && this.host.sendRootMessage) {
-      await this.host.sendRootMessage(runtime.state.rootSessionId, message, 'steer', false);
-    } else {
-      await session.sendCustomMessage(message, allowSteer && session.isStreaming ? { triggerTurn: false, deliverAs: 'steer' } : { triggerTurn: false });
+    envelope.state = 'dispatching';
+    this.persist(runtime, 'envelope.dispatching');
+    try {
+      if (target.id === runtime.state.rootNodeId && this.host.sendRootMessage) {
+        await this.host.sendRootMessage(runtime.state.rootSessionId, message, 'steer', false);
+      } else {
+        await session.sendCustomMessage(message, allowSteer && session.isStreaming ? { triggerTurn: false, deliverAs: 'steer' } : { triggerTurn: false });
+      }
+      for (const candidate of session.messages) this.observeDeliveredMessage(runtime.state.rootSessionId, session, candidate);
+    } catch (error) {
+      if (envelope.state === 'dispatching') {
+        envelope.state = 'failed';
+        envelope.error = `Delivery was not acknowledged: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2_000);
+        this.persist(runtime, 'envelope.failed');
+      }
+      throw error;
     }
-    envelope.state = 'delivered';
-    envelope.deliveredAt = Date.now();
-    target.unreadMessages += 1;
-    appendTimeline(runtime, 'envelope.updated', `${envelope.kind} delivered to ${target.path}.`, { envelopeId: envelope.id, nodeId: target.id, taskId: envelope.taskId });
+    appendTimeline(runtime, 'envelope.updated', `${envelope.kind} ${envelope.state} for ${target.path}.`, { envelopeId: envelope.id, nodeId: target.id, taskId: envelope.taskId });
     if (finalAnswer) this.notifyListeners(runtime, { path: sender.path, reason: 'completed' });
   }
 

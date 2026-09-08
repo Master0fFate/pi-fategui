@@ -53,8 +53,8 @@ interface TaskRow {
 /**
  * Reads the canonical, session-scoped task list (the same list GoalMax binds
  * to), so the strip is not GoalMax-exclusive. The collapsed row shows the
- * current task plus the required done/total count and the verification state;
- * expanding reveals a dense status list with inline status toggling and
+ * current task and done/total count; expanding reveals verification details
+ * and a dense status list with inline status toggling and
  * removal for ordinary user tasks. Task creation is owned by the agent, so the
  * strip intentionally has no manual add form.
  */
@@ -66,6 +66,7 @@ function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
   const rows: TaskRow[] = [...tasks].sort((left, right) => left.order - right.order).map((task) => ({
     id: task.id, title: task.title, detail: task.detail, status: task.status, required: task.required, verified: task.verified, managed: task.source === 'goalmax',
   }));
+  const done = rows.filter((row) => row.status === 'done').length;
   const requiredTotal = rows.filter((row) => row.required).length;
   const requiredDone = rows.filter((row) => row.required && row.status === 'done').length;
   const requiredVerified = rows.filter((row) => row.required && row.status === 'done' && row.verified).length;
@@ -107,15 +108,16 @@ function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
       <button type="button" className="goalmax-task-strip-toggle" aria-expanded={expanded} aria-controls="goalmax-task-strip-tasks" aria-label={expanded ? 'Collapse task list' : 'Expand task list'} onClick={() => setExpanded((value) => !value)}>
         <span className="goalmax-task-strip-mark" data-status={current.status}>{taskStatusIcon(current.status)}</span>
         <span className="goalmax-task-strip-copy">
-          <strong>{current.title}</strong>
-          {current.detail ? <small className="goalmax-task-strip-criterion-description">{current.detail}</small> : null}
-          <small>{taskCount} · {gateSummary}</small>
+          <strong title={current.detail ? `${current.title}\n${current.detail}` : current.title}>{current.title}</strong>
+          <small title={`${taskCount} · ${gateSummary}`}>{done}/{rows.length} tasks</small>
         </span>
         {expanded ? <ChevronUp size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}
       </button>
       {expanded ? (
         <>
-          <ol id="goalmax-task-strip-tasks" className="goalmax-task-strip-criteria" aria-label="Task status">            {rows.map((row) => {
+          <p className="goalmax-task-strip-summary">{taskCount} · {gateSummary}</p>
+          <ol id="goalmax-task-strip-tasks" className="goalmax-task-strip-criteria" aria-label="Task status">
+            {rows.map((row) => {
               const busy = mutatingId === row.id;
               const statusText = `${taskStatusLabel(row.status)}${row.required && row.status === 'done' ? (row.verified ? ' · verified' : ' · unverified') : ''}`;
               return (
@@ -150,9 +152,7 @@ function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
 }
 
 /**
- * Compact collapsed row that summarises the active GoalMax goal (criteria
- * fallback). Kept verbatim so legacy goal sessions render unchanged when no
- * canonical task list has been bound yet.
+ * Criteria fallback for goal sessions without a bound canonical task list.
  */
 function GoalMaxCriteriaStrip({ goal }: { goal: GoalMaxState }) {
   const [expanded, setExpanded] = useState(false);
@@ -172,8 +172,7 @@ function GoalMaxCriteriaStrip({ goal }: { goal: GoalMaxState }) {
       <button type="button" className="goalmax-task-strip-toggle" aria-expanded={expanded} aria-controls="goalmax-task-strip-criteria" aria-label={toggleLabel} onClick={() => setExpanded((value) => !value)}>
         <span className="goalmax-task-strip-mark" data-status={currentStatus}>{criterionStatusIcon(currentStatus)}</span>
         <span className="goalmax-task-strip-copy">
-          <strong>{taskLabel}</strong>
-          {currentCriterion?.description ? <small className="goalmax-task-strip-criterion-description">{currentCriterion.description}</small> : null}
+          <strong title={currentCriterion?.description ? `${taskLabel}\n${currentCriterion.description}` : taskLabel}>{taskLabel}</strong>
           <small>{satisfied}/{required.length} required</small>
         </span>
         {expanded ? <ChevronUp size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}
@@ -204,8 +203,8 @@ function GoalMaxCriteriaStrip({ goal }: { goal: GoalMaxState }) {
 export function GoalMaxTaskStrip() {
   const list = useTaskStore((state) => state.list);
   const goal = useGoalMaxStore((state) => state.goal);
-  if (list && list.tasks.length > 0) return <TaskListStrip tasks={list.tasks} />;
-  if (goal) return <GoalMaxCriteriaStrip goal={goal} />;
+  if (list && list.tasks.length > 0) return <TaskListStrip key={`${list.projectPath}\0${list.sessionId}`} tasks={list.tasks} />;
+  if (goal) return <GoalMaxCriteriaStrip key={goal.id} goal={goal} />;
   return null;
 }
 

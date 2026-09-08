@@ -328,7 +328,9 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const setActiveGoal = useGoalMaxStore((state) => state.setGoal);
   const subagentOrder = useRuntimeStore((state) => state.subagentOrder);
   const heldQueueItems = queue.held ?? [];
-  const queuedItems = [...heldQueueItems, ...(queue.items ?? [])];
+  const recoveredQueueItems = queue.recovered ?? [];
+  const recoveredQueueIds = new Set(recoveredQueueItems.map((item) => item.id));
+  const queuedItems = [...recoveredQueueItems, ...heldQueueItems, ...(queue.items ?? [])];
   const heldQueueIds = new Set(heldQueueItems.map((item) => item.id));
   const goalUpdates = activeGoal ? [...activeGoal.steering].reverse() : [];
   const compactMode = useUiStore((state) => state.compactMode);
@@ -1882,7 +1884,8 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     const goalNow = useGoalMaxStore.getState().goal;
     const item = goalNow?.steering.find((entry) => entry.id === id);
     if (!item) return;
-    if (action === 'edit' && (draftRef.current.trim() || imagesRef.current.length > 0 || browserAnnotationIdsRef.current.length > 0)) {
+    const originDraftKey = activeDraftKey.current;
+    if (action === 'edit' && (draftRef.current.trim() || imagesRef.current.length > 0 || browserAnnotationIdsRef.current.length > 0 || sessionReferencesRef.current.length > 0)) {
       setComposerError('Finish or clear the current draft and attachments before editing a goal update.');
       textarea.current?.focus({ preventScroll: true });
       return;
@@ -1895,15 +1898,12 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     setGoalUpdateBusyId(id);
     setComposerError(null);
     try {
-      // Goal updates are authoritative steering: editing withdraws the entry
-      // and restores its text to the composer (mirroring queued-message edit),
-      // while cancel removes it from the goal entirely.
       const goal = await window.piDesktop.removeGoalMaxSteering({ steeringId: id });
       if (mounted.current) setActiveGoal(goal);
-      if (action === 'edit') {
-        updateDraft(item.text);
+      if (action === 'edit' && originDraftKey !== null) {
+        updateDraftForKey(originDraftKey, item.text);
         requestAnimationFrame(() => {
-          if (!mounted.current) return;
+          if (!mounted.current || activeDraftKey.current !== originDraftKey) return;
           textarea.current?.focus({ preventScroll: true });
           const end = item.text.length;
           textarea.current?.setSelectionRange(end, end);
@@ -2167,7 +2167,9 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
         </div>
       )}
       {goalUpdates.length > 0 && (
-        <section className="queued-messages goalmax-steering-messages" aria-label="GoalMax updates" aria-live="polite">
+        <details className="goalmax-saved-instructions">
+          <summary>Saved goal instructions · {goalUpdates.length}</summary>
+          <section className="queued-messages goalmax-steering-messages" aria-label="Saved goal instructions">
           {goalUpdates.map((item) => {
             const preview = item.text.split('\n', 1)[0]?.trim() || item.text;
             const busy = goalUpdateBusyId === item.id;
@@ -2175,7 +2177,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
               <div className="queued-message" key={item.id} data-behavior="steer" data-goal-update="true">
                 <CornerUpLeft size={13} aria-hidden="true" />
                 <AppTooltip content={item.text}><span className="queued-message-preview icon-label">{preview}</span></AppTooltip>
-                <span className="queued-message-status">Goal update</span>
+                <span className="queued-message-status">Saved instruction</span>
                 <div className="queued-message-actions">
                   <AppTooltip content="Edit goal update" wrapTrigger>
                     <button className="queued-message-edit" type="button" aria-label={`Edit goal update: ${preview}`} disabled={Boolean(goalUpdateBusyId)} onClick={() => void mutateGoalUpdate(item.id, 'edit')}><Pencil size={13} aria-hidden="true" /></button>
@@ -2189,13 +2191,16 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
               </div>
             );
           })}
-        </section>
+          </section>
+        </details>
       )}
       {queuedItems.length > 0 && (
         <section className="queued-messages" aria-label="Queued messages" aria-live="polite">
+          {recoveredQueueItems.length > 0 && <p>Recovered messages were not resent. Delivery is uncertain; check the transcript and permissions. Restoring copies the draft and its model settings; discard the saved copy when finished.</p>}
           {queuedItems.map((item) => {
             const busy = queueBusyId === item.id;
             const held = heldQueueIds.has(item.id);
+            const recovered = recoveredQueueIds.has(item.id);
             return (
               <div className="queued-message" key={item.id} data-behavior={item.behavior} data-held={held || undefined}>
                 <CornerUpLeft size={13} aria-hidden="true" />
@@ -2204,7 +2209,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                   {item.images?.length ? <span className="queued-message-attachments">{item.images.length} image{item.images.length === 1 ? '' : 's'}</span> : null}
                   {item.browserAnnotations?.length ? <span className="queued-message-attachments">{item.browserAnnotations.length} page note{item.browserAnnotations.length === 1 ? '' : 's'}</span> : null}
                   {item.sessionReferences?.length ? <span className="queued-message-attachments">{item.sessionReferences.length} session{item.sessionReferences.length === 1 ? '' : 's'}</span> : null}
-                  <AppTooltip content={item.behavior === 'steer' ? 'Steer mode · switch to follow-up' : 'Follow-up mode · switch to steer'} wrapTrigger>
+                  {recovered ? <AppTooltip content={item.requestedModel ? `Requested ${item.requestedModel.provider}/${item.requestedModel.id}${item.requestedThinkingLevel ? ` · ${item.requestedThinkingLevel}` : ''}. Check settings before resending.` : 'Delivery is uncertain. Restore to the composer to review; this does not send.'}><span className="queued-message-status">Recovered</span></AppTooltip> : <AppTooltip content={item.behavior === 'steer' ? 'Steer mode · switch to follow-up' : 'Follow-up mode · switch to steer'} wrapTrigger>
                     <button
                       className="queued-message-behavior"
                       type="button"
@@ -2217,9 +2222,9 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                     >
                       <CornerUpLeft size={13} aria-hidden="true" />
                     </button>
-                  </AppTooltip>
-                  <AppTooltip content="Edit message" wrapTrigger>
-                    <button className="queued-message-edit" type="button" aria-label={`Edit queued message: ${item.text}`} disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'edit')}><Pencil size={13} aria-hidden="true" /></button>
+                  </AppTooltip>}
+                  <AppTooltip content={recovered ? 'Copy draft and model settings to the composer (does not send or discard the saved copy)' : 'Edit message'} wrapTrigger>
+                    <button className="queued-message-edit" type="button" aria-label={`${recovered ? 'Restore recovered message' : 'Edit queued message'}: ${item.text}`} disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'edit')}><Pencil size={13} aria-hidden="true" /></button>
                   </AppTooltip>
                   <AppTooltip content="Cancel queued message" wrapTrigger>
                     <button className="queued-message-cancel" type="button" aria-label={`Cancel queued message: ${item.text}`} disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'cancel')}>

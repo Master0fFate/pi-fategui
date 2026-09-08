@@ -148,6 +148,7 @@ export class GoalMaxCoordinator {
   private readonly observationBuffers = new Map<string, ObservationBuffer>();
   private readonly turnMarkers = new Map<string, TurnMarker>();
   private readonly verificationRuns = new Map<string, Promise<void>>();
+  private readonly userInputEpochs = new Map<string, number>();
   private readonly diagnosticRuns = new Map<string, Promise<void>>();
   private readonly failClosedStates = new Map<string, GoalMaxState>();
   private readonly completionFences = new Set<string>();
@@ -477,6 +478,35 @@ export class GoalMaxCoordinator {
     return structuredClone(updated);
   }
 
+  async prepareUserTurn(sessionId: string): Promise<GoalMaxState | null> {
+    const existing = this.stateForSession(sessionId);
+    if (!existing || isGoalMaxTerminal(existing.status)) return existing ? structuredClone(existing) : null;
+    this.invalidateUserInput(sessionId);
+    this.scheduler.cancel(existing.id);
+    await this.mutate(sessionId, (current, now) => {
+      if (isGoalMaxTerminal(current.status)) throw new GoalMaxOperationSuperseded();
+      const resumes = current.status === 'blocked' || current.status === 'failed' || current.status === 'verifying';
+      const active = resumes ? transitionGoalMax(current, 'active', now) : current;
+      return appendGoalMaxTimeline({
+        ...active,
+        revision: current.revision + 1,
+        phase: current.phase === 'verification' ? 'implementation' : current.phase,
+        evidence: current.evidence.map((evidence) => evidence.kind === 'verification' ? { ...evidence, current: false } : evidence),
+        blockedReason: resumes ? null : current.blockedReason,
+        failure: resumes ? null : current.failure,
+        continuation: { ...active.continuation, pending: false, reason: 'User message takes priority over automatic continuation.' },
+        updatedAt: now,
+      }, 'goal.updated', 'User message submitted through the session queue.', now);
+    });
+    this.clearFailClosedState(sessionId);
+    return structuredClone(this.requireState(sessionId));
+  }
+
+  private invalidateUserInput(sessionId: string): void {
+    this.userInputEpochs.set(sessionId, (this.userInputEpochs.get(sessionId) ?? 0) + 1);
+    if (this.completionFences.has(sessionId)) this.completionFenceConflicts.set(sessionId, 'New user work arrived during the completion gate.');
+  }
+
   async recordSteering(sessionId: string, textValue: string, behavior: GoalMaxSteering['behavior']): Promise<GoalMaxState | null> {
     const existing = this.stateForSession(sessionId);
     const text = textValue.trim().slice(0, GOALMAX_STEERING_TEXT_LIMIT);
@@ -548,7 +578,7 @@ export class GoalMaxCoordinator {
 
   async removeSteering(sessionId: string, steeringId: string): Promise<GoalMaxState | null> {
     const existing = this.stateForSession(sessionId);
-    if (!existing || isGoalMaxTerminal(existing.status)) return existing ? structuredClone(existing) : null;
+    if (!existing) return null;
     if (!existing.steering.some((item) => item.id === steeringId)) return structuredClone(existing);
     if (this.completionFences.has(sessionId)) this.completionFenceConflicts.set(sessionId, 'A goal update was withdrawn during the completion gate.');
     await this.mutate(sessionId, (current, now) => appendGoalMaxTimeline({
@@ -571,12 +601,8 @@ export class GoalMaxCoordinator {
       this.schedule(updated, 'user-steering');
       return;
     }
-    // Goal updates are authoritative steering: force-deliver the capsule now
-    // instead of parking it in the goal state until a later continuation.
-    // steerGoalTurn injects into the running root turn when one is streaming
-    // and appends the capsule to the transcript for the next root wake
-    // otherwise, so a streaming root with a stale executionState, a settling
-    // turn, or active children all receive the update as soon as possible.
+    // Active roots receive the current capsule; idle continuations rebuild it
+    // from durable state rather than accumulating hidden SDK next-turn messages.
     await this.host.steerGoal(sessionId, goalMaxCapsule(updated), updated.id, updated.revision).catch(() => undefined);
   }
 
@@ -672,6 +698,7 @@ export class GoalMaxCoordinator {
     const preflight = deterministicVerification(current);
     const runtime = this.host.runtime(sessionId);
     if (runtime && runtime.activeChildren > 0) preflight.findings.push(`Wait for ${runtime.activeChildren} active child ${runtime.activeChildren === 1 ? 'task' : 'tasks'} to settle.`);
+    if (runtime && runtime.queuedUserMessages > 0) preflight.findings.push('Process the queued user messages before completing the goal.');
     if (preflight.findings.length > 0) {
       const actionable = current.status === 'verifying'
         ? await this.reactivateFromRejectedCompletion(sessionId, current, `Completion was not accepted. Continue the active goal and resolve:\n${preflight.findings.map((finding) => `- ${finding}`).join('\n')}`)
@@ -684,6 +711,7 @@ export class GoalMaxCoordinator {
         details: structuredClone(actionable),
       };
     }
+    if (this.completionFences.has(sessionId)) return { text: 'Completion is already being checked. Wait for the current gate to settle.', details: structuredClone(current) };
     const completionRevision = current.revision;
     this.scheduler.cancel(current.id);
     // The completion fence blocks new child admission for this session until
@@ -692,27 +720,14 @@ export class GoalMaxCoordinator {
     // guard rolls the would-be completion back to active below.
     this.completionFences.add(sessionId);
     this.completionFenceConflicts.delete(sessionId);
-    const guard: GoalMaxCommitGuard = {
-      validate: () => this.completionFenceConflicts.get(sessionId) ?? null,
-      recover: (previous, attempted, reason, now) => appendGoalMaxTimeline({
-        ...previous,
-        revision: attempted.revision + 1,
-        status: 'active',
-        phase: previous.phase === 'verification' ? 'implementation' : previous.phase,
-        executionState: 'idle',
-        blockedReason: null,
-        failure: null,
-        evidence: previous.evidence.map((evidence) => evidence.kind === 'verification' ? { ...evidence, current: false } : evidence),
-        continuation: { ...previous.continuation, pending: false, reason: `Completion was not accepted: ${reason}` },
-        updatedAt: now,
-      }, 'verification.failed', `Completion gate rejected: ${reason}. GoalMax stays active without a warning state.`, now),
-    };
+    const guard = this.completionGuard(sessionId);
     try { await this.mutate(sessionId, (goal, now) => {
       if (goal.status !== 'active' && goal.status !== 'verifying') throw new GoalMaxOperationSuperseded();
       if (goal.revision !== completionRevision) throw new Error('The goal changed during the completion gate. Inspect the latest steering and task state, then retry completion.');
       const latestPreflight = deterministicVerification(goal);
       const latestRuntime = this.host.runtime(sessionId);
       if (latestRuntime && latestRuntime.activeChildren > 0) latestPreflight.findings.push(`Wait for ${latestRuntime.activeChildren} active child ${latestRuntime.activeChildren === 1 ? 'task' : 'tasks'} to settle.`);
+      if (latestRuntime && latestRuntime.queuedUserMessages > 0) latestPreflight.findings.push('Process the queued user messages before completing the goal.');
       if (latestPreflight.findings.length > 0) throw new Error(`Completion conditions changed:\n${latestPreflight.findings.map((finding) => `- ${finding}`).join('\n')}`);
       const requiredCriterionIds = goal.criteria.filter((criterion) => criterion.required && criterion.status !== 'waived').map((criterion) => criterion.id);
       const supportingIds = goal.evidence.filter(evidenceSupportsCriterion).map((evidence) => evidence.id);
@@ -971,6 +986,12 @@ export class GoalMaxCoordinator {
     if (event.type === 'agent_start') {
       this.turnMarkers.set(sessionId, { toolCount: 0, meaningful: false, novelInvestigation: false, latestAssistantText: '', startedAt: Date.now(), statusCalls: 0, reportCalls: 0, completeCalls: 0 });
       void this.mutate(sessionId, (current, now) => ({ ...current, revision: current.revision + 1, executionState: 'running-root', continuation: { ...current.continuation, pending: false }, updatedAt: now }), false).catch(() => undefined);
+      return;
+    }
+    if (event.type === 'message_start' && event.message.role === 'user') {
+      // Delivery may follow admission much later. Fence in-flight verification
+      // synchronously, without persisting the same user update a second time.
+      this.invalidateUserInput(sessionId);
       return;
     }
     if (event.type === 'tool_execution_start') {
@@ -1409,6 +1430,8 @@ export class GoalMaxCoordinator {
     await this.checkpoint(sessionId, 'Completion evidence reconciled before verification.');
     let goal = this.requireState(sessionId);
     if (goal.status !== 'verifying') return;
+    const inputEpoch = this.userInputEpochs.get(sessionId) ?? 0;
+    const criterionScope = (state: GoalMaxState) => state.criteria.map(({ id, title, description, required, status }) => ({ id, title, description, required, status }));
     const deterministic = deterministicVerification(goal);
     let verification: GoalMaxVerificationResult | null = null;
     let verifierFailure: string | null = null;
@@ -1425,8 +1448,28 @@ export class GoalMaxCoordinator {
     const report = verification?.report ?? deterministic.findings.join('\n');
     const latest = this.stateForSession(sessionId);
     if (!latest || latest.id !== goal.id || latest.status !== 'verifying') return;
+    const workspace = await this.progressEngine.capture(goal.projectPath);
+    const verificationInputsChanged = (current: GoalMaxState): boolean => (this.userInputEpochs.get(sessionId) ?? 0) !== inputEpoch
+      || current.objective !== goal.objective
+      || current.verificationLevel !== goal.verificationLevel
+      || JSON.stringify(criterionScope(current)) !== JSON.stringify(criterionScope(goal))
+      || JSON.stringify(current.steering) !== JSON.stringify(goal.steering)
+      || workspace.fingerprint !== goal.progress.latestWorkspaceFingerprint
+      || (reportPass && !deterministicVerification(current).pass);
+    const latestRuntime = this.host.runtime(sessionId);
+    if (verificationInputsChanged(latest) || (latestRuntime?.queuedUserMessages ?? 0) > 0 || latestRuntime?.streaming || (latestRuntime?.activeChildren ?? 0) > 0) {
+      await this.reactivateFromRejectedCompletion(sessionId, latest, 'User work or completion evidence changed during verification. Recheck the current goal.');
+      return;
+    }
+    if (this.completionFences.has(sessionId)) return;
+    const guard = reportPass ? this.completionGuard(sessionId, () => verificationInputsChanged(this.requireState(sessionId)) ? 'Verification inputs changed.' : null) : undefined;
+    if (guard) {
+      this.completionFences.add(sessionId);
+      this.completionFenceConflicts.delete(sessionId);
+    }
     try { await this.mutate(sessionId, (current, now) => {
       if (current.id !== goal.id || current.status !== 'verifying') throw new GoalMaxOperationSuperseded();
+      if (verificationInputsChanged(current) || (this.host.runtime(sessionId)?.queuedUserMessages ?? 0) > 0) throw new GoalMaxOperationSuperseded();
       const criterionIds = current.criteria.filter((criterion) => criterion.required && criterion.status !== 'waived').map((criterion) => criterion.id);
       const verifierEvidence: GoalMaxEvidence = {
         id: `evidence-${randomUUID()}`,
@@ -1497,12 +1540,25 @@ export class GoalMaxCoordinator {
         executionState: 'idle',
         continuation: { ...active.continuation, pending: false, reason: summary.slice(0, 1_000) },
       }, 'verification.failed', summary, now);
-    }); } catch (error) {
+    }, true, [], guard); } catch (error) {
       if (error instanceof GoalMaxOperationSuperseded) return;
-      throw error;
+      if (!(error instanceof GoalMaxCompletionRejected)) throw error;
+    } finally {
+      if (guard) {
+        this.completionFences.delete(sessionId);
+        this.completionFenceConflicts.delete(sessionId);
+      }
     }
     goal = this.requireState(sessionId);
     if (goal.status === 'active') this.schedule(goal, 'verification-failed');
+  }
+
+  reconcileRuntime(sessionId: string): void {
+    const goal = this.stateForSession(sessionId);
+    const runtime = this.host.runtime(sessionId);
+    if (goal?.status === 'active' && goal.executionState === 'idle' && runtime?.idle && !runtime.streaming && runtime.queuedUserMessages === 0) {
+      this.schedule(goal, 'runtime-ready');
+    }
   }
 
   private schedule(goal: GoalMaxState, reason: string): void {
@@ -1513,7 +1569,11 @@ export class GoalMaxCoordinator {
   private async maybeContinue(sessionId: string, expectedRevision: number, reason: string): Promise<void> {
     await this.flushObservations(sessionId);
     const initial = this.stateForSession(sessionId);
-    if (!initial || initial.revision !== expectedRevision || initial.status !== 'active' || initial.executionState !== 'idle') return;
+    if (!initial || initial.status !== 'active' || initial.executionState !== 'idle') return;
+    if (initial.revision !== expectedRevision) {
+      this.reconcileRuntime(sessionId);
+      return;
+    }
     const runtime = this.host.runtime(sessionId);
     if (!runtime || !runtime.idle || runtime.streaming || runtime.queuedUserMessages > 0) return;
     if (runtime.activeChildren > 0) {
@@ -1545,7 +1605,10 @@ export class GoalMaxCoordinator {
       return;
     }
     let dispatched: GoalMaxState | null = null;
-    await this.mutate(sessionId, (goal, timestamp) => {
+    try { await this.mutate(sessionId, (goal, timestamp) => {
+      const admission = this.host.runtime(sessionId);
+      if (goal.id !== current.id || goal.revision !== current.revision || goal.status !== 'active' || goal.executionState !== 'idle'
+        || !admission?.idle || admission.streaming || admission.queuedUserMessages > 0 || admission.activeChildren > 0) throw new GoalMaxOperationSuperseded();
       const recoveryPhase = recovery.kind === 'change-strategy' ? goalMaxRecoveryPhase(goal.phase) : goal.phase;
       let next: GoalMaxState = {
         ...goal,
@@ -1567,14 +1630,18 @@ export class GoalMaxCoordinator {
       next = appendGoalMaxTimeline(next, 'continuation.scheduled', `${reason}: ${recovery.kind}.`, timestamp);
       dispatched = next;
       return next;
-    });
+    }); } catch (error) {
+      if (!(error instanceof GoalMaxOperationSuperseded)) throw error;
+      this.reconcileRuntime(sessionId);
+      return;
+    }
     const goal = dispatched ?? this.requireState(sessionId);
     try {
       await this.host.continueGoal(sessionId, goalMaxCapsule(goal, recovery), goal.id, goal.revision);
     } catch (error) {
       const failure = classifyContinuationFailure(error);
       try { await this.mutate(sessionId, (latest, timestamp) => {
-        if (latest.id !== goal.id || latest.revision !== goal.revision || latest.status !== 'active') throw new GoalMaxOperationSuperseded();
+        if (latest.id !== goal.id || latest.continuation.attempt !== goal.continuation.attempt || latest.status !== 'active') throw new GoalMaxOperationSuperseded();
         if (failure.kind === 'defer') return appendGoalMaxTimeline({
           ...latest,
           revision: latest.revision + 1,
@@ -1594,6 +1661,7 @@ export class GoalMaxCoordinator {
       }); } catch (mutationError) {
         if (!(mutationError instanceof GoalMaxOperationSuperseded)) throw mutationError;
       }
+      if (failure.kind === 'defer') this.reconcileRuntime(sessionId);
     }
   }
 
@@ -1620,7 +1688,7 @@ export class GoalMaxCoordinator {
     this.observationBuffers.delete(goal.id);
     const items = buffer.items.slice(-MAX_BUFFERED_OBSERVATIONS);
     const newEvidence = items.map((item) => item.evidence);
-    await this.mutate(sessionId, (current, now) => {
+    try { await this.mutate(sessionId, (current, now) => {
       let repeatedFailureCount = current.progress.repeatedFailureCount;
       let lastFailureFingerprint = current.progress.lastFailureFingerprint;
       for (const { observation } of items) {
@@ -1648,7 +1716,12 @@ export class GoalMaxCoordinator {
         },
         updatedAt: now,
       };
-    }, false, newEvidence.map((evidence) => evidenceEvent(goal, evidence)));
+    }, false, newEvidence.map((evidence) => evidenceEvent(goal, evidence))); } catch (error) {
+      const pending = this.observationBuffers.get(goal.id);
+      if (pending) pending.items = [...items, ...pending.items].slice(-MAX_BUFFERED_OBSERVATIONS);
+      else this.observationBuffers.set(goal.id, { ...buffer, items });
+      throw error;
+    }
   }
 
   private discardTransientState(goal: GoalMaxState): void {
@@ -1658,6 +1731,7 @@ export class GoalMaxCoordinator {
     this.observationBuffers.delete(goal.id);
     this.toolStarts.delete(goal.sessionId);
     this.turnMarkers.delete(goal.sessionId);
+    this.userInputEpochs.delete(goal.sessionId);
     this.failClosedStates.delete(goal.sessionId);
     this.completionFences.delete(goal.sessionId);
     this.completionFenceConflicts.delete(goal.sessionId);
@@ -1704,6 +1778,26 @@ export class GoalMaxCoordinator {
       }
       await this.commit(next, current.revision, emitSnapshot, additionalEvents, guard);
     });
+  }
+
+  private completionGuard(sessionId: string, invalidated?: () => string | null): GoalMaxCommitGuard {
+    return {
+      validate: () => this.completionFenceConflicts.get(sessionId)
+        ?? ((this.host.runtime(sessionId)?.queuedUserMessages ?? 0) > 0 ? 'User messages are waiting for delivery.' : null)
+        ?? invalidated?.() ?? null,
+      recover: (previous, attempted, reason, now) => appendGoalMaxTimeline({
+        ...previous,
+        revision: attempted.revision + 1,
+        status: 'active',
+        phase: previous.phase === 'verification' ? 'implementation' : previous.phase,
+        executionState: 'idle',
+        blockedReason: null,
+        failure: null,
+        evidence: previous.evidence.map((evidence) => evidence.kind === 'verification' ? { ...evidence, current: false } : evidence),
+        continuation: { ...previous.continuation, pending: false, reason: `Completion was not accepted: ${reason}` },
+        updatedAt: now,
+      }, 'verification.failed', `Completion gate rejected: ${reason}. GoalMax stays active without a warning state.`, now),
+    };
   }
 
   private async commit(
@@ -2119,11 +2213,10 @@ function deterministicVerification(goal: GoalMaxState): { pass: boolean; finding
   if (currentFailure) findings.push(`Resolve the current failed evidence: ${currentFailure.title}.`);
   const required = goal.criteria.filter((criterion) => criterion.required && criterion.status !== 'waived' && !isControlPlaneVerificationCriterion(criterion));
   if (required.length === 0) findings.push('Define at least one required completion criterion.');
-  // Gate A: every user-work criterion must carry current non-verifier evidence.
-  // The control-plane verification criterion is satisfied only after this
-  // deterministic preflight and the independent verifier both pass.
+  // Required work needs both a completion report and current supporting evidence.
   const supportingIds = new Set(currentEvidence.filter(evidenceSupportsCriterion).map((evidence) => evidence.id));
   for (const criterion of required) {
+    if (criterion.status !== 'satisfied') findings.push(`Finish required criterion before completion: ${criterion.title}.`);
     if (!criterion.evidenceIds.some((id) => supportingIds.has(id))) findings.push(`Attach current non-verifier evidence to required criterion: ${criterion.title}.`);
   }
   return { pass: findings.length === 0, findings, needsVerificationCommand };

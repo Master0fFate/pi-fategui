@@ -43,7 +43,11 @@ vi.mock('../SubagentSessionFactory', async () => {
           messages.push(assistant);
           listener?.({ type: 'message_end', message: assistant });
         }),
-        sendCustomMessage: vi.fn(async () => undefined),
+        sendCustomMessage: vi.fn(async (message: Parameters<AgentSession['sendCustomMessage']>[0]) => {
+          const accepted = { ...message, role: 'custom' };
+          messages.push(accepted);
+          listener?.({ type: 'message_end', message: accepted });
+        }),
         abort: vi.fn(async () => { releaseAbort(); }),
         dispose: vi.fn(),
       } as unknown as AgentSession;
@@ -80,7 +84,7 @@ function rootSession() {
     sessionId: 'root-session', model, thinkingLevel: 'max', messages,
     resourceLoader: { getSkills: () => ({ skills: [] }) },
     sessionManager: { getBranch: () => [], appendCustomEntry: vi.fn(), getSessionId: () => 'root-session' },
-    sendCustomMessage: vi.fn(async () => undefined),
+    sendCustomMessage: vi.fn(async (message: Parameters<AgentSession['sendCustomMessage']>[0]) => { messages.push({ ...message, role: 'custom' }); }),
     isStreaming: true,
   } as unknown as AgentSession;
 }
@@ -95,6 +99,116 @@ function runtime() {
 async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
+
+describe('AgentTeamCoordinator spawn preflight', () => {
+  function coordinatorFor(root = rootSession(), permissionLevel: 'read-only' | 'full-access' = 'full-access') {
+    return new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+  }
+
+  async function expectRejectedSpawn(specification: Record<string, unknown>, error: RegExp, modelRuntime = runtime()) {
+    const coordinator = coordinatorFor();
+    await expect(coordinator.spawn(coordinator.rootNodeId('root-session'), { task: 'inspect', ...specification }, 'preflight-spawn', modelRuntime))
+      .rejects.toThrow(error);
+    expect(createdInputs).toHaveLength(0);
+    expect(coordinator.getTeams('root-session')[0]).toMatchObject({ nodes: [expect.objectContaining({ depth: 0 })], tasks: [], envelopes: [], operationReceipts: [] });
+  }
+
+  it.each([
+    ['undefined', undefined],
+    ['null', null],
+    ['string', 'test/model'],
+    ['array', []],
+    ['missing provider', { id: 'model' }],
+    ['missing id', { provider: 'test' }],
+    ['non-string provider', { provider: 1, id: 'model' }],
+    ['non-string id', { provider: 'test', id: 1 }],
+    ['empty provider', { provider: '', id: 'model' }],
+    ['blank id', { provider: 'test', id: '  ' }],
+    ['oversized provider', { provider: 'p'.repeat(201), id: 'model' }],
+    ['oversized id', { provider: 'test', id: 'm'.repeat(501) }],
+    ['extra selector field', { provider: 'test', id: 'model', fallback: true }],
+  ])('rejects an explicit malformed model (%s) rather than inheriting the caller model', async (_label, requestedModel) => {
+    await expectRejectedSpawn({ model: requestedModel }, /model requires exact non-empty provider and id/);
+  });
+
+  it.each([
+    ['undefined', undefined],
+    ['null', null],
+    ['non-array', 'read'],
+    ['unsupported tool', ['read', 'not_a_tool']],
+    ['malformed entry', ['read', 42]],
+  ])('rejects explicit unsupported tools (%s) rather than dropping them', async (_label, tools) => {
+    await expectRejectedSpawn({ tools }, /tools must be an array of supported child tools/);
+  });
+
+  it.each([
+    ['permission', undefined], ['permission', null], ['permission', 'admin'], ['permission', 1],
+    ['thinkingLevel', undefined], ['thinkingLevel', null], ['thinkingLevel', 'turbo'], ['thinkingLevel', 1],
+  ])('rejects unsupported explicit %s value %s', async (field, value) => {
+    await expectRejectedSpawn({ [field as string]: value }, new RegExp(`${field} must be one of`));
+  });
+
+  it('preserves the exact authenticated provider/model and explicit thinking without widening default authority', async () => {
+    const selected = { ...model, provider: 'authenticated-provider', id: 'vendor/model-v2' };
+    const modelRuntime = runtime();
+    vi.mocked(modelRuntime.getAvailable).mockResolvedValue([model, selected] as unknown as Awaited<ReturnType<ModelRuntime['getAvailable']>>);
+    const coordinator = coordinatorFor();
+    await coordinator.spawn(coordinator.rootNodeId('root-session'), {
+      task: 'inspect', model: { provider: selected.provider, id: selected.id }, thinkingLevel: 'high', tools: ['read'],
+    }, 'exact-model-spawn', modelRuntime);
+    await settle();
+    expect(createdInputs[0]).toMatchObject({ model: selected, thinkingLevel: 'high', permissionLevel: 'read-only', toolNames: ['read'] });
+    expect(createdInputs[0]?.model).toBe(selected);
+  });
+
+  it('does not fall back to the caller for an unauthenticated explicit model', async () => {
+    await expectRejectedSpawn({ model: { provider: 'other-provider', id: model.id } }, /not currently authenticated/);
+  });
+
+  it('caps a valid explicit permission at caller authority', async () => {
+    const coordinator = coordinatorFor(rootSession(), 'read-only');
+    await coordinator.spawn(coordinator.rootNodeId('root-session'), { task: 'inspect', permission: 'full-access', tools: ['read'] }, 'capped-spawn', runtime());
+    await settle();
+    expect(createdInputs[0]).toMatchObject({ permissionLevel: 'read-only', toolNames: ['read'] });
+  });
+
+  it('rejects explicit tools blocked by the resolved profile while preserving implicit profile narrowing', async () => {
+    const directory = path.join(dataRoot, '.pi', 'agents');
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, 'reader.md'), '---\nname: reader\ndescription: Read-only inspection\ntools: read\n---\nInspect files.');
+    await expectRejectedSpawn({ agent: 'project/reader', tools: ['read', 'grep'] }, /'grep'.*not enabled by agent profile 'project\/reader'/);
+
+    const coordinator = coordinatorFor();
+    await coordinator.spawn(coordinator.rootNodeId('root-session'), { task: 'inspect', agent: 'project/reader' }, 'profile-default-spawn', runtime());
+    await settle();
+    expect(createdInputs[0]).toMatchObject({ agentName: 'reader', profileSystemPrompt: 'Inspect files.', toolNames: ['read'] });
+  });
+
+  it.each([
+    ['non-reasoning', { ...model, reasoning: false }],
+    ['explicitly unsupported effort', { ...model, thinkingLevelMap: { high: null } }],
+  ])('rejects explicit thinking incompatible with a %s model', async (_label, selected) => {
+    const modelRuntime = runtime();
+    vi.mocked(modelRuntime.getAvailable).mockResolvedValue([selected] as unknown as Awaited<ReturnType<ModelRuntime['getAvailable']>>);
+    await expectRejectedSpawn({ model: { provider: model.provider, id: model.id }, thinkingLevel: 'high' }, /does not support requested thinking level 'high'/, modelRuntime);
+  });
+
+  it.each([undefined, 'off'])('allows non-reasoning models with omitted or off thinking (%s) and an empty tool allowlist', async (thinkingLevel) => {
+    const selected = { ...model, reasoning: false };
+    const modelRuntime = runtime();
+    vi.mocked(modelRuntime.getAvailable).mockResolvedValue([selected] as unknown as Awaited<ReturnType<ModelRuntime['getAvailable']>>);
+    const coordinator = coordinatorFor();
+    await coordinator.spawn(coordinator.rootNodeId('root-session'), {
+      task: 'inspect', model: { provider: model.provider, id: model.id }, tools: [], ...(thinkingLevel ? { thinkingLevel } : {}),
+    }, 'no-thinking-spawn', modelRuntime);
+    await settle();
+    expect(createdInputs[0]).toMatchObject({ thinkingLevel: 'off', toolNames: [], permissionLevel: 'read-only' });
+  });
+});
 
 describe('AgentTeamCoordinator vertical slice', () => {
   it('threads team identity into the child factory and resolves current task/permission dynamically', async () => {
@@ -535,7 +649,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
 describe('Agent Team V2 send_message delivery modes', () => {
   function makeCoordinator() {
     const root = rootSession();
-    const sendRootMessage = vi.fn(async () => undefined);
+    const sendRootMessage = vi.fn(async (_sessionId: string, _message: Parameters<AgentSession['sendCustomMessage']>[0]) => undefined);
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' }),
       sendRootMessage,
@@ -544,6 +658,24 @@ describe('Agent Team V2 send_message delivery modes', () => {
     }, dataRoot);
     return { coordinator, root, sendRootMessage };
   }
+
+  it('does not acknowledge a root mailbox handoff until the recipient records it', async () => {
+    const { coordinator, root, sendRootMessage } = makeCoordinator();
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'work', name: 'reporter' }, 'ack-spawn', runtime());
+    await settle();
+    const receipt = await coordinator.sendMessage(child.nodeId, '/root', 'retained report', 'ack-message', 'queue');
+    expect(receipt.state).toBe('dispatching');
+    const message = { ...sendRootMessage.mock.calls.at(-1)![1], role: 'custom' };
+    const state = () => coordinator.getTeams('root-session')[0]!.envelopes.find((item) => item.id === receipt.envelopeId)!.state;
+    coordinator.observeDeliveredMessage('root-session', childSessions[0]!, message);
+    expect(state()).toBe('dispatching');
+    coordinator.observeDeliveredMessage('root-session', root, message);
+    expect(state()).toBe('delivered');
+    const calls = sendRootMessage.mock.calls.length;
+    await coordinator.sendMessage(child.nodeId, '/root', 'retained report', 'ack-message', 'queue');
+    expect(sendRootMessage).toHaveBeenCalledTimes(calls);
+  });
 
   it('queue holds a message until the recipient task settles, then delivers it once', async () => {
     let releasePrompt: () => void = () => undefined;

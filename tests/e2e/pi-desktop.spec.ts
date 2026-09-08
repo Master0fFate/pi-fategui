@@ -1144,10 +1144,64 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await composerInput.press('Shift+Enter');
     await expect(composerInput).toHaveValue('Keep this on two lines\n');
 
+    await page.evaluate(() => window.piDesktop.createTask({ title: 'Review the ordinary session task list', detail: 'This task exists without GoalMax and should not consume three lines above the composer.' }));
+    const ordinaryTasks = page.getByRole('region', { name: 'Task list strip' });
+    await expect(ordinaryTasks).toContainText('0/1 tasks');
+    await expect(page.getByRole('region', { name: 'Current GoalMax goal' })).toHaveCount(0);
+    const normalTaskHeight = (await ordinaryTasks.boundingBox())!.height;
+    expect(normalTaskHeight).toBeLessThanOrEqual(34);
+    await page.evaluate(() => { document.documentElement.dataset.compactMode = 'true'; });
+    const compactTaskHeight = (await ordinaryTasks.boundingBox())!.height;
+    expect(compactTaskHeight).toBeLessThan(normalTaskHeight);
+    expect(compactTaskHeight).toBeLessThanOrEqual(26);
+    await ordinaryTasks.getByRole('button', { name: 'Expand task list' }).click();
+    await ordinaryTasks.getByRole('button', { name: 'Change status for Review the ordinary session task list' }).click();
+    await expect(ordinaryTasks.getByRole('button', { name: 'Change status for Review the ordinary session task list' })).toHaveText('In progress');
+    await ordinaryTasks.getByRole('button', { name: 'Cancel task Review the ordinary session task list' }).click();
+    await expect(ordinaryTasks).toHaveCount(0);
+    await page.evaluate(() => { document.documentElement.dataset.compactMode = 'false'; });
+
     await composerInput.fill('/goalmax Build and verify the persistent goal flow');
     await composerInput.press('Enter');
     const goalRail = page.getByRole('region', { name: 'Current GoalMax goal' });
     await expect(goalRail).toContainText('Build and verify the persistent goal flow');
+    await openInspectorView(page, 'Run', /^Subagent sessions/u);
+    await expect(page.getByLabel('Main agent linked to GoalMax')).toBeVisible();
+    for (const compact of [false, true]) {
+      await page.evaluate((value) => { document.documentElement.dataset.compactMode = String(value); }, compact);
+      for (const width of [280, 420]) {
+        const layout = await page.locator('.agent-tree-root').evaluate((root, targetWidth) => {
+          const node = root as HTMLElement;
+          const previous = node.style.width;
+          node.style.width = `${targetWidth}px`;
+          const mark = node.querySelector('.agent-tree-root-mark')!.getBoundingClientRect();
+          const button = node.querySelector('.agent-team-create')!.getBoundingClientRect();
+          const bounds = node.getBoundingClientRect();
+          const result = { overflow: node.scrollWidth - node.clientWidth, centerDelta: Math.abs(mark.top + mark.height / 2 - button.top - button.height / 2), contained: button.right <= bounds.right && button.bottom <= bounds.bottom };
+          node.style.width = previous;
+          return result;
+        }, width);
+        expect(layout.overflow).toBeLessThanOrEqual(0);
+        expect(layout.centerDelta).toBeLessThan(1);
+        expect(layout.contained).toBe(true);
+      }
+      const strip = page.getByRole('region', { name: 'GoalMax task strip' });
+      expect((await strip.boundingBox())!.height).toBeLessThanOrEqual(compact ? 26 : 34);
+      expect((await goalRail.boundingBox())!.height).toBeLessThanOrEqual(compact ? 24 : 32);
+      const narrowRail = await goalRail.evaluate((element) => {
+        const rail = element as HTMLElement;
+        const previous = rail.style.width;
+        rail.style.width = '260px';
+        const bounds = rail.getBoundingClientRect();
+        const actions = rail.querySelector('.goalmax-rail-actions')!.getBoundingClientRect();
+        const result = { overflow: rail.scrollWidth - rail.clientWidth, actionsInside: actions.right <= bounds.right && actions.bottom <= bounds.bottom };
+        rail.style.width = previous;
+        return result;
+      });
+      expect(narrowRail).toEqual({ overflow: 0, actionsInside: true });
+      await page.screenshot({ path: `test-results/pi-desktop-goalmax-agents-${compact ? 'compact' : 'normal'}.png` });
+    }
+    await page.evaluate(() => { document.documentElement.dataset.compactMode = 'false'; });
     await goalRail.getByRole('button', { name: 'Open Goal Flight Deck' }).click();
     await expect(page.getByRole('tab', { name: /Goal/ })).toHaveAttribute('data-state', 'active');
     await expect(page.getByRole('region', { name: 'Goal Flight Deck' })).toContainText('Build and verify the persistent goal flow');

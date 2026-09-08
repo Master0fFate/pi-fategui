@@ -29,6 +29,15 @@ describe('AgentTeamStore', () => {
     expect(restored.state.writerNodeId).toBeNull();
   });
 
+  it('does not replay a dispatch interrupted before acknowledgement', () => {
+    const runtime = createTeamRuntime('root-session', '/project', model, 'medium', 'read-only');
+    const root = runtime.nodes.get(runtime.state.rootNodeId)!;
+    const envelope = addEnvelope(runtime, { kind: 'MESSAGE', authorNodeId: root.id, recipientNodeId: root.id, content: 'Review this once', triggerTurn: false });
+    envelope.state = 'dispatching';
+    const restored = hydrateTeamRuntime(projectTeam(runtime))!;
+    expect(restored.envelopes.get(envelope.id)).toMatchObject({ state: 'failed', error: expect.stringContaining('not replayed') });
+  });
+
   it('migrates legacy single-team snapshots with explicit project ownership and selection', () => {
     const legacy = projectTeam(createTeamRuntime('root-session', '/project', model, 'medium', 'read-only')) as unknown as Record<string, unknown>;
     delete legacy.projectPath;

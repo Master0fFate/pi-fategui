@@ -95,6 +95,8 @@ export class GoalMaxRepository implements GoalMaxPersistence {
 
   save(state: GoalMaxState, expectedRevision: number | null): Promise<void> {
     const parsed = goalMaxStateSchema.parse(state);
+    const serialized = `${JSON.stringify(parsed, null, 2)}\n`;
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_SNAPSHOT_BYTES) return Promise.reject(new Error('GoalMax snapshot exceeds its size limit; the previous snapshot is preserved.'));
     return this.enqueue(parsed.projectPath, parsed.sessionId, async () => {
       const key = stateKey(parsed.projectPath, parsed.sessionId);
       const known = this.revisions.has(key)
@@ -104,7 +106,7 @@ export class GoalMaxRepository implements GoalMaxPersistence {
       if (parsed.revision !== (expectedRevision ?? 0) + 1) throw new Error('GoalMax snapshots must advance by exactly one revision.');
       const directory = this.sessionDirectory(parsed.projectPath, parsed.sessionId);
       await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-      await this.atomicWrite(path.join(directory, 'current.json'), `${JSON.stringify(parsed, null, 2)}\n`);
+      await this.atomicWrite(path.join(directory, 'current.json'), serialized);
       this.revisions.set(key, parsed.revision);
       await this.appendJournal(directory, {
         goalId: parsed.id,
@@ -141,12 +143,15 @@ export class GoalMaxRepository implements GoalMaxPersistence {
       for (const name of briefFiles) {
         const source = path.join(directory, name);
         const destination = path.join(archiveDirectory, name);
-        await fs.rename(source, destination).catch((error: NodeJS.ErrnoException) => {
+        await fs.copyFile(source, destination).catch((error: NodeJS.ErrnoException) => {
           if (error.code !== 'ENOENT') throw error;
         });
       }
       await fs.rm(path.join(directory, 'current.json'), { force: true });
       this.revisions.set(key, null);
+      await Promise.all(briefFiles.map((name) => fs.rm(path.join(directory, name), { force: true }).catch((error: unknown) => {
+        this.logs.write('warn', 'goalmaxxing', `Archived goal brief cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      })));
       await this.appendJournal(directory, { goalId: parsed.id, revision: parsed.revision, status: 'cleared', timestamp: Date.now() });
     });
   }
@@ -170,8 +175,10 @@ export class GoalMaxRepository implements GoalMaxPersistence {
 
   private async readCurrent(projectPath: string, sessionId: string): Promise<GoalMaxState | null> {
     const target = path.join(this.sessionDirectory(projectPath, sessionId), 'current.json');
+    let snapshotExists = false;
     try {
       const stat = await fs.stat(target);
+      snapshotExists = true;
       if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_SNAPSHOT_BYTES) throw new Error('Saved GoalMax snapshot exceeds its size limit.');
       const state = migrateGoalMaxSnapshot(JSON.parse(await fs.readFile(target, 'utf8')));
       if (state.sessionId !== sessionId || !sameProjectPath(state.projectPath, projectPath)) throw new Error('Saved GoalMax snapshot identity does not match its session directory.');
@@ -184,9 +191,10 @@ export class GoalMaxRepository implements GoalMaxPersistence {
       }
       return state;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      this.logs.write('warn', 'goalmaxxing', `Saved goal state was ignored: ${error instanceof Error ? error.message : String(error)}`);
-      return null;
+      if (!snapshotExists && (error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      const message = `Saved goal state could not be restored; its files are preserved: ${error instanceof Error ? error.message : String(error)}`;
+      this.logs.write('warn', 'goalmaxxing', message);
+      throw new Error(message, { cause: error });
     }
   }
 
@@ -213,14 +221,14 @@ export class GoalMaxRepository implements GoalMaxPersistence {
 
   private async appendJournal(directory: string, event: Record<string, unknown>): Promise<void> {
     const target = path.join(directory, 'events.jsonl');
-    await fs.appendFile(target, `${JSON.stringify(event)}\n`, { encoding: 'utf8', mode: 0o600 });
     try {
+      await fs.appendFile(target, `${JSON.stringify(event)}\n`, { encoding: 'utf8', mode: 0o600 });
       const stat = await fs.stat(target);
       if (stat.size <= MAX_JOURNAL_BYTES) return;
       const lines = (await fs.readFile(target, 'utf8')).trimEnd().split('\n').slice(-MAX_JOURNAL_EVENTS);
       await this.atomicWrite(target, `${lines.join('\n')}\n`);
     } catch (error) {
-      this.logs.write('warn', 'goalmaxxing', `Goal audit journal could not be compacted: ${error instanceof Error ? error.message : String(error)}`);
+      this.logs.write('warn', 'goalmaxxing', `Goal snapshot committed, but the audit journal could not be updated: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }

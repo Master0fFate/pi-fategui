@@ -146,6 +146,15 @@ describe('TaskService', () => {
     await svc.syncGoal('/project', 'session-1', goalFixture());
     const goalTask = (await svc.get('/project', 'session-1'))!.tasks[0]!;
     await expect(svc.delete('/project', 'session-1', { id: goalTask.id })).rejects.toThrow(/managed by the active goal/);
+    await expect(svc.update('/project', 'session-1', { id: goalTask.id, status: 'done', required: false })).rejects.toThrow(/managed by the active goal/);
+    expect(svc.get('/project', 'session-1')!.tasks[0]).toEqual(goalTask);
+  });
+
+  it('rejects unknown task updates without committing a revision', async () => {
+    const svc = new TaskService(host());
+    const before = await svc.create('/project', 'session-1', { title: 'Known task' });
+    await expect(svc.update('/project', 'session-1', { id: 'missing', status: 'done' })).rejects.toThrow(/no longer exists/);
+    expect(svc.get('/project', 'session-1')).toEqual(before);
   });
 
   it('detaches goal tasks on clear, restoring an ordinary goal-free list', async () => {

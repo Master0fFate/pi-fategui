@@ -78,8 +78,10 @@ describe('GoalMax task strip', () => {
     render(<GoalMaxTaskStrip />);
 
     const strip = screen.getByRole('region', { name: 'Task list strip' });
-    expect(strip).toHaveTextContent('2 tasks · 0/2 required · unverified');
+    expect(strip).toHaveTextContent('0/2 tasks');
+    expect(strip).not.toHaveTextContent('Build the required behavior.');
     await user.click(screen.getByRole('button', { name: 'Expand task list' }));
+    expect(strip).toHaveTextContent('2 tasks · 0/2 required · unverified');
 
     // Task creation is prompted to the agent instead of typed manually.
     expect(screen.queryByRole('textbox', { name: 'Add a task' })).toBeNull();
@@ -127,6 +129,23 @@ describe('GoalMax task strip', () => {
     expect(deleteTask).toHaveBeenCalledWith({ id: 'task-manual' });
     expect(screen.queryByRole('button', { name: 'Cancel task Review the copy' })).toBeNull();
     expect(screen.getByRole('region', { name: 'Task list strip' })).toHaveTextContent('2 tasks · 0/2 required · unverified');
+  });
+
+  it('shows and manages ordinary session tasks without a goal', async () => {
+    const user = userEvent.setup();
+    const source = buildTaskList(true);
+    const list: TaskList = { ...source, goalId: null, tasks: source.tasks.filter((task) => task.source === 'user'), currentTaskId: 'task-manual' };
+    const deleteTask = vi.fn(async () => ({ ...list, revision: list.revision + 1, tasks: [], currentTaskId: null }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { deleteTask } });
+    useGoalMaxStore.setState({ goal: null });
+    useTaskStore.setState({ list });
+    render(<GoalMaxTaskStrip />);
+
+    expect(screen.getByRole('region', { name: 'Task list strip' })).toHaveTextContent('0/1 tasks');
+    await user.click(screen.getByRole('button', { name: 'Expand task list' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel task Review the copy' }));
+    expect(deleteTask).toHaveBeenCalledWith({ id: 'task-manual' });
+    expect(screen.queryByRole('region', { name: 'Task list strip' })).toBeNull();
   });
 
   it('renders nothing when no goal is active', () => {

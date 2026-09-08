@@ -25,6 +25,7 @@ import { PiRuntimeService } from './pi/PiRuntimeService';
 import { prepareFateProviderStorage } from './pi/FateProviderStorage';
 import { SessionPermissionStore } from './pi/SessionPermissionStore';
 import { GoalMaxRepository } from './pi/goalmaxxing/GoalMaxRepository';
+import { SessionQueueRepository } from './pi/SessionQueueRepository';
 import { MutationAttestationLedger } from './pi/provenance/MutationAttestationLedger';
 import { createMutationRecorder } from './pi/provenance/mutationRecorder';
 import { ProjectService } from './projects/ProjectService';
@@ -129,6 +130,7 @@ const piRuntime = new MultiProjectPiRuntime({
   getImageGenerationSettings: () => settings.get().imageGeneration,
   getDisabledModels: () => settings.get().disabledModels ?? [],
   createGoalPersistence: () => new GoalMaxRepository(logs),
+  createQueuePersistence: () => new SessionQueueRepository(undefined, instanceProfile.slot),
   browserIntegration: browserBridge,
   recordAttestation,
   notifySessionSettled: () => {

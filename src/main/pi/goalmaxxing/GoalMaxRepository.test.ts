@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -67,6 +67,44 @@ describe('GoalMax repository', () => {
     await expect(repository.load('/project', 'session-1')).resolves.toMatchObject({ revision: 2, updatedAt: 20 });
   });
 
+  it('keeps committed revisions usable when journal writes fail', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'goalmax-repo-')); roots.push(root);
+    const logs = { write: vi.fn() };
+    const repository = new GoalMaxRepository(logs, root);
+    await repository.save(state(), null);
+    const journal = (await findFiles(root)).find((file) => file.endsWith('events.jsonl'))!;
+    await rm(journal);
+    await mkdir(journal);
+    await expect(repository.save(state(2), 1)).resolves.toBeUndefined();
+    await expect(repository.save(state(3), 2)).resolves.toBeUndefined();
+    await expect(new GoalMaxRepository(logs, root).load('/project', 'session-1')).resolves.toMatchObject({ revision: 3 });
+    await expect(repository.archiveAndClear(state(3))).resolves.toBeUndefined();
+    await expect(repository.load('/project', 'session-1')).resolves.toBeNull();
+    expect(logs.write).toHaveBeenCalledWith('warn', 'goalmaxxing', expect.stringContaining('snapshot committed'));
+  });
+
+  it('rejects oversized snapshots before replacing recoverable state', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'goalmax-repo-')); roots.push(root);
+    const repository = new GoalMaxRepository({ write: vi.fn() }, root);
+    await repository.save(state(), null);
+    const oversized = { ...state(2), evidence: Array.from({ length: 200 }, (_, index) => ({
+      id: `e-${index}`, kind: 'test' as const, title: 'Check', summary: '界'.repeat(8_000), output: '界'.repeat(8_000),
+      criterionIds: [], source: 'runtime' as const, timestamp: 10, current: true,
+    })) };
+    await expect(repository.save(oversized, 1)).rejects.toThrow('size limit');
+    await expect(repository.load('/project', 'session-1')).resolves.toMatchObject({ revision: 1 });
+    await expect(repository.save(state(2), 1)).resolves.toBeUndefined();
+  });
+
+  it('reports a missing referenced brief rather than treating the goal as absent', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'goalmax-repo-')); roots.push(root);
+    const repository = new GoalMaxRepository({ write: vi.fn() }, root);
+    const brief = await repository.saveBrief('/project', 'session-1', 'goal-1', 'Required source brief');
+    await repository.save({ ...state(), originalBriefRef: brief.ref, originalBriefHash: brief.hash }, null);
+    await rm((await findFiles(root)).find((file) => file.endsWith(brief.ref))!);
+    await expect(new GoalMaxRepository({ write: vi.fn() }, root).load('/project', 'session-1')).rejects.toThrow('preserved');
+  });
+
   it('stores long briefs by content identity so a stale edit cannot overwrite the active source', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'goalmax-repo-')); roots.push(root);
     const repository = new GoalMaxRepository({ write: vi.fn() }, root);
@@ -92,11 +130,11 @@ describe('GoalMax repository', () => {
     const brief = (await findFiles(root)).find((file) => file.endsWith(saved.ref))!;
     await writeFile(brief, 'tampered brief', 'utf8');
 
-    await expect(new GoalMaxRepository(logs, root).load('/project', 'session-1')).resolves.toBeNull();
+    await expect(new GoalMaxRepository(logs, root).load('/project', 'session-1')).rejects.toThrow('integrity');
     expect(logs.write).toHaveBeenCalledWith('warn', 'goalmaxxing', expect.stringContaining('integrity'));
   });
 
-  it('archives a cleared goal and ignores malformed recovery snapshots', async () => {
+  it('archives a cleared goal and refuses to overwrite malformed recovery snapshots', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'goalmax-repo-')); roots.push(root);
     const logs = { write: vi.fn() };
     const repository = new GoalMaxRepository(logs, root);
@@ -109,8 +147,10 @@ describe('GoalMax repository', () => {
     await repository.save(state(), null);
     const current = (await findFiles(root)).find((file) => file.endsWith('current.json'))!;
     await writeFile(current, '{ malformed', 'utf8');
-    await expect(new GoalMaxRepository(logs, root).load('/project', 'session-1')).resolves.toBeNull();
-    expect(logs.write).toHaveBeenCalledWith('warn', 'goalmaxxing', expect.stringContaining('ignored'));
+    const restored = new GoalMaxRepository(logs, root);
+    await expect(restored.load('/project', 'session-1')).rejects.toThrow('preserved');
+    await expect(restored.save(state(), null)).rejects.toThrow('preserved');
+    expect(logs.write).toHaveBeenCalledWith('warn', 'goalmaxxing', expect.stringContaining('preserved'));
     expect(await readFile(current, 'utf8')).toContain('malformed');
   });
 });

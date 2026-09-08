@@ -237,6 +237,121 @@ describe('GoalMax coordinator', () => {
     expect(result.details).toMatchObject({ status: 'active', blockedReason: null, failure: null });
   });
 
+  it('refuses completion while ordinary user messages are queued', async () => {
+    const { coordinator, runtime } = fixture();
+    await coordinator.create({ objective: 'Honor follow-up work', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await addCompletionEvidence(coordinator);
+    runtime.queuedUserMessages = 1;
+    const result = await coordinator.requestCompletion('session-1', { summary: 'Done before reading the follow-up.' });
+    expect(result.details.status).toBe('active');
+    expect(result.text).toContain('queued user messages');
+    await coordinator.dispose();
+  });
+
+  it.each(['queue', 'delivery'] as const)('rejects a completion when user input arrives through %s during its durable save', async (boundary) => {
+    const { coordinator, repository, runtime } = fixture();
+    await coordinator.create({ objective: 'Fence late queue admission', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await addCompletionEvidence(coordinator);
+    const save = repository.save.bind(repository);
+    vi.spyOn(repository, 'save').mockImplementation(async (state, expected) => {
+      await save(state, expected);
+      if (state.status === 'completed') {
+        if (boundary === 'queue') runtime.queuedUserMessages = 1;
+        else coordinator.observeSessionEvent('session-1', { type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'There is more work.' }], timestamp: Date.now() } } as never);
+      }
+    });
+    const result = await coordinator.requestCompletion('session-1', { summary: 'Do not skip the arriving message.' });
+    expect(result.details.status).toBe('active');
+    expect(result.text).toContain(boundary === 'queue' ? 'waiting for delivery' : 'New user work');
+    expect((await repository.load('/project', 'session-1'))?.status).toBe('active');
+    await coordinator.dispose();
+  });
+
+  it('requires finished task status even when supporting evidence exists', async () => {
+    const { coordinator } = fixture();
+    await coordinator.create({ objective: 'Finish every required task', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await addCompletionEvidence(coordinator);
+    const before = (await coordinator.statusForModel('session-1')).details;
+    await coordinator.report('session-1', { outcome: 'progress', summary: 'More work remains.', criterionUpdates: [{ criterionId: before.criteria[0]!.id, status: 'active' }] });
+    const result = await coordinator.requestCompletion('session-1', { summary: 'Evidence alone is not completion.' });
+    expect(result.details.status).toBe('active');
+    expect(result.text).toContain('Finish required criterion');
+    await coordinator.dispose();
+  });
+
+  it('prepares normal user input without hidden steering or an automatic wake', async () => {
+    const { coordinator, host } = fixture();
+    await coordinator.create({ objective: 'Handle ordinary conversation', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await coordinator.control({ action: 'pause' });
+    const prepared = await coordinator.prepareUserTurn('session-1');
+    expect(prepared).toMatchObject({ status: 'paused', steering: [] });
+    expect(host.steerGoal).not.toHaveBeenCalled();
+    expect(host.continueGoal).not.toHaveBeenCalled();
+    await coordinator.dispose();
+  });
+
+  it('does not silently lift an exhausted user budget on ordinary input', async () => {
+    const { coordinator, host, runtime } = fixture();
+    await coordinator.create({ objective: 'Respect the token budget', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: 1, timeLimitMs: null });
+    runtime.tokensUsed = 102;
+    coordinator.reconcileRuntime('session-1');
+    await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.status).toBe('budget-limited'));
+    expect(await coordinator.prepareUserTurn('session-1')).toMatchObject({ status: 'budget-limited', budget: { tokenLimit: 1 } });
+    expect(host.continueGoal).not.toHaveBeenCalled();
+    await coordinator.dispose();
+  });
+
+  it('recovers a stale continuation reservation after an unrelated revision changes', async () => {
+    const { coordinator, host } = fixture();
+    await coordinator.create({ objective: 'Recover the dispatch lease', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    vi.mocked(host.continueGoal).mockImplementationOnce(async () => {
+      await coordinator.control({ action: 'checkpoint' });
+      throw new Error('The scheduled goal continuation is stale.');
+    });
+    coordinator.reconcileRuntime('session-1');
+    await vi.waitFor(() => expect(host.continueGoal).toHaveBeenCalledTimes(2));
+    expect((await coordinator.statusForModel('session-1')).details).toMatchObject({ status: 'active', continuation: { attempt: 2 } });
+    await coordinator.dispose();
+  });
+
+  it('retries buffered evidence after a failed persistence write', async () => {
+    const { coordinator, repository } = fixture();
+    await coordinator.create({ objective: 'Keep evidence on disk errors', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'test-retry', toolName: 'bash', args: { command: 'pnpm test' } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'test-retry', toolName: 'bash', result: 'passed', isError: false } as never);
+    vi.spyOn(repository, 'save').mockRejectedValueOnce(new Error('disk full'));
+    await expect(coordinator.statusForModel('session-1')).rejects.toThrow('disk full');
+    const recovered = await coordinator.statusForModel('session-1');
+    expect(recovered.details.evidence.filter((item) => item.kind === 'test')).toHaveLength(1);
+    await coordinator.dispose();
+  });
+
+  it('discards independent verification when the workspace changes during review', async () => {
+    const { coordinator, host, progress } = fixture();
+    await coordinator.create({ objective: 'Verify the current workspace', verificationLevel: 'strict', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await addCompletionEvidence(coordinator);
+    vi.mocked(host.verifyGoal).mockImplementationOnce(async () => {
+      progress.capture.mockResolvedValue({ fingerprint: 'changed-during-review', changedFileCount: 1, paths: ['src/new.ts'], repository: true });
+      return { verdict: 'pass', report: 'VERDICT: pass', nodeId: 'verifier-1' };
+    });
+    await coordinator.control({ action: 'verify' });
+    expect((await coordinator.statusForModel('session-1')).details.status).toBe('active');
+    await coordinator.dispose();
+  });
+
+  it('discards independent verification when ordinary user input arrives', async () => {
+    const { coordinator, host } = fixture();
+    await coordinator.create({ objective: 'Respect new user work during review', verificationLevel: 'strict', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await addCompletionEvidence(coordinator);
+    vi.mocked(host.verifyGoal).mockImplementationOnce(async () => {
+      await coordinator.prepareUserTurn('session-1');
+      return { verdict: 'pass', report: 'VERDICT: pass', nodeId: 'verifier-1' };
+    });
+    await coordinator.control({ action: 'verify' });
+    expect((await coordinator.statusForModel('session-1')).details).toMatchObject({ status: 'active', steering: [] });
+    await coordinator.dispose();
+  });
+
   it('recovers an interrupted run as idle and reconciles workspace evidence after rebind', async () => {
     const { coordinator, host, repository, progress } = fixture();
     const created = await coordinator.create({ objective: 'Recover after restart', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });

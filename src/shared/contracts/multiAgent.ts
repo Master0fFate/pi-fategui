@@ -45,7 +45,7 @@ export const agentTeamLimitsSchema = z.object({
 export const agentTeamNodeStatusSchema = z.enum(['creating', 'ready', 'active', 'interrupted', 'closing', 'closed', 'released', 'failed']);
 export const agentTeamTaskStatusSchema = z.enum(['queued', 'running', 'waiting-for-children', 'completed', 'interrupted', 'cancelled', 'failed']);
 export const agentTeamEnvelopeKindSchema = z.enum(['NEW_TASK', 'MESSAGE', 'FINAL_ANSWER', 'CONTROL']);
-export const agentTeamEnvelopeStateSchema = z.enum(['queued', 'delivered', 'consumed', 'failed', 'expired']);
+export const agentTeamEnvelopeStateSchema = z.enum(['queued', 'dispatching', 'delivered', 'consumed', 'failed', 'expired']);
 export const agentTeamEnvelopeDeliverySchema = z.enum(['queue', 'steer']);
 
 export const agentTeamNodeSchema = z.object({

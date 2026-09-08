@@ -1434,7 +1434,23 @@ describe('conversation components', () => {
     expect(prompt).not.toHaveBeenCalled();
   });
 
-  it('previews a queued follow-up and converts it to steering in place', async () => {
+  it('shows uncertain recovered messages and restores drafts without sending', async () => {
+    const queued = { id: '00000000-0000-4000-8000-000000000001', behavior: 'followUp' as const, text: 'Review before resending', createdAt: 1 };
+    const prompt = vi.fn();
+    const mutateQueuedMessage = vi.fn(async () => ({ state: ready({ queue: { steering: 0, followUp: 0, items: [] } }), restored: { text: queued.text } }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, mutateQueuedMessage } as unknown as PiDesktopApi });
+    useRuntimeStore.setState({ runtime: ready(), queue: { steering: 0, followUp: 0, recovered: [queued] } });
+    render(<Composer onOpenProject={vi.fn()} />);
+    expect(screen.getByText(/Delivery is uncertain; check the transcript/u)).toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: /queued message/u })).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: `Restore recovered message: ${queued.text}` }));
+    expect(screen.getByLabelText('Message Pi')).toHaveValue(queued.text);
+    expect(prompt).not.toHaveBeenCalled();
+    expect(mutateQueuedMessage).toHaveBeenCalledWith({ id: queued.id, action: 'edit' });
+  });
+
+  it.each([false, true])('previews a queued follow-up and converts it to steering in place (GoalMax: %s)', async (withGoal) => {
+    if (withGoal) useGoalMaxStore.setState({ goal: activeGoalFixture() });
     const queued = { id: '00000000-0000-4000-8000-000000000001', behavior: 'followUp' as const, text: 'Use the smaller API', createdAt: 1 };
     const steeredState = ready({ streaming: true, queue: { steering: 1, followUp: 0, items: [{ ...queued, behavior: 'steer' }] } });
     const mutateQueuedMessage = vi.fn(async () => ({ state: steeredState }));
@@ -1456,7 +1472,8 @@ describe('conversation components', () => {
     expect(steerMode).toHaveTextContent('');
   });
 
-  it('shows accepted GoalMax updates after the composer draft clears', () => {
+  it('keeps legacy goal instructions collapsed instead of presenting them as pending messages', async () => {
+    const user = userEvent.setup();
     const goal = activeGoalFixture();
     useGoalMaxStore.setState({ goal: {
       ...goal,
@@ -1464,8 +1481,11 @@ describe('conversation components', () => {
     } });
     render(<Composer onOpenProject={vi.fn()} />);
 
-    expect(screen.getByRole('region', { name: 'GoalMax updates' })).toHaveTextContent('Also document the recovery path.');
-    expect(screen.getByRole('region', { name: 'GoalMax updates' })).toHaveTextContent('Goal update');
+    expect(screen.queryByRole('region', { name: 'Queued messages' })).toBeNull();
+    expect(screen.getByText('Saved goal instructions · 1').closest('details')).not.toHaveAttribute('open');
+    await user.click(screen.getByText('Saved goal instructions · 1'));
+    expect(screen.getByRole('region', { name: 'Saved goal instructions' })).toHaveTextContent('Also document the recovery path.');
+    expect(screen.getByRole('region', { name: 'Saved goal instructions' })).toHaveTextContent('Saved instruction');
     expect(screen.getByRole('button', { name: 'Edit goal update: Also document the recovery path.' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cancel goal update: Also document the recovery path.' })).toBeInTheDocument();
   });
@@ -1480,6 +1500,7 @@ describe('conversation components', () => {
     const user = userEvent.setup();
     render(<Composer onOpenProject={vi.fn()} />);
 
+    await user.click(screen.getByText('Saved goal instructions · 1'));
     await user.click(screen.getByRole('button', { name: 'Edit goal update: Also document the recovery path.' }));
 
     expect(removeGoalMaxSteering).toHaveBeenCalledWith({ steeringId: 'steering-1' });
@@ -1498,6 +1519,7 @@ describe('conversation components', () => {
     const user = userEvent.setup();
     render(<Composer onOpenProject={vi.fn()} />);
 
+    await user.click(screen.getByText('Saved goal instructions · 1'));
     await user.click(screen.getByRole('button', { name: 'Cancel goal update: Scrap this note.' }));
 
     expect(removeGoalMaxSteering).toHaveBeenCalledWith({ steeringId: 'steering-1' });
@@ -1505,7 +1527,8 @@ describe('conversation components', () => {
     expect(screen.getByLabelText('Message Pi')).toHaveValue('');
   });
 
-  it('moves a queued message back into the composer for editing', async () => {
+  it.each([false, true])('moves a queued message back into the composer for editing (GoalMax: %s)', async (withGoal) => {
+    if (withGoal) useGoalMaxStore.setState({ goal: activeGoalFixture() });
     const queued = { id: '00000000-0000-4000-8000-000000000002', behavior: 'followUp' as const, text: 'Fix teh heading', createdAt: 1 };
     const emptyState = ready({ streaming: true, queue: { steering: 0, followUp: 0, items: [] } });
     const mutateQueuedMessage = vi.fn(async () => ({ state: emptyState, restored: { text: queued.text } }));

@@ -1,5 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import { Check, CircleAlert, Info, LoaderCircle, Pause, Pencil, Play, Target, X } from 'lucide-react';
+import { Check, CircleAlert, LoaderCircle, Pause, Pencil, Play, Target, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GoalMaxControlInput, GoalMaxState } from '../../../shared/contracts/goalmaxxing';
 import { AppTooltip } from '../../components/AppTooltip';
@@ -57,15 +57,14 @@ export function GoalMaxRail() {
   return (
     <>
       <section className="goalmax-rail" data-status={goal.status} aria-label="Current GoalMax goal" aria-live="polite">
-        <span className="goalmax-rail-status"><RailStatusIcon goal={goal} /></span>
-        <AppTooltip content={objectiveTooltip}>
-          <button className="goalmax-rail-objective" type="button" onClick={openGoalMax}>
+        <span className="goalmax-rail-status" aria-label={goalMaxStatusLabel(goal.status)}><RailStatusIcon goal={goal} /></span>
+        <AppTooltip content={`${objectiveTooltip}\n${goalMaxStatusLabel(goal.status)} · ${goal.phase} · ${satisfied}/${required.length} required`}>
+          <button className="goalmax-rail-objective" type="button" aria-label="Open Goal Flight Deck" onClick={openGoalMax}>
             <strong>{railObjective}</strong>
-            <small>{goalMaxStatusLabel(goal.status)} · {goal.phase} · {satisfied}/{required.length}</small>
+            <small>{goalMaxStatusLabel(goal.status)}</small>
           </button>
         </AppTooltip>
         <div className="goalmax-rail-actions">
-          <AppTooltip content="Open Goal Flight Deck" wrapTrigger><button type="button" aria-label="Open Goal Flight Deck" onClick={openGoalMax}><Info size={14} /></button></AppTooltip>
           <AppTooltip content="Edit goal" wrapTrigger><button type="button" aria-label="Edit goal" disabled={busy || terminal.has(goal.status)} onClick={() => setEditorOpen(true)}><Pencil size={14} /></button></AppTooltip>
           {canPause ? <AppTooltip content="Pause future goal continuations" wrapTrigger><button type="button" aria-label="Pause goal" disabled={busy} onClick={() => void control({ action: 'pause' })}><Pause size={14} /></button></AppTooltip> : null}
           {canResume ? <AppTooltip content="Resume goal" wrapTrigger><button type="button" aria-label="Resume goal" disabled={busy} onClick={() => void control({ action: 'resume' })}><Play size={14} /></button></AppTooltip> : null}

@@ -117,6 +117,12 @@ export function hydrateTeamRuntime(value: unknown, fallbackProjectPath = 'unknow
       task.endedAt = Date.now();
     }
   }
+  for (const envelope of state.envelopes) {
+    if (envelope.state === 'dispatching') {
+      envelope.state = 'failed';
+      envelope.error = 'Delivery was interrupted before acknowledgement. Check the recipient transcript before sending again; this message was not replayed.';
+    }
+  }
   state.status = state.status === 'closed' || state.status === 'released' ? state.status : 'restored-interrupted';
   state.activeTurns = 0;
   state.writerNodeId = null;
