@@ -280,10 +280,17 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const review = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.workspace!.review!;
     let unblock!: () => void;
     const barrier = new Promise<void>((resolve) => { unblock = resolve; });
-    const integrate = vi.spyOn(service, 'integrate').mockImplementation(async () => { await barrier; return review.sourceHead; });
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    const integrate = vi.spyOn(service, 'integrate').mockImplementation(async () => {
+      markEntered();
+      await barrier;
+      return review.sourceHead;
+    });
     const integration = coordinator.workspace(rootId, child.nodeId, 'integrate', { expectedSourceHead: review.sourceHead, expectedTargetHead: review.targetHead });
     try {
-      await vi.waitFor(() => expect(integrate).toHaveBeenCalled());
+      await Promise.race([entered, integration]);
+      expect(integrate).toHaveBeenCalled();
       const other = coordinator.createTeam('root-session', 'other');
       await expect(coordinator.spawn(other.rootNodeId, { task: 'read during integration', permission: 'read-only' }, 'locked-reader', runtime())).rejects.toThrow('workspace operation');
       const create = vi.spyOn(service, 'create');
