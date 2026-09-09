@@ -1,4 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
+import { LearningIndicator } from '../learning/LearningIndicator';
+import { learningDraftKey, useLearningStore } from '../learning/learningStore';
 import * as Popover from '@radix-ui/react-popover';
 import { ArrowUp, AtSign, ChevronDown, ChevronUp, CornerUpLeft, FileText, FolderOpen, GitFork, Globe2, Hash, History, ImagePlus, LoaderCircle, MessageSquarePlus, Mic, Pencil, Plug, Shield, ShieldCheck, Sparkles, Square, Target, Trash2, TriangleAlert, X, Zap } from 'lucide-react';
 import { type ChangeEvent, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -1068,14 +1070,18 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       const promptImages = submittedImages.map(({ name, mimeType, data }) => ({ name, mimeType, data }));
       const browserAnnotationRefs = submittedBrowserAnnotationIds.map((id) => ({ id }));
       const promptSessionReferences = submittedSessionReferences.map(({ id, title, projectPath }) => ({ id, title, projectPath }));
+      const learningKey = learningDraftKey(runtimeNow.project?.path, runtimeNow.sessionId);
+      const learning = useLearningStore.getState().turns[learningKey];
       const acceptance = await window.piDesktop.prompt({
         text,
         behavior,
         ...(promptImages.length ? { images: promptImages } : {}),
         ...(browserAnnotationRefs.length ? { browserAnnotations: browserAnnotationRefs } : {}),
         ...(promptSessionReferences.length ? { sessionReferences: promptSessionReferences } : {}),
+        ...(learning ? { learning } : {}),
       });
       if (!acceptance.accepted) return;
+      useLearningStore.getState().clearTurn(learningKey, learning);
       if (submittedBrowserAnnotationIds.length > 0 && typeof window.piDesktop.dismissBrowserAnnotations === 'function') {
         try {
           await window.piDesktop.dismissBrowserAnnotations(submittedBrowserAnnotationIds);
@@ -1856,6 +1862,10 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       if (!selectionIsOrigin && !resultIsCurrent) return;
       useRuntimeStore.getState().setRuntime(result.state);
       if (result.restored) {
+        if (result.restored.learning) {
+          const current = useRuntimeStore.getState().runtime;
+          useLearningStore.getState().setTurn(learningDraftKey(current.project?.path, current.sessionId), result.restored.learning);
+        }
         updateDraft(result.restored.text);
         updateImages((result.restored.images ?? []).map((image) => ({
           ...image,
@@ -2378,6 +2388,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
             <div className="composer-voice-meter" aria-hidden="true" data-live={isLiveModel || undefined} data-lag={voiceLag || undefined}><i /><i /><i /><i /><i /></div>
           )}
           <div className="composer-toolbar-leading">
+            <LearningIndicator text={draft} />
             {compactToolbar && (
               <Popover.Root
                 open={utilityMenuOpen}

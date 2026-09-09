@@ -98,6 +98,8 @@ export function reconcileHydrationEvents(runtime: RuntimeState, events: readonly
 }
 const MusicPlayerDock = lazy(() => import('../features/music/MusicPlayerDock').then((module) => ({ default: module.MusicPlayerDock })));
 const CommandPalette = lazy(() => import('../features/commands/CommandPalette').then((module) => ({ default: module.CommandPalette })));
+import { useLearningStore } from '../features/learning/learningStore';
+const LearningPanel = lazy(() => import('../features/learning/LearningPanel').then((module) => ({ default: module.LearningPanel })));
 const SettingsDialog = lazy(() => import('../features/settings/SettingsDialog').then((module) => ({ default: module.SettingsDialog })));
 import { AppShell } from './AppShell';
 
@@ -195,6 +197,7 @@ export function App() {
   const musicPlayerEnabled = useUiStore((state) => state.musicPlayerEnabled);
   const paletteOpen = useUiStore((state) => state.paletteOpen);
   const settingsOpen = useUiStore((state) => state.settingsOpen);
+  const learningOpen = useLearningStore((state) => state.open);
   const browserOpen = useUiStore((state) => state.browserOpen);
   const goalEditorOpen = useUiStore((state) => state.goalEditorOpen);
   const [portalDialogOpen, setPortalDialogOpen] = useState(false);
@@ -608,6 +611,7 @@ export function App() {
       {musicPlayerEnabled && <Suspense fallback={null}><MusicPlayerDock /></Suspense>}
       {(paletteOpen || paletteActivated) && <Suspense fallback={null}><CommandPalette /></Suspense>}
       {(settingsOpen || settingsActivated) && <Suspense fallback={null}><SettingsDialog themeCatalog={themeCatalog} /></Suspense>}
+      {learningOpen && <Suspense fallback={null}><LearningPanel /></Suspense>}
     </>
   );
 }

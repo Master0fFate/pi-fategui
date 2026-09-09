@@ -1,3 +1,4 @@
+import type { LearningService } from '../learning/LearningService';
 import type { GoalMaxEvent } from '../../shared/contracts/goalmaxxing';
 import type { PiEvent, ProjectState, RuntimeState, SessionSummary } from '../../shared/contracts/ipc';
 import type { AgentWorkspacePolicy } from '../../shared/contracts/multiAgent';
@@ -38,6 +39,7 @@ export function backgroundAttentionUpdate(events: readonly PiEvent[]): SessionSu
  */
 export interface MultiProjectPiRuntimeDeps {
   adapter?: PiSdkAdapter;
+  learning?: LearningService;
   sessionPermissions: SessionPermissionPersistence;
   getImageGenerationSettings: ImageGenerationSettingsResolver;
   createGoalPersistence: () => GoalMaxPersistence;
@@ -305,6 +307,7 @@ export class MultiProjectPiRuntime {
       undefined,
       this.deps.createQueuePersistence?.(),
     );
+    if (this.deps.learning) service.setLearningService(this.deps.learning);
     service.setSessionSettledListener(() => this.deps.notifySessionSettled?.());
     if (this.deps.getDisabledModels) service.setDisabledModelsSource(this.deps.getDisabledModels);
     if (this.deps.getAgentWorkspacePolicy) service.setAgentWorkspacePolicySource(this.deps.getAgentWorkspacePolicy);

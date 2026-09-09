@@ -25,6 +25,9 @@ import { TASK_TOOL_NAMES } from './tasks/TaskTools';
 import { InMemorySessionQueueRepository, type SessionQueuePersistence } from './SessionQueueRepository';
 import { AgentWorkspaceGitService } from '../git/AgentWorkspaceGitService';
 import type { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
+import { LearningService } from '../learning/LearningService';
+import { LearningRepository } from '../learning/LearningRepository';
+import { emptyActivation } from '../../shared/contracts/learning';
 
 const model = { provider: 'test', id: 'model', name: 'Test Model', reasoning: true, contextWindow: 1000, input: ['text', 'image'] as const };
 
@@ -4063,4 +4066,42 @@ describe('models.dev managed providers', () => {
       expect(fake.modelRuntime.refresh).toHaveBeenCalledWith({ allowNetwork: false });
       await runtime.dispose();
     });
+});
+
+describe('Memory Learning root runtime integration', () => {
+  it.each(['prompt', 'followUp'] as const)('keeps %s transport free of learning until actual dispatch', async (behavior) => {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'pi-learning-boundary-')));
+    const fake = fixture();
+    const originalStream = fake.agent.streamFunction;
+    originalStream.mockReturnValue({});
+    const learning = new LearningService(new LearningRepository(path.join(root, 'data')), () => ({ enabled: true, global: true, project: true }));
+    const runtime = new PiRuntimeService(fake.adapter);
+    runtime.setLearningService(learning);
+    try {
+      await runtime.openProject({ path: root, name: 'learning', trusted: true });
+      const origin = runtime.learningOrigin();
+      let state = (await learning.state(origin, null)).snapshot!;
+      await learning.mutate(origin, { action: 'save-draft', binding: origin.binding, epoch: state.epoch, expectedRevision: state.revision, content: { kind: 'note', title: 'Root-only memory', body: { guidance: 'Use named IPC for filesystem work.', rationale: '', exceptions: [] }, activation: emptyActivation }, evidenceIds: [] });
+      state = (await learning.state(origin, null)).snapshot!;
+      await learning.mutate(origin, { action: 'approve', binding: origin.binding, epoch: state.epoch, expectedRevision: state.revision, id: state.drafts[0]!.id, digest: state.drafts[0]!.digest });
+      state = (await learning.state(origin, null)).snapshot!;
+      const lesson = state.lessons[0]!;
+      fake.setStreaming(behavior === 'followUp');
+      await runtime.prompt({ text: 'Build a file preview', behavior, learning: { binding: origin.binding, pins: [{ lessonId: lesson.id, revisionId: lesson.activeRevisionId }], excluded: [] } });
+      expect(fake.session.prompt.mock.calls[0]![0]).toBe('Build a file preview');
+      if (behavior === 'followUp') {
+        await learning.mutate(origin, { action: 'set-enabled', id: lesson.id, enabled: false, binding: origin.binding, epoch: state.epoch, expectedRevision: state.revision });
+      }
+      await fake.emitAgent({ type: 'message_start', message: { role: 'user', content: 'Build a file preview' } });
+      if (behavior === 'prompt') {
+        await fake.agent.streamFunction(model, { messages: [] });
+        expect(JSON.stringify(originalStream.mock.calls.at(-1))).toContain('Use named IPC');
+        await vi.waitFor(async () => expect((await learning.state(origin, null)).snapshot!.manifests[0]?.state).toBe('handed-to-runtime'));
+      } else {
+        await expect(fake.agent.streamFunction(model, { messages: [] })).rejects.toThrow('ineligible');
+        expect(originalStream).not.toHaveBeenCalled();
+        expect(runtime.getState().queue?.recovered?.[0]?.text).toBe('Build a file preview');
+      }
+    } finally { await runtime.dispose(); learning.dispose(); await learning.repository.flush(); rmSync(root, { recursive: true, force: true, maxRetries: 5 }); }
+  });
 });

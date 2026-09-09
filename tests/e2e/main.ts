@@ -5,6 +5,8 @@ import { appCommandSchema, ipcChannels, type AppSettings, type ProjectState, typ
 import { browserEventBatchSchema } from '../../src/shared/contracts/browser';
 import { builtInThemes } from '../../src/shared/themes';
 import { AutomationRepository } from '../../src/main/automations/AutomationRepository';
+import { LearningService } from '../../src/main/learning/LearningService';
+import { LearningRepository } from '../../src/main/learning/LearningRepository';
 import { FilesystemService } from '../../src/main/files/FilesystemService';
 import { GitService } from '../../src/main/git/GitService';
 import { BrowserHost } from '../../src/main/browser/BrowserHost';
@@ -53,9 +55,12 @@ const projects = {
   selectFile: async () => 'src/example.ts',
 } as unknown as ProjectService;
 const profileVisualMode = process.env.FATE_GUI_PROFILE_VISUAL_MODE;
-let settingsValue: AppSettings = { appearance: 'dark', defaultModel: 'test/deterministic', disabledModels: [], thinkingLevel: 'medium', agentTeamMode: 'legacy', agentWorkspace: { preferredMode: 'worktree', strict: false }, confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } };
+let settingsValue: AppSettings = { memoryLearning: { enabled: false, global: true, project: true }, appearance: 'dark', defaultModel: 'test/deterministic', disabledModels: [], thinkingLevel: 'medium', agentTeamMode: 'legacy', agentWorkspace: { preferredMode: 'worktree', strict: false }, confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } };
+const learning = new LearningService(new LearningRepository(path.join(app.getPath('userData'), 'learning-data')), () => settingsValue.memoryLearning);
+runtime.setLearningService(learning);
 const e2ePiTheme = { ...builtInThemes[4]!, id: 'pi-e2e-theme-0123456789ab', name: 'Pi · E2E Theme' };
 const settings = {
+  getStoragePath: () => path.join(process.env.FATE_GUI_DATA_DIR ?? app.getPath('userData'), 'settings.json'),
   load: async () => settingsValue,
   get: () => settingsValue,
   set: async (value: AppSettings) => { settingsValue = value; return value; },
@@ -137,6 +142,7 @@ app.whenReady().then(() => {
     files,
     git,
     settings,
+    learning,
     terminal,
     logs,
     music,

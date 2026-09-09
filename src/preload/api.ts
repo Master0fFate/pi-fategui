@@ -1,4 +1,5 @@
 import { ipcRenderer } from 'electron';
+import { learningApi } from './learningApi';
 import {
   abortResultSchema,
   appCommandSchema,
@@ -221,6 +222,7 @@ import {
 } from '../shared/contracts/mutationAttestation';
 
 export const piDesktopApi: PiDesktopApi = Object.freeze({
+  ...learningApi,
   async getAppInfo() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.systemGetInfo, getAppInfoInputSchema.parse({}));
     return appInfoSchema.parse(result);

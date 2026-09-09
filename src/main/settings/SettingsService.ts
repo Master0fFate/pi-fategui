@@ -16,6 +16,7 @@ const defaults: AppSettings = {
   thinkingLevel: 'medium',
   agentTeamMode: 'legacy',
   agentWorkspace: defaultAgentWorkspacePolicy,
+  memoryLearning: { enabled: false, global: true, project: true },
   confirmRiskyCommands: true,
   terminalShell: null,
   reduceMotion: false,
@@ -122,6 +123,8 @@ export class SettingsService {
       throw error;
     }
   }
+
+  getStoragePath(): string { return this.filePath(); }
 
   private filePath(): string {
     return path.join(this.dataRoot, 'settings.json');

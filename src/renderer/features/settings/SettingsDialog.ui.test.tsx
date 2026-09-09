@@ -14,6 +14,7 @@ const settings: AppSettings = {
   thinkingLevel: 'medium',
   agentTeamMode: 'legacy',
   agentWorkspace: { preferredMode: 'worktree', strict: false },
+  memoryLearning: { enabled: false, global: true, project: true },
   confirmRiskyCommands: true,
   terminalShell: null,
   reduceMotion: false,
@@ -50,6 +51,7 @@ function installBridge(
 ) {
   const bridge = {
     getSettings: vi.fn(async () => loadedSettings),
+    getLearningStorage: vi.fn(async () => ({ settingsFile: '/user-data/settings.json', globalFile: '/user-data/learning/v1/global/current.json', projectFile: '/user-data/learning/v1/projects/root-key/current.json' })),
     getThemes: vi.fn(async () => loadedThemes),
     setSettings,
     getDiagnostics: vi.fn(async () => null),
@@ -103,6 +105,25 @@ afterEach(() => {
 });
 
 describe('SettingsDialog feedback', () => {
+  it('defaults Memory Learning off and saves independent GLOBAL and PROJECT layers', async () => {
+    const bridge = installBridge(vi.fn(async (value: AppSettings) => value));
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+    await user.click(await screen.findByRole('tab', { name: /Memory Learning/u }));
+    expect(await screen.findByText('/user-data/settings.json')).toBeInTheDocument();
+    const master = screen.getByRole('checkbox', { name: 'Enable Memory Learning' });
+    const global = screen.getByRole('checkbox', { name: 'Enable GLOBAL memory' });
+    const project = screen.getByRole('checkbox', { name: 'Enable PROJECT memory' });
+    expect(master).not.toBeChecked();
+    expect(global).toBeDisabled();
+    expect(project).toBeDisabled();
+    await user.click(master);
+    expect(global).toBeEnabled();
+    expect(project).toBeChecked();
+    await user.click(global);
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(bridge.setSettings).toHaveBeenCalledWith(expect.objectContaining({ memoryLearning: { enabled: true, global: false, project: true } })));
+  });
   it('keeps Save changes geometrically stable and confirms success in a themed toast', async () => {
     let finishSave: ((value: AppSettings) => void) | undefined;
     const setSettings = vi.fn(() => new Promise<AppSettings>((resolve) => { finishSave = resolve; }));
@@ -189,10 +210,13 @@ describe('SettingsDialog feedback', () => {
     const user = userEvent.setup();
     render(<SettingsDialog />);
     await user.click(await screen.findByRole('tab', { name: /Agent/ }));
-    expect(screen.getByRole('checkbox', { name: 'Prefer isolated worktrees' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Isolated worktree' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Shared checkout' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Strict workspace mode' })).not.toBeChecked();
     expect(screen.getByText('Preferred: isolated worktree')).toBeVisible();
     expect(screen.getByText(/agent can choose the other mode/u)).toBeVisible();
+    expect(screen.getByText(/Legacy subagents are not affected/u)).not.toBeVisible();
+    await user.click(screen.getByText('How it works'));
     expect(screen.getByText(/Legacy subagents are not affected/u)).toBeVisible();
     expect(useRuntimeStore.getState().runtime.agentTeams ?? []).toHaveLength(0);
   });
@@ -206,13 +230,14 @@ describe('SettingsDialog feedback', () => {
     const user = userEvent.setup();
     render(<SettingsDialog />);
     await user.click(await screen.findByRole('tab', { name: /Agent/ }));
-    await user.click(screen.getByRole('checkbox', { name: 'Prefer isolated worktrees' }));
+    await user.click(screen.getByRole('radio', { name: 'Shared checkout' }));
     await user.click(screen.getByRole('checkbox', { name: 'Strict workspace mode' }));
     expect(screen.getByText('Required: shared checkout')).toBeVisible();
     expect(screen.getByText(/agent must use your preferred mode/u)).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ agentWorkspace: { preferredMode: 'shared', strict: true } })));
     expect(controlTeam).not.toHaveBeenCalled();
+    await user.click(screen.getByText('How it works'));
     expect(screen.getByText(/No project restart is needed for workspace policy changes/u)).toBeVisible();
   });
 
@@ -224,7 +249,7 @@ describe('SettingsDialog feedback', () => {
     await user.click(await screen.findByRole('tab', { name: /Agent/ }));
     expect(screen.getByRole('checkbox', { name: 'Strict workspace mode' })).toBeChecked();
     await user.click(screen.getByRole('checkbox', { name: 'Strict workspace mode' }));
-    expect(screen.getByRole('checkbox', { name: 'Prefer isolated worktrees' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Isolated worktree' })).toBeChecked();
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ agentWorkspace: { preferredMode: 'worktree', strict: false } })));
   });

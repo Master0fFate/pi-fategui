@@ -73,7 +73,7 @@ export async function evaluate({ caseId, workspace, metricsFile, baselineFile, t
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-agent-eval-'));
   const started = performance.now();
   try {
-    const suite = `import test from 'node:test';\nimport assert from 'node:assert/strict';\n${definition.tests.replace('__SOLUTION__', pathToFileURL(solution).href)}\n`;
+    const suite = `import test from 'node:test';\nimport assert from 'node:assert/strict';\n${definition.tests.replaceAll('__SOLUTION__', pathToFileURL(solution).href)}\n`;
     const target = path.join(directory, 'acceptance.test.mjs');
     await fs.writeFile(target, suite);
     const { output, diagnostics, exitCode, terminationReason } = await runSuite(target, path.resolve(workspace), timeout);

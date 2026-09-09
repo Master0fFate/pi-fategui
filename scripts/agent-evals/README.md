@@ -30,3 +30,18 @@ The grader launches Node's test runner in a separate process with an external re
 No agent/provider is invoked by these commands. No live model quality, application-flow coverage, reduced spending, or improvement over a baseline is claimed merely because the harness tests pass.
 
 Harness verification is included in `pnpm test` via `scripts/**/*.test.mjs`.
+
+## Memory Learning fixtures
+
+`learning-process-boundary` checks named renderer-to-main bridge use, path validation and propagation of host failures. `learning-scope-isolation` checks approval, enabled state, freshness, conflicts and exact project identity. Both are synthetic infrastructure cases, not real-model benefit evidence. Use the same prepare/grade commands with either case ID:
+
+```bash
+node scripts/agent-evals/run.mjs prepare --case learning-process-boundary --workspace ../learning-eval
+# Give the candidate workspace to an authorized agent or implement a deterministic fixture.
+node scripts/agent-evals/run.mjs grade --case learning-process-boundary --workspace ../learning-eval --out ../learning-grade.json
+node scripts/agent-evals/learning-report.mjs ../learning-grade.json ../learning-metadata.json ../learning-result.json
+```
+
+The report command accepts a new output filename only. Metadata follows the strict exported `learningRunMetadataSchema` in `learning-report.mjs`: condition (`A-no-learning`, `B-manual-notes`, `C-managed-learning`), repeatIndex, projectKey, provider, model, initialCodeHash, taskPromptHash, frozenContextHash, permissions, freshSessionId, revisionIds, nullable manifestDispatchId, and provenance. Hashes are SHA-256 hex; revision/dispatch IDs are UUIDs. `repeatedCorrections`, `humanReviewMs`, `agentExecutionMs`, token/cache counts, `providerCostUsd`, `draftGenerationCostUsd`, and `preparationMs` are nonnegative measurements or null; omitted metrics default to null, never fabricated zeroes.
+
+The result retains the external grader's candidate/suite/evaluator hashes and acceptance results separately from externally reported telemetry. Hold ordinary instructions constant across all three conditions and freeze context before running a batch. Use fresh sessions and a separately authorized total cost ceiling for live runs. No prepare, grade, or report command calls a provider. See [the implementation/evaluation record](../../docs/project-learning-implementation.md) for study design and limitations.
