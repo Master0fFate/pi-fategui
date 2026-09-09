@@ -1171,6 +1171,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(goalRail).toContainText('Build and verify the persistent goal flow');
     await openInspectorView(page, 'Run', /^Subagent sessions/u);
     await expect(page.getByLabel('Main agent linked to GoalMax')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Create Agent Team' })).toHaveCount(0);
     for (const compact of [false, true]) {
       await page.evaluate((value) => { document.documentElement.dataset.compactMode = String(value); }, compact);
       for (const width of [280, 420]) {
@@ -1179,9 +1180,9 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
           const previous = node.style.width;
           node.style.width = `${targetWidth}px`;
           const mark = node.querySelector('.agent-tree-root-mark')!.getBoundingClientRect();
-          const button = node.querySelector('.agent-team-create')!.getBoundingClientRect();
+          const copy = node.querySelector('.agent-tree-root-copy')!.getBoundingClientRect();
           const bounds = node.getBoundingClientRect();
-          const result = { overflow: node.scrollWidth - node.clientWidth, centerDelta: Math.abs(mark.top + mark.height / 2 - button.top - button.height / 2), contained: button.right <= bounds.right && button.bottom <= bounds.bottom };
+          const result = { overflow: node.scrollWidth - node.clientWidth, centerDelta: Math.abs(mark.top + mark.height / 2 - copy.top - copy.height / 2), contained: copy.right <= bounds.right && copy.bottom <= bounds.bottom };
           node.style.width = previous;
           return result;
         }, width);

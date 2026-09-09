@@ -129,6 +129,7 @@ const piRuntime = new MultiProjectPiRuntime({
   sessionPermissions: new SessionPermissionStore(logs),
   getImageGenerationSettings: () => settings.get().imageGeneration,
   getDisabledModels: () => settings.get().disabledModels ?? [],
+  getAgentWorkspacePolicy: () => settings.get().agentWorkspace,
   createGoalPersistence: () => new GoalMaxRepository(logs),
   createQueuePersistence: () => new SessionQueueRepository(undefined, instanceProfile.slot),
   browserIntegration: browserBridge,

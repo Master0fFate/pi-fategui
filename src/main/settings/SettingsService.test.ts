@@ -34,7 +34,7 @@ describe('SettingsService', () => {
     const logs = new AppLogService();
     const service = createSettings(logs);
     const saved = await service.set({
-      appearance: 'system', defaultModel: 'provider/model', disabledModels: ['crof/glm-5'], thinkingLevel: 'high', agentTeamMode: 'v2',
+      appearance: 'system', defaultModel: 'provider/model', disabledModels: ['crof/glm-5'], thinkingLevel: 'high', agentTeamMode: 'v2', agentWorkspace: { preferredMode: 'shared', strict: true },
       confirmRiskyCommands: false, terminalShell: 'pwsh.exe', reduceMotion: true, performanceMode: true, holyShitMode: true, musicPlayerEnabled: true, sendMessageWithModifier: true, compactMode: false, compactSessions: false, advancedPromptImprovement: true, crashTelemetryEnabled: false, themeId: 'graphite',
       interfaceFont: 'poppins', codeFont: 'noto-sans-mono',
       imageGeneration: { provider: 'google', model: 'gemini-3.1-flash-image', customProvider: null },
@@ -42,6 +42,7 @@ describe('SettingsService', () => {
     });
 
     expect(saved.reduceMotion).toBe(true);
+    expect(saved.agentWorkspace).toEqual({ preferredMode: 'shared', strict: true });
     expect(saved.holyShitMode).toBe(true);
     expect(saved.musicPlayerEnabled).toBe(true);
     expect(saved.sendMessageWithModifier).toBe(true);
@@ -57,7 +58,7 @@ describe('SettingsService', () => {
     }), 'utf8');
     const logs = new AppLogService();
     const loaded = await createSettings(logs).load();
-    expect(loaded).toMatchObject({ appearance: 'system', thinkingLevel: 'high', holyShitMode: false, sendMessageWithModifier: false, interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null } });
+    expect(loaded).toMatchObject({ appearance: 'system', thinkingLevel: 'high', agentWorkspace: { preferredMode: 'worktree', strict: false }, holyShitMode: false, sendMessageWithModifier: false, interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null } });
     expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(loaded);
   });
 
@@ -113,7 +114,7 @@ describe('SettingsService', () => {
   it('serializes concurrent writes and returns each persisted snapshot', async () => {
     const logs = new AppLogService();
     const service = createSettings(logs);
-    const first = { appearance: 'dark', defaultModel: null, disabledModels: [] as string[], thinkingLevel: 'low', agentTeamMode: 'legacy', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } } as const;
+    const first = { appearance: 'dark', defaultModel: null, disabledModels: [] as string[], thinkingLevel: 'low', agentTeamMode: 'legacy', agentWorkspace: { preferredMode: 'worktree', strict: false }, confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } } as const;
     const second = { ...first, thinkingLevel: 'high' as const, reduceMotion: true };
 
     const [firstSaved, secondSaved] = await Promise.all([service.set(first), service.set(second)]);

@@ -11,7 +11,6 @@ import {
   OctagonX,
   Pause,
   Play,
-  Plus,
   RotateCcw,
   Target,
   Trash2,
@@ -40,7 +39,7 @@ import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { GoalMaxAgentMarker, GoalMaxAssignmentScope, type GoalMaxAgentLink } from '../goalmaxxing/GoalMaxAgentMarker';
 import { SubagentControls, type SubagentControlTarget } from './SubagentControls';
 import { AgentTeamControls } from './AgentTeamControls';
-import { AgentWorkspaceDefaults, AgentWorkspaceDetails } from './AgentWorkspaceControls';
+import { AgentWorkspaceDetails } from './AgentWorkspaceControls';
 import type { FlightDeckTarget } from './flightDeck';
 
 const activeStatuses = new Set<SubagentStatus>(['queued', 'running']);
@@ -673,24 +672,9 @@ function AgentTeamBranch({ team, goalLinks }: { team: AgentTeam; goalLinks: Read
         <span className="agent-tree-branch-state">{team.status}</span>
         <AgentTeamLifecycleControls team={team} />
       </div>
-      {expanded ? <>
-        <AgentWorkspaceDefaults team={team} />
-        <div id={childrenId} className="agent-tree-children" role="tree">{children.map((node) => <AgentTeamNodeRow key={node.id} team={team} node={node} goalLinks={goalLinks} />)}</div>
-      </> : null}
+      {expanded ? <div id={childrenId} className="agent-tree-children" role="tree">{children.map((node) => <AgentTeamNodeRow key={node.id} team={team} node={node} goalLinks={goalLinks} />)}</div> : null}
     </section>
   );
-}
-
-function CreateAgentTeamButton() {
-  const [pending, setPending] = useState(false);
-  return <button type="button" className="agent-team-create" disabled={pending} title="Create a new independent Agent Team" aria-label="Create Agent Team" onClick={() => {
-    setPending(true);
-    const origin = useRuntimeStore.getState().runtime;
-    void window.piDesktop.controlAgentTeam({ action: 'createTeam', operationId: crypto.randomUUID() }).then((state) => {
-      const current = useRuntimeStore.getState().runtime;
-      if (current.sessionId === origin.sessionId && current.project?.path === origin.project?.path) useRuntimeStore.getState().setRuntime(state);
-    }).catch((error: unknown) => useUiStore.getState().showToast({ kind: 'error', title: 'Create team failed', message: error instanceof Error ? error.message : 'The Agent Team could not be created.' })).finally(() => setPending(false));
-  }}>{pending ? <LoaderCircle className="tool-spinner" size={13} /> : <Plus size={13} />}<span>New team</span></button>;
 }
 
 export function SubagentSessionsPanel() {
@@ -796,10 +780,9 @@ export function SubagentSessionsPanel() {
           ) : null}
         </span>
         {hasChildren ? <span className="agent-tree-overview">{totalAgents + teamAgents} {totalAgents + teamAgents === 1 ? 'agent' : 'agents'}{activeAgents + teamActive ? ` · ${activeAgents + teamActive} active` : ''}</span> : null}
-        <CreateAgentTeamButton />
       </div>
       {!hasChildren ? (
-        <div className="inspector-empty subagent-empty"><MessagesSquare size={24} /><strong>No child sessions</strong><p>Managed child sessions and workflow graphs appear here when the parent launches them.</p></div>
+        <div className="inspector-empty subagent-empty"><MessagesSquare size={24} /><strong>No child sessions</strong><p>The AI creates teams and delegates work as needed. Set workspace preferences in Settings → Agent.</p></div>
       ) : (
         <div className="agent-tree-forest" aria-label={workflows.length ? 'Subagent workflows' : undefined}>
           {agentTeams.map((team) => <AgentTeamBranch key={team.id} team={team} goalLinks={goalLinks} />)}

@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { AGENT_TEAM_MAX_MESSAGE_BYTES, type AgentTeam } from '../../../shared/contracts/multiAgent';
 import { AgentWorkspaceGitService } from '../../git/AgentWorkspaceGitService';
-import type { ChildSessionInput } from '../SubagentSessionFactory';
+import { createSdkChildSession, type ChildSessionInput } from '../SubagentSessionFactory';
+import type { AgentTeamLedgerEvent } from './AgentTeamTypes';
 
 const createdInputs: ChildSessionInput[] = [];
 const childSessions: AgentSession[] = [];
@@ -106,7 +107,7 @@ describe('AgentTeamCoordinator spawn preflight', () => {
   function coordinatorFor(root = rootSession(), permissionLevel: 'read-only' | 'full-access' = 'full-access') {
     return new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
   }
@@ -225,7 +226,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     git('commit', '-m', 'base');
     const root = rootSession();
     const service = new AgentWorkspaceGitService(path.join(dataRoot, 'managed'));
-    const host = { resolveRoot: () => ({ projectPath: repository, session: root, permissionLevel: 'full-access' as const }), emit: () => undefined, persist: () => undefined };
+    const host = { resolveRoot: () => ({ projectPath: repository, session: root, permissionLevel: 'full-access' as const }), getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined, persist: () => undefined };
     const coordinator = new AgentTeamCoordinator(host, dataRoot, undefined, service);
     const rootId = coordinator.rootNodeId('root-session');
     const child = await coordinator.spawn(rootId, { task: 'implement', name: 'worker', permission: 'edit', workspace: { mode: 'worktree' } }, 'spawn-workspace', runtime());
@@ -270,6 +271,32 @@ describe('AgentTeamCoordinator vertical slice', () => {
     await expect(fs.stat(child.workspace!.path)).resolves.toBeDefined();
     await expect(coordinator.resetTeam('root-session', coordinator.getTeams('root-session')[0]!.id)).rejects.toThrow('retained');
     await coordinator.workspace(rootId, child.nodeId, 'cleanup');
+  }, 30_000);
+
+  it('returns model-visible workspace review heads and diff instead of hiding them in details', async () => {
+    const { coordinator, rootId, child, service } = await workspaceFixture();
+    await fs.writeFile(path.join(child.workspace!.path, 'result.txt'), 'review me');
+    await coordinator.workspace(rootId, child.nodeId, 'checkpoint', { message: 'review me' });
+    const tool = coordinator.createRootTools(runtime()).find((item) => item.name === 'agent_workspace')!;
+    const output = await tool.execute('review', { target: child.nodeId, operation: 'review' }, undefined, undefined, { sessionManager: { getSessionId: () => 'root-session' } } as never);
+    const review = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.workspace!.review!;
+    const content = output.content[0];
+    expect(content?.type).toBe('text');
+    if (content?.type !== 'text') throw new Error('Expected text tool content.');
+    expect(content.text).toContain(review.sourceHead);
+    expect(content.text).toContain(review.targetHead);
+    expect(content.text).toContain('diff');
+
+    const largeReview = { ...review, targetBranch: review.targetBranch ?? null, diff: 'x'.repeat(50_000), truncated: false };
+    vi.spyOn(service, 'review').mockResolvedValueOnce(largeReview);
+    const oversized = await tool.execute('oversized-review', { target: child.nodeId, operation: 'review' }, undefined, undefined, { sessionManager: { getSessionId: () => 'root-session' } } as never);
+    const oversizedContent = oversized.content[0];
+    expect(oversizedContent?.type).toBe('text');
+    if (oversizedContent?.type !== 'text') throw new Error('Expected text tool content.');
+    expect(oversizedContent.text).toContain('"truncated":true');
+    const retained = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.workspace!.review!;
+    expect(retained.truncated).toBe(true);
+    await expect(coordinator.workspace(rootId, child.nodeId, 'integrate', { expectedSourceHead: retained.sourceHead, expectedTargetHead: retained.targetHead })).rejects.toThrow('clean, complete review');
   }, 30_000);
 
   it('holds checkout operation locks across teams until Git integration settles', async () => {
@@ -332,9 +359,8 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const root = rootSession();
     let releasePrompt: () => void = () => undefined;
     promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
-    const coordinator = new AgentTeamCoordinator({ resolveRoot: () => ({ projectPath: repository, session: root, permissionLevel: 'full-access' }), emit: () => undefined, persist: () => undefined }, dataRoot, undefined, new AgentWorkspaceGitService(path.join(dataRoot, 'managed')));
+    const coordinator = new AgentTeamCoordinator({ resolveRoot: () => ({ projectPath: repository, session: root, permissionLevel: 'full-access' }), getAgentWorkspacePolicy: () => ({ preferredMode: 'worktree' as const, strict: false }), emit: () => undefined, persist: () => undefined }, dataRoot, undefined, new AgentWorkspaceGitService(path.join(dataRoot, 'managed')));
     const rootId = coordinator.rootNodeId('root-session');
-    coordinator.configureWorkspace('root-session', coordinator.getTeams('root-session')[0]!.id, { mode: 'worktree', branchPrefix: 'fate/test' });
     const child = await coordinator.spawn(rootId, { task: 'isolate', name: 'isolated', permission: 'full-access' }, 'workspace-spawn', runtime());
     await settle();
     const childNode = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!;
@@ -362,11 +388,217 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === grandchild.nodeId)?.workspace?.state).toBe('removed');
   }, 20_000);
 
+  it('enforces the live global workspace policy without consulting historical team defaults', async () => {
+    const repository = await fs.mkdtemp(path.join(dataRoot, 'policy-repository-'));
+    execFileSync('git', ['init'], { cwd: repository });
+    execFileSync('git', ['config', 'user.email', 'agent@example.test'], { cwd: repository });
+    execFileSync('git', ['config', 'user.name', 'Agent Test'], { cwd: repository });
+    await fs.writeFile(path.join(repository, 'tracked.txt'), 'base\n');
+    execFileSync('git', ['add', '.'], { cwd: repository });
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: repository });
+    let policy: { preferredMode: 'shared' | 'worktree'; strict: boolean } = { preferredMode: 'shared', strict: false };
+    const workspaceGit = new AgentWorkspaceGitService(path.join(dataRoot, 'managed'));
+    const actualCreate = workspaceGit.create.bind(workspaceGit);
+    const create = vi.spyOn(workspaceGit, 'create');
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: repository, session: rootSession(), permissionLevel: 'full-access' as const }),
+      getAgentWorkspacePolicy: () => policy,
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot, undefined, workspaceGit);
+    const rootId = coordinator.rootNodeId('root-session');
+    // A beta4 snapshot field may remain for hydration but cannot select this child.
+    const internal = coordinator as unknown as { teamsById: Map<string, { state: AgentTeam }> };
+    [...internal.teamsById.values()][0]!.state.workspaceDefaults = { mode: 'worktree', branchPrefix: 'ignored' };
+    const preferredShared = await coordinator.spawn(rootId, { task: 'shared default', permission: 'read-only' }, 'policy-shared-default', runtime());
+    await settle();
+    expect(preferredShared.workspace?.mode).toBe('shared');
+    const explicitWorktree = await coordinator.spawn(rootId, { task: 'explicit worktree', permission: 'read-only', workspace: { mode: 'worktree' } }, 'policy-worktree-override', runtime());
+    await settle();
+    expect(explicitWorktree.workspace?.mode).toBe('worktree');
+    expect(create).toHaveBeenCalledTimes(1);
+
+    policy = { preferredMode: 'shared', strict: true };
+    await expect(coordinator.spawn(rootId, { task: 'forbidden worktree', workspace: { mode: 'worktree' } }, 'policy-refuse-worktree', runtime())).rejects.toThrow(/strictly requires shared/);
+    expect(create).toHaveBeenCalledTimes(1);
+    policy = { preferredMode: 'worktree', strict: true };
+    await expect(coordinator.spawn(rootId, { task: 'forbidden shared', workspace: { mode: 'shared' } }, 'policy-refuse-shared', runtime())).rejects.toThrow(/strictly requires worktree/);
+    expect(create).toHaveBeenCalledTimes(1);
+    const strictPreferredWorktree = await coordinator.spawn(rootId, { task: 'strict preferred worktree', permission: 'read-only' }, 'policy-strict-worktree-default', runtime());
+    await settle();
+    expect(strictPreferredWorktree.workspace?.mode).toBe('worktree');
+
+    policy = { preferredMode: 'worktree', strict: false };
+    const preferredWorktree = await coordinator.spawn(rootId, { task: 'worktree default', permission: 'read-only' }, 'policy-worktree-default', runtime());
+    await settle();
+    expect(preferredWorktree.workspace?.mode).toBe('worktree');
+    policy = { preferredMode: 'worktree', strict: true };
+    await expect(coordinator.followUp(rootId, preferredShared.nodeId, 'blocked retained shared child', 'policy-followup-blocked', runtime())).rejects.toThrow(/strictly requires worktree/);
+    expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === preferredShared.nodeId)?.workspace?.mode).toBe('shared');
+    policy = { preferredMode: 'shared', strict: false };
+    await coordinator.followUp(rootId, preferredShared.nodeId, 'allowed after policy relaxes', 'policy-followup-relaxed', runtime());
+    await settle();
+
+    let releasePrompt: () => void = () => undefined;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    await coordinator.followUp(rootId, preferredShared.nodeId, 'running before strict change', 'policy-queued-running', runtime());
+    const queued = await coordinator.followUp(rootId, preferredShared.nodeId, 'queued before strict change', 'policy-queued-blocked', runtime());
+    policy = { preferredMode: 'worktree', strict: true };
+    releasePrompt();
+    promptBarrier = null;
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === queued.taskId)?.status).toBe('interrupted'));
+    expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === preferredShared.nodeId)?.lastError).toContain('strictly requires worktree');
+
+    policy = { preferredMode: 'worktree', strict: false };
+    let releaseCreate: () => void = () => undefined;
+    const createPaused = new Promise<void>((resolve) => { releaseCreate = resolve; });
+    let markCreated: () => void = () => undefined;
+    const created = new Promise<void>((resolve) => { markCreated = resolve; });
+    create.mockImplementationOnce(async (...args) => {
+      const workspace = await actualCreate(...args);
+      markCreated();
+      await createPaused;
+      return workspace;
+    });
+    const beforeNodes = coordinator.getTeams('root-session')[0]!.nodes.length;
+    const racing = coordinator.spawn(rootId, { task: 'rollback strict race', workspace: { mode: 'worktree' } }, 'policy-strict-race', runtime());
+    await created;
+    policy = { preferredMode: 'shared', strict: true };
+    releaseCreate();
+    await expect(racing).rejects.toThrow(/strictly requires shared/);
+    expect(coordinator.getTeams('root-session')[0]!.nodes).toHaveLength(beforeNodes);
+    expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0);
+
+    policy = { preferredMode: 'shared', strict: false };
+    let releaseJoin: () => void = () => undefined;
+    promptBarrier = new Promise<void>((resolve) => { releaseJoin = resolve; });
+    const waitingParent = await coordinator.spawn(rootId, { task: 'wait for child', name: 'waiting-parent', permission: 'read-only' }, 'policy-wait-parent', runtime());
+    await coordinator.spawn(waitingParent.nodeId, { task: 'finish after parent', name: 'waiting-child', permission: 'read-only' }, 'policy-wait-child', runtime());
+    policy = { preferredMode: 'worktree', strict: true };
+    releaseJoin();
+    promptBarrier = null;
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === waitingParent.nodeId)?.status).toBe('interrupted'));
+    const waitingTask = coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.assigneeNodeId === waitingParent.nodeId);
+    expect(waitingTask?.status).toBe('interrupted');
+    expect(waitingTask?.error).toContain('Waiting parent resume refused');
+  }, 30_000);
+
+  it('never replays a strict-refused follow-up after the policy is relaxed', async () => {
+    let policy: { preferredMode: 'shared' | 'worktree'; strict: boolean } = { preferredMode: 'shared', strict: false };
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => policy, emit: () => undefined, persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'initial task' }, 'initial', runtime());
+    await settle();
+    policy = { preferredMode: 'worktree', strict: true };
+    await expect(coordinator.followUp(rootId, child.nodeId, 'must never run', 'refused', runtime())).rejects.toThrow('strictly requires worktree');
+    const failed = coordinator.getTeams('root-session')[0]!;
+    const refused = failed.tasks.find((task) => task.summary === 'must never run')!;
+    expect(refused.status).toBe('failed');
+    expect(failed.envelopes.find((envelope) => envelope.id === refused.inputEnvelopeId)?.state).toBe('failed');
+    expect(failed.activeTurns).toBe(0);
+    policy = { preferredMode: 'worktree', strict: false };
+    await coordinator.followUp(rootId, child.nodeId, 'explicitly accepted next task', 'accepted', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(childSessions[0]!.prompt).mock.calls.some(([prompt]) => prompt.includes('must never run'))).toBe(false);
+    await coordinator.release(rootId, child.nodeId);
+  });
+
+  it('releases an acquired writer lease when policy tightens during a restored follow-up', async () => {
+    let policy: { preferredMode: 'shared' | 'worktree'; strict: boolean } = { preferredMode: 'shared', strict: false };
+    const root = rootSession();
+    const persisted: AgentTeamLedgerEvent[] = [];
+    const host = {
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' as const }),
+      getAgentWorkspacePolicy: () => policy,
+      emit: () => undefined,
+      persist: (_root: string, event: AgentTeamLedgerEvent) => { persisted.push(event); },
+    };
+    const original = new AgentTeamCoordinator(host, dataRoot);
+    const rootId = original.rootNodeId('root-session');
+    const child = await original.spawn(rootId, { task: 'initial', permission: 'edit' }, 'initial', runtime());
+    await settle();
+    vi.spyOn(root.sessionManager, 'getBranch').mockReturnValue(persisted.map((event) => ({ type: 'custom', customType: 'fate-agent-team-event', data: event })) as never);
+    let entered!: () => void;
+    let resume!: () => void;
+    const opening = new Promise<void>((resolve) => { entered = resolve; });
+    const barrier = new Promise<void>((resolve) => { resume = resolve; });
+    const restored = new AgentTeamCoordinator(host, dataRoot, async (input) => {
+      entered();
+      await barrier;
+      return createSdkChildSession(input);
+    });
+    restored.restoreRoot(root);
+    const attempt = restored.followUp(rootId, child.nodeId, 'must not start after policy changes', 'racing-followup', runtime());
+    try {
+      await Promise.race([opening, attempt]);
+      expect(restored.getTeams('root-session')[0]).toMatchObject({ activeTurns: 1, writerNodeId: child.nodeId });
+      policy = { preferredMode: 'worktree', strict: true };
+    } finally { resume(); }
+    await expect(attempt).rejects.toThrow('strictly requires worktree');
+    const stopped = restored.getTeams('root-session')[0]!;
+    expect(stopped).toMatchObject({ activeTurns: 0, writerNodeId: null });
+    expect(stopped.tasks.find((task) => task.summary === 'must not start after policy changes')?.status).toBe('failed');
+    expect(childSessions.at(-1)!.prompt).not.toHaveBeenCalled();
+    await original.release(rootId, child.nodeId);
+    await restored.release(rootId, child.nodeId);
+  });
+
+  it('marks strict-refused direct-message turns failed instead of stranding a queued envelope', async () => {
+    let policy: { preferredMode: 'shared' | 'worktree'; strict: boolean } = { preferredMode: 'shared', strict: false };
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => policy, emit: () => undefined, persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'initial task' }, 'initial', runtime());
+    await settle();
+    policy = { preferredMode: 'worktree', strict: true };
+    await expect(coordinator.sendMessage(rootId, child.nodeId, 'refused direct task', 'refused-message', 'queue', runtime(), true)).rejects.toThrow('strictly requires worktree');
+    const failed = coordinator.getTeams('root-session')[0]!;
+    expect(failed.envelopes.find((envelope) => envelope.content === 'refused direct task')).toMatchObject({ state: 'failed', error: expect.stringContaining('strictly requires worktree') });
+    expect(failed.activeTurns).toBe(0);
+    expect(failed.nodes.find((node) => node.id === child.nodeId)?.status).toBe('interrupted');
+    const retried = await coordinator.sendMessage(rootId, child.nodeId, 'refused direct task', 'refused-message', 'queue', runtime(), true);
+    expect(retried.state).toBe('failed');
+    policy = { preferredMode: 'shared', strict: false };
+    await coordinator.followUp(rootId, child.nodeId, 'accepted next task', 'accepted', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(childSessions[0]!.sendCustomMessage).mock.calls.some(([message]) => JSON.stringify(message).includes('refused direct task'))).toBe(false);
+    await coordinator.release(rootId, child.nodeId);
+  });
+
+  it('rejects stale beta4 workspace configuration controls instead of mutating global policy', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' as const }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    coordinator.rootNodeId('root-session');
+    const team = coordinator.getTeams('root-session')[0]!;
+    await expect(coordinator.control('root-session', {
+      action: 'configureWorkspace', teamId: team.id, workspace: { mode: 'shared' }, operationId: 'stale-workspace-control',
+    }, runtime())).rejects.toThrow('Use Settings > Agent');
+    expect(coordinator.getWorkspacePolicy()).toMatchObject({ preferredMode: 'shared', strict: false });
+    const policyTool = coordinator.createRootTools(runtime()).find((tool) => tool.name === 'get_agent_workspace_policy')!;
+    const output = await policyTool.execute('policy', {}, undefined, undefined, { sessionManager: { getSessionId: () => 'root-session' } } as never);
+    const content = output.content[0];
+    expect(content?.type).toBe('text');
+    if (content?.type !== 'text') throw new Error('Expected text tool content.');
+    expect(content.text).toContain('"preferredMode":"shared"');
+    expect(content.text).toContain('"strict":false');
+  });
+
   it('threads team identity into the child factory and resolves current task/permission dynamically', async () => {
     const root = rootSession();
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' }),
-      sendRootMessage: vi.fn(async () => undefined),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), sendRootMessage: vi.fn(async () => undefined),
       emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
@@ -386,7 +618,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' }),
       getDisabledModels: () => ['test/model'],
-      sendRootMessage: vi.fn(async () => undefined),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), sendRootMessage: vi.fn(async () => undefined),
       emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
@@ -397,7 +629,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const root = rootSession();
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' }),
-      sendRootMessage: vi.fn(async () => undefined),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), sendRootMessage: vi.fn(async () => undefined),
       emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
@@ -422,7 +654,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const sendRootMessage = vi.fn(async () => undefined);
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' }),
-      sendRootMessage,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), sendRootMessage,
       emit: (_root, team) => emitted.push(team),
       persist: (_root, event) => persisted.push(event),
     }, dataRoot);
@@ -441,7 +673,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     ]));
     expect(sendRootMessage).toHaveBeenCalledWith('root-session', expect.objectContaining({ customType: 'fate-agent-team-envelope' }), 'steer', false);
     expect(root.sendCustomMessage).not.toHaveBeenCalled();
-    expect(createdInputs[0]?.collaborationTools?.map((tool) => tool.name)).toEqual(['spawn_agent', 'agent_workspace', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents']);
+    expect(createdInputs[0]?.collaborationTools?.map((tool) => tool.name)).toEqual(['spawn_agent', 'agent_workspace', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'get_agent_workspace_policy']);
 
     const followUp = await coordinator.followUp(rootId, child.nodeId, 'continue with retained context', 'follow-1', modelRuntime);
     await settle();
@@ -464,7 +696,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const sendRootMessage = vi.fn(async () => undefined);
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
-      sendRootMessage,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), sendRootMessage,
       emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
@@ -484,7 +716,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
   it('grants an explicitly requested bash tool when the effective permission allows it', async () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const rootId = coordinator.rootNodeId('root-session');
@@ -497,7 +729,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
   it('rejects an explicitly requested bash tool at edit permission with an actionable error instead of silently dropping it', async () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const rootId = coordinator.rootNodeId('root-session');
@@ -509,7 +741,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
   it('rejects a grandchild tool request that the calling node does not hold', async () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const rootId = coordinator.rootNodeId('root-session');
@@ -525,7 +757,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const rootId = coordinator.rootNodeId('root-session');
@@ -548,7 +780,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
   it('creates a bounded leaf child without collaboration tools', async () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const rootId = coordinator.rootNodeId('root-session');
@@ -565,7 +797,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     let agentStrategy: 'off' | 'read-only' = 'off';
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access', agentStrategy }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const rootId = coordinator.rootNodeId('root-session');
@@ -596,7 +828,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
   it('rejects an oversized UTF-8 task before reserving a child node', async () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const rootId = coordinator.rootNodeId('root-session');
@@ -618,7 +850,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const persisted: Array<{ sequence: number }> = [];
     const host = {
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' as const }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: (_root: string, event: { sequence: number }) => { persisted.push(event); },
     };
     const modelRuntime = runtime();
@@ -632,7 +864,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     vi.spyOn(reopenedRoot.sessionManager, 'getBranch').mockReturnValue(persisted.map((event) => ({ type: 'custom', id: `event-${event.sequence}`, parentId: null, timestamp: new Date().toISOString(), customType: 'fate-agent-team-event', data: event })) as never);
     const second = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: reopenedRoot, permissionLevel: 'read-only' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     second.restoreRoot(reopenedRoot);
@@ -645,12 +877,43 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(createdInputs.at(-1)?.sessionFile).toMatch(/\.jsonl$/u);
   });
 
+  it('treats restored nodes without workspace metadata as shared and refuses strict worktree follow-ups before SDK admission', async () => {
+    const root = rootSession();
+    const persisted: unknown[] = [];
+    const first = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' as const }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }),
+      emit: () => undefined,
+      persist: (_root, event) => { persisted.push(structuredClone(event)); },
+    }, dataRoot);
+    const rootId = first.rootNodeId('root-session');
+    const child = await first.spawn(rootId, { task: 'legacy shared child', name: 'legacy' }, 'legacy-shared-spawn', runtime());
+    await settle();
+    const snapshots = persisted as Array<{ payload: { team: AgentTeam } }>;
+    const latest = snapshots.at(-1)!;
+    delete latest.payload.team.nodes.find((node) => node.id === child.nodeId)!.workspace;
+    const reopened = rootSession();
+    vi.spyOn(reopened.sessionManager, 'getBranch').mockReturnValue(snapshots.map((event, index) => ({ type: 'custom', customType: 'fate-agent-team-event', data: event, id: `legacy-${index}` })) as never);
+    const restored = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: reopened, permissionLevel: 'read-only' as const }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'worktree' as const, strict: true }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    restored.restoreRoot(reopened);
+    const team = restored.getTeams('root-session')[0]!;
+    const before = createdInputs.length;
+    await expect(restored.followUp(team.rootNodeId, child.nodeId, 'must not resume shared legacy child', 'legacy-strict-followup', runtime())).rejects.toThrow(/strictly requires worktree/);
+    expect(createdInputs).toHaveLength(before);
+    expect(restored.getTeams('root-session')[0]?.nodes.find((node) => node.id === child.nodeId)?.workspace).toBeUndefined();
+  });
+
   it('places default child storage beneath the configured cross-platform Fate GUI data root', async () => {
     const configuredRoot = path.join(dataRoot, 'portable-profile');
     vi.stubEnv('FATE_GUI_DATA_DIR', configuredRoot);
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     });
     const rootId = coordinator.rootNodeId('portable-root-session');
@@ -667,7 +930,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
   it('deletes every persisted sibling and nested child session when its root session is deleted', async () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const modelRuntime = runtime();
@@ -694,7 +957,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const root = rootSession();
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const modelRuntime = runtime();
@@ -708,7 +971,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
   it('creates, selects, and isolates two teams under one root session', async () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const firstRoot = coordinator.rootNodeId('root-session');
@@ -731,7 +994,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const persisted: Array<{ teamId: string; sequence: number }> = [];
     const host = {
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' as const }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: (_root: string, event: { teamId: string; sequence: number }) => { persisted.push(event); },
     };
     const first = new AgentTeamCoordinator(host, dataRoot);
@@ -745,7 +1008,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
 
     const reopened = rootSession();
     vi.spyOn(reopened.sessionManager, 'getBranch').mockReturnValue(persisted.map((event) => ({ type: 'custom', id: `${event.teamId}-${event.sequence}`, parentId: null, timestamp: new Date().toISOString(), customType: 'fate-agent-team-event', data: event })) as never);
-    const restored = new AgentTeamCoordinator({ resolveRoot: () => ({ projectPath: dataRoot, session: reopened, permissionLevel: 'read-only' }), emit: () => undefined, persist: () => undefined }, dataRoot);
+    const restored = new AgentTeamCoordinator({ resolveRoot: () => ({ projectPath: dataRoot, session: reopened, permissionLevel: 'read-only' }), getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined, persist: () => undefined }, dataRoot);
     restored.restoreRoot(reopened);
     expect(restored.getTeams('root-session')).toHaveLength(2);
     expect(restored.selectedTeamId('root-session')).toBe(second.id);
@@ -754,7 +1017,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
   it('releases ready and active nodes idempotently and makes team capacity reusable', async () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const rootId = coordinator.rootNodeId('root-session');
@@ -782,7 +1045,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
-      emit: () => undefined,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const rootId = coordinator.rootNodeId('root-session');
@@ -803,7 +1066,7 @@ describe('Agent Team V2 send_message delivery modes', () => {
     const sendRootMessage = vi.fn(async (_sessionId: string, _message: Parameters<AgentSession['sendCustomMessage']>[0]) => undefined);
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'full-access' }),
-      sendRootMessage,
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), sendRootMessage,
       emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);

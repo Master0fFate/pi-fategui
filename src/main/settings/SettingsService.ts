@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { appSettingsSchema, defaultSpeechSettings, type AppSettings, type ProjectState } from '../../shared/contracts/ipc';
+import { defaultAgentWorkspacePolicy } from '../../shared/contracts/multiAgent';
 import { builtInThemes, customThemeFileSchema, themeCatalogSchema, type ThemeDefinition } from '../../shared/themes';
 import type { AppLogService } from '../logging/AppLogService';
 import { PiThemeService } from './PiThemeService';
@@ -14,6 +15,7 @@ const defaults: AppSettings = {
   disabledModels: [],
   thinkingLevel: 'medium',
   agentTeamMode: 'legacy',
+  agentWorkspace: defaultAgentWorkspacePolicy,
   confirmRiskyCommands: true,
   terminalShell: null,
   reduceMotion: false,

@@ -1,6 +1,6 @@
 import type { AgentSession, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
-import type { AgentTeam, AgentTeamEnvelope, AgentTeamNode, AgentTeamTask, AgentWorkspaceRequest } from '../../../shared/contracts/multiAgent';
+import type { AgentTeam, AgentTeamEnvelope, AgentTeamNode, AgentTeamTask, AgentWorkspacePolicy, AgentWorkspaceRequest } from '../../../shared/contracts/multiAgent';
 import type { ToolProvenance } from '../../../shared/contracts/provenance';
 import type { ChildToolName } from '../SubagentProtocol';
 import type { SelectedSubagentSkill } from '../SubagentSkills';
@@ -78,6 +78,8 @@ export interface PreparedAgentRequest extends SpawnAgentRequest {
 export interface AgentTeamCoordinatorHost {
   resolveRoot(sessionId: string): { projectPath: string; session: AgentSession; permissionLevel: PermissionLevel; agentStrategy?: 'auto' | 'off' | 'read-only' } | null;
   getDisabledModels?: (sessionId?: string) => readonly string[];
+  /** Live global policy. Omission is intentionally fail-safe worktree/soft for standalone callers. */
+  getAgentWorkspacePolicy?: () => AgentWorkspacePolicy;
   /**
    * Routes child-generated messages through the root session's lifecycle gate.
    * A message arriving after `agent_end` must wait for `agent_settled`; queueing

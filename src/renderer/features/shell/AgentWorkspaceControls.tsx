@@ -1,5 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import { ArrowUpRight, Check, GitBranch, GitMerge, GitPullRequest, LoaderCircle, RefreshCw, Save, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import { ArrowUpRight, GitBranch, GitMerge, GitPullRequest, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { AgentTeam, AgentTeamControlInput, AgentTeamNode } from '../../../shared/contracts/multiAgent';
 import { InlineConfirm } from '../../components/InlineConfirm';
@@ -30,50 +30,6 @@ function useWorkspaceControl() {
     }
   };
   return { control, pending, error };
-}
-
-export function AgentWorkspaceDefaults({ team }: { team: AgentTeam }) {
-  const defaults = team.workspaceDefaults;
-  const [mode, setMode] = useState<'shared' | 'worktree'>(defaults?.mode ?? 'shared');
-  const [baseRef, setBaseRef] = useState(defaults?.baseRef ?? '');
-  const [branchPrefix, setBranchPrefix] = useState(defaults?.branchPrefix ?? '');
-  const [saved, setSaved] = useState(false);
-  const { control, pending, error } = useWorkspaceControl();
-  useEffect(() => {
-    setMode(defaults?.mode ?? 'shared');
-    setBaseRef(defaults?.baseRef ?? '');
-    setBranchPrefix(defaults?.branchPrefix ?? '');
-  }, [defaults?.mode, defaults?.baseRef, defaults?.branchPrefix]);
-  const permission = useRuntimeStore((state) => state.runtime.permissionLevel);
-  const streaming = useRuntimeStore((state) => state.runtime.streaming);
-  const disabled = pending || streaming || permission === 'read-only' || team.status === 'closed' || team.status === 'released';
-  return (
-    <details className="agent-workspace agent-workspace-defaults">
-      <summary aria-label={`Workspace defaults for ${team.name}`}><SlidersHorizontal size={12} /><span>Workspace defaults</span><small>{defaults?.mode === 'worktree' ? 'Worktree' : 'Shared'}</small></summary>
-      <form className="agent-workspace-body" aria-label={`${team.name} workspace defaults`} onSubmit={(event) => {
-        event.preventDefault();
-        void control({ action: 'configureWorkspace', teamId: team.id, workspace: {
-          mode,
-          ...(mode === 'worktree' && baseRef.trim() ? { baseRef: baseRef.trim() } : {}),
-          ...(mode === 'worktree' && branchPrefix.trim() ? { branchPrefix: branchPrefix.trim() } : {}),
-        } }).then((ok) => setSaved(ok));
-      }}>
-        <div className="agent-workspace-mode" role="group" aria-label="Default child workspace">
-          <button type="button" aria-pressed={mode === 'shared'} disabled={disabled} onClick={() => { setMode('shared'); setSaved(false); }}>Shared checkout</button>
-          <button type="button" aria-pressed={mode === 'worktree'} disabled={disabled} onClick={() => { setMode('worktree'); setSaved(false); }}>New worktree</button>
-        </div>
-        <p>{mode === 'shared' ? 'New agents share their direct parent’s files. One writer per checkout.' : 'Each new agent gets its own branch and checkout. Uncommitted parent changes stay behind.'} The parent can override this per agent.</p>
-        {mode === 'worktree' ? <div className="agent-workspace-fields">
-          <label>Base ref<input value={baseRef} maxLength={200} placeholder="HEAD" disabled={disabled} onChange={(event) => { setBaseRef(event.target.value); setSaved(false); }} /></label>
-          <label>Branch prefix<input value={branchPrefix} maxLength={100} placeholder="Automatic" disabled={disabled} onChange={(event) => { setBranchPrefix(event.target.value); setSaved(false); }} /></label>
-        </div> : null}
-        <p>Applies to future agents in this team. Existing workspaces never move. Worktrees stay local until explicitly integrated or removed.</p>
-        {streaming ? <p>Wait for the parent to finish before changing defaults here.</p> : null}
-        <div className="agent-workspace-actions"><button type="submit" disabled={disabled}>{pending ? <LoaderCircle size={12} className="tool-spinner" /> : saved ? <Check size={12} /> : <Save size={12} />}{saved ? 'Saved' : 'Save defaults'}</button></div>
-        {error ? <p className="agent-workspace-error" role="alert">{error}</p> : null}
-      </form>
-    </details>
-  );
 }
 
 type Confirmation = 'checkpoint' | 'integrate' | 'cleanup' | null;
@@ -146,7 +102,7 @@ export function AgentWorkspaceDetails({ team, node }: { team: AgentTeam; node: A
           {rootStreaming ? <p>Integration and cleanup are unavailable while the parent is running.</p> : null}
           {!directChild ? <p>Only this agent’s direct parent can checkpoint or integrate its work. You can review it here and remove the checkout after closing it.</p> : null}
           {review ? <div className="agent-workspace-review">
-            <strong>{review.dirty ? 'Uncommitted work' : `${review.commits.length} commit${review.commits.length === 1 ? '' : 's'} to review`}</strong>
+            <strong>{review.truncated ? 'Incomplete review' : review.dirty ? 'Uncommitted work' : `${review.commits.length} commit${review.commits.length === 1 ? '' : 's'} to review`}</strong>
             <dl className="agent-workspace-facts"><dt>Source HEAD</dt><dd><code>{review.sourceHead.slice(0, 12)}</code></dd><dt>Parent HEAD</dt><dd><code>{review.targetBranch ?? 'Detached HEAD'} · {review.targetHead.slice(0, 12)}</code></dd></dl>
             {review.targetDirty ? <p className="agent-workspace-warning">Parent checkout has uncommitted changes. Commit or stash them before integration.</p> : null}
             {review.truncated ? <p className="agent-workspace-warning">This review is incomplete or exceeds the display limit. Inspect the listed files locally, or checkpoint uncommitted work and refresh. Integration is disabled.</p> : null}

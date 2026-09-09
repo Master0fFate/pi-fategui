@@ -77,6 +77,18 @@ describe('IPC contracts', () => {
     expect(() => clipboardTextInputSchema.parse({ text: 'Copy me', html: '<b>Copy me</b>' })).toThrow();
   });
 
+  it('defaults missing global Agent workspace policy fields without resetting other preferences', () => {
+    const base = {
+      appearance: 'system', defaultModel: 'provider/model', disabledModels: ['provider/hidden'], thinkingLevel: 'high', agentTeamMode: 'v2',
+      confirmRiskyCommands: false, terminalShell: 'pwsh', reduceMotion: true, performanceMode: true, holyShitMode: true, musicPlayerEnabled: true,
+      sendMessageWithModifier: true, compactMode: true, compactSessions: true, advancedPromptImprovement: true, crashTelemetryEnabled: true,
+      themeId: 'midnight', interfaceFont: 'poppins', codeFont: 'noto-sans-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: defaultSpeechSettings,
+    };
+    expect(appSettingsSchema.parse(base)).toMatchObject({ ...base, agentWorkspace: { preferredMode: 'worktree', strict: false } });
+    expect(appSettingsSchema.parse({ ...base, agentWorkspace: { preferredMode: 'shared' } })).toMatchObject({ ...base, agentWorkspace: { preferredMode: 'shared', strict: false } });
+    expect(() => appSettingsSchema.parse({ ...base, agentWorkspace: { preferredMode: 'shared', strict: 'no' } })).toThrow();
+  });
+
   it('migrates image settings written before custom providers were added', () => {
     const parsed = appSettingsSchema.parse({
       appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true,

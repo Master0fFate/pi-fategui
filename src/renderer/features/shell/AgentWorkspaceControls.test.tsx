@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentTeam, AgentTeamNode } from '../../../shared/contracts/multiAgent';
 import type { RuntimeState } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
-import { AgentWorkspaceDefaults, AgentWorkspaceDetails } from './AgentWorkspaceControls';
+import { AgentWorkspaceDetails } from './AgentWorkspaceControls';
 
 const sourceHead = 'a'.repeat(40);
 const targetHead = 'b'.repeat(40);
@@ -41,30 +41,6 @@ beforeEach(() => {
   Object.defineProperty(window, 'piDesktop', { value: { controlAgentTeam: vi.fn().mockResolvedValue(runtime) }, configurable: true });
 });
 afterEach(() => { Reflect.deleteProperty(window, 'piDesktop'); });
-
-describe('agent workspace defaults', () => {
-  it('keeps shared as default and saves worktree settings without moving existing agents', async () => {
-    const user = userEvent.setup();
-    render(<AgentWorkspaceDefaults team={team} />);
-    await user.click(screen.getByLabelText('Workspace defaults for Implementation'));
-    expect(screen.getByRole('button', { name: 'Shared checkout' })).toHaveAttribute('aria-pressed', 'true');
-    await user.click(screen.getByRole('button', { name: 'New worktree' }));
-    await user.type(screen.getByLabelText('Base ref'), 'release/base');
-    await user.type(screen.getByLabelText('Branch prefix'), 'feature/agents');
-    await user.click(screen.getByRole('button', { name: 'Save defaults' }));
-    expect(window.piDesktop.controlAgentTeam).toHaveBeenCalledWith(expect.objectContaining({ action: 'configureWorkspace', teamId: 'team', workspace: { mode: 'worktree', baseRef: 'release/base', branchPrefix: 'feature/agents' } }));
-    expect(screen.getByText(/Existing workspaces never move/u)).toBeVisible();
-  });
-
-  it('does not send hidden branch options after selecting shared checkout', async () => {
-    const user = userEvent.setup();
-    render(<AgentWorkspaceDefaults team={{ ...team, workspaceDefaults: { mode: 'worktree', baseRef: 'main', branchPrefix: 'agents' } }} />);
-    await user.click(screen.getByLabelText('Workspace defaults for Implementation'));
-    await user.click(screen.getByRole('button', { name: 'Shared checkout' }));
-    await user.click(screen.getByRole('button', { name: 'Save defaults' }));
-    expect(window.piDesktop.controlAgentTeam).toHaveBeenCalledWith(expect.objectContaining({ workspace: { mode: 'shared' } }));
-  });
-});
 
 describe('agent workspace review', () => {
   it('shows source, target and diff, requiring confirmation and exact HEADs for integration', async () => {

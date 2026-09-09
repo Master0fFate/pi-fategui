@@ -6,7 +6,7 @@ import {
   SUBAGENT_HANDLE_PATTERN,
 } from '../subagentIdentity';
 import { themeCatalogSchema, type ThemeDefinition } from '../themes';
-import { agentTeamSchema, agentTeamControlInputSchema, type AgentTeamControlInput } from './multiAgent';
+import { agentTeamSchema, agentTeamControlInputSchema, agentWorkspacePolicySchema, type AgentTeamControlInput } from './multiAgent';
 
 const AGENT_TEAM_MAX_RETAINED_TEAMS = 32;
 import { toolProvenanceSchema } from './provenance';
@@ -1262,6 +1262,7 @@ export const appSettingsSchema = z.object({
   disabledModels: z.array(z.string().min(1).max(700)).max(5_000).default([]),
   thinkingLevel: thinkingLevelSchema,
   agentTeamMode: z.enum(['legacy', 'v2']).default('legacy'),
+  agentWorkspace: agentWorkspacePolicySchema,
   confirmRiskyCommands: z.boolean(),
   terminalShell: z.string().max(4_096).nullable(),
   reduceMotion: z.boolean(),

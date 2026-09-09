@@ -13,6 +13,7 @@ const settings: AppSettings = {
   disabledModels: [],
   thinkingLevel: 'medium',
   agentTeamMode: 'legacy',
+  agentWorkspace: { preferredMode: 'worktree', strict: false },
   confirmRiskyCommands: true,
   terminalShell: null,
   reduceMotion: false,
@@ -181,6 +182,51 @@ describe('SettingsDialog feedback', () => {
     await user.click(compactMode);
     expect(compactMode).not.toBeChecked();
     expect(compactSessions).not.toBeChecked();
+  });
+
+  it('offers a global isolated-worktree preference before any team exists', async () => {
+    installBridge(vi.fn(async (value) => value));
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+    await user.click(await screen.findByRole('tab', { name: /Agent/ }));
+    expect(screen.getByRole('checkbox', { name: 'Prefer isolated worktrees' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Strict workspace mode' })).not.toBeChecked();
+    expect(screen.getByText('Preferred: isolated worktree')).toBeVisible();
+    expect(screen.getByText(/agent can choose the other mode/u)).toBeVisible();
+    expect(screen.getByText(/Legacy subagents are not affected/u)).toBeVisible();
+    expect(useRuntimeStore.getState().runtime.agentTeams ?? []).toHaveLength(0);
+  });
+
+  it('saves strict shared policy while the root is working without touching teams', async () => {
+    const save = vi.fn(async (value: AppSettings) => value);
+    const bridge = installBridge(save, { ...settings, agentTeamMode: 'v2' });
+    const controlTeam = vi.fn();
+    Object.assign(bridge, { controlAgentTeam: controlTeam });
+    useRuntimeStore.setState((state) => ({ runtime: { ...state.runtime, streaming: true } }));
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+    await user.click(await screen.findByRole('tab', { name: /Agent/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'Prefer isolated worktrees' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Strict workspace mode' }));
+    expect(screen.getByText('Required: shared checkout')).toBeVisible();
+    expect(screen.getByText(/agent must use your preferred mode/u)).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ agentWorkspace: { preferredMode: 'shared', strict: true } })));
+    expect(controlTeam).not.toHaveBeenCalled();
+    expect(screen.getByText(/No project restart is needed for workspace policy changes/u)).toBeVisible();
+  });
+
+  it('loads saved strict policy and can relax enforcement independently of the preferred mode', async () => {
+    const save = vi.fn(async (value: AppSettings) => value);
+    installBridge(save, { ...settings, agentTeamMode: 'v2', agentWorkspace: { preferredMode: 'worktree', strict: true } });
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+    await user.click(await screen.findByRole('tab', { name: /Agent/ }));
+    expect(screen.getByRole('checkbox', { name: 'Strict workspace mode' })).toBeChecked();
+    await user.click(screen.getByRole('checkbox', { name: 'Strict workspace mode' }));
+    expect(screen.getByRole('checkbox', { name: 'Prefer isolated worktrees' })).toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ agentWorkspace: { preferredMode: 'worktree', strict: false } })));
   });
 
   it('describes agent settings as initial project fallbacks rather than new-session defaults', async () => {
