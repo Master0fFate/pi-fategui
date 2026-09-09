@@ -11,6 +11,11 @@ const teamId = Type.Optional(Type.String({ minLength: 1, maxLength: 160, descrip
 const target = Type.String({ minLength: 1, maxLength: 512, description: 'Same-team target by immutable node ID, canonical path, or stable @handle.' });
 const message = Type.String({ minLength: 1, maxLength: 32 * 1024 });
 const deliveryModes = ['queue', 'steer'] as const;
+const workspace = Type.Object({
+  mode: enumString(['shared', 'worktree'], 'shared inherits the caller checkout; worktree creates a managed isolated checkout.'),
+  baseRef: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+  branch: Type.Optional(Type.String({ minLength: 1, maxLength: 240 })),
+}, { additionalProperties: false });
 const spawnParameters = Type.Object({
   teamId,
   task: Type.String({ minLength: 1, maxLength: 200_000 }),
@@ -26,6 +31,7 @@ const spawnParameters = Type.Object({
   skillMode: Type.Optional(enumString(['all', 'selected', 'none'], 'Child skill discovery visibility.')),
   preloadSkills: Type.Optional(Type.Boolean()),
   contextTurns: Type.Optional(Type.Integer({ minimum: 1, maximum: 5, description: 'Sanitized recent parent user/assistant turns. Omit for fresh context.' })),
+  workspace: Type.Optional(workspace),
 }, { additionalProperties: false });
 
 function text(content: string, details: unknown) {
@@ -64,6 +70,12 @@ export function createAgentCollaborationTools(
         return text(`${team.name} (${team.id}) is ${team.status}.`, team);
       },
     }),
+    defineTool({
+      name: 'configure_agent_workspace', label: 'Configure agent workspaces', promptSnippet: 'Configure default child workspaces',
+      description: 'Set default workspace behavior for future direct child agents. shared is the default; worktree creates managed Git worktrees only from committed refs.',
+      parameters: Type.Object({ teamId: Type.String({ minLength: 1, maxLength: 160 }), workspace: Type.Object({ mode: enumString(['shared', 'worktree'], 'Workspace mode.'), baseRef: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })), branchPrefix: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })) }, { additionalProperties: false }) }, { additionalProperties: false }), executionMode: 'sequential',
+      execute: async (_id, params, _signal, _update, ctx) => text('Workspace defaults updated.', coordinator.configureWorkspace(ctx.sessionManager.getSessionId(), params.teamId, params.workspace as { mode: 'shared' | 'worktree'; baseRef?: string; branchPrefix?: string })),
+    }),
     ...(['select', 'pause', 'resume', 'close', 'reset'] as const).map((action) => defineTool({
       name: `${action}_team`, label: `${action[0]!.toUpperCase()}${action.slice(1)} team`, promptSnippet: `${action} an Agent Team`,
       description: action === 'close' ? 'Close a team. Active work is refused unless force is explicit; force aborts turns and cancels tasks.' : action === 'reset' ? 'Reset a team to an empty active state. Active work is refused unless force is explicit.' : `${action[0]!.toUpperCase()}${action.slice(1)} an explicit team idempotently.`,
@@ -78,12 +90,21 @@ export function createAgentCollaborationTools(
   return [
     defineTool({
       name: 'spawn_agent', label: 'Spawn agent', promptSnippet: 'Create one direct child agent',
-      description: 'Create a direct child in the current Agent Team V2 tree and start its initial task. Depth, total nodes, active turns, authority, context, and the single-writer lease are enforced atomically.',
-      promptGuidelines: ['Delegate one bounded outcome.', 'Children share the project tree. Only one write-capable child turn may run at once.', 'Capacity errors are explicit; wait for existing work and retry.'],
+      description: 'Create a direct child in the current Agent Team V2 tree and start its initial task. Shared checkout is the default; managed worktrees are explicit and are not a security sandbox. Depth, total nodes, active turns, authority, context, and per-checkout writer leases are enforced atomically.',
+      promptGuidelines: ['Delegate one bounded outcome.', 'Shared children inherit the caller checkout; isolated worktrees can write concurrently but require parent review and explicit integration.', 'Capacity errors are explicit; wait for existing work and retry.'],
       parameters: spawnParameters, executionMode: 'sequential',
       execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
         const receipt = await coordinator.spawn(caller(ctx.sessionManager.getSessionId(), params.teamId), params, toolCallId, modelRuntime, signal);
         return text(`Spawned @${receipt.handle} at ${receipt.path} (${receipt.status}).`, receipt);
+      },
+    }),
+    defineTool({
+      name: 'agent_workspace', label: 'Review or integrate agent workspace', promptSnippet: 'Review/checkpoint/integrate/cleanup an owned child workspace',
+      description: 'Parent-owned workspace operations. Review is required before explicit integration; checkpoint creates no automatic integration; cleanup keeps the branch and is never forced.',
+      parameters: Type.Object({ teamId, target, operation: enumString(['review', 'checkpoint', 'integrate', 'cleanup'], 'Workspace operation.'), message: Type.Optional(Type.String({ minLength: 1, maxLength: 2_000 })), strategy: Type.Optional(enumString(['ff-only', 'cherry-pick'], 'Integration strategy.')), commits: Type.Optional(Type.Array(Type.String({ minLength: 40, maxLength: 64 }), { minItems: 1, maxItems: 128 })), expectedSourceHead: Type.Optional(Type.String({ minLength: 40, maxLength: 64 })), expectedTargetHead: Type.Optional(Type.String({ minLength: 40, maxLength: 64 })) }, { additionalProperties: false }), executionMode: 'sequential',
+      execute: async (_id, params, _signal, _update, ctx) => {
+        const result = await coordinator.workspace(caller(ctx.sessionManager.getSessionId(), params.teamId), params.target, params.operation as 'review' | 'checkpoint' | 'integrate' | 'cleanup', { ...(params.message ? { message: params.message } : {}), ...(params.strategy === 'ff-only' || params.strategy === 'cherry-pick' ? { strategy: params.strategy } : {}), ...(params.commits ? { commits: params.commits } : {}), ...(params.expectedSourceHead ? { expectedSourceHead: params.expectedSourceHead } : {}), ...(params.expectedTargetHead ? { expectedTargetHead: params.expectedTargetHead } : {}) });
+        return text(`Workspace ${params.operation} completed.`, result);
       },
     }),
     defineTool({

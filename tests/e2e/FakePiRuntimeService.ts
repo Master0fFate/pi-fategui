@@ -52,8 +52,8 @@ function agentTeamFixture(): AgentTeam {
     limits: { maxDepth: 2, maxNodes: 16, maxActiveTurns: 3, maxMessages: 256, maxMessageBytes: 32 * 1024 }, activeTurns: 1, writerNodeId: reviewerId, usage: { ...emptyUsage },
     nodes: [
       { id: rootId, teamId, parentNodeId: null, path: '/root', handle: 'root', displayName: 'Main agent', depth: 0, role: 'root', agentName: 'direct', permissionLevel: 'full-access', enabledTools: ['read'], model, thinkingLevel: 'medium', status: 'active', childIds: [reviewerId], unreadMessages: 0, writer: false, usage: { ...emptyUsage }, createdAt: now, updatedAt: now },
-      { id: reviewerId, teamId, parentNodeId: rootId, path: '/root/reviewer', handle: 'reviewer', displayName: 'Reviewer', depth: 1, role: 'reviewer', agentName: 'direct', permissionLevel: 'edit', enabledTools: ['read', 'grep', 'edit'], model, thinkingLevel: 'high', status: 'active', currentTaskId: 'e2e-team-review-task', childIds: [verifierId], unreadMessages: 0, writer: true, usage: { ...emptyUsage, turns: 1 }, createdAt: now, updatedAt: now },
-      { id: verifierId, teamId, parentNodeId: reviewerId, path: '/root/reviewer/verifier', handle: 'verifier', displayName: 'Verifier', depth: 2, role: 'verifier', agentName: 'direct', permissionLevel: 'read-only', enabledTools: ['read', 'grep'], model, thinkingLevel: 'medium', status: 'ready', childIds: [], unreadMessages: 0, writer: false, usage: { ...emptyUsage, turns: 1 }, createdAt: now, updatedAt: now },
+      { id: reviewerId, teamId, parentNodeId: rootId, path: '/root/reviewer', handle: 'reviewer', displayName: 'Reviewer', depth: 1, role: 'reviewer', agentName: 'direct', permissionLevel: 'edit', enabledTools: ['read', 'grep', 'edit'], workspace: { mode: 'worktree', path: '/e2e/worktrees/reviewer', parentPath: '/e2e/project', commonDirectory: '/e2e/project/.git', branch: 'agents/reviewer', baseRef: 'HEAD', baseCommit: 'b'.repeat(40), state: 'ready' }, model, thinkingLevel: 'high', status: 'active', currentTaskId: 'e2e-team-review-task', childIds: [verifierId], unreadMessages: 0, writer: true, usage: { ...emptyUsage, turns: 1 }, createdAt: now, updatedAt: now },
+      { id: verifierId, teamId, parentNodeId: reviewerId, path: '/root/reviewer/verifier', handle: 'verifier', displayName: 'Verifier', depth: 2, role: 'verifier', agentName: 'direct', permissionLevel: 'read-only', enabledTools: ['read', 'grep'], workspace: { mode: 'shared', path: '/e2e/worktrees/reviewer', parentPath: '/e2e/worktrees/reviewer', state: 'ready' }, model, thinkingLevel: 'medium', status: 'ready', childIds: [], unreadMessages: 0, writer: false, usage: { ...emptyUsage, turns: 1 }, createdAt: now, updatedAt: now },
     ],
     tasks: [{ id: 'e2e-team-review-task', teamId, assigneeNodeId: reviewerId, requesterNodeId: rootId, inputEnvelopeId: 'e2e-team-review-envelope', summary: 'Review the Agent Teams V2 flow', status: 'running', createdAt: now, startedAt: now }],
     envelopes: [{ id: 'e2e-team-review-envelope', teamId, sequence: 1, kind: 'NEW_TASK', authorNodeId: rootId, recipientNodeId: reviewerId, taskId: 'e2e-team-review-task', content: 'Review the Agent Teams V2 flow', triggerTurn: true, state: 'consumed', createdAt: now, deliveredAt: now }],
@@ -272,6 +272,11 @@ export class FakePiRuntimeService {
       this.emitState();
       return this.getState();
     }
+    if (input.action === 'configureWorkspace') {
+      this.agentTeams = this.agentTeams.map((team) => team.id === input.teamId ? { ...team, workspaceDefaults: input.workspace, updatedAt: now } : team);
+      this.emitState();
+      return this.getState();
+    }
     if (input.action === 'selectTeam' || input.action === 'pauseTeam' || input.action === 'resumeTeam' || input.action === 'closeTeam' || input.action === 'resetTeam' || input.action === 'deleteTeam') {
       if (input.action === 'deleteTeam') this.agentTeams = this.agentTeams.filter((team) => team.id !== input.teamId);
       else this.agentTeams = this.agentTeams.map((team) => team.id !== input.teamId ? (input.action === 'selectTeam' ? { ...team, selected: false } : team) : {
@@ -288,6 +293,24 @@ export class FakePiRuntimeService {
     const index = team?.nodes.findIndex((node) => node.id === input.target) ?? -1;
     if (!team || index < 0) throw new Error(`Unknown Agent Team node ${input.target}.`);
     const node = team.nodes[index]!;
+    if (input.action === 'workspace') {
+      if (!node.workspace || node.workspace.mode !== 'worktree') throw new Error('This agent does not own a worktree.');
+      const workspace = { ...node.workspace };
+      if (input.operation === 'review') workspace.review = {
+        sourceHead: 'a'.repeat(40), targetHead: 'b'.repeat(40), targetBranch: 'main', dirty: false, targetDirty: false,
+        commits: [{ hash: 'a'.repeat(40), subject: 'Implement isolated workspace' }],
+        diff: 'diff --git a/src/example.ts b/src/example.ts\n+export const workspace = "isolated";', truncated: false, reviewedAt: now,
+      };
+      else if (input.operation === 'integrate') {
+        if (input.expectedSourceHead !== workspace.review?.sourceHead || input.expectedTargetHead !== workspace.review?.targetHead) throw new Error('Review HEADs changed.');
+        workspace.integratedHead = 'a'.repeat(40);
+        delete workspace.review;
+      } else if (input.operation === 'checkpoint') delete workspace.review;
+      else workspace.state = 'removed';
+      this.agentTeams = this.agentTeams.map((candidate, current) => current === teamIndex ? { ...candidate, nodes: candidate.nodes.map((item) => item.id === node.id ? { ...item, workspace, updatedAt: now } : item), updatedAt: now } : candidate);
+      this.emitState();
+      return this.getState();
+    }
     const followUp = input.action === 'followUp' || input.action === 'resume';
     if (followUp && node.parentNodeId !== team.rootNodeId) throw new Error('Follow-up work may target only a direct child.');
     const next = input.action === 'message'

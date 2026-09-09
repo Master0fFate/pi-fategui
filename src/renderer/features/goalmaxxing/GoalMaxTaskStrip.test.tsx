@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GoalMaxState } from '../../../shared/contracts/goalmaxxing';
@@ -88,27 +88,28 @@ describe('GoalMax task strip', () => {
     expect(screen.queryByRole('button', { name: 'Add task' })).toBeNull();
   });
 
-  it('applies the returned list when a manual task status changes', async () => {
+  it.each(['todo', 'in-progress', 'blocked', 'done'] as const)('displays %s as agent-owned status, never as a manual toggle', async (status) => {
     const user = userEvent.setup();
     const initial = buildTaskList(true);
-    const updated: TaskList = {
-      ...initial,
-      revision: initial.revision + 1,
-      tasks: initial.tasks.map((task) => task.id === 'task-manual' ? { ...task, status: 'in-progress' as const } : task),
-    };
-    const updateTask = vi.fn(async () => updated);
+    initial.tasks[0]!.status = status;
+    const updateTask = vi.fn();
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { updateTask } });
     useTaskStore.setState({ list: initial });
     render(<GoalMaxTaskStrip />);
-
     await user.click(screen.getByRole('button', { name: 'Expand task list' }));
-    await user.click(screen.getByRole('button', { name: 'Change status for Review the copy' }));
-
-    expect(updateTask).toHaveBeenCalledWith({ id: 'task-manual', status: 'in-progress' });
-    expect(useTaskStore.getState().list?.tasks.find((task) => task.id === 'task-manual')?.status).toBe('in-progress');
+    const row = within(screen.getByRole('list', { name: 'Task status' })).getByText('Review the copy').closest('li')!;
+    const label = within(row).getByTitle('Status is updated by the agent');
+    expect(label.tagName).toBe('EM');
+    expect(label).not.toHaveAttribute('tabindex');
+    expect(screen.queryByRole('button', { name: /Change status/u })).not.toBeInTheDocument();
+    await user.click(label);
+    expect(updateTask).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().list?.tasks[0]?.status).toBe(status);
+    act(() => useTaskStore.setState({ list: { ...initial, tasks: initial.tasks.map((task) => ({ ...task, status: 'in-progress' })) } }));
+    expect(within(row).getByTitle('Status is updated by the agent')).toHaveTextContent('In progress');
   });
 
-  it('turns a manual task status control into a cancel action and applies the returned list', async () => {
+  it('preserves explicit task cancellation and applies the returned list', async () => {
     const user = userEvent.setup();
     const withManualTask = buildTaskList(true);
     const withoutManualTask = { ...buildTaskList(), revision: withManualTask.revision + 1 };

@@ -685,7 +685,7 @@ describe('PiRuntimeService', () => {
   });
 
   it('activates one orchestration protocol surface while registering both for restored sessions', async () => {
-    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'message_session', 'goalmax_status', 'goalmax_report', 'goalmax_complete', ...TASK_TOOL_NAMES];
+    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'agent_workspace', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'configure_agent_workspace', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'message_session', 'goalmax_status', 'goalmax_report', 'goalmax_complete', ...TASK_TOOL_NAMES];
     const legacy = fixture();
     const legacyService = new PiRuntimeService(legacy.adapter);
     await legacyService.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'medium', defaultModel: null, agentTeamMode: 'legacy' });
@@ -700,7 +700,7 @@ describe('PiRuntimeService', () => {
     await v2Service.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'max', defaultModel: null, agentTeamMode: 'v2' });
     const v2Tools = (v2.adapter.createRuntime as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as ToolDefinition[];
     expect(v2Tools.map((tool) => tool.name)).toEqual(allNames);
-    expect(v2.session.getActiveToolNames()).toEqual(expect.arrayContaining(['spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'subagent_catalog']));
+    expect(v2.session.getActiveToolNames()).toEqual(expect.arrayContaining(['spawn_agent', 'agent_workspace', 'configure_agent_workspace', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'subagent_catalog']));
     expect(v2.session.getActiveToolNames()).not.toContain('subagent_start');
     await v2Service.dispose();
   });

@@ -29,6 +29,32 @@ describe('SubagentSessionFactory boundaries', () => {
     expect(usage).toEqual({ input: 15, output: 7, cacheRead: 2, cacheWrite: 1, cost: 0.03, contextTokens: 8, turns: 2 });
   });
 
+  it('does not automatically trust context or skills from an alternate worktree checkout', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-worktree-resources-'));
+    const approved = path.join(directory, 'approved');
+    const checkout = path.join(directory, 'checkout');
+    let session: AgentSession | undefined;
+    try {
+      await fs.mkdir(approved);
+      await fs.mkdir(path.join(checkout, '.pi', 'skills', 'injected'), { recursive: true });
+      await fs.writeFile(path.join(checkout, 'AGENTS.md'), 'WORKTREE_CONTEXT_INJECTION');
+      await fs.writeFile(path.join(checkout, '.pi', 'skills', 'injected', 'SKILL.md'), '---\nname: injected\ndescription: worktree-only skill\n---\nWORKTREE_SKILL_INJECTION');
+      const modelRuntime = await ModelRuntime.create({ authPath: path.join(directory, 'auth.json'), modelsPath: null });
+      const model = modelRuntime.getModels()[0]!;
+      session = await createSdkChildSession({
+        projectPath: checkout, settingsProjectPath: approved, approvedSkills: [], modelRuntime, model,
+        thinkingLevel: 'off', permissionLevel: 'edit', role: 'worker', agentName: 'direct', profileSystemPrompt: '',
+        toolNames: ['read', 'edit'], skillMode: 'all', selectedSkills: [],
+      });
+      expect(session.resourceLoader.getSkills().skills).toEqual([]);
+      expect(session.agent.state.systemPrompt).not.toContain('WORKTREE_CONTEXT_INJECTION');
+      expect(session.agent.state.systemPrompt).not.toContain('WORKTREE_SKILL_INJECTION');
+    } finally {
+      session?.dispose();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('registers and activates every Agent Team collaboration tool', async () => {
     const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-child-session-test-'));
     let session: AgentSession | undefined;

@@ -1,6 +1,6 @@
 import type { AgentSession, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
-import type { AgentTeam, AgentTeamEnvelope, AgentTeamNode, AgentTeamTask } from '../../../shared/contracts/multiAgent';
+import type { AgentTeam, AgentTeamEnvelope, AgentTeamNode, AgentTeamTask, AgentWorkspaceRequest } from '../../../shared/contracts/multiAgent';
 import type { ToolProvenance } from '../../../shared/contracts/provenance';
 import type { ChildToolName } from '../SubagentProtocol';
 import type { SelectedSubagentSkill } from '../SubagentSkills';
@@ -59,6 +59,7 @@ export interface SpawnAgentRequest {
   skillMode?: 'all' | 'selected' | 'none';
   preloadSkills?: boolean;
   contextTurns?: number;
+  workspace?: AgentWorkspaceRequest;
 }
 
 export interface PreparedAgentRequest extends SpawnAgentRequest {
