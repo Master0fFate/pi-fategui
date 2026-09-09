@@ -38,8 +38,6 @@ function taskStatusLabel(status: TaskStatus): string {
   }
 }
 
-const TASK_STATUS_CYCLE: TaskStatus[] = ['todo', 'in-progress', 'done', 'blocked'];
-
 interface TaskRow {
   id: string;
   title: string;
@@ -50,14 +48,7 @@ interface TaskRow {
   managed: boolean;
 }
 
-/**
- * Reads the canonical, session-scoped task list (the same list GoalMax binds
- * to), so the strip is not GoalMax-exclusive. The collapsed row shows the
- * current task and done/total count; expanding reveals verification details
- * and a dense status list with inline status toggling and
- * removal for ordinary user tasks. Task creation is owned by the agent, so the
- * strip intentionally has no manual add form.
- */
+/** Task creation and status belong to the agent; ordinary tasks may still be cancelled. */
 function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
   const [expanded, setExpanded] = useState(false);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
@@ -77,19 +68,6 @@ function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
     : `${requiredDone}/${requiredTotal} required · ${requiredVerified === requiredTotal ? 'verified' : 'unverified'}`;
   const canEdit = typeof window !== 'undefined' && 'piDesktop' in window;
 
-  const cycleStatus = async (row: TaskRow) => {
-    if (row.managed || mutatingId || !canEdit || typeof window.piDesktop.updateTask !== 'function') return;
-    const next = TASK_STATUS_CYCLE[(TASK_STATUS_CYCLE.indexOf(row.status) + 1) % TASK_STATUS_CYCLE.length];
-    setMutatingId(row.id);
-    setMutationError(null);
-    try {
-      setList(await window.piDesktop.updateTask({ id: row.id, status: next }));
-    } catch {
-      setMutationError('Could not update the task. Try again.');
-    } finally {
-      setMutatingId(null);
-    }
-  };
   const cancelTask = async (row: TaskRow) => {
     if (row.managed || mutatingId || !canEdit || typeof window.piDesktop.deleteTask !== 'function') return;
     setMutatingId(row.id);
@@ -135,11 +113,7 @@ function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
                     <span className="goalmax-task-strip-criterion-title">{row.title}</span>
                     {row.detail ? <small className="goalmax-task-strip-criterion-description">{row.detail}</small> : null}
                   </span>
-                  {row.managed ? (
-                    <em className="goalmax-task-strip-criterion-status">{statusText}</em>
-                  ) : (
-                    <button type="button" className="goalmax-task-strip-criterion-status goalmax-task-strip-criterion-status-action" aria-label={`Change status for ${row.title}`} disabled={busy} onClick={() => void cycleStatus(row)}>{statusText}</button>
-                  )}
+                  <em className="goalmax-task-strip-criterion-status" title="Status is updated by the agent">{statusText}</em>
                 </li>
               );
             })}

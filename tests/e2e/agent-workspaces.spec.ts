@@ -1,0 +1,79 @@
+import { _electron as electron, expect, test } from '@playwright/test';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+
+const exec = promisify(execFile);
+
+test('Run Agents configures, reviews, integrates and retains isolated workspaces', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'fate-agent-workspace-e2e-'));
+  const root = path.join(directory, 'project');
+  const userData = path.join(directory, 'profile');
+  await mkdir(root);
+  await writeFile(path.join(root, 'example.ts'), 'export const value = 1;\n');
+  await exec('git', ['init', '-b', 'main'], { cwd: root });
+  await exec('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'add', '.'], { cwd: root });
+  await exec('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-m', 'Fixture'], { cwd: root });
+  const application = await electron.launch({
+    args: [path.resolve('.test-dist/main/index.js')],
+    env: { ...process.env, PI_DESKTOP_E2E_PROJECT: root, PI_DESKTOP_E2E_USER_DATA: userData, FATE_GUI_DATA_DIR: path.join(userData, 'fateGUI'), PI_OFFLINE: '1' },
+  });
+  try {
+    const page = await application.firstWindow();
+    await page.getByRole('button', { name: /Open project/u }).first().click();
+    await page.getByLabel('Message Pi').fill('__FATE_V2_AGENT_FIXTURE__');
+    await page.getByRole('button', { name: 'Send message' }).click();
+    await page.locator('.inspector-primary-nav').getByRole('button', { name: /^Run(?:,|$)/u }).click();
+    await page.getByRole('tab', { name: /^Subagent sessions/u }).click();
+    const agents = page.getByRole('region', { name: 'Agent sessions' });
+    await agents.getByLabel('Workspace defaults for E2E team').click();
+    const defaults = agents.getByRole('form', { name: 'E2E team workspace defaults' });
+    await defaults.getByRole('button', { name: 'New worktree' }).click();
+    await defaults.getByLabel('Base ref').fill('HEAD');
+    await defaults.getByLabel('Branch prefix').fill('agents/custom');
+    await defaults.getByRole('button', { name: 'Save defaults' }).click();
+    await expect(defaults.getByRole('button', { name: 'Saved' })).toBeVisible();
+    await agents.getByLabel('Workspace defaults for E2E team').click();
+    await agents.getByLabel('Workspace for Reviewer', { exact: true }).click();
+    const workspace = page.getByRole('region', { name: 'Reviewer workspace', exact: true });
+    await expect(workspace).toContainText('/e2e/worktrees/reviewer');
+    await expect(workspace).toContainText('not a security sandbox');
+    await expect(workspace.getByRole('button', { name: 'Review changes' })).toBeDisabled();
+    await page.getByRole('button', { name: 'Close workspace' }).click();
+    await agents.getByRole('button', { name: 'Interrupt /root/reviewer and preserve its session', exact: true }).click();
+    await agents.getByLabel('Workspace for Reviewer', { exact: true }).click();
+    await workspace.getByRole('button', { name: 'Review changes' }).click();
+    await expect(workspace.getByLabel('Workspace diff')).toContainText('export const workspace');
+    await expect(workspace.getByRole('button', { name: 'Integrate changes' })).toBeEnabled();
+    await workspace.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: 'test-results/agent-workspace-review.png' });
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
+    await expect.poll(() => workspace.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: 'test-results/agent-workspace-review-narrow.png' });
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1280, 800));
+    await workspace.getByLabel('Integration method').selectOption('cherry-pick');
+    await expect(workspace.getByRole('button', { name: 'Integrate changes' })).toBeDisabled();
+    await workspace.getByLabel('Select commit aaaaaaaaaaaa').check();
+    await workspace.getByRole('button', { name: 'Integrate changes' }).click();
+    const confirmation = workspace.getByRole('alertdialog', { name: 'Integrate into Main agent?' });
+    await expect(confirmation).toContainText('/e2e/project');
+    await confirmation.getByRole('button', { name: 'Integrate', exact: true }).click();
+    await expect(workspace.getByRole('status')).toContainText('Changes integrated');
+    await expect(workspace).toContainText('/e2e/worktrees/reviewer');
+    await page.getByRole('button', { name: 'Close workspace' }).click();
+    await agents.getByRole('button', { name: 'Close /root/reviewer and preserve history', exact: true }).click();
+    await agents.getByLabel('Workspace for Reviewer', { exact: true }).click();
+    await workspace.getByRole('button', { name: 'Remove worktree', exact: true }).click();
+    const cleanup = workspace.getByRole('alertdialog', { name: 'Remove Reviewer worktree?' });
+    await expect(cleanup).toContainText('branch and agent history stay available');
+    await cleanup.getByRole('button', { name: 'Remove worktree' }).click();
+    await expect(workspace.getByRole('status')).toContainText('Git branch is retained');
+    await page.getByRole('button', { name: 'Close workspace' }).click();
+    await expect(agents.getByLabel('Workspace for Reviewer', { exact: true })).toContainText('Removed worktree');
+  } finally {
+    await application.close();
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+  }
+});

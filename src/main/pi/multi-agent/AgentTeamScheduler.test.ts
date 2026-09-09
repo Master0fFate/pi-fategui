@@ -12,14 +12,16 @@ describe('AgentTeamScheduler', () => {
     expect(scheduler.acquire('d', 'read-only').nodeId).toBe('d');
   });
 
-  it('serializes write-capable child turns and releases idempotently', () => {
+  it('permits isolated writers concurrently but serializes a shared checkout', () => {
     const scheduler = new AgentTeamScheduler({ ...DEFAULT_AGENT_TEAM_LIMITS });
-    const writer = scheduler.acquire('writer-a', 'edit');
-    expect(scheduler.writer).toBe('writer-a');
-    expect(() => scheduler.acquire('writer-b', 'full-access')).toThrow(/writer lease/);
-    expect(() => scheduler.acquire('writer-a', 'edit')).toThrow(/already has an active turn/);
-    writer.release();
-    writer.release();
+    const first = scheduler.acquire('writer-a', 'edit', 'checkout-a');
+    const second = scheduler.acquire('writer-b', 'full-access', 'checkout-b');
+    expect(scheduler.activeTurns).toBe(2);
+    expect(() => scheduler.acquire('writer-c', 'edit', 'checkout-a')).toThrow(/writer lease/);
+    expect(() => scheduler.acquire('writer-a', 'edit', 'checkout-a')).toThrow(/already has an active turn/);
+    first.release();
+    first.release();
+    second.release();
     expect(scheduler.writer).toBeNull();
     expect(scheduler.activeTurns).toBe(0);
   });

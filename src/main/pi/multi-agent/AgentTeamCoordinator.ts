@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { AgentWorkspaceGitService } from '../../git/AgentWorkspaceGitService';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AgentSession, AgentSessionEvent, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
-import { AGENT_TEAM_MAX_GLOBAL_NODES, AGENT_TEAM_MAX_WAIT_MS, type AgentTeam, type AgentTeamControlInput, type AgentTeamEnvelope, type AgentTeamEnvelopeDelivery, type AgentTeamNode, type AgentTeamTask } from '../../../shared/contracts/multiAgent';
+import { AGENT_TEAM_MAX_GLOBAL_NODES, AGENT_TEAM_MAX_WAIT_MS, type AgentTeam, type AgentTeamControlInput, type AgentTeamEnvelope, type AgentTeamEnvelopeDelivery, type AgentTeamNode, type AgentTeamTask, type AgentWorkspaceDefaults, type AgentWorkspaceMetadata, type AgentWorkspaceRequest, workspaceDefaultsSchema } from '../../../shared/contracts/multiAgent';
 import type { ToolActor } from '../../../shared/contracts/provenance';
 import { addUsage, createSdkChildSession, emptyUsage, finalAssistant, usageFromMessages, type SubagentChildSessionFactory } from '../SubagentSessionFactory';
 import { assertContextTransfer } from '../SubagentContext';
@@ -73,7 +74,9 @@ export class AgentTeamCoordinator {
   private readonly selectedTeamByRoot = new Map<string, string>();
   private readonly nodeToTeam = new Map<string, string>();
   private readonly schedulers = new Map<string, AgentTeamScheduler>();
+  /** Writer leases are keyed by canonical checkout, not a logical project/team. */
   private readonly projectWriter = new Map<string, { teamId: string; nodeId: string }>();
+  private readonly workspaceOperationLocks = new Set<string>();
   private readonly lifecycleReceipts = new Map<string, string>();
   private readonly mutationQueues = new Map<string, Promise<void>>();
   private readonly listeners = new Map<string, Set<TeamListener>>();
@@ -84,6 +87,7 @@ export class AgentTeamCoordinator {
     private readonly host: AgentTeamCoordinatorHost,
     dataRoot?: string,
     private readonly childSessionFactory: SubagentChildSessionFactory = createSdkChildSession,
+    private readonly workspaceGit = new AgentWorkspaceGitService(),
   ) {
     const configuredRoot = configuredAgentTeamDataRoot();
     this.dataRoot = dataRoot ?? configuredRoot ?? legacyAgentTeamDataRoot();
@@ -187,6 +191,7 @@ export class AgentTeamCoordinator {
       unreadMessages: 0,
       writer: prepared.permission !== 'read-only',
       usage: emptyUsage(),
+      workspace: { mode: 'shared', path: this.checkoutForNode(runtime, caller), parentPath: this.checkoutForNode(runtime, caller), state: 'ready' },
       createdAt: now,
       updatedAt: now,
     };
@@ -203,10 +208,17 @@ export class AgentTeamCoordinator {
     const receipt = { key: receiptKey, operation: 'spawn' as const, entityId: node.id, createdAt: now };
     runtime.operationReceipts.set(receiptKey, receipt);
     let lease;
+    let nodeRuntime: AgentNodeRuntime | undefined;
+    let releaseProvision: (() => void) | undefined;
     try {
+      releaseProvision = await this.provisionWorkspace(runtime, caller, node, request.workspace);
+      if (signal?.aborted) throw Object.assign(new Error('Spawn cancelled.'), { name: 'AbortError' });
       lease = this.acquireLease(runtime, node.id, node.permissionLevel);
       this.syncScheduler(runtime);
-      const nodeRuntime = await this.createNodeSession(runtime, node, prepared, modelRuntime, options.allowDelegation !== false);
+      nodeRuntime = await this.createNodeSession(runtime, node, prepared, modelRuntime, options.allowDelegation !== false);
+      if (signal?.aborted) throw Object.assign(new Error('Spawn cancelled.'), { name: 'AbortError' });
+      const rootAuthority = this.host.resolveRoot(runtime.state.rootSessionId)?.permissionLevel ?? 'read-only';
+      if (permissionRank[prepared.permission] > Math.min(permissionRank[caller.permissionLevel], permissionRank[rootAuthority])) throw new Error('Parent authority narrowed while the child workspace was being prepared. Retry the spawn.');
       nodeRuntime.lease = lease;
       runtime.nodeRuntime.set(node.id, nodeRuntime);
       this.attachNodeRecorder(runtime, node, nodeRuntime);
@@ -225,6 +237,27 @@ export class AgentTeamCoordinator {
       return this.nodeReceipt(node);
     } catch (error) {
       lease?.release();
+      try { nodeRuntime?.unsubscribe?.(); } catch { /* Best effort. */ }
+      try { nodeRuntime?.session?.dispose(); } catch { /* Best effort. */ }
+      runtime.nodeRuntime.delete(node.id);
+      let cleanupError: unknown;
+      if (node.workspace?.mode === 'worktree' && node.workspace.state === 'ready') {
+        const workspace = node.workspace;
+        try {
+          await this.workspaceGit.discardCreated(workspace.parentPath, { path: workspace.path, branch: workspace.branch!, baseCommit: workspace.baseCommit!, commonDirectory: workspace.commonDirectory! }, this.workspaceOwner(runtime, node));
+        } catch (failure) { cleanupError = failure; }
+      }
+      if (cleanupError) {
+        node.status = 'failed';
+        node.lastError = 'Spawn failed and workspace rollback could not complete. Retained files and branch require explicit review and cleanup.';
+        node.updatedAt = Date.now();
+        task.status = 'failed';
+        task.error = node.lastError;
+        task.endedAt = node.updatedAt;
+        input.state = 'failed';
+        this.changed(runtime, `Spawn of ${node.path} failed with retained workspace metadata.`);
+        throw new AggregateError([error, cleanupError], `${node.lastError} Node: ${node.id}.`);
+      }
       runtime.nodes.delete(node.id);
       runtime.pathToNode.delete(node.path);
       this.nodeToTeam.delete(node.id);
@@ -235,6 +268,8 @@ export class AgentTeamCoordinator {
       this.syncScheduler(runtime);
       this.changed(runtime, `Spawn of ${node.path} failed before admission.`);
       throw error;
+    } finally {
+      releaseProvision?.();
     }
   }
 
@@ -680,6 +715,7 @@ export class AgentTeamCoordinator {
 
   private async resetTeamRuntime(runtime: AgentTeamRuntime, force: boolean): Promise<AgentTeam> {
     const teamId = runtime.state.id;
+    if ([...runtime.nodes.values()].some((node) => node.workspace?.mode === 'worktree' && node.workspace.state === 'ready')) throw new Error('Clean up retained Agent Team worktrees before resetting team history.');
     const active = [...runtime.nodes.values()].filter((node) => node.depth > 0 && activeNodeStatuses.has(node.status));
     if (active.length && !force) throw new Error(`Cannot reset team ${runtime.state.name} (${teamId}); ${active.length} node turn(s) are active. Use force to clean them up.`);
     for (const node of [...runtime.nodes.values()].filter((item) => item.depth > 0).sort((left, right) => right.depth - left.depth)) await this.releaseNode(runtime, node, force, 'Released by team reset.');
@@ -699,9 +735,123 @@ export class AgentTeamCoordinator {
 
   async deleteTeam(rootSessionId: string, teamId: string): Promise<void> {
     const runtime = this.requireTeam(rootSessionId, teamId);
+    if ([...runtime.nodes.values()].some((node) => node.workspace?.mode === 'worktree' && node.workspace.state === 'ready')) throw new Error('Clean up retained Agent Team worktrees before deleting team history.');
     if (this.teamHasActiveWork(runtime) || (runtime.state.status !== 'closed' && runtime.state.status !== 'released')) throw new Error(`Team ${runtime.state.name} (${teamId}) must be safely closed or released before history deletion.`);
     this.uninstallRuntime(runtime);
     await Promise.all(this.storageRoots.map((dataRoot) => fs.rm(path.join(dataRoot, safeDirectoryKey(rootSessionId), safeDirectoryKey(teamId)), { recursive: true, force: true, maxRetries: 2, retryDelay: 50 })));
+  }
+
+  configureWorkspace(rootSessionId: string, teamId: string, workspace: AgentWorkspaceDefaults): AgentTeam {
+    const root = this.host.resolveRoot(rootSessionId);
+    if (!root || root.permissionLevel === 'read-only') throw new Error('Configuring agent workspaces requires edit or full-access authority.');
+    const runtime = this.requireTeam(rootSessionId, teamId);
+    if (runtime.state.status === 'closed' || runtime.state.status === 'released') throw new Error('Closed teams cannot change workspace defaults.');
+    runtime.state.workspaceDefaults = workspaceDefaultsSchema.parse(workspace);
+    this.changed(runtime, `Workspace defaults configured for ${runtime.state.name}.`);
+    return projectTeam(runtime);
+  }
+
+  private checkoutKey(checkout: string): string {
+    const normalized = path.resolve(checkout);
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  }
+
+  private workspaceOwner(runtime: AgentTeamRuntime, node: AgentTeamNode): string {
+    return `${runtime.state.rootSessionId}/${runtime.state.id}/${node.id}`;
+  }
+
+  private async withWorkspaceLocks<T>(caller: AgentTeamNode, node: AgentTeamNode, operation: string, work: () => Promise<T>): Promise<T> {
+    const workspace = node.workspace!;
+    const keys = new Set([this.checkoutKey(workspace.path), this.checkoutKey(workspace.parentPath)]);
+    for (const key of keys) {
+      if (this.workspaceOperationLocks.has(key)) throw new Error('A workspace operation is already in progress. Retry after it finishes.');
+    }
+    for (const team of this.teamsById.values()) {
+      for (const candidate of team.nodes.values()) {
+        if (candidate.depth === 0 || candidate.id === caller.id || !activeNodeStatuses.has(candidate.status)) continue;
+        if (keys.has(this.checkoutKey(this.checkoutForNode(team, candidate)))) throw new Error(`Wait for ${candidate.path} to settle before workspace ${operation}.`);
+      }
+    }
+    for (const key of keys) this.workspaceOperationLocks.add(key);
+    try { return await work(); }
+    finally { for (const key of keys) this.workspaceOperationLocks.delete(key); }
+  }
+
+  async workspace(callerNodeId: string, target: string, operation: 'review' | 'checkpoint' | 'integrate' | 'cleanup', options: { message?: string; strategy?: 'ff-only' | 'cherry-pick'; commits?: string[]; expectedSourceHead?: string; expectedTargetHead?: string; human?: boolean } = {}) {
+    const runtime = this.runtimeForCaller(callerNodeId);
+    return this.serializeMutation(runtime, async () => {
+      const caller = this.requireNode(runtime, callerNodeId);
+      const node = this.resolveTarget(runtime, target);
+      const isDirect = node.parentNodeId === caller.id;
+      const isAncestor = node.path.startsWith(`${caller.path}/`);
+      const canMutate = isDirect || (options.human === true && operation === 'cleanup' && isAncestor);
+      if ((operation === 'review' ? !isAncestor : !canMutate) || node.depth === 0) throw new Error(`${operation} may target only ${operation === 'review' ? 'an owned descendant' : 'an owned direct child'} workspace.`);
+      const root = this.host.resolveRoot(runtime.state.rootSessionId);
+      if (!root) throw new Error('The root session is unavailable.');
+      if (operation !== 'review' && (caller.permissionLevel === 'read-only' || root.permissionLevel === 'read-only')) throw new Error('Workspace mutation requires edit or full-access authority.');
+      if ((operation === 'checkpoint' || operation === 'integrate') && node.permissionLevel === 'read-only') throw new Error(`${operation} requires a write-capable child workspace.`);
+      if (!node.workspace || node.workspace.mode !== 'worktree') throw new Error(`${node.path} does not own an isolated worktree.`);
+      const workspace = node.workspace;
+      return this.withWorkspaceLocks(caller, node, operation, async () => {
+        await this.validateNodeWorkspace(runtime, node);
+        const sourceBusy = [...runtime.nodes.values()].some((candidate) => (candidate.id === node.id || candidate.path.startsWith(`${node.path}/`)) && activeNodeStatuses.has(candidate.status));
+        if (operation !== 'review' && sourceBusy) throw new Error(`${node.path} and descendants must be idle before ${operation}.`);
+        const targetPath = workspace.parentPath;
+        if (operation === 'review') {
+          const review = await this.workspaceGit.review(workspace.path, targetPath, workspace.baseCommit);
+          workspace.review = { ...review, reviewedAt: Date.now() };
+          node.updatedAt = Date.now();
+          this.changed(runtime, `${caller.path} reviewed ${node.path} workspace.`);
+          return structuredClone(workspace.review);
+        }
+        if (operation === 'checkpoint') {
+          if (!options.message?.trim()) throw new Error('Checkpoint requires an explicit commit message.');
+          const head = await this.workspaceGit.checkpoint(workspace.path, options.message);
+          delete workspace.review;
+          node.updatedAt = Date.now();
+          this.changed(runtime, `${caller.path} checkpointed ${node.path} workspace.`);
+          return { head };
+        }
+        if (operation === 'integrate') {
+          const review = workspace.review;
+          if (!review) throw new Error('Review the workspace immediately before integration.');
+          if (!options.expectedSourceHead || !options.expectedTargetHead) throw new Error('Integration requires exact source and target heads from the retained review.');
+          const held = this.projectWriter.get(this.checkoutKey(targetPath));
+          const sourceHeld = this.projectWriter.get(this.checkoutKey(workspace.path));
+          if (held && (held.teamId !== runtime.state.id || held.nodeId !== caller.id)) throw new Error(`Target checkout has an active writer lease held by ${held.nodeId}; wait before integrating.`);
+          if (sourceHeld && (sourceHeld.teamId !== runtime.state.id || sourceHeld.nodeId !== caller.id)) throw new Error(`Source checkout has an active writer lease held by ${sourceHeld.nodeId}; wait before integrating.`);
+          if (review.dirty || review.targetDirty || review.truncated) throw new Error('Integration requires a clean, complete review.');
+          if (options.expectedSourceHead !== review.sourceHead || options.expectedTargetHead !== review.targetHead) throw new Error('Expected heads must exactly match the retained review.');
+          if (options.strategy !== 'cherry-pick' && options.commits?.length) throw new Error('Commit selection requires the cherry-pick strategy.');
+          if (options.strategy === 'cherry-pick' && (!options.commits?.length || options.commits.some((hash) => !review.commits.some((commit) => commit.hash === hash)))) throw new Error('Select commits from the retained workspace review before cherry-picking.');
+          const targetStatus = await this.workspaceGit.status(targetPath);
+          if (!review.targetBranch || targetStatus.branch !== review.targetBranch) throw new Error('Parent branch changed since review. Review again before integration.');
+          const head = await this.workspaceGit.integrate(workspace.path, targetPath, options.expectedSourceHead, options.expectedTargetHead, options.strategy ?? 'ff-only', options.commits, workspace.baseCommit);
+          workspace.integratedHead = head;
+          delete workspace.review;
+          node.updatedAt = Date.now();
+          this.changed(runtime, `${caller.path} integrated ${node.path} workspace.`);
+          return { head };
+        }
+        const sharingDescendant = [...runtime.nodes.values()].some((candidate) => {
+          if (candidate.id === node.id || !candidate.path.startsWith(`${node.path}/`) || candidate.workspace?.state !== 'ready') return false;
+          if (candidate.workspace.mode === 'worktree') return true;
+          return candidate.workspace.path === workspace.path && (activeNodeStatuses.has(candidate.status) || candidate.status === 'ready' || candidate.status === 'interrupted');
+        });
+        if (sharingDescendant) throw new Error('Cannot clean up a workspace while descendants retain reusable/active sessions or nested worktrees.');
+        if (node.status !== 'closed' && node.status !== 'released') throw new Error('Close or release the child before explicitly cleaning up its worktree.');
+        await this.workspaceGit.cleanup(targetPath, workspace.path);
+        for (const candidate of runtime.nodes.values()) {
+          if (candidate.workspace?.path === workspace.path) {
+            candidate.workspace.state = 'removed';
+            candidate.updatedAt = Date.now();
+          }
+        }
+        node.updatedAt = Date.now();
+        this.changed(runtime, `${caller.path} cleaned up ${node.path} workspace; branch retained.`);
+        return { state: 'removed' as const };
+      });
+    });
   }
 
   async control(rootSessionId: string, input: AgentTeamControlInput, modelRuntime: ModelRuntime): Promise<void> {
@@ -715,8 +865,19 @@ export class AgentTeamCoordinator {
     else if (input.action === 'closeTeam') await this.closeTeam(rootSessionId, input.teamId, input.force);
     else if (input.action === 'resetTeam') await this.resetTeam(rootSessionId, input.teamId, input.force);
     else if (input.action === 'deleteTeam') await this.deleteTeam(rootSessionId, input.teamId);
+    else if (input.action === 'configureWorkspace') {
+      if (this.host.resolveRoot(rootSessionId)?.session.isStreaming) throw new Error('Workspace configuration from the UI requires the root session to be idle.');
+      this.configureWorkspace(rootSessionId, input.teamId, input.workspace);
+    }
     else {
       const runtime = this.ensureTeam(rootSessionId, input.teamId);
+      if (input.action === 'workspace') {
+        const root = this.host.resolveRoot(rootSessionId);
+        if (input.operation !== 'review' && root?.session.isStreaming) throw new Error('Workspace mutations from the UI require the root session to be idle.');
+        await this.workspace(runtime.state.rootNodeId, input.target, input.operation, { ...(input.message ? { message: input.message } : {}), ...(input.strategy ? { strategy: input.strategy } : {}), ...(input.commits ? { commits: input.commits } : {}), ...(input.expectedSourceHead ? { expectedSourceHead: input.expectedSourceHead } : {}), ...(input.expectedTargetHead ? { expectedTargetHead: input.expectedTargetHead } : {}), human: true });
+        this.lifecycleReceipts.set(receiptKey, input.action);
+        return;
+      }
       const root = runtime.state.rootNodeId;
       if (input.action === 'message') await this.sendMessage(root, input.target, input.message, operationId, input.delivery, modelRuntime, input.replyToUser === true);
       else if (input.action === 'followUp' || input.action === 'resume') await this.followUp(root, input.target, input.message, operationId, modelRuntime, undefined, input.action === 'followUp' && input.replyToUser === true);
@@ -839,8 +1000,9 @@ export class AgentTeamCoordinator {
     ids?.delete(runtime.state.id);
     if (ids?.size === 0) this.teamIdsByRoot.delete(runtime.state.rootSessionId);
     if (this.selectedTeamByRoot.get(runtime.state.rootSessionId) === runtime.state.id) this.selectedTeamByRoot.delete(runtime.state.rootSessionId);
-    const writer = this.projectWriter.get(runtime.state.projectPath);
-    if (writer?.teamId === runtime.state.id) this.projectWriter.delete(runtime.state.projectPath);
+    for (const [checkout, writer] of this.projectWriter) {
+      if (writer.teamId === runtime.state.id) this.projectWriter.delete(checkout);
+    }
   }
 
   private runtimeForCaller(callerNodeId: string): AgentTeamRuntime {
@@ -898,6 +1060,53 @@ export class AgentTeamCoordinator {
     throw new Error(`Unknown or ambiguous same-team target ${target}.`);
   }
 
+  private checkoutForNode(runtime: AgentTeamRuntime, node: AgentTeamNode): string {
+    if (node.workspace?.state === 'removed') throw new Error(`Workspace for ${node.path} was removed and cannot be reused.`);
+    return node.workspace?.path ?? this.host.resolveRoot(runtime.state.rootSessionId)?.projectPath ?? runtime.state.projectPath;
+  }
+
+  private async validateNodeWorkspace(runtime: AgentTeamRuntime, node: AgentTeamNode): Promise<string> {
+    const rootPath = path.normalize(await fs.realpath(this.host.resolveRoot(runtime.state.rootSessionId)?.projectPath ?? runtime.state.projectPath));
+    if (!node.workspace) return rootPath; // Only legacy nodes may inherit the root checkout.
+    if (node.workspace.state !== 'ready') throw new Error(`Workspace for ${node.path} was removed and cannot be reused.`);
+    const canonical = path.normalize(await fs.realpath(node.workspace.path));
+    const parentCanonical = path.normalize(await fs.realpath(node.workspace.parentPath));
+    const parent = node.parentNodeId ? runtime.nodes.get(node.parentNodeId) : undefined;
+    const expectedParent = parent ? await this.validateNodeWorkspace(runtime, parent) : rootPath;
+    if (canonical !== path.normalize(node.workspace.path) || parentCanonical !== expectedParent) throw new Error(`Workspace metadata for ${node.path} no longer matches its parent checkout.`);
+    if (node.workspace.mode === 'worktree') {
+      if (!node.workspace.branch || !node.workspace.baseCommit || !node.workspace.commonDirectory) throw new Error(`Workspace metadata for ${node.path} is incomplete.`);
+      const duplicateOwner = [...this.teamsById.values()].some((team) => [...team.nodes.values()].some((candidate) => candidate.id !== node.id && candidate.workspace?.mode === 'worktree' && candidate.workspace.state === 'ready' && this.checkoutKey(candidate.workspace.path) === this.checkoutKey(canonical)));
+      if (duplicateOwner) throw new Error('Multiple agent nodes claim ownership of this worktree. Resolve the retained metadata before reuse.');
+      await this.workspaceGit.validate(canonical, parentCanonical, node.workspace.branch, node.workspace.baseCommit, node.workspace.commonDirectory, this.workspaceOwner(runtime, node));
+    } else if (canonical !== expectedParent) throw new Error(`Shared workspace for ${node.path} no longer inherits its parent checkout.`);
+    return canonical;
+  }
+
+  private async provisionWorkspace(runtime: AgentTeamRuntime, parent: AgentTeamNode, node: AgentTeamNode, requested?: AgentWorkspaceRequest): Promise<(() => void) | undefined> {
+    const defaults = runtime.state.workspaceDefaults;
+    const choice = requested ?? (defaults ? { mode: defaults.mode, ...(defaults.mode === 'worktree' && defaults.baseRef ? { baseRef: defaults.baseRef } : {}) } : { mode: 'shared' as const });
+    const parentPath = await this.validateNodeWorkspace(runtime, parent);
+    if (choice.mode === 'shared') {
+      node.workspace = { mode: 'shared', path: parentPath, parentPath, state: 'ready' };
+      return;
+    }
+    const prefix = defaults?.branchPrefix ?? 'fate/agent';
+    const branch = choice.branch ?? `${prefix}/${node.handle}-${node.id.slice(-8)}`;
+    if (parent.permissionLevel === 'read-only' || this.host.resolveRoot(runtime.state.rootSessionId)?.permissionLevel === 'read-only') throw new Error('Creating an agent worktree requires edit or full-access authority.');
+    const parentKey = this.checkoutKey(parentPath);
+    if (this.workspaceOperationLocks.has(parentKey)) throw new Error('A workspace operation holds the parent checkout. Retry after it finishes.');
+    this.workspaceOperationLocks.add(parentKey);
+    try {
+      const created = await this.workspaceGit.create(parentPath, branch, choice.baseRef, this.workspaceOwner(runtime, node));
+      node.workspace = { mode: 'worktree', path: created.path, parentPath, commonDirectory: created.commonDirectory, branch: created.branch, ...(choice.baseRef ? { baseRef: choice.baseRef } : {}), baseCommit: created.baseCommit, state: 'ready' };
+      return () => { this.workspaceOperationLocks.delete(parentKey); };
+    } catch (error) {
+      this.workspaceOperationLocks.delete(parentKey);
+      throw error;
+    }
+  }
+
   private scheduler(runtime: AgentTeamRuntime): AgentTeamScheduler {
     const scheduler = this.schedulers.get(runtime.state.id);
     if (!scheduler) throw new Error(`Agent team scheduler for ${runtime.state.name} (${runtime.state.id}) is unavailable.`);
@@ -906,15 +1115,18 @@ export class AgentTeamCoordinator {
 
   private acquireLease(runtime: AgentTeamRuntime, nodeId: string, permissionLevel: PermissionLevel) {
     const writer = permissionLevel !== 'read-only';
-    const held = this.projectWriter.get(runtime.state.projectPath);
+    const node = this.requireNode(runtime, nodeId);
+    const checkout = this.checkoutKey(this.checkoutForNode(runtime, node));
+    if (this.workspaceOperationLocks.has(checkout)) throw new Error('A workspace operation holds this checkout. Retry after it finishes.');
+    const held = this.projectWriter.get(checkout);
     if (writer && held && (held.teamId !== runtime.state.id || held.nodeId !== nodeId)) throw new Error(`Project writer lease is held by node ${held.nodeId} in team ${held.teamId}; team ${runtime.state.id} cannot start writer ${nodeId}.`);
-    const lease = this.scheduler(runtime).acquire(nodeId, permissionLevel);
-    if (writer) this.projectWriter.set(runtime.state.projectPath, { teamId: runtime.state.id, nodeId });
+    const lease = this.scheduler(runtime).acquire(nodeId, permissionLevel, checkout);
+    if (writer) this.projectWriter.set(checkout, { teamId: runtime.state.id, nodeId });
     const release = lease.release.bind(lease);
     lease.release = () => {
       release();
-      const current = this.projectWriter.get(runtime.state.projectPath);
-      if (current?.teamId === runtime.state.id && current.nodeId === nodeId) this.projectWriter.delete(runtime.state.projectPath);
+      const current = this.projectWriter.get(checkout);
+      if (current?.teamId === runtime.state.id && current.nodeId === nodeId) this.projectWriter.delete(checkout);
     };
     return lease;
   }
@@ -963,7 +1175,19 @@ export class AgentTeamCoordinator {
       ...(value.skillMode === 'all' || value.skillMode === 'selected' || value.skillMode === 'none' ? { skillMode: value.skillMode } : {}),
       ...(typeof value.preloadSkills === 'boolean' ? { preloadSkills: value.preloadSkills } : {}),
       ...(typeof value.contextTurns === 'number' ? { contextTurns: value.contextTurns } : {}),
+      ...('workspace' in value ? { workspace: this.normalizeWorkspaceRequest(value.workspace) } : {}),
     };
+  }
+
+  private normalizeWorkspaceRequest(value: unknown): AgentWorkspaceRequest {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('spawn_agent workspace must be an object.');
+    const input = value as Record<string, unknown>;
+    if (input.mode !== 'shared' && input.mode !== 'worktree') throw new Error('spawn_agent workspace mode must be shared or worktree.');
+    for (const key of Object.keys(input)) if (!['mode', 'baseRef', 'branch'].includes(key)) throw new Error(`spawn_agent workspace contains unsupported field ${key}.`);
+    if ('baseRef' in input && (typeof input.baseRef !== 'string' || !input.baseRef.trim() || input.baseRef.length > 500)) throw new Error('spawn_agent workspace baseRef must be a non-empty string up to 500 characters.');
+    if ('branch' in input && (typeof input.branch !== 'string' || !input.branch.trim() || input.branch.length > 240)) throw new Error('spawn_agent workspace branch must be a non-empty string up to 240 characters.');
+    if (input.mode === 'shared' && ('baseRef' in input || 'branch' in input)) throw new Error('Shared workspace does not accept baseRef or branch.');
+    return { mode: input.mode, ...(typeof input.baseRef === 'string' ? { baseRef: input.baseRef.trim() } : {}), ...(typeof input.branch === 'string' ? { branch: input.branch.trim() } : {}) };
   }
 
   private async prepareRequest(runtime: AgentTeamRuntime, caller: AgentTeamNode, request: SpawnAgentRequest, modelRuntime: ModelRuntime, bypassGoalPolicy = false): Promise<PreparedAgentRequest> {
@@ -1049,12 +1273,15 @@ export class AgentTeamCoordinator {
   private async createNodeSession(runtime: AgentTeamRuntime, node: AgentTeamNode, prepared: PreparedAgentRequest, modelRuntime: ModelRuntime, allowDelegation: boolean): Promise<AgentNodeRuntime> {
     const root = this.host.resolveRoot(runtime.state.rootSessionId);
     if (!root) throw new Error('Root session unavailable while creating child session.');
+    const workspacePath = await this.validateNodeWorkspace(runtime, node);
     const sessionDirectory = path.join(this.dataRoot, safeDirectoryKey(runtime.state.rootSessionId), safeDirectoryKey(runtime.state.id), safeDirectoryKey(node.id));
     await fs.mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
     const collaborationTools = allowDelegation ? createAgentCollaborationTools(this, node.id, modelRuntime) : [];
     const parent = this.requireNode(runtime, node.parentNodeId!);
     const session = await this.childSessionFactory({
-      projectPath: root.projectPath,
+      projectPath: workspacePath,
+      settingsProjectPath: root.projectPath,
+      approvedSkills: root.session.resourceLoader.getSkills().skills,
       modelRuntime,
       model: prepared.modelValue,
       thinkingLevel: prepared.thinkingLevel,
@@ -1087,6 +1314,7 @@ export class AgentTeamCoordinator {
   }
 
   private async ensureNodeSession(runtime: AgentTeamRuntime, node: AgentTeamNode, modelRuntime: ModelRuntime): Promise<AgentNodeRuntime> {
+    await this.validateNodeWorkspace(runtime, node);
     const existing = runtime.nodeRuntime.get(node.id);
     if (existing?.session) return existing;
     const relativeDirectory = path.join(safeDirectoryKey(runtime.state.rootSessionId), safeDirectoryKey(runtime.state.id), safeDirectoryKey(node.id));
@@ -1114,11 +1342,14 @@ export class AgentTeamCoordinator {
     if (isModelDisabled(this.host.getDisabledModels?.(runtime.state.rootSessionId), node.model.provider, node.model.id)) {
       throw new Error(disabledModelMessage(node.model.provider, node.model.id));
     }
+    const workspacePath = await this.validateNodeWorkspace(runtime, node);
     const parent = this.requireNode(runtime, node.parentNodeId!);
     const allowDelegation = existing?.allowDelegation !== false;
     const collaborationTools = allowDelegation ? createAgentCollaborationTools(this, node.id, modelRuntime) : [];
     const session = await this.childSessionFactory({
-      projectPath: root.projectPath,
+      projectPath: workspacePath,
+      settingsProjectPath: root.projectPath,
+      approvedSkills: root.session.resourceLoader.getSkills().skills,
       modelRuntime,
       model,
       thinkingLevel: node.thinkingLevel,
@@ -1575,6 +1806,6 @@ export class AgentTeamCoordinator {
   }
 
   private nodeReceipt(node: AgentTeamNode) {
-    return { nodeId: node.id, path: node.path, handle: node.handle, status: node.status, model: node.model, permissionLevel: node.permissionLevel, enabledTools: node.enabledTools };
+    return { nodeId: node.id, path: node.path, handle: node.handle, status: node.status, model: node.model, permissionLevel: node.permissionLevel, enabledTools: node.enabledTools, ...(node.workspace ? { workspace: structuredClone(node.workspace) } : {}) };
   }
 }

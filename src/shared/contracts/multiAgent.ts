@@ -15,6 +15,47 @@ const id = z.string().min(1).max(160);
 const boundedText = z.string().max(AGENT_TEAM_MAX_MESSAGE_BYTES);
 const permission = z.enum(['read-only', 'edit', 'full-access']);
 const thinking = z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const workspaceMode = z.enum(['shared', 'worktree']);
+const fullCommitHash = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u);
+export const workspaceDefaultsSchema = z.object({
+  mode: workspaceMode,
+  baseRef: z.string().trim().min(1).max(500).optional(),
+  branchPrefix: z.string().trim().min(1).max(120).optional(),
+}).strict().superRefine((value, context) => {
+  if (value.mode === 'shared' && (value.baseRef || value.branchPrefix)) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Shared workspace defaults cannot specify baseRef or branchPrefix.' });
+});
+export const workspaceRequestSchema = z.object({
+  mode: workspaceMode,
+  baseRef: z.string().trim().min(1).max(500).optional(),
+  branch: z.string().trim().min(1).max(240).optional(),
+}).strict().superRefine((value, context) => {
+  if (value.mode === 'shared' && (value.baseRef || value.branch)) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Shared workspaces cannot specify baseRef or branch.' });
+});
+export const workspaceReviewSchema = z.object({
+  sourceHead: fullCommitHash,
+  targetHead: fullCommitHash,
+  targetBranch: z.string().min(1).max(240).nullable().optional(),
+  dirty: z.boolean(),
+  targetDirty: z.boolean(),
+  commits: z.array(z.object({ hash: fullCommitHash, subject: z.string().max(2_000) }).strict()).max(128),
+  diff: z.string().max(1_000_000),
+  truncated: z.boolean(),
+  reviewedAt: z.number().finite(),
+}).strict();
+export const workspaceMetadataSchema = z.object({
+  mode: workspaceMode,
+  path: z.string().min(1).max(32_768),
+  parentPath: z.string().min(1).max(32_768),
+  commonDirectory: z.string().min(1).max(32_768).optional(),
+  branch: z.string().min(1).max(240).optional(),
+  baseRef: z.string().min(1).max(500).optional(),
+  baseCommit: fullCommitHash.optional(),
+  state: z.enum(['ready', 'removed']),
+  review: workspaceReviewSchema.optional(),
+  integratedHead: fullCommitHash.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.mode === 'worktree' && (!value.branch || !value.baseCommit || !value.commonDirectory)) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Worktree metadata requires branch, baseCommit, and commonDirectory.' });
+});
 const toolName = z.enum(['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash', 'generate_image']);
 const model = z.object({
   provider: z.string().min(1).max(200),
@@ -73,6 +114,7 @@ export const agentTeamNodeSchema = z.object({
   lastError: z.string().max(4_000).optional(),
   closedAt: z.number().finite().optional(),
   releasedAt: z.number().finite().optional(),
+  workspace: workspaceMetadataSchema.optional(),
 }).strict();
 
 export const agentTeamTaskSchema = z.object({
@@ -140,6 +182,7 @@ export const agentTeamSchema = z.object({
   selected: z.boolean(),
   rootNodeId: id,
   limits: agentTeamLimitsSchema,
+  workspaceDefaults: workspaceDefaultsSchema.optional(),
   activeTurns: z.number().int().nonnegative().max(AGENT_TEAM_MAX_ACTIVE_TURNS),
   writerNodeId: id.nullable(),
   usage,
@@ -162,6 +205,8 @@ export const agentTeamControlInputSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('closeTeam'), teamId: id, force: z.boolean().optional(), operationId: id.optional() }).strict(),
   z.object({ action: z.literal('resetTeam'), teamId: id, force: z.boolean().optional(), operationId: id.optional() }).strict(),
   z.object({ action: z.literal('deleteTeam'), teamId: id, operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('configureWorkspace'), teamId: id, workspace: workspaceDefaultsSchema, operationId: id.optional() }).strict(),
+  z.object({ action: z.literal('workspace'), teamId: id.optional(), target: id, operation: z.enum(['review', 'checkpoint', 'integrate', 'cleanup']), message: z.string().trim().min(1).max(2_000).optional(), strategy: z.enum(['ff-only', 'cherry-pick']).optional(), commits: z.array(fullCommitHash).min(1).max(128).optional(), expectedSourceHead: fullCommitHash.optional(), expectedTargetHead: fullCommitHash.optional(), operationId: id.optional() }).strict(),
   z.object({ action: z.literal('message'), teamId: id.optional(), target: id, message: boundedText, delivery: agentTeamEnvelopeDeliverySchema.optional(), replyToUser: z.boolean().optional(), operationId: id.optional() }).strict(),
   z.object({ action: z.literal('followUp'), teamId: id.optional(), target: id, message: boundedText, replyToUser: z.boolean().optional(), operationId: id.optional() }).strict(),
   z.object({ action: z.literal('interrupt'), teamId: id.optional(), target: id, reason: z.string().trim().min(1).max(500).optional(), operationId: id.optional() }).strict(),
@@ -178,3 +223,7 @@ export type AgentTeamEnvelopeDelivery = z.infer<typeof agentTeamEnvelopeDelivery
 export type AgentTeamTimelineEvent = z.infer<typeof agentTeamTimelineEventSchema>;
 export type AgentTeamLimits = z.infer<typeof agentTeamLimitsSchema>;
 export type AgentTeamControlInput = z.infer<typeof agentTeamControlInputSchema>;
+export type AgentWorkspaceDefaults = z.infer<typeof workspaceDefaultsSchema>;
+export type AgentWorkspaceRequest = z.infer<typeof workspaceRequestSchema>;
+export type AgentWorkspaceMetadata = z.infer<typeof workspaceMetadataSchema>;
+export type AgentWorkspaceReview = z.infer<typeof workspaceReviewSchema>;

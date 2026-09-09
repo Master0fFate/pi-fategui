@@ -1156,8 +1156,11 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     expect(compactTaskHeight).toBeLessThan(normalTaskHeight);
     expect(compactTaskHeight).toBeLessThanOrEqual(26);
     await ordinaryTasks.getByRole('button', { name: 'Expand task list' }).click();
-    await ordinaryTasks.getByRole('button', { name: 'Change status for Review the ordinary session task list' }).click();
-    await expect(ordinaryTasks.getByRole('button', { name: 'Change status for Review the ordinary session task list' })).toHaveText('In progress');
+    await expect(ordinaryTasks.getByRole('button', { name: /Change status/u })).toHaveCount(0);
+    const taskStatus = ordinaryTasks.getByTitle('Status is updated by the agent');
+    await expect(taskStatus).toHaveText('To do');
+    await taskStatus.click();
+    await expect(taskStatus).toHaveText('To do');
     await ordinaryTasks.getByRole('button', { name: 'Cancel task Review the ordinary session task list' }).click();
     await expect(ordinaryTasks).toHaveCount(0);
     await page.evaluate(() => { document.documentElement.dataset.compactMode = 'false'; });

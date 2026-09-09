@@ -1,9 +1,11 @@
+import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { AGENT_TEAM_MAX_MESSAGE_BYTES } from '../../../shared/contracts/multiAgent';
+import { AGENT_TEAM_MAX_MESSAGE_BYTES, type AgentTeam } from '../../../shared/contracts/multiAgent';
+import { AgentWorkspaceGitService } from '../../git/AgentWorkspaceGitService';
 import type { ChildSessionInput } from '../SubagentSessionFactory';
 
 const createdInputs: ChildSessionInput[] = [];
@@ -71,7 +73,7 @@ beforeEach(async () => {
   childSessions.length = 0;
   childUnsubscribes.length = 0;
   promptBarrier = null;
-  dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-agent-team-test-'));
+  dataRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'fate-agent-team-test-')));
 });
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -211,6 +213,148 @@ describe('AgentTeamCoordinator spawn preflight', () => {
 });
 
 describe('AgentTeamCoordinator vertical slice', () => {
+  async function workspaceFixture() {
+    const repository = await fs.mkdtemp(path.join(dataRoot, 'repository-'));
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repository, encoding: 'utf8' }).trim();
+    git('init', '-b', 'main');
+    git('config', 'user.email', 'agent@example.test');
+    git('config', 'user.name', 'Agent Test');
+    git('config', 'core.autocrlf', 'false');
+    await fs.writeFile(path.join(repository, 'tracked.txt'), 'base\n');
+    git('add', '.');
+    git('commit', '-m', 'base');
+    const root = rootSession();
+    const service = new AgentWorkspaceGitService(path.join(dataRoot, 'managed'));
+    const host = { resolveRoot: () => ({ projectPath: repository, session: root, permissionLevel: 'full-access' as const }), emit: () => undefined, persist: () => undefined };
+    const coordinator = new AgentTeamCoordinator(host, dataRoot, undefined, service);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'implement', name: 'worker', permission: 'edit', workspace: { mode: 'worktree' } }, 'spawn-workspace', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
+    return { repository, root, service, host, coordinator, rootId, child, git };
+  }
+
+  it('rolls back a cancelled worktree spawn and does not grant worktree creation to a read-only parent', async () => {
+    const { coordinator, rootId, child, service, git } = await workspaceFixture();
+    const controller = new AbortController();
+    const create = service.create.bind(service);
+    const creation = vi.spyOn(service, 'create').mockImplementationOnce(async (...args) => {
+      const created = await create(...args);
+      controller.abort();
+      return created;
+    });
+    await expect(coordinator.spawn(rootId, { task: 'cancel', workspace: { mode: 'worktree', branch: 'agents/cancelled' } }, 'cancelled-workspace', runtime(), controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    creation.mockRestore();
+    expect(() => git('show-ref', '--verify', 'refs/heads/agents/cancelled')).toThrow();
+    expect(coordinator.getTeams('root-session')[0]!.nodes).toHaveLength(2);
+    coordinator.lowerRootPermission('root-session', 'read-only');
+    await expect(coordinator.spawn(rootId, { task: 'no ref mutation', workspace: { mode: 'worktree' } }, 'readonly-workspace', runtime())).rejects.toThrow('requires edit or full-access');
+    coordinator.lowerRootPermission('root-session', 'full-access');
+    await coordinator.release(rootId, child.nodeId);
+    await coordinator.workspace(rootId, child.nodeId, 'cleanup');
+  }, 30_000);
+
+  it('requires the exact retained review and parent branch before integration', async () => {
+    const { coordinator, rootId, child, git } = await workspaceFixture();
+    await fs.writeFile(path.join(child.workspace!.path, 'result.txt'), 'first');
+    await coordinator.workspace(rootId, child.nodeId, 'checkpoint', { message: 'first result' });
+    await coordinator.workspace(rootId, child.nodeId, 'review');
+    const review = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.workspace!.review!;
+    await expect(coordinator.workspace(rootId, child.nodeId, 'integrate')).rejects.toThrow('exact source and target heads');
+    await expect(coordinator.workspace(rootId, child.nodeId, 'integrate', { expectedSourceHead: 'f'.repeat(40), expectedTargetHead: review.targetHead })).rejects.toThrow('exactly match');
+    git('checkout', '-b', 'different-target');
+    await expect(coordinator.workspace(rootId, child.nodeId, 'integrate', { expectedSourceHead: review.sourceHead, expectedTargetHead: review.targetHead })).rejects.toThrow('Parent branch changed');
+    git('checkout', 'main');
+    await coordinator.workspace(rootId, child.nodeId, 'integrate', { expectedSourceHead: review.sourceHead, expectedTargetHead: review.targetHead });
+    expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.workspace!.review).toBeUndefined();
+    await coordinator.release(rootId, child.nodeId);
+    await expect(fs.stat(child.workspace!.path)).resolves.toBeDefined();
+    await expect(coordinator.resetTeam('root-session', coordinator.getTeams('root-session')[0]!.id)).rejects.toThrow('retained');
+    await coordinator.workspace(rootId, child.nodeId, 'cleanup');
+  }, 30_000);
+
+  it('holds checkout operation locks across teams until Git integration settles', async () => {
+    const { coordinator, rootId, child, service } = await workspaceFixture();
+    await fs.writeFile(path.join(child.workspace!.path, 'result.txt'), 'result');
+    await coordinator.workspace(rootId, child.nodeId, 'checkpoint', { message: 'result' });
+    await coordinator.workspace(rootId, child.nodeId, 'review');
+    const review = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.workspace!.review!;
+    let unblock!: () => void;
+    const barrier = new Promise<void>((resolve) => { unblock = resolve; });
+    const integrate = vi.spyOn(service, 'integrate').mockImplementation(async () => { await barrier; return review.sourceHead; });
+    const integration = coordinator.workspace(rootId, child.nodeId, 'integrate', { expectedSourceHead: review.sourceHead, expectedTargetHead: review.targetHead });
+    try {
+      await vi.waitFor(() => expect(integrate).toHaveBeenCalled());
+      const other = coordinator.createTeam('root-session', 'other');
+      await expect(coordinator.spawn(other.rootNodeId, { task: 'read during integration', permission: 'read-only' }, 'locked-reader', runtime())).rejects.toThrow('workspace operation');
+      const create = vi.spyOn(service, 'create');
+      await expect(coordinator.spawn(other.rootNodeId, { task: 'isolate during integration', permission: 'edit', workspace: { mode: 'worktree' } }, 'locked-worktree', runtime())).rejects.toThrow('workspace operation');
+      expect(create).not.toHaveBeenCalled();
+      create.mockRestore();
+    } finally { unblock(); await integration; integrate.mockRestore(); }
+    await coordinator.release(rootId, child.nodeId);
+    await coordinator.workspace(rootId, child.nodeId, 'cleanup');
+  }, 30_000);
+
+  it('rejects forged restored ownership and refuses to reopen a removed inherited checkout', async () => {
+    const { coordinator, host, root, rootId, child, service, repository } = await workspaceFixture();
+    const team = coordinator.getTeams('root-session')[0]!;
+    const forged: AgentTeam = structuredClone(team);
+    forged.nodes.find((node) => node.id === child.nodeId)!.workspace!.path = repository;
+    vi.spyOn(root.sessionManager, 'getBranch').mockReturnValue([{ type: 'custom', customType: 'fate-agent-team-event', data: { kind: 'fate-agent-team-event', version: 1, teamId: team.id, sequence: 1, timestamp: 1, type: 'snapshot', payload: { team: forged } } }] as never);
+    const restored = new AgentTeamCoordinator(host, dataRoot, undefined, service);
+    restored.restoreRoot(root);
+    await expect(restored.workspace(team.rootNodeId, child.nodeId, 'review')).rejects.toThrow();
+    const shared = await coordinator.spawn(child.nodeId, { task: 'inherit', workspace: { mode: 'shared' } }, 'inherited', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
+    expect(shared.workspace!.path).toBe(child.workspace!.path);
+    await coordinator.release(rootId, child.nodeId);
+    await coordinator.workspace(rootId, child.nodeId, 'cleanup');
+    expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === shared.nodeId)!.workspace!.state).toBe('removed');
+    expect(() => coordinator.followUp(child.nodeId, shared.nodeId, 'must not touch root', 'removed-followup', runtime())).toThrow();
+    expect(createdInputs.at(-1)!.projectPath).toBe(child.workspace!.path);
+  }, 30_000);
+
+  it('creates managed worktrees and pins shared descendants/reopens to the caller checkout', async () => {
+    const repository = await fs.mkdtemp(path.join(dataRoot, 'repository-'));
+    execFileSync('git', ['init'], { cwd: repository });
+    execFileSync('git', ['config', 'user.email', 'agent@example.test'], { cwd: repository });
+    execFileSync('git', ['config', 'user.name', 'Agent Test'], { cwd: repository });
+    await fs.writeFile(path.join(repository, 'tracked.txt'), 'base\n');
+    execFileSync('git', ['add', '.'], { cwd: repository });
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: repository });
+    const root = rootSession();
+    let releasePrompt: () => void = () => undefined;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const coordinator = new AgentTeamCoordinator({ resolveRoot: () => ({ projectPath: repository, session: root, permissionLevel: 'full-access' }), emit: () => undefined, persist: () => undefined }, dataRoot, undefined, new AgentWorkspaceGitService(path.join(dataRoot, 'managed')));
+    const rootId = coordinator.rootNodeId('root-session');
+    coordinator.configureWorkspace('root-session', coordinator.getTeams('root-session')[0]!.id, { mode: 'worktree', branchPrefix: 'fate/test' });
+    const child = await coordinator.spawn(rootId, { task: 'isolate', name: 'isolated', permission: 'full-access' }, 'workspace-spawn', runtime());
+    await settle();
+    const childNode = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!;
+    expect(childNode.workspace).toMatchObject({ mode: 'worktree', state: 'ready', parentPath: repository });
+    expect(createdInputs.at(-1)?.projectPath).toBe(childNode.workspace?.path);
+    coordinator.lowerRootPermission('root-session', 'read-only');
+    await expect(coordinator.workspace(rootId, child.nodeId, 'checkpoint', { message: 'must be denied' })).rejects.toThrow(/requires edit or full-access/);
+    coordinator.lowerRootPermission('root-session', 'full-access');
+    const secondIsolated = await coordinator.spawn(rootId, { task: 'second isolate', name: 'isolated-two', permission: 'full-access' }, 'workspace-second-isolated', runtime());
+    expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === secondIsolated.nodeId)?.status).toBe('active');
+    await coordinator.interrupt(rootId, secondIsolated.nodeId);
+    await coordinator.release(rootId, secondIsolated.nodeId);
+    await coordinator.workspace(rootId, secondIsolated.nodeId, 'cleanup');
+    const sharedWriter = await coordinator.spawn(rootId, { task: 'shared write', name: 'shared-writer', permission: 'full-access', workspace: { mode: 'shared' } }, 'workspace-shared-writer', runtime());
+    await expect(coordinator.spawn(rootId, { task: 'blocked shared write', name: 'blocked-shared-writer', permission: 'full-access', workspace: { mode: 'shared' } }, 'workspace-shared-blocked', runtime())).rejects.toThrow(/writer lease/);
+    const grandchild = await coordinator.spawn(child.nodeId, { task: 'inherit', name: 'shared', permission: 'read-only', workspace: { mode: 'shared' } }, 'workspace-grandchild', runtime());
+    await settle();
+    expect(createdInputs.at(-1)?.projectPath).toBe(childNode.workspace?.path);
+    releasePrompt();
+    promptBarrier = null;
+    await settle();
+    await coordinator.release(rootId, sharedWriter.nodeId);
+    await coordinator.release(rootId, child.nodeId);
+    await coordinator.workspace(rootId, child.nodeId, 'cleanup');
+    expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === grandchild.nodeId)?.workspace?.state).toBe('removed');
+  }, 20_000);
+
   it('threads team identity into the child factory and resolves current task/permission dynamically', async () => {
     const root = rootSession();
     const coordinator = new AgentTeamCoordinator({
@@ -290,7 +434,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     ]));
     expect(sendRootMessage).toHaveBeenCalledWith('root-session', expect.objectContaining({ customType: 'fate-agent-team-envelope' }), 'steer', false);
     expect(root.sendCustomMessage).not.toHaveBeenCalled();
-    expect(createdInputs[0]?.collaborationTools?.map((tool) => tool.name)).toEqual(['spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents']);
+    expect(createdInputs[0]?.collaborationTools?.map((tool) => tool.name)).toEqual(['spawn_agent', 'agent_workspace', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents']);
 
     const followUp = await coordinator.followUp(rootId, child.nodeId, 'continue with retained context', 'follow-1', modelRuntime);
     await settle();

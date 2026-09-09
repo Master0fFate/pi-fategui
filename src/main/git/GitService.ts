@@ -97,7 +97,7 @@ function executeWithoutWorkTree(root: string, args: string[], maxBuffer = MAX_GI
   });
 }
 
-async function validateSelectedRoot(root: string): Promise<void> {
+export async function validateSelectedRoot(root: string): Promise<void> {
   const output = await executeWithoutWorkTree(root, [...SAFE_GIT_CONFIG, 'rev-parse', '--show-toplevel'], 32_768);
   const topLevel = output.toString('utf8').trim();
   const canonicalTopLevel = topLevel ? path.normalize(realpathSync(topLevel)) : '';
@@ -106,7 +106,7 @@ async function validateSelectedRoot(root: string): Promise<void> {
   }
 }
 
-async function inheritedLineEndingConfig(root: string): Promise<string[]> {
+export async function inheritedLineEndingConfig(root: string): Promise<string[]> {
   const readAutoCrlf = async (args: string[], environment = gitEnvironment()): Promise<string | null> => {
     try {
       const value = (await executeWithoutWorkTree(root, args, 16_384, environment)).toString('utf8').trim().toLowerCase();
@@ -141,6 +141,8 @@ function execute(root: string, args: string[], maxBuffer = MAX_GIT_OUTPUT, addit
     });
   });
 }
+
+export { execute as executeGitInWorktree };
 
 let resolvedSshExecutable: string | null | undefined;
 
@@ -263,7 +265,7 @@ async function readAttributeFile(attributePath: string, drivers: Set<string>, bu
   collectFilterDrivers(content, drivers);
 }
 
-async function safeFilterConfig(root: string): Promise<string[]> {
+export async function safeFilterConfig(root: string): Promise<string[]> {
   const drivers = new Set<string>();
   const budget: AttributeBudget = { bytes: 0 };
   const output = await execute(root, ['ls-files', '-z', '--cached', '--others', '--', '.gitattributes', ':(glob)**/.gitattributes'], 512_000);

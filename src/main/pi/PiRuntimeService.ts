@@ -427,7 +427,7 @@ interface RuntimeSlot {
 export { activeToolsForPermission } from './PiToolPolicy';
 
 const LEGACY_ORCHESTRATION_TOOLS = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog'] as const;
-const V2_ORCHESTRATION_TOOLS = ['spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'subagent_catalog'] as const;
+const V2_ORCHESTRATION_TOOLS = ['spawn_agent', 'agent_workspace', 'configure_agent_workspace', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'subagent_catalog'] as const;
 const ALL_ORCHESTRATION_TOOLS = new Set<string>([...LEGACY_ORCHESTRATION_TOOLS, ...V2_ORCHESTRATION_TOOLS]);
 
 function goalChildStatus(status: SubagentStatus): GoalMaxRuntimeChild['status'] {

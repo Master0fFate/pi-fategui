@@ -40,6 +40,7 @@ import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { GoalMaxAgentMarker, GoalMaxAssignmentScope, type GoalMaxAgentLink } from '../goalmaxxing/GoalMaxAgentMarker';
 import { SubagentControls, type SubagentControlTarget } from './SubagentControls';
 import { AgentTeamControls } from './AgentTeamControls';
+import { AgentWorkspaceDefaults, AgentWorkspaceDetails } from './AgentWorkspaceControls';
 import type { FlightDeckTarget } from './flightDeck';
 
 const activeStatuses = new Set<SubagentStatus>(['queued', 'running']);
@@ -574,6 +575,7 @@ function AgentTeamNodeRow({ team, node, goalLinks }: { team: AgentTeam; node: Ag
         </button>
         <AgentTeamControls teamId={team.id} node={node} />
       </article>
+      <AgentWorkspaceDetails team={team} node={node} />
       {children.length ? <div className="agent-tree-children" role="group">{children.map((child) => <AgentTeamNodeRow key={child.id} team={team} node={child} goalLinks={goalLinks} />)}</div> : null}
     </div>
   );
@@ -659,18 +661,22 @@ function AgentTeamBranch({ team, goalLinks }: { team: AgentTeam; goalLinks: Read
     return child ? [child] : [];
   }).sort((left, right) => left.path.localeCompare(right.path)) ?? [];
   const childrenId = `agent-team-children-${team.id}`;
+  const activeWriters = team.nodes.filter((node) => node.depth > 0 && node.status === 'active' && node.writer).length;
   return (
     <section ref={branchRef} className="agent-tree-branch" data-status={team.status} data-expanded={expanded} aria-label={`${team.name} Agent Team ${team.id}`} tabIndex={-1} data-flight-focus={focused || undefined}>
       <div className="agent-tree-branch-heading">
         <button className="agent-tree-branch-toggle" type="button" aria-expanded={expanded} aria-controls={childrenId} onClick={() => setExpanded((current) => !current)}>
           <span className="agent-tree-branch-mark"><GitBranch size={12} /></span>
-          <span className="agent-tree-branch-copy"><strong>{team.name}{team.selected ? ' · Current' : ''}</strong><small>{team.nodes.filter((node) => node.depth > 0 && node.status !== 'released').length}/{team.limits.maxNodes} nodes · {team.activeTurns}/{team.limits.maxActiveTurns} active{team.writerNodeId ? ' · writer leased' : ''}</small></span>
+          <span className="agent-tree-branch-copy"><strong>{team.name}{team.selected ? ' · Current' : ''}</strong><small>{team.nodes.filter((node) => node.depth > 0 && node.status !== 'released').length}/{team.limits.maxNodes} nodes · {team.activeTurns}/{team.limits.maxActiveTurns} active{activeWriters > 1 ? ` · ${activeWriters} workspace writers` : team.writerNodeId ? ' · writer leased' : ''}</small></span>
           <ChevronRight className="agent-tree-branch-chevron" size={13} aria-hidden="true" />
         </button>
         <span className="agent-tree-branch-state">{team.status}</span>
         <AgentTeamLifecycleControls team={team} />
       </div>
-      {expanded ? <div id={childrenId} className="agent-tree-children" role="tree">{children.map((node) => <AgentTeamNodeRow key={node.id} team={team} node={node} goalLinks={goalLinks} />)}</div> : null}
+      {expanded ? <>
+        <AgentWorkspaceDefaults team={team} />
+        <div id={childrenId} className="agent-tree-children" role="tree">{children.map((node) => <AgentTeamNodeRow key={node.id} team={team} node={node} goalLinks={goalLinks} />)}</div>
+      </> : null}
     </section>
   );
 }
