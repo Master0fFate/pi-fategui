@@ -1,4 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { LearningContextAdapter } from '../learning/LearningContext';
+import type { LearningService } from '../learning/LearningService';
+import type { LearningOrigin } from '../learning/LearningEvidence';
+import type { LearningProvider } from '../learning/LearningGenerator';
+import { projectLearningKey } from '../learning/LearningRepository';
 import { promises as fs, realpathSync } from 'node:fs';
 import path from 'node:path';
 import {
@@ -155,6 +160,8 @@ interface StagedThinkingLevel {
   token: string;
   level: ThinkingLevel;
 }
+let nextLearningGeneration = 1;
+
 type QueuedMessageRecord = QueuedMessage & {
   transportText: string;
   boundModel?: StagedModel;
@@ -381,6 +388,8 @@ interface RuntimeSlot {
   bindingPromise: Promise<void> | null;
   unsubscribeSession: (() => void) | null;
   disposeModelBoundary: (() => void) | null;
+  learningContext: LearningContextAdapter | null;
+  learningGeneration: number;
   normalizer: PiEventNormalizer;
   activeRunId: string | null;
   objective: string;
@@ -1045,6 +1054,28 @@ export class PiRuntimeService {
   private agentWorkspacePolicySource: () => AgentWorkspacePolicy = () => defaultAgentWorkspacePolicy;
   private readonly goalReviewGit = new AgentWorkspaceGitService();
   private onSessionSettled: ((sessionId: string) => void) | null = null;
+  private learningService: LearningService | null = null;
+
+  setLearningService(service: LearningService): void { this.learningService = service; }
+
+  learningOrigin(slot = this.selectedSlot, scope: 'global' | 'project' = 'project'): LearningOrigin {
+    const project = this.project;
+    if (!project?.trusted || !this.learningService) throw new PiDesktopError({ code: 'PROJECT_NOT_TRUSTED', message: 'Open a trusted project to manage Memory Learning.', retryable: true });
+    const session = slot?.runtime.session ?? null;
+    const generation = slot?.learningGeneration ?? this.initialization;
+    return {
+      root: project.path,
+      binding: { projectKey: projectLearningKey(project.path), sessionId: session?.sessionId ?? null, runtimeGeneration: generation, scope },
+      session,
+      valid: () => this.project === project && project.trusted && (slot ? !slot.disposed && slot.runtime.session === session && slot.learningGeneration === generation : this.initialization === generation),
+    };
+  }
+
+  learningProvider(): LearningProvider | null {
+    const model = this.selectedSlot?.pendingModel?.model ?? this.runtime?.session.model;
+    return model && this.modelRuntime && !this.disabledModelsSource().includes(`${model.provider}/${model.id}`) && this.models.some((item) => item.provider === model.provider && item.id === model.id)
+      ? { model, runtime: this.modelRuntime } : null;
+  }
 
   private get runtime(): AgentSessionRuntime | null { return this.selectedSlot?.runtime ?? null; }
   private get permissionLevel(): PermissionLevel { return this.selectedSlot?.permissionLevel ?? this.fallbackPermissionLevel; }
@@ -1731,6 +1762,10 @@ export class PiRuntimeService {
     }
     const initialization = this.initialization;
     const runId = randomUUID();
+    const learning = replayedMessage?.learning ?? input.learning ?? (!skipCommandExpansion && this.learningService && this.project?.trusted ? { binding: this.learningOrigin(slot).binding, pins: [], excluded: [] } : undefined);
+    if (learning && this.learningService) this.learningService.assertBinding(this.learningOrigin(slot), learning.binding, true);
+    if (learning?.pins.length && !slot.learningContext) throw this.unsupported('Memory Learning context attachment');
+    if (learning?.pins.length && input.text.trimStart().startsWith('/')) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Use selected learning on a plain user turn, not an extension command.', retryable: true });
     let activeGoal = this.project ? this.goalMax.get(this.project.path, session.sessionId) : null;
     const commandPrompt = skipCommandExpansion
       ? input.text
@@ -1799,6 +1834,7 @@ export class PiRuntimeService {
         behavior: effectiveBehavior === 'steer' ? 'steer' : 'followUp',
         text: draftText,
         transportText: promptText,
+        ...(learning ? { learning } : {}),
         ...(effectiveModel ? { requestedModel: { provider: effectiveModel.provider, id: effectiveModel.id } } : {}),
         requestedThinkingLevel: stagedThinkingLevel?.level ?? session.thinkingLevel,
         ...(stagedModel ? { boundModel: stagedModel } : {}),
@@ -1899,6 +1935,7 @@ export class PiRuntimeService {
           behavior: queuedBehavior,
           text: draftText,
           transportText: promptText,
+          ...(learning ? { learning } : {}),
           ...(effectiveModel ? { requestedModel: { provider: effectiveModel.provider, id: effectiveModel.id } } : {}),
           requestedThinkingLevel: stagedThinkingLevel?.level ?? session.thinkingLevel,
           ...(stagedModel ? { boundModel: stagedModel } : {}),
@@ -1968,6 +2005,11 @@ export class PiRuntimeService {
       }
     }
     slot.stateError = null;
+    if (learning && !promptStartsWithCommand && !queuedRecord) slot.learningContext?.register({ id: runId, text: promptText, turn: learning, blocked: () => {
+      slot.recoveredMessages.push({ id: runId, text: draftText, behavior: 'followUp', learning, createdAt: Date.now(), ...(input.images ? { images: input.images } : {}) });
+      this.checkpointQueue(slot);
+      if (this.selectedSlot === slot) this.emitState();
+    } });
     let settled = false;
     return new Promise<PromptAcceptance>((resolve) => {
       const releaseQueuedReservation = (restoreModel: boolean): void => {
@@ -1979,6 +2021,7 @@ export class PiRuntimeService {
         if (restoreModel && queuedRecord.boundThinkingLevel) restoreStagedThinkingLevel(queuedRecord.boundThinkingLevel);
       };
       const rejectReservation = (): void => {
+        slot.learningContext?.cancel(runId);
         releaseQueuedReservation(true);
         if (startsRun && stagedModel) restoreStagedModel(stagedModel);
         if (startsRun && stagedThinkingLevel) restoreStagedThinkingLevel(stagedThinkingLevel);
@@ -3055,6 +3098,8 @@ export class PiRuntimeService {
       bindingPromise: null,
       unsubscribeSession: null,
       disposeModelBoundary: null,
+      learningContext: null,
+      learningGeneration: nextLearningGeneration++,
       normalizer: new PiEventNormalizer(() => owner.slot?.activeRunId ?? null),
       activeRunId: null,
       objective: '',
@@ -3119,6 +3164,9 @@ export class PiRuntimeService {
   private invalidateSession(slot: RuntimeSlot | null = this.selectedSlot): void {
     if (!slot) return;
     const invalidatedSession = slot.boundSession ?? slot.runtime.session;
+    slot.learningContext?.dispose();
+    slot.learningContext = null;
+    slot.learningGeneration = nextLearningGeneration++;
     slot.sessionGeneration += 1;
     if (slot.pendingModel) this.rememberColdPendingModel(invalidatedSession.sessionId, slot.pendingModel.info);
     if (slot.pendingThinkingLevel) this.rememberColdPendingThinkingLevel(invalidatedSession.sessionId, slot.pendingThinkingLevel.level);
@@ -3305,10 +3353,13 @@ export class PiRuntimeService {
     const agent = session.agent;
     if (!agent || typeof agent.subscribe !== 'function' || typeof agent.streamFunction !== 'function') return;
     const originalStreamFunction = agent.streamFunction;
+    const learningContext = this.learningService && this.project?.trusted ? new LearningContextAdapter(this.learningService, () => this.learningOrigin(slot)) : null;
+    slot.learningContext = learningContext;
+    const learningStream = learningContext?.wrap(originalStreamFunction) ?? originalStreamFunction;
     const wrappedStreamFunction: typeof agent.streamFunction = (model, context, options) => {
       const staged = slot.boundaryModelOverride;
       slot.boundaryModelOverride = null;
-      if (!staged) return originalStreamFunction(model, context, options);
+      if (!staged) return learningStream(model, context, options);
       // The loop resolved auth for its captured (previous) model before invoking
       // streamFunction. Drop that key so ModelRuntime resolves credentials for
       // the staged provider rather than forwarding credentials across providers.
@@ -3316,7 +3367,7 @@ export class PiRuntimeService {
       const nextOptions = staged.model.reasoning && session.thinkingLevel !== 'off'
         ? { ...optionsWithoutCapturedModel, reasoning: session.thinkingLevel }
         : optionsWithoutCapturedModel;
-      return originalStreamFunction(staged.model, context, nextOptions);
+      return learningStream(staged.model, context, nextOptions);
     };
     agent.streamFunction = wrappedStreamFunction;
     const unsubscribe = agent.subscribe(async (event) => {
@@ -3337,6 +3388,12 @@ export class PiRuntimeService {
         const index = slot.queuedMessages.findIndex((item) => item.transportText === text);
         if (index >= 0) queued = slot.queuedMessages.splice(index, 1)[0];
       }
+      const learningQueued = queued;
+      learningContext?.start(messageText(event.message), learningQueued?.learning ? { id: learningQueued.id, text: learningQueued.text, turn: learningQueued.learning, blocked: () => {
+        this.retainEditingDraft(slot, learningQueued);
+        this.checkpointQueue(slot);
+        if (this.selectedSlot === slot) this.emitState();
+      } } : undefined);
       if (queued) this.acknowledgeQueuedMessage(slot, queued.id);
       if (!queued?.boundModel && !queued?.boundThinkingLevel) return;
       try {
@@ -3369,6 +3426,8 @@ export class PiRuntimeService {
       }
     });
     slot.disposeModelBoundary = () => {
+      learningContext?.dispose();
+      if (slot.learningContext === learningContext) slot.learningContext = null;
       unsubscribe();
       if (agent.streamFunction === wrappedStreamFunction) agent.streamFunction = originalStreamFunction;
     };
@@ -3462,6 +3521,7 @@ export class PiRuntimeService {
       if (!slot.disabledModelsForTurn) slot.disabledModelsForTurn = [...this.disabledModelsSource()];
     } else if (event.type === 'agent_end') slot.sessionTurnPhase = 'ending';
     else if (event.type === 'agent_settled') {
+      slot.learningContext?.settle();
       slot.sessionMessageTargets.clear();
       slot.disabledModelsForTurn = null;
       slot.sessionTurnPhase = 'idle';
@@ -3834,9 +3894,9 @@ export class PiRuntimeService {
         if (recovered.requestedThinkingLevel && recovered.requestedThinkingLevel !== 'off' && !(model ?? session.model)?.reasoning) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The recovered reasoning setting is unsupported. The saved draft was retained.', retryable: false });
         if (model) slot.pendingModel = { token: randomUUID(), model, info: toModelInfo(model) };
         if (recovered.requestedThinkingLevel) slot.pendingThinkingLevel = { token: randomUUID(), level: recovered.requestedThinkingLevel };
-        const { text, images, browserAnnotations, sessionReferences } = recovered;
+        const { text, images, browserAnnotations, sessionReferences, learning } = recovered;
         this.emitState();
-        return { state: this.getState(false), restored: { text, images, browserAnnotations, sessionReferences } };
+        return { state: this.getState(false), restored: { text, images, browserAnnotations, sessionReferences, learning } };
       }
       const previous = slot.recoveredMessages;
       slot.recoveredMessages = previous.filter((item) => item.id !== input.id);
@@ -3861,6 +3921,7 @@ export class PiRuntimeService {
       const restored = input.action === 'edit'
         ? {
             text: target.text,
+            ...(target.learning ? { learning: target.learning } : {}),
             ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}),
             ...(target.browserAnnotations?.length ? { browserAnnotations: target.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
             ...(target.sessionReferences?.length ? { sessionReferences: target.sessionReferences.map((reference) => ({ ...reference })) } : {}),
@@ -3909,6 +3970,7 @@ export class PiRuntimeService {
     const restored = input.action === 'edit'
       ? {
           text: target.text,
+          ...(target.learning ? { learning: target.learning } : {}),
           ...(target.images?.length ? { images: target.images.map((image) => ({ ...image })) } : {}),
           ...(target.browserAnnotations?.length ? { browserAnnotations: target.browserAnnotations.map((annotation) => ({ ...annotation })) } : {}),
           ...(target.sessionReferences?.length ? { sessionReferences: target.sessionReferences.map((reference) => ({ ...reference })) } : {}),

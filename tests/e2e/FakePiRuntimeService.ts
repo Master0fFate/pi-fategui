@@ -73,7 +73,20 @@ function agentTeamFixture(): AgentTeam {
   };
 }
 
+import { randomUUID } from 'node:crypto';
+import type { LearningService } from '../../src/main/learning/LearningService';
+import { projectLearningKey } from '../../src/main/learning/LearningRepository';
+import type { LearningOrigin } from '../../src/main/learning/LearningEvidence';
+
 export class FakePiRuntimeService {
+  private learning: LearningService | null = null;
+  setLearningService(learning: LearningService): void { this.learning = learning; }
+  learningProvider(): null { return null; }
+  learningOrigin(_slot?: unknown, scope: 'global' | 'project' = 'project'): LearningOrigin {
+    const project = this.project!;
+    const sessionId = this.activeSession;
+    return { root: project.path, session: null, binding: { projectKey: projectLearningKey(project.path), sessionId, runtimeGeneration: 1, scope }, valid: () => this.project === project && this.activeSession === sessionId };
+  }
   private project: ProjectState | null = null;
   private activeSession = 'e2e-session-1';
   private streaming = false;
@@ -170,6 +183,11 @@ export class FakePiRuntimeService {
 
   async prompt(input: PromptInput): Promise<PromptAcceptance> {
     const runId = 'e2e-run';
+    if (this.learning && this.project && !this.streaming) {
+      const origin = this.learningOrigin();
+      const dispatched = await this.learning.prepareDispatch(origin, randomUUID(), input.text, input.learning);
+      if (dispatched) await this.learning.markDispatch(origin, dispatched.manifest.dispatchId, 'handed-to-runtime');
+    }
     if (this.streaming && input.behavior !== 'prompt') {
       this.queueSequence += 1;
       this.queuedMessages.push({

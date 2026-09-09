@@ -25,7 +25,7 @@ test('Settings owns workspace policy while Run Agents reviews and retains work',
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
     await settings.getByRole('tab', { name: /Agent/u }).click();
-    const preferred = settings.getByRole('checkbox', { name: 'Prefer isolated worktrees' });
+    const preferred = settings.getByRole('radio', { name: 'Isolated worktree' });
     const strict = settings.getByRole('checkbox', { name: 'Strict workspace mode' });
     await expect(preferred).toBeChecked();
     await expect(strict).not.toBeChecked();
@@ -35,7 +35,7 @@ test('Settings owns workspace policy while Run Agents reviews and retains work',
     await settings.getByRole('button', { name: 'Save changes' }).click();
     await expect(settings.getByRole('status')).toContainText('Settings saved');
     await expect.poll(() => page.evaluate(() => window.piDesktop.getSettings())).toMatchObject({ agentWorkspace: { preferredMode: 'worktree', strict: true } });
-    await settings.getByRole('group', { name: 'Subagent workspace policy' }).scrollIntoViewIfNeeded();
+    await settings.getByRole('region', { name: 'Subagent workspace policy' }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: 'test-results/agent-workspace-settings.png' });
     await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
     await expect.poll(() => settings.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
@@ -56,7 +56,7 @@ test('Settings owns workspace policy while Run Agents reviews and retains work',
     await settings.getByRole('tab', { name: /Agent/u }).click();
     await expect(preferred).toBeChecked();
     await expect(strict).toBeChecked();
-    await settings.getByText('Prefer isolated worktrees', { exact: true }).click();
+    await settings.getByRole('radio', { name: 'Shared checkout' }).check();
     await settings.getByRole('button', { name: 'Save changes' }).click();
     await expect(settings.getByRole('status')).toContainText('Settings saved');
     await expect.poll(() => page.evaluate(() => window.piDesktop.getSettings())).toMatchObject({ agentWorkspace: { preferredMode: 'shared', strict: true } });

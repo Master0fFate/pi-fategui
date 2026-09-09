@@ -2,9 +2,12 @@ import * as Dialog from '@radix-ui/react-dialog';
 import {
   Activity,
   Bot,
+  Brain,
   CheckCircle2,
   CircleAlert,
   Gauge,
+  GitBranch,
+  Folder,
   LockKeyhole,
   Plus,
   Rows3,
@@ -21,6 +24,9 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type { AppSettings, Diagnostics, LogEntry, ModelInfo, SpeechDownloadProgress, SpeechHotkeyStatus, SpeechModelId, SpeechStatus, SpeechTier, UpdateCheckResult, VoiceHotkeyMode } from '../../../shared/contracts/ipc';
 import { defaultSpeechSettings } from '../../../shared/contracts/ipc';
 import { defaultAgentWorkspacePolicy } from '../../../shared/contracts/multiAgent';
+import { defaultMemoryLearning, type LearningStorage } from '../../../shared/contracts/learning';
+import { useLearningStore } from '../learning/learningStore';
+import '../learning/learning.css';
 import type { ThemeDefinition } from '../../../shared/themes';
 import {
   defaultImageGenerationModel,
@@ -49,15 +55,17 @@ const fallback: AppSettings = {
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
   speech: defaultSpeechSettings,
+  memoryLearning: defaultMemoryLearning,
 };
 
-type SettingsSection = 'general' | 'compaction' | 'agent' | 'voice' | 'workspace' | 'system';
+type SettingsSection = 'general' | 'compaction' | 'agent' | 'learning' | 'voice' | 'workspace' | 'system';
 type SettingsToast = { kind: 'success' | 'error'; title: string; message: string };
 
 const sections = [
   { id: 'general', label: 'General', detail: 'Look & performance', icon: SlidersHorizontal },
   { id: 'compaction', label: 'Compaction', detail: 'Density controls', icon: Rows3 },
   { id: 'agent', label: 'Agent', detail: 'Models & workspaces', icon: Bot },
+  { id: 'learning', label: 'Memory Learning', detail: 'Reviewed knowledge', icon: Brain },
   { id: 'voice', label: 'Voice', detail: 'Local speech-to-text', icon: Mic2 },
   { id: 'workspace', label: 'Workspace', detail: 'Trust & terminal', icon: ShieldCheck },
   { id: 'system', label: 'System', detail: 'Health & logs', icon: Activity },
@@ -145,6 +153,16 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   const [persistedSettings, setPersistedSettings] = useState<AppSettings>(fallback);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const workspacePolicy = settings.agentWorkspace ?? fallback.agentWorkspace;
+  const memoryLearning = settings.memoryLearning ?? defaultMemoryLearning;
+  const [learningStorage, setLearningStorage] = useState<LearningStorage | null>(null);
+  const learningProjectPath = useRuntimeStore((state) => state.runtime.project?.path);
+  useEffect(() => {
+    if (!open || activeSection !== 'learning' || !window.piDesktop?.getLearningStorage) return;
+    let current = true;
+    setLearningStorage(null);
+    void window.piDesktop.getLearningStorage().then((storage) => { if (current) setLearningStorage(storage); }).catch(() => { if (current) setLearningStorage(null); });
+    return () => { current = false; };
+  }, [open, activeSection, learningProjectPath]);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -622,24 +640,30 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
 
               {activeSection === 'agent' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-agent" aria-labelledby="settings-tab-agent">
-                  <div className="settings-title"><div><h3>Subagent workspaces</h3><p>Choose how the AI starts its agents, across projects and teams. No manual team setup needed.</p></div></div>
-                  <div className="settings-group" role="group" aria-label="Subagent workspace policy">
-                    <label className="settings-toggle">
-                      <div><strong>Prefer isolated worktrees</strong><small>On: new agents get separate Git checkouts. Off: they share their direct parent’s checkout.</small></div>
-                      <input type="checkbox" aria-label="Prefer isolated worktrees" checked={workspacePolicy.preferredMode === 'worktree'} onChange={(event) => setSettings({ ...settings, agentWorkspace: { ...workspacePolicy, preferredMode: event.target.checked ? 'worktree' : 'shared' } })} />
-                      <span aria-hidden="true" />
-                    </label>
-                    <label className="settings-toggle">
-                      <div><strong>Strict mode</strong><small>{workspacePolicy.strict ? 'The agent must use your preferred mode. Conflicting launches and resumed work are refused.' : 'This is a preference. The agent can choose the other mode when the task calls for it.'}</small></div>
+                  <section className="workspace-preference" aria-label="Subagent workspace policy">
+                    <div className="settings-title"><div><h3>Subagent workspaces</h3><p>One preference for every team.</p></div><span className="workspace-preference-scope">Global</span></div>
+                    <div className="workspace-preference-options" role="radiogroup" aria-label="Preferred workspace">
+                      {([
+                        { mode: 'shared', title: 'Shared checkout', description: 'Work directly in the parent’s files.', Icon: Folder },
+                        { mode: 'worktree', title: 'Isolated worktree', description: 'A separate branch for each agent.', Icon: GitBranch },
+                      ] as const).map(({ mode, title, description, Icon }) => (
+                        <label className="workspace-preference-option" key={mode} data-selected={workspacePolicy.preferredMode === mode}>
+                          <input type="radio" name="agent-workspace-preference" aria-label={title} checked={workspacePolicy.preferredMode === mode} onChange={() => setSettings({ ...settings, agentWorkspace: { ...workspacePolicy, preferredMode: mode } })} />
+                          <span className="workspace-preference-option-heading"><Icon size={18} aria-hidden="true" /><span className="workspace-preference-radio" aria-hidden="true" /></span>
+                          <strong>{title}</strong><small>{description}</small>
+                        </label>
+                      ))}
+                    </div>
+                    <label className="settings-toggle workspace-preference-strict">
+                      <div><strong><ShieldCheck size={14} aria-hidden="true" />Strict mode</strong><small>{workspacePolicy.strict ? 'The agent must use your preferred mode.' : 'The agent can choose the other mode when needed.'}</small></div>
                       <input type="checkbox" aria-label="Strict workspace mode" checked={workspacePolicy.strict} onChange={(event) => setSettings({ ...settings, agentWorkspace: { ...workspacePolicy, strict: event.target.checked } })} />
                       <span aria-hidden="true" />
                     </label>
-                  </div>
-                  <p className="settings-workspace-policy-summary" data-strict={workspacePolicy.strict}>
-                    <strong>{workspacePolicy.strict ? 'Required' : 'Preferred'}: {workspacePolicy.preferredMode === 'worktree' ? 'isolated worktree' : 'shared checkout'}</strong>
-                    <span>New agents use this preference after saving, including in existing teams. Strict mode also applies to resumed work. Running work stays in its current checkout.</span>
-                    <span>{settings.agentTeamMode === 'legacy' ? 'Applies to Agent Teams V2, including restored teams. Legacy subagents are not affected.' : 'No project restart is needed for workspace policy changes.'} Worktrees start from committed Git files, not the parent’s uncommitted changes. They are not a security sandbox.</span>
-                  </p>
+                    <div className="workspace-preference-footer">
+                      <span>{workspacePolicy.strict ? 'Required' : 'Preferred'}: {workspacePolicy.preferredMode === 'worktree' ? 'isolated worktree' : 'shared checkout'}</span>
+                      <details className="workspace-preference-details"><summary>How it works</summary><p>Applies after saving to new agents. Strict mode also applies to resumed work; running work stays in place.</p><p>{settings.agentTeamMode === 'legacy' ? 'Agent Teams V2 only. Legacy subagents are not affected.' : 'No project restart is needed for workspace policy changes.'} Worktrees start from committed files, not uncommitted changes, and are not security sandboxes.</p></details>
+                    </div>
+                  </section>
                   <div className="settings-title settings-title--spaced"><div><h3>Agent defaults</h3><p>Fallbacks for the first Pi session opened in a project. Later sessions inherit the active composer settings.</p></div></div>
                   <div className="settings-model-picker">
                     <div className="settings-model-heading"><div><strong>Default model</strong><small>Models are separated by provider so the catalog stays clear as it grows.</small></div>{selectedProvider && <span>{formatProviderName(selectedProvider)}</span>}</div>
@@ -711,6 +735,19 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                     </dl>
                     {!imageProviderReady && <p className="image-provider-help">{imageSettings.provider === 'custom' && selectedCustomImageProvider && !customImageModelReady ? 'Enter the exact image model ID deployed by this provider.' : <>Connect a supported provider with Fate UI <code>/login</code>, or configure it in <code>~/.pi/fateGUI/models.json</code>. Fate UI never displays the credential.</>}</p>}
                   </div>
+                </div>
+              )}
+
+              {activeSection === 'learning' && (
+                <div className="settings-panel" role="tabpanel" id="settings-panel-learning" aria-labelledby="settings-tab-learning">
+                  <div className="settings-title"><div><h3>Memory Learning</h3><p>Local reviewed memory. Off by default.</p></div></div>
+                  <div className="settings-group">
+                    <label className="settings-toggle"><div><strong>Enable</strong><small>Master switch. Stored data stays.</small></div><input type="checkbox" aria-label="Enable Memory Learning" checked={memoryLearning.enabled} onChange={(event) => setSettings({ ...settings, memoryLearning: { ...memoryLearning, enabled: event.target.checked } })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>GLOBAL</strong><small>Your coding profile, all projects.</small></div><input type="checkbox" aria-label="Enable GLOBAL memory" checked={memoryLearning.global} disabled={!memoryLearning.enabled} onChange={(event) => setSettings({ ...settings, memoryLearning: { ...memoryLearning, global: event.target.checked } })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>PROJECT</strong><small>This repository’s briefing and notes.</small></div><input type="checkbox" aria-label="Enable PROJECT memory" checked={memoryLearning.project} disabled={!memoryLearning.enabled} onChange={(event) => setSettings({ ...settings, memoryLearning: { ...memoryLearning, project: event.target.checked } })} /><span aria-hidden="true" /></label>
+                    <div className="settings-select-row"><div><strong>Review</strong><small>Edit approved memories.</small></div><button type="button" className="settings-inline-action" aria-label="Manage lessons, drafts & recent use" onClick={() => { setOpen(false); useLearningStore.getState().show(); }}>Open</button></div>
+                  </div>
+                  <section className="learning-storage-settings" aria-label="Memory storage locations">{learningStorage ? <dl><div><dt>Settings</dt><dd><code>{learningStorage.settingsFile}</code></dd></div><div><dt>GLOBAL</dt><dd><code>{learningStorage.globalFile}</code></dd></div><div><dt>PROJECT</dt><dd><code>{learningStorage.projectFile ?? 'Open a project'}</code></dd></div></dl> : <p className="settings-empty">Paths unavailable.</p>}</section>
                 </div>
               )}
 

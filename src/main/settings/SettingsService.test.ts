@@ -37,6 +37,7 @@ describe('SettingsService', () => {
       appearance: 'system', defaultModel: 'provider/model', disabledModels: ['crof/glm-5'], thinkingLevel: 'high', agentTeamMode: 'v2', agentWorkspace: { preferredMode: 'shared', strict: true },
       confirmRiskyCommands: false, terminalShell: 'pwsh.exe', reduceMotion: true, performanceMode: true, holyShitMode: true, musicPlayerEnabled: true, sendMessageWithModifier: true, compactMode: false, compactSessions: false, advancedPromptImprovement: true, crashTelemetryEnabled: false, themeId: 'graphite',
       interfaceFont: 'poppins', codeFont: 'noto-sans-mono',
+      memoryLearning: { enabled: true, global: true, project: false },
       imageGeneration: { provider: 'google', model: 'gemini-3.1-flash-image', customProvider: null },
       speech: { enabled: true, modelId: 'parakeet-unified', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' },
     });
@@ -114,7 +115,7 @@ describe('SettingsService', () => {
   it('serializes concurrent writes and returns each persisted snapshot', async () => {
     const logs = new AppLogService();
     const service = createSettings(logs);
-    const first = { appearance: 'dark', defaultModel: null, disabledModels: [] as string[], thinkingLevel: 'low', agentTeamMode: 'legacy', agentWorkspace: { preferredMode: 'worktree', strict: false }, confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } } as const;
+    const first = { memoryLearning: { enabled: false, global: true, project: true }, appearance: 'dark', defaultModel: null, disabledModels: [] as string[], thinkingLevel: 'low', agentTeamMode: 'legacy', agentWorkspace: { preferredMode: 'worktree', strict: false }, confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } } as const;
     const second = { ...first, thinkingLevel: 'high' as const, reduceMotion: true };
 
     const [firstSaved, secondSaved] = await Promise.all([service.set(first), service.set(second)]);

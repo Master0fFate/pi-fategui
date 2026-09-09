@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { memoryLearningSettingsSchema, learningTurnSchema, type LearningApi } from './learning';
 import { MAX_SPEECH_STREAM_FEED_SAMPLES, SPEECH_PCM_BYTES_PER_SAMPLE } from '../speech';
 import {
   SUBAGENT_DISPLAY_NAME_MAX_LENGTH,
@@ -160,6 +161,16 @@ export const ipcChannels = {
   terminalResize: 'terminal:resize',
   terminalClose: 'terminal:close',
   terminalEvents: 'terminal:events',
+  learningGetStorage: 'learning:get-storage',
+  learningGetState: 'learning:get-state',
+  learningMutate: 'learning:mutate',
+  learningPreviewEvidence: 'learning:preview-evidence',
+  learningReviewCapture: 'learning:review-capture',
+  learningGenerateDraft: 'learning:generate-draft',
+  learningCancel: 'learning:cancel',
+  learningPreviewSelection: 'learning:preview-selection',
+  learningRecover: 'learning:recover',
+  learningChanged: 'learning:changed',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
   updatesCheck: 'updates:check',
@@ -887,6 +898,7 @@ export const queuedMessageSchema = z.object({
   images: promptImagesSchema.optional(),
   browserAnnotations: z.array(browserAnnotationReferenceSchema).max(24).optional(),
   sessionReferences: promptSessionReferencesSchema.optional(),
+  learning: learningTurnSchema.optional(),
   createdAt: z.number().finite(),
   requestedModel: z.object({ provider: z.string().min(1), id: z.string().min(1) }).optional(),
   requestedThinkingLevel: thinkingLevelSchema.optional(),
@@ -1065,6 +1077,7 @@ export const promptInputSchema = z.object({
   images: promptImagesSchema.optional(),
   browserAnnotations: z.array(browserAnnotationReferenceSchema).max(24).optional(),
   sessionReferences: promptSessionReferencesSchema.optional(),
+  learning: learningTurnSchema.optional(),
 }).strict();
 export const promptAcceptanceSchema = z.object({ accepted: z.boolean(), runId: z.string().min(1) });
 export const promptOptimizationInputSchema = z.object({ text: z.string().trim().min(1).max(200_000), advanced: z.boolean().default(false) }).strict();
@@ -1093,6 +1106,7 @@ export const queueMutationResultSchema = z.object({
     images: promptImagesSchema.optional(),
     browserAnnotations: z.array(browserAnnotationReferenceSchema).max(24).optional(),
     sessionReferences: promptSessionReferencesSchema.optional(),
+    learning: learningTurnSchema.optional(),
   }).optional(),
 }).strict();
 export const sessionSearchInputSchema = z.object({ query: z.string().max(500).default('') }).strict();
@@ -1263,6 +1277,7 @@ export const appSettingsSchema = z.object({
   thinkingLevel: thinkingLevelSchema,
   agentTeamMode: z.enum(['legacy', 'v2']).default('legacy'),
   agentWorkspace: agentWorkspacePolicySchema,
+  memoryLearning: memoryLearningSettingsSchema,
   confirmRiskyCommands: z.boolean(),
   terminalShell: z.string().max(4_096).nullable(),
   reduceMotion: z.boolean(),
@@ -1446,7 +1461,7 @@ export type ModelsDevAddInput = z.infer<typeof modelsDevAddInputSchema>;
 export type ModelsDevRemoveInput = z.infer<typeof modelsDevRemoveInputSchema>;
 export type ModelsDevMutationResult = z.infer<typeof modelsDevMutationResultSchema>;
 
-export interface PiDesktopApi {
+export interface PiDesktopApi extends LearningApi {
   getAppInfo: () => Promise<AppInfo>;
   controlWindow: (action: WindowControlAction) => Promise<WindowState>;
   getWindowState: () => Promise<WindowState>;

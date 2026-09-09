@@ -31,6 +31,8 @@ import { createMutationRecorder } from './pi/provenance/mutationRecorder';
 import { ProjectService } from './projects/ProjectService';
 import { createTrustedRendererPolicy, isTrustedAudioPermissionRequest } from './security/trustedRenderer';
 import { SettingsService } from './settings/SettingsService';
+import { LearningService } from './learning/LearningService';
+import { LearningRepository } from './learning/LearningRepository';
 import { SpeechService } from './speech/SpeechService';
 import { configurePackagedSpeechLibrary } from './speech/packagedSpeechLibrary';
 import { GlobalHotkeyService } from './speech/GlobalHotkeyService';
@@ -96,6 +98,7 @@ configurePackagedSpeechLibrary({
 const logs = new AppLogService();
 const recovery = new RecoverySnapshotService(RecoverySnapshotService.defaultFilePath(instanceProfile.slot));
 const settings = new SettingsService(logs);
+const learning = new LearningService(new LearningRepository(), () => settings.get().memoryLearning);
 const crashTelemetry = new CrashTelemetryService(
   path.join(process.env.FATE_GUI_DATA_DIR ? path.resolve(process.env.FATE_GUI_DATA_DIR) : path.join(os.homedir(), '.pi', 'fateGUI'), 'crash-reports'),
   () => settings.get().crashTelemetryEnabled === true,
@@ -126,6 +129,7 @@ const browserBridge = new BrowserRuntimeBridge(
 const attestationLedger = new MutationAttestationLedger(logs, undefined, { instanceSlot: instanceProfile.slot });
 const recordAttestation = createMutationRecorder(attestationLedger, logs);
 const piRuntime = new MultiProjectPiRuntime({
+  learning,
   sessionPermissions: new SessionPermissionStore(logs),
   getImageGenerationSettings: () => settings.get().imageGeneration,
   getDisabledModels: () => settings.get().disabledModels ?? [],
@@ -218,9 +222,9 @@ function reportLaunchError(error: unknown): void {
 
 const shutdown = new ShutdownCoordinator({
   onBeforeDispose: () => rememberWindowPlacement(dispatcher.activeHandle(), windowState),
-  disposeSync: () => { terminal.dispose(); music.dispose(); rendererNetworkProxy.dispose(); },
+  disposeSync: () => { learning.dispose(); terminal.dispose(); music.dispose(); rendererNetworkProxy.dispose(); },
   disposeAsync: () => [
-    runtime.dispose().finally(() => attestationLedger.flush()).finally(() => recovery.markClean()),
+    runtime.dispose().finally(() => learning.repository.flush()).finally(() => attestationLedger.flush()).finally(() => recovery.markClean()),
     speech.dispose(),
     hotkey.dispose(),
     windowState.flush(),
@@ -388,7 +392,7 @@ app.whenReady().then(async () => {
     }
   }
   await recovery.load();
-  const mainCommands = registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, recovery, browser: browserHost, automations, attestations: attestationLedger, newWindow: () => windows.createWindow(), rendererPolicy });
+  const mainCommands = registerIpc({ runtime, projects, files, git, settings, learning, terminal, logs, music, speech, hotkey, updates, recovery, browser: browserHost, automations, attestations: attestationLedger, newWindow: () => windows.createWindow(), rendererPolicy });
   // Refresh every models.dev-managed provider's model list once per Fate GUI
   // start. Runs beside startup, never blocking it; offline keeps the cache.
   void runtime.refreshManagedModelsDevProviders().catch((error) => {

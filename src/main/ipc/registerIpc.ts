@@ -1,4 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, webContents } from 'electron';
+import { registerLearningIpc } from '../learning/registerLearningIpc';
+import type { LearningService } from '../learning/LearningService';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import packageManifest from '../../../package.json';
 import { promises as fs } from 'node:fs';
@@ -225,6 +227,7 @@ export interface IpcServices {
   files: FilesystemService;
   git: GitService;
   settings: SettingsService;
+  learning?: LearningService;
   terminal: TerminalService;
   logs: AppLogService;
   music: Pick<MusicService, 'getStatus' | 'load' | 'resolveTrack' | 'clearQueue' | 'reset' | 'setDurationSink'>;
@@ -466,7 +469,7 @@ async function applyPendingRecovery(
   await recovery?.markClean();
 }
 
-export function registerIpc({ runtime, projects, files, git, settings, terminal, logs, music, speech, hotkey, updates, recovery, browser, automations, attestations, newWindow, rendererPolicy }: IpcServices) {
+export function registerIpc({ runtime, projects, files, git, settings, learning, terminal, logs, music, speech, hotkey, updates, recovery, browser, automations, attestations, newWindow, rendererPolicy }: IpcServices) {
   runtime.setEventSink((events) => {
     try { recovery?.remember(runtime.getState(false)); } catch { /* Snapshot failures must never drop live events. */ }
     let batch: unknown;
@@ -564,6 +567,7 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
   });
 
   const handle = (channel: string, handler: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown | Promise<unknown>) => register(channel, rendererPolicy, handler);
+  registerLearningIpc(handle, runtime, learning, () => settings.getStoragePath());
   const activationServices = { runtime, files, settings, terminal, logs, browser };
   const queueProjectActivation = createProjectActivationQueue();
   const openProjectPath = createProjectPathOpener(projects, activationServices, queueProjectActivation);
@@ -1258,7 +1262,9 @@ export function registerIpc({ runtime, projects, files, git, settings, terminal,
     return appSettingsSchema.parse(await settings.load());
   });
   handle(ipcChannels.settingsSet, async (_event, input) => {
+    const previousLearning = settings.get().memoryLearning;
     const saved = appSettingsSchema.parse(await settings.set(appSettingsSchema.parse(input)));
+    if (JSON.stringify(previousLearning) !== JSON.stringify(saved.memoryLearning)) learning?.settingsChanged();
     if (!saved.musicPlayerEnabled) music.reset();
     await hotkey.applySpeechSettings(saved.speech);
     return saved;

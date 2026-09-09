@@ -1,4 +1,5 @@
 import { Brain, Check, CircleAlert, Copy, GitFork, PackageCheck, PackageOpen, Plug, RotateCcw } from 'lucide-react';
+import { useLearningStore } from '../learning/learningStore';
 import { memo, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { useShallow } from 'zustand/react/shallow';
@@ -145,6 +146,7 @@ export const MessageRow = memo(function MessageRow({ messageId }: { messageId: s
         <span className="message-footer-meta">{message.role === 'system' ? <><Plug size={11} aria-hidden="true" /><span className="icon-label">{label} <span aria-hidden="true">·</span> {formatMessageTimestamp(message.timestamp)}</span></> : <>{label} <span aria-hidden="true">·</span> {formatMessageTimestamp(message.timestamp)}</>}</span>
         <span className="message-footer-actions">
           <AppTooltip content={copied ? 'Copied' : message.text ? 'Copy message' : 'This message has no text to copy'} wrapTrigger><button className="message-action" type="button" aria-label={copied ? 'Message copied' : 'Copy message'} disabled={!message.text || copying} onClick={() => { void copyMessage(); }}>{copied ? <Check size={14} /> : <Copy size={14} />}</button></AppTooltip>
+          {message.role === 'user' && <AppTooltip content="Review a correction as learning; no model request is made yet" wrapTrigger><button className="message-action" type="button" aria-label="Learn from this correction" disabled={!message.text} onClick={() => useLearningStore.getState().show(message.text)}><Brain size={14} /></button></AppTooltip>}
           {message.role !== 'system' && <AppTooltip content={forkUnavailable ?? 'Fork from this message'} wrapTrigger><button className="message-action" type="button" aria-label="Fork from this message" disabled={!canFork || forking} onClick={() => { void forkMessage(); }}><GitFork size={14} /></button></AppTooltip>}
           {message.role === 'assistant' && <AppTooltip content={forkUnavailable ?? 'Try again from this prompt'} wrapTrigger><button className="message-action" type="button" aria-label="Try again" disabled={!canFork || forking} onClick={() => { void forkMessage(true); }}><RotateCcw size={14} /></button></AppTooltip>}
         </span>
