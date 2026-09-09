@@ -87,6 +87,7 @@ import { createSdkChildSession, finalAssistant, type SubagentChildSessionFactory
 import type { ImageGenerationSettingsResolver } from './PiImageTool';
 import { defaultImageGenerationSettings } from '../../shared/imageGeneration';
 import { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
+import { AgentWorkspaceGitService } from '../git/AgentWorkspaceGitService';
 import { defaultAgentWorkspacePolicy, type AgentTeamControlInput, type AgentWorkspacePolicy } from '../../shared/contracts/multiAgent';
 import { InMemorySessionPermissionStore, type SessionPermissionPersistence } from './SessionPermissionStore';
 import { GoalMaxCoordinator, type GoalMaxDiagnosticResult, type GoalMaxRuntimeChild, type GoalMaxRuntimeChildObservation, type GoalMaxRuntimeSnapshot, type GoalMaxVerificationResult } from './goalmaxxing/GoalMaxCoordinator';
@@ -1042,6 +1043,7 @@ export class PiRuntimeService {
   private modelsDevRefreshInflight: Promise<void> | null = null;
   private disabledModelsSource: () => readonly string[] = () => [];
   private agentWorkspacePolicySource: () => AgentWorkspacePolicy = () => defaultAgentWorkspacePolicy;
+  private readonly goalReviewGit = new AgentWorkspaceGitService();
   private onSessionSettled: ((sessionId: string) => void) | null = null;
 
   private get runtime(): AgentSessionRuntime | null { return this.selectedSlot?.runtime ?? null; }
@@ -4264,7 +4266,13 @@ export class PiRuntimeService {
     input: { name: string; role: string; prompt: string; instructions: string; timeoutMs: number; timeoutReport: string; unavailableReport: string },
   ): Promise<{ report: string; nodeId: string; infrastructureFailure?: 'timeout' | 'unavailable' }> {
     const slot = this.findLiveSlot(sessionId);
-    if (!slot || slot.disposed || !this.modelRuntime || this.sessionHasActiveWork(slot.runtime.session)) throw new Error('The runtime is not idle for bounded goal review.');
+    if (!slot || slot.disposed || !this.project || !this.modelRuntime || this.sessionHasActiveWork(slot.runtime.session)) throw new Error('The runtime is not idle for bounded goal review.');
+    const policy = this.agentWorkspacePolicySource();
+    // Goal reviews must inspect the delivered project, not an older committed snapshot.
+    const workspaceMode = policy.strict ? policy.preferredMode : 'shared';
+    if (workspaceMode === 'worktree' && (await this.goalReviewGit.status(this.project.path)).dirty) {
+      throw new Error('Strict isolated-worktree goal review requires a clean, committed project. Commit the project changes or relax Strict mode in Settings > Agent before verification.');
+    }
     const rootNodeId = this.agentTeams.rootNodeId(sessionId);
     const receipt = await this.agentTeams.spawn(rootNodeId, {
       task: input.prompt,
@@ -4274,6 +4282,7 @@ export class PiRuntimeService {
       tools: ['read', 'grep', 'find', 'ls'],
       instructions: input.instructions,
       skillMode: 'none',
+      workspace: { mode: workspaceMode },
     }, `${input.name}-${randomUUID()}`, this.modelRuntime, undefined, { allowDelegation: false, bypassGoalPolicy: true });
     const settlement = await this.agentTeams.waitForTaskSettlement(rootNodeId, receipt.path, input.timeoutMs);
     if (!settlement) {

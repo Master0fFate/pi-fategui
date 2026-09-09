@@ -19,6 +19,8 @@ Saving applies the policy immediately to future admissions, including in existin
 
 Worktrees still require a Git repository with a commit and sufficient parent permissions. An unavailable worktree is an error, not a silent downgrade; with Strict mode off, the agent can retry with an explicit shared checkout. This policy applies to **Agent Teams V2**, not legacy subagents. Switching orchestration protocols still requires reopening the project; changing workspace policy does not.
 
+Automatic GoalMax verifiers and diagnostic agents explicitly share the current project when the policy is flexible, so they inspect delivered files rather than an older commit. With strict isolation selected, these reviews require a clean, committed project before launching an isolated verifier; they fail clearly instead of silently reviewing stale files.
+
 The parent and children can call `get_agent_workspace_policy` to read the live preference and strict flag. `configure_agent_workspace` is no longer exposed. Saved beta4 team defaults remain readable as historical data but no longer determine new workspace choices.
 
 A parent can specify a workspace for each `spawn_agent` call, subject to that policy:
