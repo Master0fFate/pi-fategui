@@ -265,15 +265,11 @@ export class FakePiRuntimeService {
     return this.getState();
   }
   async controlAgentTeam(input: AgentTeamControlInput): Promise<RuntimeState> {
+    if (input.action === 'configureWorkspace') throw new Error('Workspace policy is managed in Settings → Agent.');
     const now = Date.now();
     if (input.action === 'createTeam') {
       const created = agentTeamFixture();
       this.agentTeams = [...this.agentTeams.map((team) => ({ ...team, selected: false })), { ...created, id: `e2e-agent-team-${this.agentTeams.length + 1}`, name: input.name ?? `Team ${this.agentTeams.length + 1}`, selected: this.agentTeams.length === 0 }];
-      this.emitState();
-      return this.getState();
-    }
-    if (input.action === 'configureWorkspace') {
-      this.agentTeams = this.agentTeams.map((team) => team.id === input.teamId ? { ...team, workspaceDefaults: input.workspace, updatedAt: now } : team);
       this.emitState();
       return this.getState();
     }

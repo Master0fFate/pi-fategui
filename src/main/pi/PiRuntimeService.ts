@@ -87,7 +87,8 @@ import { createSdkChildSession, finalAssistant, type SubagentChildSessionFactory
 import type { ImageGenerationSettingsResolver } from './PiImageTool';
 import { defaultImageGenerationSettings } from '../../shared/imageGeneration';
 import { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
-import type { AgentTeamControlInput } from '../../shared/contracts/multiAgent';
+import { AgentWorkspaceGitService } from '../git/AgentWorkspaceGitService';
+import { defaultAgentWorkspacePolicy, type AgentTeamControlInput, type AgentWorkspacePolicy } from '../../shared/contracts/multiAgent';
 import { InMemorySessionPermissionStore, type SessionPermissionPersistence } from './SessionPermissionStore';
 import { GoalMaxCoordinator, type GoalMaxDiagnosticResult, type GoalMaxRuntimeChild, type GoalMaxRuntimeChildObservation, type GoalMaxRuntimeSnapshot, type GoalMaxVerificationResult } from './goalmaxxing/GoalMaxCoordinator';
 import { GOALMAX_TOOL_NAME_SET } from './goalmaxxing/GoalMaxTools';
@@ -427,7 +428,7 @@ interface RuntimeSlot {
 export { activeToolsForPermission } from './PiToolPolicy';
 
 const LEGACY_ORCHESTRATION_TOOLS = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog'] as const;
-const V2_ORCHESTRATION_TOOLS = ['spawn_agent', 'agent_workspace', 'configure_agent_workspace', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'subagent_catalog'] as const;
+const V2_ORCHESTRATION_TOOLS = ['spawn_agent', 'agent_workspace', 'get_agent_workspace_policy', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'subagent_catalog'] as const;
 const ALL_ORCHESTRATION_TOOLS = new Set<string>([...LEGACY_ORCHESTRATION_TOOLS, ...V2_ORCHESTRATION_TOOLS]);
 
 function goalChildStatus(status: SubagentStatus): GoalMaxRuntimeChild['status'] {
@@ -1041,6 +1042,8 @@ export class PiRuntimeService {
   private modelsDevManagedCache: ModelsDevManagedProvider[] = [];
   private modelsDevRefreshInflight: Promise<void> | null = null;
   private disabledModelsSource: () => readonly string[] = () => [];
+  private agentWorkspacePolicySource: () => AgentWorkspacePolicy = () => defaultAgentWorkspacePolicy;
+  private readonly goalReviewGit = new AgentWorkspaceGitService();
   private onSessionSettled: ((sessionId: string) => void) | null = null;
 
   private get runtime(): AgentSessionRuntime | null { return this.selectedSlot?.runtime ?? null; }
@@ -1117,6 +1120,7 @@ export class PiRuntimeService {
         return { projectPath: this.project.path, session: slot.runtime.session, permissionLevel: slot.permissionLevel, ...(agentStrategy ? { agentStrategy } : {}) };
       },
       getDisabledModels: (sessionId) => this.disabledModelsForSession(sessionId),
+      getAgentWorkspacePolicy: () => this.agentWorkspacePolicySource(),
       sendRootMessage: (rootSessionId, message, activeDelivery, triggerWhenIdle) => {
         const slot = this.findLiveSlot(rootSessionId);
         if (!slot || slot.disposed) return Promise.resolve();
@@ -1261,6 +1265,10 @@ export class PiRuntimeService {
 
   setDisabledModelsSource(source: () => readonly string[]): void {
     this.disabledModelsSource = source;
+  }
+
+  setAgentWorkspacePolicySource(source: () => AgentWorkspacePolicy): void {
+    this.agentWorkspacePolicySource = source;
   }
 
   private disabledModelsForSession(sessionId?: string): readonly string[] {
@@ -4258,7 +4266,13 @@ export class PiRuntimeService {
     input: { name: string; role: string; prompt: string; instructions: string; timeoutMs: number; timeoutReport: string; unavailableReport: string },
   ): Promise<{ report: string; nodeId: string; infrastructureFailure?: 'timeout' | 'unavailable' }> {
     const slot = this.findLiveSlot(sessionId);
-    if (!slot || slot.disposed || !this.modelRuntime || this.sessionHasActiveWork(slot.runtime.session)) throw new Error('The runtime is not idle for bounded goal review.');
+    if (!slot || slot.disposed || !this.project || !this.modelRuntime || this.sessionHasActiveWork(slot.runtime.session)) throw new Error('The runtime is not idle for bounded goal review.');
+    const policy = this.agentWorkspacePolicySource();
+    // Goal reviews must inspect the delivered project, not an older committed snapshot.
+    const workspaceMode = policy.strict ? policy.preferredMode : 'shared';
+    if (workspaceMode === 'worktree' && (await this.goalReviewGit.status(this.project.path)).dirty) {
+      throw new Error('Strict isolated-worktree goal review requires a clean, committed project. Commit the project changes or relax Strict mode in Settings > Agent before verification.');
+    }
     const rootNodeId = this.agentTeams.rootNodeId(sessionId);
     const receipt = await this.agentTeams.spawn(rootNodeId, {
       task: input.prompt,
@@ -4268,6 +4282,7 @@ export class PiRuntimeService {
       tools: ['read', 'grep', 'find', 'ls'],
       instructions: input.instructions,
       skillMode: 'none',
+      workspace: { mode: workspaceMode },
     }, `${input.name}-${randomUUID()}`, this.modelRuntime, undefined, { allowDelegation: false, bypassGoalPolicy: true });
     const settlement = await this.agentTeams.waitForTaskSettlement(rootNodeId, receipt.path, input.timeoutMs);
     if (!settlement) {

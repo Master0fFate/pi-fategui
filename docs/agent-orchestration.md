@@ -8,9 +8,22 @@ Agent Teams V2 is the recursive, provider-neutral option. A root can create chil
 
 Teams limit depth to 2, non-root nodes to 16, and concurrent non-root turns to 3 per team. Writer leases are **per checkout**: shared-checkout writers serialize, while agents in separate worktrees can write concurrently. Descendant permissions and ordinary tools can only narrow the direct caller's authority.
 
-### Optional local worktrees
+### Global workspace preference
 
-Shared checkout remains the default. A parent can override the workspace for each `spawn_agent` call:
+Set the workspace policy once in **Settings → Agent → Subagent workspaces**. It applies across projects and AI-created teams; there is no manual team setup in **Run → Agents**.
+
+- **Prefer isolated worktrees** starts on. New agents use separate Git checkouts by default. Turn it off to prefer sharing the direct parent's checkout.
+- **Strict mode** starts off. With it off, the parent can explicitly choose the other mode for a particular task. With it on, Fate refuses incompatible launches and resumed turns in the backend; an agent cannot change this policy through a team tool.
+
+Saving applies the policy immediately to future admissions, including in existing and background teams. Running turns finish in their current checkout: a settings change never moves files or discards work. A retained agent in the wrong mode cannot start another turn while strict enforcement applies; relax the setting or spawn a compatible replacement. Review, integration, and cleanup of retained workspaces remain available.
+
+Worktrees still require a Git repository with a commit and sufficient parent permissions. An unavailable worktree is an error, not a silent downgrade; with Strict mode off, the agent can retry with an explicit shared checkout. This policy applies to **Agent Teams V2**, not legacy subagents. Switching orchestration protocols still requires reopening the project; changing workspace policy does not.
+
+Automatic GoalMax verifiers and diagnostic agents explicitly share the current project when the policy is flexible, so they inspect delivered files rather than an older commit. With strict isolation selected, these reviews require a clean, committed project before launching an isolated verifier; they fail clearly instead of silently reviewing stale files.
+
+The parent and children can call `get_agent_workspace_policy` to read the live preference and strict flag. `configure_agent_workspace` is no longer exposed. Saved beta4 team defaults remain readable as historical data but no longer determine new workspace choices.
+
+A parent can specify a workspace for each `spawn_agent` call, subject to that policy:
 
 ```json
 {
@@ -25,9 +38,9 @@ Shared checkout remains the default. A parent can override the workspace for eac
 }
 ```
 
-`mode: "shared"` inherits the **direct parent's** checkout, including when that parent is already in a worktree. An omitted workspace uses the team's defaults, initially shared. Worktree `baseRef` defaults to `HEAD` and is resolved to a fixed commit; uncommitted parent changes are not copied. Omit `branch` for a unique generated name. Explicit branches must be new, valid Git branch names. No arbitrary output paths are accepted: worktrees live under `~/.pi/fateGUI/agent-team-worktrees/`.
+`mode: "shared"` inherits the **direct parent's** checkout, including when that parent is already in a worktree. An omitted workspace uses the current global preference. An explicit mode wins only when Strict mode is off or it matches the required mode. Worktree `baseRef` defaults to `HEAD` and is resolved to a fixed commit; uncommitted parent changes are not copied. Omit `branch` for a unique generated name. Explicit branches must be new, valid Git branch names. No arbitrary output paths are accepted: worktrees live under `~/.pi/fateGUI/agent-team-worktrees/`. Model, thinking, tools, skills, and permissions remain independent controls.
 
-Under **Run → Agents**, expand a team's **Workspace defaults** to choose shared/new worktree, base ref, and branch prefix for future children. The parent can also set these with `configure_agent_workspace({ teamId, workspace: { mode, baseRef?, branchPrefix? } })`. Explicit spawn settings take precedence. Existing agents never move when defaults change; model, thinking, tools, skills, and permission controls remain independent.
+### Review and integrate agent work
 
 Select an agent's **Isolated worktree** row to open the workspace dialog. It shows the checkout, branch, base, parent target, bounded diff, and commit list. The parent model uses the same lifecycle through `agent_workspace`:
 

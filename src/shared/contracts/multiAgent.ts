@@ -15,7 +15,14 @@ const id = z.string().min(1).max(160);
 const boundedText = z.string().max(AGENT_TEAM_MAX_MESSAGE_BYTES);
 const permission = z.enum(['read-only', 'edit', 'full-access']);
 const thinking = z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
-const workspaceMode = z.enum(['shared', 'worktree']);
+export const agentWorkspaceModeSchema = z.enum(['shared', 'worktree']);
+export const defaultAgentWorkspacePolicy = { preferredMode: 'worktree', strict: false } as const;
+/** Global user preference for future Agent Team executable admissions. */
+export const agentWorkspacePolicySchema = z.object({
+  preferredMode: agentWorkspaceModeSchema.default(defaultAgentWorkspacePolicy.preferredMode),
+  strict: z.boolean().default(defaultAgentWorkspacePolicy.strict),
+}).strict().default(defaultAgentWorkspacePolicy);
+const workspaceMode = agentWorkspaceModeSchema;
 const fullCommitHash = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u);
 export const workspaceDefaultsSchema = z.object({
   mode: workspaceMode,
@@ -224,6 +231,7 @@ export type AgentTeamTimelineEvent = z.infer<typeof agentTeamTimelineEventSchema
 export type AgentTeamLimits = z.infer<typeof agentTeamLimitsSchema>;
 export type AgentTeamControlInput = z.infer<typeof agentTeamControlInputSchema>;
 export type AgentWorkspaceDefaults = z.infer<typeof workspaceDefaultsSchema>;
+export type AgentWorkspacePolicy = z.infer<typeof agentWorkspacePolicySchema>;
 export type AgentWorkspaceRequest = z.infer<typeof workspaceRequestSchema>;
 export type AgentWorkspaceMetadata = z.infer<typeof workspaceMetadataSchema>;
 export type AgentWorkspaceReview = z.infer<typeof workspaceReviewSchema>;

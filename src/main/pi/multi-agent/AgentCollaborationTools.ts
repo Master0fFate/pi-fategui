@@ -38,12 +38,35 @@ function text(content: string, details: unknown) {
   return { content: [{ type: 'text' as const, text: content }], details };
 }
 
+function workspacePolicyContent(policy: ReturnType<AgentTeamCoordinator['getWorkspacePolicy']>): string {
+  return `${policy.explanation}\n${JSON.stringify({ preferredMode: policy.preferredMode, strict: policy.strict })}`;
+}
+
+function workspaceResultContent(operation: string, result: unknown): string {
+  const serialized = JSON.stringify(result);
+  if (Buffer.byteLength(serialized, 'utf8') <= 48 * 1024) return `Workspace ${operation} completed:\n${serialized}`;
+  if (operation === 'review' && result && typeof result === 'object') {
+    const review = result as { sourceHead?: unknown; targetHead?: unknown; targetBranch?: unknown; dirty?: unknown; targetDirty?: unknown };
+    return `Workspace review is too large for model context and remains blocked from integration until a fresh bounded review is performed in the UI or locally:\n${JSON.stringify({ sourceHead: review.sourceHead, targetHead: review.targetHead, targetBranch: review.targetBranch, dirty: review.dirty, targetDirty: review.targetDirty, truncated: true, diff: '[omitted from model context]' })}`;
+  }
+  return `Workspace ${operation} completed, but its result exceeds the model-visible output bound. Inspect it in the UI or locally.`;
+}
+
 export function createAgentCollaborationTools(
   coordinator: AgentTeamCoordinator,
   callerNodeId: string | null,
   modelRuntime: ModelRuntime,
 ): ToolDefinition[] {
   const caller = (sessionId: string, requestedTeamId?: string) => callerNodeId ?? coordinator.rootNodeId(sessionId, requestedTeamId);
+  const workspacePolicyTool = defineTool({
+    name: 'get_agent_workspace_policy', label: 'Get Agent workspace policy', promptSnippet: 'Inspect the current global Agent workspace policy',
+    description: 'Read the live global preference for future Agent Team executable admissions. Omitted spawn workspace uses preferredMode; strict policy rejects incompatible requested modes. Change it only in Settings > Agent.',
+    parameters: Type.Object({}, { additionalProperties: false }), executionMode: 'parallel',
+    execute: async () => {
+      const policy = coordinator.getWorkspacePolicy();
+      return text(workspacePolicyContent(policy), policy);
+    },
+  });
   const rootLifecycleTools: ToolDefinition[] = callerNodeId ? [] : [
     defineTool({
       name: 'create_team', label: 'Create team', promptSnippet: 'Create a new Agent Team',
@@ -70,12 +93,7 @@ export function createAgentCollaborationTools(
         return text(`${team.name} (${team.id}) is ${team.status}.`, team);
       },
     }),
-    defineTool({
-      name: 'configure_agent_workspace', label: 'Configure agent workspaces', promptSnippet: 'Configure default child workspaces',
-      description: 'Set default workspace behavior for future direct child agents. shared is the default; worktree creates managed Git worktrees only from committed refs.',
-      parameters: Type.Object({ teamId: Type.String({ minLength: 1, maxLength: 160 }), workspace: Type.Object({ mode: enumString(['shared', 'worktree'], 'Workspace mode.'), baseRef: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })), branchPrefix: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })) }, { additionalProperties: false }) }, { additionalProperties: false }), executionMode: 'sequential',
-      execute: async (_id, params, _signal, _update, ctx) => text('Workspace defaults updated.', coordinator.configureWorkspace(ctx.sessionManager.getSessionId(), params.teamId, params.workspace as { mode: 'shared' | 'worktree'; baseRef?: string; branchPrefix?: string })),
-    }),
+    workspacePolicyTool,
     ...(['select', 'pause', 'resume', 'close', 'reset'] as const).map((action) => defineTool({
       name: `${action}_team`, label: `${action[0]!.toUpperCase()}${action.slice(1)} team`, promptSnippet: `${action} an Agent Team`,
       description: action === 'close' ? 'Close a team. Active work is refused unless force is explicit; force aborts turns and cancels tasks.' : action === 'reset' ? 'Reset a team to an empty active state. Active work is refused unless force is explicit.' : `${action[0]!.toUpperCase()}${action.slice(1)} an explicit team idempotently.`,
@@ -90,12 +108,13 @@ export function createAgentCollaborationTools(
   return [
     defineTool({
       name: 'spawn_agent', label: 'Spawn agent', promptSnippet: 'Create one direct child agent',
-      description: 'Create a direct child in the current Agent Team V2 tree and start its initial task. Shared checkout is the default; managed worktrees are explicit and are not a security sandbox. Depth, total nodes, active turns, authority, context, and per-checkout writer leases are enforced atomically.',
-      promptGuidelines: ['Delegate one bounded outcome.', 'Shared children inherit the caller checkout; isolated worktrees can write concurrently but require parent review and explicit integration.', 'Capacity errors are explicit; wait for existing work and retry.'],
+      description: 'Create a direct child in the current Agent Team V2 tree and start its initial task. Omit workspace to use the live global preference; an explicit mode overrides only when global strict mode is off. Worktrees are not security sandboxes. Depth, total nodes, active turns, authority, context, and per-checkout writer leases are enforced atomically.',
+      promptGuidelines: ['Delegate one bounded outcome.', 'Omit workspace to use the global preference. When policy is soft, shared children inherit the caller checkout and isolated worktrees require parent review; strict policy rejects an incompatible explicit mode.', 'Worktrees start from committed files; uncommitted parent changes stay behind. Choose shared explicitly if the task needs those files and strict policy permits it.', 'Capacity errors are explicit; wait for existing work and retry.'],
       parameters: spawnParameters, executionMode: 'sequential',
       execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
         const receipt = await coordinator.spawn(caller(ctx.sessionManager.getSessionId(), params.teamId), params, toolCallId, modelRuntime, signal);
-        return text(`Spawned @${receipt.handle} at ${receipt.path} (${receipt.status}).`, receipt);
+        const workspaceDetails = receipt.workspace ? ` workspace=${receipt.workspace.mode} path=${receipt.workspace.path}${receipt.workspace.branch ? ` branch=${receipt.workspace.branch}` : ''}` : '';
+        return text(`Spawned @${receipt.handle} at ${receipt.path} (${receipt.status}).${workspaceDetails}`, receipt);
       },
     }),
     defineTool({
@@ -103,8 +122,8 @@ export function createAgentCollaborationTools(
       description: 'Parent-owned workspace operations. Review is required before explicit integration; checkpoint creates no automatic integration; cleanup keeps the branch and is never forced.',
       parameters: Type.Object({ teamId, target, operation: enumString(['review', 'checkpoint', 'integrate', 'cleanup'], 'Workspace operation.'), message: Type.Optional(Type.String({ minLength: 1, maxLength: 2_000 })), strategy: Type.Optional(enumString(['ff-only', 'cherry-pick'], 'Integration strategy.')), commits: Type.Optional(Type.Array(Type.String({ minLength: 40, maxLength: 64 }), { minItems: 1, maxItems: 128 })), expectedSourceHead: Type.Optional(Type.String({ minLength: 40, maxLength: 64 })), expectedTargetHead: Type.Optional(Type.String({ minLength: 40, maxLength: 64 })) }, { additionalProperties: false }), executionMode: 'sequential',
       execute: async (_id, params, _signal, _update, ctx) => {
-        const result = await coordinator.workspace(caller(ctx.sessionManager.getSessionId(), params.teamId), params.target, params.operation as 'review' | 'checkpoint' | 'integrate' | 'cleanup', { ...(params.message ? { message: params.message } : {}), ...(params.strategy === 'ff-only' || params.strategy === 'cherry-pick' ? { strategy: params.strategy } : {}), ...(params.commits ? { commits: params.commits } : {}), ...(params.expectedSourceHead ? { expectedSourceHead: params.expectedSourceHead } : {}), ...(params.expectedTargetHead ? { expectedTargetHead: params.expectedTargetHead } : {}) });
-        return text(`Workspace ${params.operation} completed.`, result);
+        const result = await coordinator.workspace(caller(ctx.sessionManager.getSessionId(), params.teamId), params.target, params.operation as 'review' | 'checkpoint' | 'integrate' | 'cleanup', { ...(params.message ? { message: params.message } : {}), ...(params.strategy === 'ff-only' || params.strategy === 'cherry-pick' ? { strategy: params.strategy } : {}), ...(params.commits ? { commits: params.commits } : {}), ...(params.expectedSourceHead ? { expectedSourceHead: params.expectedSourceHead } : {}), ...(params.expectedTargetHead ? { expectedTargetHead: params.expectedTargetHead } : {}), ...(params.operation === 'review' ? { modelVisibleReviewBytes: 48 * 1024 } : {}) });
+        return text(workspaceResultContent(params.operation, result), result);
       },
     }),
     defineTool({
@@ -123,7 +142,7 @@ export function createAgentCollaborationTools(
       parameters: Type.Object({ teamId, target, task: message }, { additionalProperties: false }), executionMode: 'sequential',
       execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
         const receipt = await coordinator.followUp(caller(ctx.sessionManager.getSessionId(), params.teamId), params.target, params.task, toolCallId, modelRuntime, signal);
-        return text(`Follow-up ${receipt.taskId} assigned to ${receipt.path}.`, receipt);
+        return text(`Follow-up ${receipt.taskId} for ${receipt.path} is ${receipt.status}.`, receipt);
       },
     }),
     defineTool({
@@ -184,6 +203,7 @@ export function createAgentCollaborationTools(
         return text(result.nodes.map((node) => `${'  '.repeat(node.depth)}- ${node.path} · @${node.handle} · ${node.status} · ${node.model.provider}/${node.model.id} · task:${node.currentTaskId ?? 'none'} · unread:${node.unreadMessages}`).join('\n') || 'No agents match that prefix.', result);
       },
     }),
+    ...(callerNodeId ? [workspacePolicyTool] : []),
     ...rootLifecycleTools,
   ] as ToolDefinition[];
 }

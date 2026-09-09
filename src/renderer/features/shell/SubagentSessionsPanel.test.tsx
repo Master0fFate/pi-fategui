@@ -113,6 +113,16 @@ describe('subagent session inspector', () => {
     Reflect.deleteProperty(window, 'piDesktop');
   });
 
+  it('keeps team creation and workspace policy out of the run inspector', () => {
+    useRuntimeStore.getState().hydrateRuntime({ ...state, agentTeams: [{ ...team, workspaceDefaults: { mode: 'shared' } }] });
+    render(<SubagentSessionsPanel />);
+    expect(screen.queryByRole('button', { name: 'Create Agent Team' })).not.toBeInTheDocument();
+    expect(screen.queryByText('New team')).not.toBeInTheDocument();
+    expect(screen.queryByText('Workspace defaults')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save defaults' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Workspace for Reviewer' })).toBeVisible();
+  });
+
   it('shows only the active destination views and keeps agent counts at the Run entry', async () => {
     const user = userEvent.setup();
     render(<Inspector onCollapse={vi.fn()} />);

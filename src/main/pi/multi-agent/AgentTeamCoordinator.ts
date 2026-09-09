@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AgentSession, AgentSessionEvent, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
-import { AGENT_TEAM_MAX_GLOBAL_NODES, AGENT_TEAM_MAX_WAIT_MS, type AgentTeam, type AgentTeamControlInput, type AgentTeamEnvelope, type AgentTeamEnvelopeDelivery, type AgentTeamNode, type AgentTeamTask, type AgentWorkspaceDefaults, type AgentWorkspaceMetadata, type AgentWorkspaceRequest, workspaceDefaultsSchema } from '../../../shared/contracts/multiAgent';
+import { AGENT_TEAM_MAX_GLOBAL_NODES, AGENT_TEAM_MAX_WAIT_MS, defaultAgentWorkspacePolicy, type AgentTeam, type AgentTeamControlInput, type AgentTeamEnvelope, type AgentTeamEnvelopeDelivery, type AgentTeamNode, type AgentTeamTask, type AgentWorkspacePolicy, type AgentWorkspaceRequest } from '../../../shared/contracts/multiAgent';
 import type { ToolActor } from '../../../shared/contracts/provenance';
 import { addUsage, createSdkChildSession, emptyUsage, finalAssistant, usageFromMessages, type SubagentChildSessionFactory } from '../SubagentSessionFactory';
 import { assertContextTransfer } from '../SubagentContext';
@@ -18,7 +18,7 @@ import { disabledModelMessage, isModelDisabled, visibleModels } from '../../../s
 import { createAgentCollaborationTools } from './AgentCollaborationTools';
 import { sanitizedRecentTurns } from './AgentContextForker';
 import { reserveAgentPath } from './AgentPath';
-import { AgentTeamScheduler } from './AgentTeamScheduler';
+import { AgentTeamScheduler, type TurnLease } from './AgentTeamScheduler';
 import {
   addEnvelope,
   addTask,
@@ -216,6 +216,8 @@ export class AgentTeamCoordinator {
       lease = this.acquireLease(runtime, node.id, node.permissionLevel);
       this.syncScheduler(runtime);
       nodeRuntime = await this.createNodeSession(runtime, node, prepared, modelRuntime, options.allowDelegation !== false);
+      // Settings may have changed while provisioning/session creation awaited.
+      this.assertWorkspacePolicy(node);
       if (signal?.aborted) throw Object.assign(new Error('Spawn cancelled.'), { name: 'AbortError' });
       const rootAuthority = this.host.resolveRoot(runtime.state.rootSessionId)?.permissionLevel ?? 'read-only';
       if (permissionRank[prepared.permission] > Math.min(permissionRank[caller.permissionLevel], permissionRank[rootAuthority])) throw new Error('Parent authority narrowed while the child workspace was being prepared. Retry the spawn.');
@@ -335,14 +337,19 @@ export class AgentTeamCoordinator {
     if (node.status === 'closed' || node.status === 'released' || node.status === 'failed' || this.hasLiveCurrentTask(runtime, node)) return;
     const existingTask = [...runtime.tasks.values()].find((task) => task.assigneeNodeId === node.id && task.inputEnvelopeId === envelope.id);
     if (existingTask) return;
-    const lease = this.acquireLease(runtime, node.id, node.permissionLevel);
-    this.syncScheduler(runtime);
+    let lease: TurnLease | undefined;
+    let task: AgentTeamTask | undefined;
     try {
+      lease = this.acquireLease(runtime, node.id, node.permissionLevel);
+      this.syncScheduler(runtime);
       const nodeRuntime = await this.ensureNodeSession(runtime, node, modelRuntime);
+      this.assertWorkspacePolicy(node);
+      const prompt = `[Direct message from ${this.requireNode(runtime, envelope.authorNodeId).path}; envelope ${envelope.id}]\n${envelope.content}`;
+      assertContextTransfer('Agent Team V2 direct message', nodeRuntime.session!.model ?? this.requireParentModel(runtime), prompt, nodeRuntime.session!);
       if (nodeRuntime.retentionTimer) clearTimeout(nodeRuntime.retentionTimer);
       delete nodeRuntime.retentionTimer;
       nodeRuntime.lease = lease;
-      const task = addTask(runtime, {
+      task = addTask(runtime, {
         assigneeNodeId: node.id,
         requesterNodeId: runtime.state.rootNodeId,
         inputEnvelopeId: envelope.id,
@@ -357,15 +364,31 @@ export class AgentTeamCoordinator {
       envelope.triggerTurn = true;
       envelope.state = 'delivered';
       envelope.deliveredAt = node.updatedAt;
-      const prompt = `[Direct message from ${this.requireNode(runtime, envelope.authorNodeId).path}; envelope ${envelope.id}]\n${envelope.content}`;
-      assertContextTransfer('Agent Team V2 direct message', nodeRuntime.session!.model ?? this.requireParentModel(runtime), prompt, nodeRuntime.session!);
       this.changed(runtime, `${node.path} started a direct message turn.`);
       nodeRuntime.turn = this.runTurn(runtime, node, task, prompt);
     } catch (error) {
-      lease.release();
-      this.syncScheduler(runtime);
+      this.failTurnAdmission(runtime, node, envelope, task, lease, error);
       throw error;
     }
+  }
+
+  private failTurnAdmission(runtime: AgentTeamRuntime, node: AgentTeamNode, envelope: AgentTeamEnvelope, task: AgentTeamTask | undefined, lease: TurnLease | undefined, error: unknown): void {
+    lease?.release();
+    const nodeRuntime = runtime.nodeRuntime.get(node.id);
+    if (nodeRuntime && nodeRuntime.lease === lease) delete nodeRuntime.lease;
+    const message = (error instanceof Error ? error.message : String(error)).slice(0, 4_000);
+    envelope.state = 'failed';
+    envelope.error = message.slice(0, 2_000);
+    if (task) {
+      task.status = 'failed';
+      task.error = message;
+      task.endedAt = Date.now();
+    }
+    if (node.status !== 'closed' && node.status !== 'released') node.status = 'interrupted';
+    node.lastError = message;
+    node.updatedAt = Date.now();
+    if (node.status === 'interrupted' && nodeRuntime?.session && !nodeRuntime.turn && !nodeRuntime.retentionTimer) this.armRetention(runtime, node, nodeRuntime);
+    this.changed(runtime, `${node.path} failed turn admission.`);
   }
 
   private hasLiveCurrentTask(runtime: AgentTeamRuntime, node: AgentTeamNode): boolean {
@@ -402,14 +425,16 @@ export class AgentTeamCoordinator {
       this.changed(runtime, `Follow-up ${task.id} queued for active agent ${node.path}.`);
       return { taskId: task.id, path: node.path, status: task.status };
     }
-    const lease = this.acquireLease(runtime, node.id, node.permissionLevel);
-    this.syncScheduler(runtime);
+    let lease: TurnLease | undefined;
     try {
+      lease = this.acquireLease(runtime, node.id, node.permissionLevel);
+      this.syncScheduler(runtime);
       const nodeRuntime = await this.ensureNodeSession(runtime, node, modelRuntime);
+      this.assertWorkspacePolicy(node);
+      assertContextTransfer('Agent Team V2 follow-up', nodeRuntime.session!.model ?? this.requireParentModel(runtime), content, nodeRuntime.session!);
       if (nodeRuntime.retentionTimer) clearTimeout(nodeRuntime.retentionTimer);
       delete nodeRuntime.retentionTimer;
       nodeRuntime.lease = lease;
-      assertContextTransfer('Agent Team V2 follow-up', nodeRuntime.session!.model ?? this.requireParentModel(runtime), content, nodeRuntime.session!);
       envelope.state = 'delivered';
       envelope.deliveredAt = Date.now();
       node.currentTaskId = task.id;
@@ -421,13 +446,7 @@ export class AgentTeamCoordinator {
       nodeRuntime.turn = this.runTurn(runtime, node, task, content, signal);
       return { taskId: task.id, path: node.path, status: task.status };
     } catch (error) {
-      lease.release();
-      task.status = 'failed';
-      task.error = error instanceof Error ? error.message : String(error);
-      task.endedAt = Date.now();
-      node.status = 'interrupted';
-      this.syncScheduler(runtime);
-      this.changed(runtime, `${node.path} follow-up failed admission.`);
+      this.failTurnAdmission(runtime, node, envelope, task, lease, error);
       throw error;
     }
   }
@@ -741,16 +760,6 @@ export class AgentTeamCoordinator {
     await Promise.all(this.storageRoots.map((dataRoot) => fs.rm(path.join(dataRoot, safeDirectoryKey(rootSessionId), safeDirectoryKey(teamId)), { recursive: true, force: true, maxRetries: 2, retryDelay: 50 })));
   }
 
-  configureWorkspace(rootSessionId: string, teamId: string, workspace: AgentWorkspaceDefaults): AgentTeam {
-    const root = this.host.resolveRoot(rootSessionId);
-    if (!root || root.permissionLevel === 'read-only') throw new Error('Configuring agent workspaces requires edit or full-access authority.');
-    const runtime = this.requireTeam(rootSessionId, teamId);
-    if (runtime.state.status === 'closed' || runtime.state.status === 'released') throw new Error('Closed teams cannot change workspace defaults.');
-    runtime.state.workspaceDefaults = workspaceDefaultsSchema.parse(workspace);
-    this.changed(runtime, `Workspace defaults configured for ${runtime.state.name}.`);
-    return projectTeam(runtime);
-  }
-
   private checkoutKey(checkout: string): string {
     const normalized = path.resolve(checkout);
     return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
@@ -777,7 +786,7 @@ export class AgentTeamCoordinator {
     finally { for (const key of keys) this.workspaceOperationLocks.delete(key); }
   }
 
-  async workspace(callerNodeId: string, target: string, operation: 'review' | 'checkpoint' | 'integrate' | 'cleanup', options: { message?: string; strategy?: 'ff-only' | 'cherry-pick'; commits?: string[]; expectedSourceHead?: string; expectedTargetHead?: string; human?: boolean } = {}) {
+  async workspace(callerNodeId: string, target: string, operation: 'review' | 'checkpoint' | 'integrate' | 'cleanup', options: { message?: string; strategy?: 'ff-only' | 'cherry-pick'; commits?: string[]; expectedSourceHead?: string; expectedTargetHead?: string; human?: boolean; modelVisibleReviewBytes?: number } = {}) {
     const runtime = this.runtimeForCaller(callerNodeId);
     return this.serializeMutation(runtime, async () => {
       const caller = this.requireNode(runtime, callerNodeId);
@@ -798,7 +807,11 @@ export class AgentTeamCoordinator {
         if (operation !== 'review' && sourceBusy) throw new Error(`${node.path} and descendants must be idle before ${operation}.`);
         const targetPath = workspace.parentPath;
         if (operation === 'review') {
-          const review = await this.workspaceGit.review(workspace.path, targetPath, workspace.baseCommit);
+          const rawReview = await this.workspaceGit.review(workspace.path, targetPath, workspace.baseCommit);
+          const review = options.modelVisibleReviewBytes && Buffer.byteLength(JSON.stringify(rawReview), 'utf8') > options.modelVisibleReviewBytes
+            ? { ...rawReview, commits: [], diff: '[Review exceeds the model tool limit. Open this workspace in Run → Agents for the full review and integration. This incomplete review cannot be integrated.]', truncated: true }
+            : rawReview;
+          // A model-visible oversized review must remain non-integrable; never imply it saw an omitted patch.
           workspace.review = { ...review, reviewedAt: Date.now() };
           node.updatedAt = Date.now();
           this.changed(runtime, `${caller.path} reviewed ${node.path} workspace.`);
@@ -866,8 +879,7 @@ export class AgentTeamCoordinator {
     else if (input.action === 'resetTeam') await this.resetTeam(rootSessionId, input.teamId, input.force);
     else if (input.action === 'deleteTeam') await this.deleteTeam(rootSessionId, input.teamId);
     else if (input.action === 'configureWorkspace') {
-      if (this.host.resolveRoot(rootSessionId)?.session.isStreaming) throw new Error('Workspace configuration from the UI requires the root session to be idle.');
-      this.configureWorkspace(rootSessionId, input.teamId, input.workspace);
+      throw new Error('Agent Team workspace defaults are now global. Use Settings > Agent to change the workspace policy.');
     }
     else {
       const runtime = this.ensureTeam(rootSessionId, input.teamId);
@@ -1083,16 +1095,42 @@ export class AgentTeamCoordinator {
     return canonical;
   }
 
+  /** Historical team workspaceDefaults remain readable in snapshots but never select new workspaces. */
+  private workspacePolicy(): AgentWorkspacePolicy {
+    return this.host.getAgentWorkspacePolicy?.() ?? defaultAgentWorkspacePolicy;
+  }
+
+  private assertWorkspacePolicy(node: AgentTeamNode, requested?: AgentWorkspaceRequest): void {
+    const policy = this.workspacePolicy();
+    // Legacy restored nodes without metadata inherited the root checkout and are therefore shared.
+    const mode = requested?.mode ?? node.workspace?.mode ?? 'shared';
+    if (policy.strict && mode !== policy.preferredMode) {
+      throw new Error(`Global Agent workspace policy strictly requires ${policy.preferredMode}; requested ${mode} is refused. Use Settings > Agent to change the policy.`);
+    }
+  }
+
+  getWorkspacePolicy(): AgentWorkspacePolicy & { explanation: string } {
+    const policy = this.workspacePolicy();
+    return {
+      ...policy,
+      explanation: policy.strict
+        ? `Global strict policy requires ${policy.preferredMode} for future executable admissions; incompatible workspace modes are refused.`
+        : `Global preference defaults future spawns to ${policy.preferredMode}; an explicit per-spawn workspace mode may override it.`,
+    };
+  }
+
   private async provisionWorkspace(runtime: AgentTeamRuntime, parent: AgentTeamNode, node: AgentTeamNode, requested?: AgentWorkspaceRequest): Promise<(() => void) | undefined> {
-    const defaults = runtime.state.workspaceDefaults;
-    const choice = requested ?? (defaults ? { mode: defaults.mode, ...(defaults.mode === 'worktree' && defaults.baseRef ? { baseRef: defaults.baseRef } : {}) } : { mode: 'shared' as const });
+    // New nodes start with provisional shared metadata; only an explicit request is meaningful before selection.
+    if (requested) this.assertWorkspacePolicy(node, requested);
     const parentPath = await this.validateNodeWorkspace(runtime, parent);
+    // Resolve omission only after async validation so a just-saved preference applies before any Git mutation.
+    const choice = requested ?? { mode: this.workspacePolicy().preferredMode };
+    this.assertWorkspacePolicy(node, choice);
     if (choice.mode === 'shared') {
       node.workspace = { mode: 'shared', path: parentPath, parentPath, state: 'ready' };
       return;
     }
-    const prefix = defaults?.branchPrefix ?? 'fate/agent';
-    const branch = choice.branch ?? `${prefix}/${node.handle}-${node.id.slice(-8)}`;
+    const branch = choice.branch ?? `fate/agent/${node.handle}-${node.id.slice(-8)}`;
     if (parent.permissionLevel === 'read-only' || this.host.resolveRoot(runtime.state.rootSessionId)?.permissionLevel === 'read-only') throw new Error('Creating an agent worktree requires edit or full-access authority.');
     const parentKey = this.checkoutKey(parentPath);
     if (this.workspaceOperationLocks.has(parentKey)) throw new Error('A workspace operation holds the parent checkout. Retry after it finishes.');
@@ -1116,6 +1154,8 @@ export class AgentTeamCoordinator {
   private acquireLease(runtime: AgentTeamRuntime, nodeId: string, permissionLevel: PermissionLevel) {
     const writer = permissionLevel !== 'read-only';
     const node = this.requireNode(runtime, nodeId);
+    // Every executable admission, including restored/queued/direct-message turns, rechecks live strict policy.
+    this.assertWorkspacePolicy(node);
     const checkout = this.checkoutKey(this.checkoutForNode(runtime, node));
     if (this.workspaceOperationLocks.has(checkout)) throw new Error('A workspace operation holds this checkout. Retry after it finishes.');
     const held = this.projectWriter.get(checkout);
@@ -1627,7 +1667,20 @@ export class AgentTeamCoordinator {
       this.changed(runtime, `Queued follow-up ${task.id} for ${node.path} failed.`);
       return;
     }
-    const lease = this.acquireLease(runtime, node.id, node.permissionLevel);
+    let lease;
+    try {
+      lease = this.acquireLease(runtime, node.id, node.permissionLevel);
+    } catch (error) {
+      task.status = 'interrupted';
+      task.error = `Queued follow-up admission refused: ${error instanceof Error ? error.message : String(error)}`.slice(0, 4_000);
+      task.endedAt = Date.now();
+      envelope.state = 'failed';
+      envelope.error = task.error.slice(0, 2_000);
+      node.status = 'interrupted';
+      node.lastError = task.error;
+      this.changed(runtime, `${node.path} queued follow-up ${task.id} was refused by current policy.`);
+      return;
+    }
     if (nodeRuntime.retentionTimer) clearTimeout(nodeRuntime.retentionTimer);
     delete nodeRuntime.retentionTimer;
     nodeRuntime.lease = lease;
@@ -1662,7 +1715,18 @@ export class AgentTeamCoordinator {
       this.changed(runtime, `${parent.path} could not resume after child join.`);
       return;
     }
-    const lease = this.acquireLease(runtime, parent.id, parent.permissionLevel);
+    let lease;
+    try {
+      lease = this.acquireLease(runtime, parent.id, parent.permissionLevel);
+    } catch (error) {
+      task.status = 'interrupted';
+      task.error = `Waiting parent resume refused: ${error instanceof Error ? error.message : String(error)}`.slice(0, 4_000);
+      task.endedAt = Date.now();
+      parent.status = 'interrupted';
+      parent.lastError = task.error;
+      this.changed(runtime, `${parent.path} could not resume under the current workspace policy.`);
+      return;
+    }
     if (nodeRuntime.retentionTimer) clearTimeout(nodeRuntime.retentionTimer);
     delete nodeRuntime.retentionTimer;
     nodeRuntime.lease = lease;

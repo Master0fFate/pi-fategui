@@ -5,7 +5,7 @@ import { defaultImageGenerationSettings } from '../../shared/imageGeneration';
 import { InMemorySessionPermissionStore } from './SessionPermissionStore';
 import { InMemoryGoalMaxRepository } from './goalmaxxing/GoalMaxRepository';
 import { MultiProjectPiRuntime, backgroundAttentionUpdate } from './MultiProjectPiRuntime';
-import type { PiSdkAdapter } from './PiRuntimeService';
+import type { PiRuntimeService, PiSdkAdapter } from './PiRuntimeService';
 
 const started = { type: 'run.started', runId: 'run-1', timestamp: 1 } satisfies PiEvent;
 const completed = { type: 'run.completed', runId: 'run-1', aborted: false, timestamp: 2 } satisfies PiEvent;
@@ -62,7 +62,7 @@ function makeFakeRuntime(): AgentSessionRuntime {
   } as unknown as AgentSessionRuntime;
 }
 
-function makeMulti() {
+function makeMulti(getAgentWorkspacePolicy: () => { preferredMode: 'shared' | 'worktree'; strict: boolean } = () => ({ preferredMode: 'worktree', strict: false })) {
   const created = vi.fn();
   const modelRuntime = { getAvailable: vi.fn(async () => [model]), getModel: vi.fn(() => model) };
   const adapter: PiSdkAdapter = {
@@ -74,6 +74,7 @@ function makeMulti() {
     adapter,
     sessionPermissions: new InMemorySessionPermissionStore(),
     getImageGenerationSettings: () => defaultImageGenerationSettings,
+    getAgentWorkspacePolicy,
     createGoalPersistence: () => new InMemoryGoalMaxRepository(),
     browserIntegration: null,
     defaults: async () => ({ thinkingLevel: 'medium', defaultModel: null }),
@@ -116,6 +117,21 @@ describe('MultiProjectPiRuntime multi-folder', () => {
     expect(created).toHaveBeenCalledTimes(2);
     expect(reopened.status).not.toBe('disconnected');
     expect(multi.focusedProjectPath).toBe('/proj-A');
+    await multi.dispose();
+  });
+
+  it('threads a live global workspace policy into focused and background PiRuntimeService coordinators', async () => {
+    let policy: { preferredMode: 'shared' | 'worktree'; strict: boolean } = { preferredMode: 'shared', strict: false };
+    const { multi } = makeMulti(() => policy);
+    await multi.openProject({ path: '/proj-A', name: 'A', trusted: true });
+    await multi.openProject({ path: '/proj-B', name: 'B', trusted: true });
+    const internals = multi as unknown as { manager: { get(path: string): PiRuntimeService | undefined } };
+    const coordinatorFor = (projectPath: string) => (internals.manager.get(projectPath)! as unknown as { agentTeams: { getWorkspacePolicy(): { preferredMode: string; strict: boolean } } }).agentTeams;
+    expect(coordinatorFor('/proj-A').getWorkspacePolicy()).toMatchObject({ preferredMode: 'shared', strict: false });
+    policy = { preferredMode: 'worktree', strict: true };
+    // A remains background after B is focused; both read the same current Settings getter without reopening.
+    expect(coordinatorFor('/proj-A').getWorkspacePolicy()).toMatchObject({ preferredMode: 'worktree', strict: true });
+    expect(coordinatorFor('/proj-B').getWorkspacePolicy()).toMatchObject({ preferredMode: 'worktree', strict: true });
     await multi.dispose();
   });
 

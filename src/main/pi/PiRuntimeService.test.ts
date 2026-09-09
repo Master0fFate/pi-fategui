@@ -23,6 +23,8 @@ import { ModelsDevService } from './modelsdev/ModelsDevService';
 import { ModelsDevStore } from './modelsdev/ModelsDevStore';
 import { TASK_TOOL_NAMES } from './tasks/TaskTools';
 import { InMemorySessionQueueRepository, type SessionQueuePersistence } from './SessionQueueRepository';
+import { AgentWorkspaceGitService } from '../git/AgentWorkspaceGitService';
+import type { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
 
 const model = { provider: 'test', id: 'model', name: 'Test Model', reasoning: true, contextWindow: 1000, input: ['text', 'image'] as const };
 
@@ -684,8 +686,49 @@ describe('PiRuntimeService', () => {
     expect(() => assertOwnedToolDefinitions({ getToolDefinition: () => ({ name: 'subagent' }) } as never, [owned])).toThrow(/extension replaced Fate UI's owned subagent tool/u);
   });
 
+  it.each([
+    { preferredMode: 'worktree', strict: false, expected: 'shared' },
+    { preferredMode: 'shared', strict: false, expected: 'shared' },
+    { preferredMode: 'shared', strict: true, expected: 'shared' },
+    { preferredMode: 'worktree', strict: true, expected: 'worktree' },
+  ] as const)('keeps bounded goal reviews on the current project under $preferredMode / strict=$strict policy', async ({ preferredMode, strict, expected }) => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    service.setAgentWorkspacePolicySource(() => ({ preferredMode, strict }));
+    const internals = service as unknown as { agentTeams: AgentTeamCoordinator; verifyGoalWithChild(sessionId: string, prompt: string): Promise<unknown> };
+    const snapshot = vi.spyOn(AgentWorkspaceGitService.prototype, 'status').mockResolvedValue({ head: 'a'.repeat(40), dirty: false, branch: 'main' });
+    const spawn = vi.spyOn(internals.agentTeams, 'spawn').mockRejectedValue(new Error('Reached reviewed admission'));
+    try {
+      await service.openProject({ path: '/project', name: 'project', trusted: true });
+      await expect(internals.verifyGoalWithChild('session-1', 'Inspect the delivered project')).rejects.toThrow('Reached reviewed admission');
+      expect(spawn.mock.calls[0]?.[1]).toMatchObject({ permission: 'read-only', workspace: { mode: expected } });
+      expect(snapshot).toHaveBeenCalledTimes(expected === 'worktree' ? 1 : 0);
+    } finally {
+      await service.dispose();
+      snapshot.mockRestore();
+    }
+  });
+
+  it('refuses strict isolated goal verification of uncommitted project changes', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    service.setAgentWorkspacePolicySource(() => ({ preferredMode: 'worktree', strict: true }));
+    const internals = service as unknown as { agentTeams: AgentTeamCoordinator; verifyGoalWithChild(sessionId: string, prompt: string): Promise<unknown> };
+    const snapshot = vi.spyOn(AgentWorkspaceGitService.prototype, 'status').mockResolvedValue({ head: 'a'.repeat(40), dirty: true, branch: 'main' });
+    const spawn = vi.spyOn(internals.agentTeams, 'spawn');
+    try {
+      await service.openProject({ path: '/project', name: 'project', trusted: true });
+      await expect(internals.verifyGoalWithChild('session-1', 'Verify changes')).rejects.toThrow('clean, committed project');
+      expect(spawn).not.toHaveBeenCalled();
+      expect(internals.agentTeams.getTeams('session-1')).toHaveLength(0);
+    } finally {
+      await service.dispose();
+      snapshot.mockRestore();
+    }
+  });
+
   it('activates one orchestration protocol surface while registering both for restored sessions', async () => {
-    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'agent_workspace', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'configure_agent_workspace', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'message_session', 'goalmax_status', 'goalmax_report', 'goalmax_complete', ...TASK_TOOL_NAMES];
+    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'agent_workspace', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'get_agent_workspace_policy', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'message_session', 'goalmax_status', 'goalmax_report', 'goalmax_complete', ...TASK_TOOL_NAMES];
     const legacy = fixture();
     const legacyService = new PiRuntimeService(legacy.adapter);
     await legacyService.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'medium', defaultModel: null, agentTeamMode: 'legacy' });
@@ -700,7 +743,7 @@ describe('PiRuntimeService', () => {
     await v2Service.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'max', defaultModel: null, agentTeamMode: 'v2' });
     const v2Tools = (v2.adapter.createRuntime as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as ToolDefinition[];
     expect(v2Tools.map((tool) => tool.name)).toEqual(allNames);
-    expect(v2.session.getActiveToolNames()).toEqual(expect.arrayContaining(['spawn_agent', 'agent_workspace', 'configure_agent_workspace', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'subagent_catalog']));
+    expect(v2.session.getActiveToolNames()).toEqual(expect.arrayContaining(['spawn_agent', 'agent_workspace', 'get_agent_workspace_policy', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'subagent_catalog']));
     expect(v2.session.getActiveToolNames()).not.toContain('subagent_start');
     await v2Service.dispose();
   });

@@ -20,6 +20,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type { AppSettings, Diagnostics, LogEntry, ModelInfo, SpeechDownloadProgress, SpeechHotkeyStatus, SpeechModelId, SpeechStatus, SpeechTier, UpdateCheckResult, VoiceHotkeyMode } from '../../../shared/contracts/ipc';
 import { defaultSpeechSettings } from '../../../shared/contracts/ipc';
+import { defaultAgentWorkspacePolicy } from '../../../shared/contracts/multiAgent';
 import type { ThemeDefinition } from '../../../shared/themes';
 import {
   defaultImageGenerationModel,
@@ -43,7 +44,7 @@ import { ProviderModelsDialog } from './ProviderModelsDialog';
 import { enabledModelIdentity, modelIdentity, visibleModels } from '../../../shared/modelVisibility';
 
 const fallback: AppSettings = {
-  appearance: 'dark', defaultModel: null, disabledModels: [], thinkingLevel: 'medium', agentTeamMode: 'legacy', confirmRiskyCommands: true,
+  appearance: 'dark', defaultModel: null, disabledModels: [], thinkingLevel: 'medium', agentTeamMode: 'legacy', agentWorkspace: defaultAgentWorkspacePolicy, confirmRiskyCommands: true,
   terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight',
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
@@ -56,7 +57,7 @@ type SettingsToast = { kind: 'success' | 'error'; title: string; message: string
 const sections = [
   { id: 'general', label: 'General', detail: 'Look & performance', icon: SlidersHorizontal },
   { id: 'compaction', label: 'Compaction', detail: 'Density controls', icon: Rows3 },
-  { id: 'agent', label: 'Agent', detail: 'Models & reasoning', icon: Bot },
+  { id: 'agent', label: 'Agent', detail: 'Models & workspaces', icon: Bot },
   { id: 'voice', label: 'Voice', detail: 'Local speech-to-text', icon: Mic2 },
   { id: 'workspace', label: 'Workspace', detail: 'Trust & terminal', icon: ShieldCheck },
   { id: 'system', label: 'System', detail: 'Health & logs', icon: Activity },
@@ -143,6 +144,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   const [settings, setSettings] = useState<AppSettings>(fallback);
   const [persistedSettings, setPersistedSettings] = useState<AppSettings>(fallback);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const workspacePolicy = settings.agentWorkspace ?? fallback.agentWorkspace;
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -620,7 +622,25 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
 
               {activeSection === 'agent' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-agent" aria-labelledby="settings-tab-agent">
-                  <div className="settings-title"><div><h3>Agent defaults</h3><p>Fallbacks for the first Pi session opened in a project. Later sessions inherit the active composer settings.</p></div></div>
+                  <div className="settings-title"><div><h3>Subagent workspaces</h3><p>Choose how the AI starts its agents, across projects and teams. No manual team setup needed.</p></div></div>
+                  <div className="settings-group" role="group" aria-label="Subagent workspace policy">
+                    <label className="settings-toggle">
+                      <div><strong>Prefer isolated worktrees</strong><small>On: new agents get separate Git checkouts. Off: they share their direct parent’s checkout.</small></div>
+                      <input type="checkbox" aria-label="Prefer isolated worktrees" checked={workspacePolicy.preferredMode === 'worktree'} onChange={(event) => setSettings({ ...settings, agentWorkspace: { ...workspacePolicy, preferredMode: event.target.checked ? 'worktree' : 'shared' } })} />
+                      <span aria-hidden="true" />
+                    </label>
+                    <label className="settings-toggle">
+                      <div><strong>Strict mode</strong><small>{workspacePolicy.strict ? 'The agent must use your preferred mode. Conflicting launches and resumed work are refused.' : 'This is a preference. The agent can choose the other mode when the task calls for it.'}</small></div>
+                      <input type="checkbox" aria-label="Strict workspace mode" checked={workspacePolicy.strict} onChange={(event) => setSettings({ ...settings, agentWorkspace: { ...workspacePolicy, strict: event.target.checked } })} />
+                      <span aria-hidden="true" />
+                    </label>
+                  </div>
+                  <p className="settings-workspace-policy-summary" data-strict={workspacePolicy.strict}>
+                    <strong>{workspacePolicy.strict ? 'Required' : 'Preferred'}: {workspacePolicy.preferredMode === 'worktree' ? 'isolated worktree' : 'shared checkout'}</strong>
+                    <span>New agents use this preference after saving, including in existing teams. Strict mode also applies to resumed work. Running work stays in its current checkout.</span>
+                    <span>{settings.agentTeamMode === 'legacy' ? 'Applies to Agent Teams V2, including restored teams. Legacy subagents are not affected.' : 'No project restart is needed for workspace policy changes.'} Worktrees start from committed Git files, not the parent’s uncommitted changes. They are not a security sandbox.</span>
+                  </p>
+                  <div className="settings-title settings-title--spaced"><div><h3>Agent defaults</h3><p>Fallbacks for the first Pi session opened in a project. Later sessions inherit the active composer settings.</p></div></div>
                   <div className="settings-model-picker">
                     <div className="settings-model-heading"><div><strong>Default model</strong><small>Models are separated by provider so the catalog stays clear as it grows.</small></div>{selectedProvider && <span>{formatProviderName(selectedProvider)}</span>}</div>
                     <div className="settings-model-controls">

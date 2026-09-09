@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 
-test('Run Agents configures, reviews, integrates and retains isolated workspaces', async () => {
+test('Settings owns workspace policy while Run Agents reviews and retains work', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'fate-agent-workspace-e2e-'));
   const root = path.join(directory, 'project');
   const userData = path.join(directory, 'profile');
@@ -22,20 +22,46 @@ test('Run Agents configures, reviews, integrates and retains isolated workspaces
   });
   try {
     const page = await application.firstWindow();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+    await settings.getByRole('tab', { name: /Agent/u }).click();
+    const preferred = settings.getByRole('checkbox', { name: 'Prefer isolated worktrees' });
+    const strict = settings.getByRole('checkbox', { name: 'Strict workspace mode' });
+    await expect(preferred).toBeChecked();
+    await expect(strict).not.toBeChecked();
+    await settings.getByText('Strict mode', { exact: true }).click();
+    await settings.getByRole('combobox', { name: 'Agent orchestration mode' }).click();
+    await page.getByRole('option', { name: /Agent Teams V2/u }).click();
+    await settings.getByRole('button', { name: 'Save changes' }).click();
+    await expect(settings.getByRole('status')).toContainText('Settings saved');
+    await expect.poll(() => page.evaluate(() => window.piDesktop.getSettings())).toMatchObject({ agentWorkspace: { preferredMode: 'worktree', strict: true } });
+    await settings.getByRole('group', { name: 'Subagent workspace policy' }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: 'test-results/agent-workspace-settings.png' });
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
+    await expect.poll(() => settings.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: 'test-results/agent-workspace-settings-narrow.png' });
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1280, 800));
+    await page.getByRole('button', { name: 'Close settings' }).click();
     await page.getByRole('button', { name: /Open project/u }).first().click();
     await page.getByLabel('Message Pi').fill('__FATE_V2_AGENT_FIXTURE__');
     await page.getByRole('button', { name: 'Send message' }).click();
     await page.locator('.inspector-primary-nav').getByRole('button', { name: /^Run(?:,|$)/u }).click();
     await page.getByRole('tab', { name: /^Subagent sessions/u }).click();
     const agents = page.getByRole('region', { name: 'Agent sessions' });
-    await agents.getByLabel('Workspace defaults for E2E team').click();
-    const defaults = agents.getByRole('form', { name: 'E2E team workspace defaults' });
-    await defaults.getByRole('button', { name: 'New worktree' }).click();
-    await defaults.getByLabel('Base ref').fill('HEAD');
-    await defaults.getByLabel('Branch prefix').fill('agents/custom');
-    await defaults.getByRole('button', { name: 'Save defaults' }).click();
-    await expect(defaults.getByRole('button', { name: 'Saved' })).toBeVisible();
-    await agents.getByLabel('Workspace defaults for E2E team').click();
+    await expect(agents.getByRole('button', { name: 'Create Agent Team' })).toHaveCount(0);
+    await expect(agents.getByText('Workspace defaults', { exact: true })).toHaveCount(0);
+    await expect(agents.getByLabel('Reviewer Agent Team node active')).toBeVisible();
+    await page.screenshot({ path: 'test-results/agent-workspace-run-panel.png' });
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: /Agent/u }).click();
+    await expect(preferred).toBeChecked();
+    await expect(strict).toBeChecked();
+    await settings.getByText('Prefer isolated worktrees', { exact: true }).click();
+    await settings.getByRole('button', { name: 'Save changes' }).click();
+    await expect(settings.getByRole('status')).toContainText('Settings saved');
+    await expect.poll(() => page.evaluate(() => window.piDesktop.getSettings())).toMatchObject({ agentWorkspace: { preferredMode: 'shared', strict: true } });
+    await page.getByRole('button', { name: 'Close settings' }).click();
+    await expect(agents.getByLabel('Reviewer Agent Team node active')).toBeVisible();
     await agents.getByLabel('Workspace for Reviewer', { exact: true }).click();
     const workspace = page.getByRole('region', { name: 'Reviewer workspace', exact: true });
     await expect(workspace).toContainText('/e2e/worktrees/reviewer');

@@ -1,5 +1,6 @@
 import type { GoalMaxEvent } from '../../shared/contracts/goalmaxxing';
 import type { PiEvent, ProjectState, RuntimeState, SessionSummary } from '../../shared/contracts/ipc';
+import type { AgentWorkspacePolicy } from '../../shared/contracts/multiAgent';
 import type { TaskEvent } from '../../shared/contracts/tasks';
 import type { PiBrowserRuntimeIntegration } from './BrowserRuntimeBridge';
 import type { GoalMaxPersistence } from './goalmaxxing/GoalMaxRepository';
@@ -44,6 +45,8 @@ export interface MultiProjectPiRuntimeDeps {
   browserIntegration: PiBrowserRuntimeIntegration | null;
   defaults: () => Promise<SessionDefaults>;
   getDisabledModels?: () => readonly string[];
+  /** Live global policy used by all focused and background Agent Team runtimes. */
+  getAgentWorkspacePolicy?: () => AgentWorkspacePolicy;
   /** Optional mutation-attestation recorder threaded to root and child confined tools. */
   recordAttestation?: MutationRecorder;
   /** Native taskbar/Dock attention when any root session settles. */
@@ -304,6 +307,7 @@ export class MultiProjectPiRuntime {
     );
     service.setSessionSettledListener(() => this.deps.notifySessionSettled?.());
     if (this.deps.getDisabledModels) service.setDisabledModelsSource(this.deps.getDisabledModels);
+    if (this.deps.getAgentWorkspacePolicy) service.setAgentWorkspacePolicySource(this.deps.getAgentWorkspacePolicy);
     return service;
   }
 
