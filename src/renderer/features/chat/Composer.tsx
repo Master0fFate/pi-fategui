@@ -2206,7 +2206,6 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       )}
       {queuedItems.length > 0 && (
         <section className="queued-messages" aria-label="Queued messages" aria-live="polite">
-          {recoveredQueueItems.length > 0 && <p>Recovered messages were not resent. Delivery is uncertain; check the transcript and permissions. Restoring copies the draft and its model settings; discard the saved copy when finished.</p>}
           {queuedItems.map((item) => {
             const busy = queueBusyId === item.id;
             const held = heldQueueIds.has(item.id);
@@ -2233,8 +2232,8 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                       <CornerUpLeft size={13} aria-hidden="true" />
                     </button>
                   </AppTooltip>}
-                  <AppTooltip content={recovered ? 'Copy draft and model settings to the composer (does not send or discard the saved copy)' : 'Edit message'} wrapTrigger>
-                    <button className="queued-message-edit" type="button" aria-label={`${recovered ? 'Restore recovered message' : 'Edit queued message'}: ${item.text}`} disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'edit')}><Pencil size={13} aria-hidden="true" /></button>
+                  <AppTooltip content="Edit message" wrapTrigger>
+                    <button className="queued-message-edit" type="button" aria-label={`Edit queued message: ${item.text}`} disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'edit')}><Pencil size={13} aria-hidden="true" /></button>
                   </AppTooltip>
                   <AppTooltip content="Cancel queued message" wrapTrigger>
                     <button className="queued-message-cancel" type="button" aria-label={`Cancel queued message: ${item.text}`} disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'cancel')}>
@@ -2388,7 +2387,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
             <div className="composer-voice-meter" aria-hidden="true" data-live={isLiveModel || undefined} data-lag={voiceLag || undefined}><i /><i /><i /><i /><i /></div>
           )}
           <div className="composer-toolbar-leading">
-            <LearningIndicator text={draft} />
+            <LearningIndicator />
             {compactToolbar && (
               <Popover.Root
                 open={utilityMenuOpen}

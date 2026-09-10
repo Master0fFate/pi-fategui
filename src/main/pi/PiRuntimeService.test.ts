@@ -1320,7 +1320,28 @@ describe('PiRuntimeService', () => {
     const result = await restored.mutateQueuedMessage({ id: queued.id, action: 'edit' });
     expect(result.restored?.text).toBe('follow-up');
     expect(result.state.pendingModel).toMatchObject({ provider: 'test', id: 'model' });
-    expect(await persistence.load('/project', 'session-1')).toEqual([queued]);
+    expect(result.state.queue?.recovered).toBeUndefined();
+    expect(await persistence.load('/project', 'session-1')).toEqual([]);
+    expect(restarted.session.prompt).not.toHaveBeenCalled();
+    await restored.dispose();
+  });
+
+  it('discards a recovered draft without sending it', async () => {
+    const persistence = new InMemorySessionQueueRepository();
+    const create = (fake: ReturnType<typeof fixture>, store: SessionQueuePersistence = persistence) => new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, store);
+    const fake = fixture();
+    const service = create(fake);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'work', behavior: 'prompt' });
+    await service.prompt({ text: 'follow-up', behavior: 'followUp' });
+    const queued = service.getState(false).queue!.items![0]!;
+    fake.settle();
+    await service.dispose();
+
+    const restarted = fixture();
+    const restored = create(restarted);
+    await restored.openProject({ path: '/project', name: 'project', trusted: true });
+    expect(restored.getState(false).queue?.recovered).toEqual([queued]);
     await restored.mutateQueuedMessage({ id: queued.id, action: 'cancel' });
     expect(await persistence.load('/project', 'session-1')).toEqual([]);
     expect(restarted.session.prompt).not.toHaveBeenCalled();
@@ -1506,6 +1527,7 @@ describe('PiRuntimeService', () => {
     const edited = await service.mutateQueuedMessage({ id: first!.id, action: 'edit' });
     expect(edited.restored).toEqual({ text: 'same text' });
     expect(edited.state.queue?.items?.map((item) => item.id)).toEqual([second!.id]);
+    expect(edited.state.queue?.recovered).toBeUndefined();
 
     const cancelled = await service.mutateQueuedMessage({ id: second!.id, action: 'cancel' });
     expect(cancelled.state.queue).toMatchObject({ steering: 0, followUp: 0, items: [] });
