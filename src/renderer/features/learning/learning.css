@@ -23,10 +23,11 @@
 .learning-warning { border-left: 3px solid var(--theme-accent); padding-left: 12px; }
 .learning-sources { max-height: 200px; overflow: auto; }
 .learning-sources label { display: flex; align-items: flex-start; overflow-wrap: anywhere; }
-.learning-indicator { position: relative; font-size: 11px; }
-.learning-indicator > button { display: flex; align-items: center; gap: 5px; }
-.learning-popover { position: absolute; bottom: 32px; left: 0; width: 340px; max-height: 350px; overflow: auto; padding: 16px; z-index: 30; background: var(--theme-panel); color: var(--theme-text); border: 1px solid var(--theme-border); border-radius: 10px; box-shadow: 0 12px 36px color-mix(in srgb, var(--theme-shadow) 40%, transparent); }
-.learning-popover p { line-height: 1.6; }
+.learning-indicator {
+  display: grid; width: 28px; height: 28px; place-items: center; padding: 0; border: 0;
+  border-radius: 7px; color: var(--theme-muted); background: transparent; cursor: pointer;
+}
+.learning-indicator:hover { color: var(--theme-text); background: var(--theme-raised); }
 .learning-storage-settings { margin-top: 18px; }
 .learning-storage-settings dl { display: grid; gap: 10px; }
 .learning-storage-settings dl > div { display: grid; gap: 3px; }

@@ -301,6 +301,16 @@ describe('dispatch boundary, not preview or history', () => {
     await expect(adapter.wrap(send as never)({} as never, { messages: [] })).rejects.toThrow('ineligible');
     expect(send).not.toHaveBeenCalled(); expect(blocked).toHaveBeenCalledOnce();
   });
+  it('does not block coding when the master switch is off, even if a session looks stale', async () => {
+    settings.enabled = false;
+    const stale = { ...origin, valid: () => false };
+    const adapter = new LearningContextAdapter(service, () => stale);
+    const send = vi.fn(() => ({ ok: true }));
+    adapter.register({ id: randomUUID(), text: 'hello', turn: { binding: origin.binding, pins: [], excluded: [] } });
+    adapter.start('hello');
+    await expect(adapter.wrap(send as never)({} as never, { messages: [] }, { signal: AbortSignal.abort() })).resolves.toEqual({ ok: true });
+    expect(send).toHaveBeenCalledOnce();
+  });
   it('attaches once per turn across retries without mutating signed history and does not replay continuation/fork context', async () => {
     const { lesson, revision } = await approved();
     const adapter = new LearningContextAdapter(service, () => origin);

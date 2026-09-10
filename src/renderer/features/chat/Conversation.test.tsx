@@ -1441,9 +1441,10 @@ describe('conversation components', () => {
     Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, mutateQueuedMessage } as unknown as PiDesktopApi });
     useRuntimeStore.setState({ runtime: ready(), queue: { steering: 0, followUp: 0, recovered: [queued] } });
     render(<Composer onOpenProject={vi.fn()} />);
-    expect(screen.getByText(/Delivery is uncertain; check the transcript/u)).toBeInTheDocument();
+    expect(screen.getByText('Recovered')).toBeInTheDocument();
+    expect(screen.queryByText(/Delivery is uncertain/u)).not.toBeInTheDocument();
     expect(screen.queryByRole('switch', { name: /queued message/u })).not.toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole('button', { name: `Restore recovered message: ${queued.text}` }));
+    await userEvent.setup().click(screen.getByRole('button', { name: `Edit queued message: ${queued.text}` }));
     expect(screen.getByLabelText('Message Pi')).toHaveValue(queued.text);
     expect(prompt).not.toHaveBeenCalled();
     expect(mutateQueuedMessage).toHaveBeenCalledWith({ id: queued.id, action: 'edit' });
@@ -1540,6 +1541,7 @@ describe('conversation components', () => {
     await user.click(screen.getByRole('button', { name: `Edit queued message: ${queued.text}` }));
 
     expect(mutateQueuedMessage).toHaveBeenCalledWith({ id: queued.id, action: 'edit' });
+    expect(screen.queryByText('Recovered')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Message Pi')).toHaveValue('Fix teh heading');
     await waitFor(() => expect(screen.getByLabelText('Message Pi')).toHaveFocus());
   });

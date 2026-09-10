@@ -29,16 +29,20 @@ export class LearningContextAdapter {
       const active = this.active;
       if (!active || this.disposed) return original(model, context, options);
       const origin = active.origin;
+      const pinned = Boolean(active.dispatch.turn?.pins.length);
+      if (!this.service.active(origin) && !pinned) return original(model, context, options);
       if (active.prepared === undefined) {
         try { active.prepared = await this.service.prepareDispatch(origin, active.dispatch.id, active.dispatch.text, active.dispatch.turn); }
         catch (error) { active.dispatch.blocked?.(); delete active.dispatch.blocked; throw error; }
       }
-      if (!origin.valid() || this.disposed || options?.signal?.aborted) {
-        if (active.prepared) await this.service.markDispatch(origin, active.dispatch.id, 'not-sent');
-        learningError('Originating session changed before dispatch.');
-      }
       const prepared = active.prepared;
       if (!prepared) return original(model, context, options);
+      if (!origin.valid() || this.disposed || options?.signal?.aborted) {
+        await this.service.markDispatch(origin, active.dispatch.id, 'not-sent');
+        if (pinned) learningError('Originating session changed before dispatch.');
+        active.prepared = null;
+        return original(model, context, options);
+      }
       if (!this.service.active(origin) && prepared.manifest.state === 'prepared') {
         await this.service.markDispatch(origin, active.dispatch.id, 'not-sent');
         if (active.dispatch.turn?.pins.length) learningError('Learning was switched off. Refresh the explicit selection.');

@@ -1762,7 +1762,8 @@ export class PiRuntimeService {
     }
     const initialization = this.initialization;
     const runId = randomUUID();
-    const learning = replayedMessage?.learning ?? input.learning ?? (!skipCommandExpansion && this.learningService && this.project?.trusted ? { binding: this.learningOrigin(slot).binding, pins: [], excluded: [] } : undefined);
+    const learningMasterOn = Boolean(this.learningService && this.project?.trusted && this.learningService.active(this.learningOrigin(slot)));
+    const learning = replayedMessage?.learning ?? input.learning ?? (!skipCommandExpansion && learningMasterOn ? { binding: this.learningOrigin(slot).binding, pins: [], excluded: [] } : undefined);
     if (learning && this.learningService) this.learningService.assertBinding(this.learningOrigin(slot), learning.binding, true);
     if (learning?.pins.length && !slot.learningContext) throw this.unsupported('Memory Learning context attachment');
     if (learning?.pins.length && input.text.trimStart().startsWith('/')) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Use selected learning on a plain user turn, not an extension command.', retryable: true });
@@ -3892,6 +3893,10 @@ export class PiRuntimeService {
         if (requested && isModelDisabled(this.disabledModelsSource(), requested.provider, requested.id)) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: disabledModelMessage(requested.provider, requested.id), retryable: false });
         if (requested && (!model || !this.models.some((candidate) => candidate.provider === requested.provider && candidate.id === requested.id))) throw new PiDesktopError({ code: 'AUTH_REQUIRED', message: `Recovered model ${requested.provider}/${requested.id} is unavailable. Reconnect it before restoring this draft.`, retryable: true });
         if (recovered.requestedThinkingLevel && recovered.requestedThinkingLevel !== 'off' && !(model ?? session.model)?.reasoning) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The recovered reasoning setting is unsupported. The saved draft was retained.', retryable: false });
+        const previous = slot.recoveredMessages;
+        slot.recoveredMessages = previous.filter((item) => item.id !== input.id);
+        try { await this.persistQueue(slot); }
+        catch (error) { if (ownsSession()) slot.recoveredMessages = previous; throw error; }
         if (model) slot.pendingModel = { token: randomUUID(), model, info: toModelInfo(model) };
         if (recovered.requestedThinkingLevel) slot.pendingThinkingLevel = { token: randomUUID(), level: recovered.requestedThinkingLevel };
         const { text, images, browserAnnotations, sessionReferences, learning } = recovered;
@@ -3933,13 +3938,11 @@ export class PiRuntimeService {
         : current.map((item) => item.id === input.id ? { ...item, behavior: input.action === 'steer' ? 'steer' as const : 'followUp' as const } : item);
       if (heldCollection === 'compaction') slot.heldCompactionMessages = next;
       else slot.heldGoalMessages = next;
-      if (input.action === 'edit') this.retainEditingDraft(slot, target);
       try { await this.persistQueue(slot); }
       catch (error) {
         if (ownsSession()) {
           if (heldCollection === 'compaction') slot.heldCompactionMessages = current;
           else slot.heldGoalMessages = current;
-          if (input.action === 'edit') slot.recoveredMessages = slot.recoveredMessages.filter((item) => item.id !== target.id);
         }
         throw error;
       }
@@ -3985,7 +3988,6 @@ export class PiRuntimeService {
       // Track the intended survivors so partial requeue failures can still be
       // reconciled against Pi's authoritative public queue counts.
       slot.queuedMessages = next;
-      if (input.action === 'edit') this.retainEditingDraft(slot, target);
       for (const item of next.filter((queued) => queued.behavior === 'steer')) {
         await session.steer(item.transportText, item.images?.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })));
         if (!ownsSession()) throw this.replacementSuperseded();
