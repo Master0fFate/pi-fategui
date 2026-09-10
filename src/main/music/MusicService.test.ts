@@ -300,8 +300,11 @@ describe('MusicService', () => {
     await service.resolveTrack(queue.tracks[0]!.id);
     await vi.waitFor(() => expect(download).toHaveBeenCalledOnce());
 
-    const second = await service.resolveTrack(queue.tracks[1]!.id);
-    expect(second.url).toMatch(/^fate-media:\/\/audio\/[0-9a-f]{32}$/u);
+    const second = await vi.waitFor(async () => {
+      const resolved = await service.resolveTrack(queue.tracks[1]!.id);
+      expect(resolved.url).toMatch(/^fate-media:\/\/audio\/[0-9a-f]{32}$/u);
+      return resolved;
+    });
     expect(process.run).toHaveBeenCalledTimes(3);
 
     const served = service.openMediaRequest('GET', second.url, null);
