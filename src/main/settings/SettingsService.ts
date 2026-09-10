@@ -8,6 +8,8 @@ import { defaultAgentWorkspacePolicy } from '../../shared/contracts/multiAgent';
 import { builtInThemes, customThemeFileSchema, themeCatalogSchema, type ThemeDefinition } from '../../shared/themes';
 import type { AppLogService } from '../logging/AppLogService';
 import { PiThemeService } from './PiThemeService';
+import { SkinPackService } from './SkinPackService';
+import { skinPackIdSchema, skinPackThemeId, type SkinCatalog } from '../../shared/skins';
 
 const defaults: AppSettings = {
   appearance: 'dark',
@@ -28,6 +30,7 @@ const defaults: AppSettings = {
   compactSessions: false,
   advancedPromptImprovement: false,
   crashTelemetryEnabled: false,
+  skinId: 'default',
   themeId: 'catppuccin-mocha',
   interfaceFont: 'noto-sans',
   codeFont: 'jetbrains-mono',
@@ -39,6 +42,7 @@ export class SettingsService {
   private settings: AppSettings = defaults;
   private loaded = false;
   private writeQueue: Promise<void> = Promise.resolve();
+  readonly skinPacks: SkinPackService;
 
   constructor(
     private readonly logs: AppLogService,
@@ -46,7 +50,7 @@ export class SettingsService {
       ? path.resolve(process.env.FATE_GUI_DATA_DIR)
       : path.join(os.homedir(), '.pi', 'fateGUI'),
     private readonly piThemes: Pick<PiThemeService, 'discover'> = new PiThemeService(),
-  ) {}
+  ) { this.skinPacks = new SkinPackService(this.dataRoot); }
 
   async load(): Promise<AppSettings> {
     if (this.loaded) return this.get();
@@ -59,6 +63,17 @@ export class SettingsService {
         await this.migrateLegacy();
       } else {
         this.logs.write('warn', 'settings', `Using defaults because settings could not be loaded: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (this.settings.skinId.startsWith('pack:')) {
+      const available = await this.skinPacks.list().then((catalog) => catalog.skins.some((skin) => skin.id === this.settings.skinId)).catch(() => false);
+      if (!available) {
+        this.logs.write('warn', 'skins', 'The saved skin pack is unavailable. Using Default without resetting other preferences.');
+        this.settings = {
+          ...this.settings,
+          themeId: this.settings.themeId === skinPackThemeId(this.settings.skinId) ? defaults.themeId : this.settings.themeId,
+          skinId: 'default',
+        };
       }
     }
     return this.get();
@@ -94,6 +109,8 @@ export class SettingsService {
       this.logs.write(diagnostic.type === 'error' ? 'error' : 'warn', 'themes', diagnostic.message);
     }
     const merged = new Map(builtInThemes.map((theme) => [theme.id, theme]));
+    const packs = await this.skinPacks.list().catch(() => null);
+    for (const skin of packs?.skins ?? []) { if (skin.palette) merged.set(skin.palette.id, skin.palette); }
     for (const theme of discovered.themes) merged.set(theme.id, theme);
     for (const theme of custom) merged.set(theme.id, theme);
     return themeCatalogSchema.parse([...merged.values()]);
@@ -102,10 +119,34 @@ export class SettingsService {
   async set(value: AppSettings): Promise<AppSettings> {
     const snapshot = appSettingsSchema.parse(value);
     const operation = this.writeQueue.then(async () => {
+      if (snapshot.skinId.startsWith('pack:') && !(await this.skinPacks.list()).skins.some((skin) => skin.id === snapshot.skinId)) {
+        throw new Error('The selected skin pack is unavailable. Choose Default or reimport it.');
+      }
       await this.persist(snapshot);
       this.settings = snapshot;
       this.logs.write('info', 'settings', 'Application settings saved.');
       return { ...snapshot };
+    });
+    this.writeQueue = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  removeSkinPack(id: string): Promise<{ catalog: SkinCatalog; settings: AppSettings }> {
+    skinPackIdSchema.parse(id);
+    const operation = this.writeQueue.then(async () => {
+      await this.load();
+      const catalog = await this.skinPacks.remove(id);
+      const current = this.settings;
+      const next = {
+        ...current,
+        skinId: current.skinId === id ? 'default' : current.skinId,
+        themeId: current.themeId === skinPackThemeId(id) ? defaults.themeId : current.themeId,
+      };
+      if (next.skinId !== current.skinId || next.themeId !== current.themeId) {
+        await this.persist(next);
+        this.settings = next;
+      }
+      return { catalog, settings: this.get() };
     });
     this.writeQueue = operation.then(() => undefined, () => undefined);
     return operation;

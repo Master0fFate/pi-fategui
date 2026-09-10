@@ -20,7 +20,8 @@ export const THEME_STORAGE_KEY = 'fate:theme:last-applied';
 
 export function persistAppliedTheme(theme: ThemeDefinition): void {
   try {
-    localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(theme));
+    const serialized = JSON.stringify(theme);
+    if (localStorage.getItem(THEME_STORAGE_KEY) !== serialized) localStorage.setItem(THEME_STORAGE_KEY, serialized);
   } catch {
     // Storage can be unavailable (blocked storage, privacy mode, tests). The
     // theme still applies for this session; boot restore is best-effort only.
@@ -40,13 +41,21 @@ export function readStoredTheme(): ThemeDefinition | null {
 
 export function applyTheme(theme: ThemeDefinition, options: { persist?: boolean | undefined } = {}): void {
   const root = document.documentElement;
-  root.dataset.theme = theme.id;
-  root.dataset.themeTone = theme.tone;
-  root.style.colorScheme = theme.tone;
-  for (const [key, variable] of Object.entries(cssTokenNames)) {
-    root.style.setProperty(variable, theme.colors[key as keyof ThemeDefinition['colors']]);
+  const paletteChanged = root.dataset.theme !== theme.id
+    || root.dataset.themeTone !== theme.tone
+    || Object.entries(cssTokenNames).some(([key, variable]) => (
+      root.style.getPropertyValue(variable) !== theme.colors[key as keyof ThemeDefinition['colors']]
+    ));
+  if (paletteChanged) {
+    if (root.dataset.theme !== theme.id) root.dataset.theme = theme.id;
+    if (root.dataset.themeTone !== theme.tone) root.dataset.themeTone = theme.tone;
+    if (root.style.colorScheme !== theme.tone) root.style.colorScheme = theme.tone;
+    for (const [key, variable] of Object.entries(cssTokenNames)) {
+      const value = theme.colors[key as keyof ThemeDefinition['colors']];
+      if (root.style.getPropertyValue(variable) !== value) root.style.setProperty(variable, value);
+    }
+    window.dispatchEvent(new CustomEvent('fate-theme-change', { detail: theme }));
   }
-  window.dispatchEvent(new CustomEvent('fate-theme-change', { detail: theme }));
   if (options.persist !== false) persistAppliedTheme(theme);
 }
 

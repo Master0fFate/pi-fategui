@@ -6,7 +6,7 @@ This directory holds the focused guides referenced by the [project README](../RE
 
 - **Open your first project** — [Get started](../README.md#get-started-in-60-seconds) (README), then [Sessions and processes](sessions-and-processes.md) for windows, processes, and session references.
 - **See what your agents are doing** — [Features](features.md) covers Activity Pulse, the Activity timeline (live events + direct-write ledger), Review Runway, Git/files, the terminal, the browser, and native media.
-- **Author a theme** — [Themes](themes.md).
+- **Choose a skin or author a theme** — [Skins](skins.md) and [Themes](themes.md).
 - **Build a dense operate UI** — [Fate Compact](../design/COMPACT.md) (Settings density system; candidate for a full-app transition).
 - **Remember project and personal coding notes** — [Memory Learning](project-learning.md).
 - **Drive multi-agent work** — [Agent orchestration](agent-orchestration.md) (Agent Teams V2 and legacy subagents).
@@ -17,7 +17,7 @@ This directory holds the focused guides referenced by the [project README](../RE
 
 - **New users** — README → [Sessions and processes](sessions-and-processes.md) → [Features](features.md).
 - **Operators and reviewers** — [Features](features.md) → [Architecture and security](architecture.md) → [SECURITY.md](../SECURITY.md).
-- **Customizers** — [Themes](themes.md).
+- **Customizers** — [Skins](skins.md) → [Themes](themes.md).
 - **Power users** — [Agent orchestration](agent-orchestration.md) → [Sessions and processes](sessions-and-processes.md).
 - **Contributors and maintainers** — [CONTRIBUTING.md](../CONTRIBUTING.md) → [Development and release](development.md).
 

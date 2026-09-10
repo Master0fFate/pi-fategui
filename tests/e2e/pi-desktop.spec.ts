@@ -1320,6 +1320,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     const settingsDialog = page.getByRole('dialog', { name: 'Settings' });
     await expect(settingsDialog).toBeVisible();
     await expect(settingsDialog.getByText('Performance mode')).toBeVisible();
+    await settingsDialog.getByRole('tab', { name: /Skins/ }).click();
     const interfaceFontSelect = settingsDialog.getByRole('combobox', { name: 'Interface font' });
     await interfaceFontSelect.click();
     await page.getByRole('option', { name: /Poppins/ }).click();
@@ -1345,7 +1346,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
       expect(metric.scrollWidth, `${metric.text} should fit horizontally with JetBrains Mono`).toBeLessThanOrEqual(metric.clientWidth + 1);
       expect(metric.scrollHeight, `${metric.text} should remain on one line with JetBrains Mono`).toBeLessThanOrEqual(metric.clientHeight + 1);
     }
-    await settingsDialog.getByRole('tab', { name: /General/ }).click();
+    await settingsDialog.getByRole('tab', { name: /Skins/ }).click();
     await interfaceFontSelect.click();
     await page.getByRole('option', { name: /Noto Sans/ }).first().click();
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.interfaceFont)).toBe('noto-sans');
@@ -1380,6 +1381,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.screenshot({ path: 'test-results/pi-desktop-settings-pi-theme.png' });
     await themeSelect.click();
     await page.getByRole('option', { name: /Midnight/ }).click();
+    await settingsDialog.getByRole('tab', { name: /General/ }).click();
     const assertSettingsGeometryStable = async (action: () => Promise<void>) => {
       const before = await settingsDialog.boundingBox();
       await action();

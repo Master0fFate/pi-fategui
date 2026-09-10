@@ -61,6 +61,8 @@ components:
 
 **Creative North Star: “The Focused Workbench”**
 
+This document defines the **Default** skin. Its identity remains the shipped default rather than an accidental ban on optional, explicitly selected skins. Built-in skins may establish a different visual paradigm when they preserve the functional workbench, trust boundaries, platform controls, content clarity, and independent color/font/density preferences.
+
 Fate UI is a purpose-built instrument for sustained coding work: quiet when idle, precise when active, and transparent when Pi uses tools. A continuous blue-charcoal shell joins navigation, conversation, inspector, and terminal rather than presenting a dashboard of floating cards.
 
 The shipped interface governs atmosphere and first-launch hierarchy; the maintained product screenshots are available at `screenshots/fate-ui-dark.png` and `screenshots/fate-ui-light.png`. Operational states become denser without losing calm, and expression never obscures state or familiar desktop affordances.
@@ -72,7 +74,13 @@ The shipped interface governs atmosphere and first-launch hierarchy; the maintai
 - Spacious first launch; compact, stable density during work.
 - Motion acknowledges state without delaying input or moving layout.
 
-**Fate Compact** is the operate-surface density system. Turn it on with **Settings → Interface → Compact mode** (`data-compact-mode`). It restyles the whole workbench. Compact sessions is nested under that switch. Spec: [`design/COMPACT.md`](design/COMPACT.md).
+**Fate Compact** is the operate-surface density system. Turn it on with **Settings → Compaction → Compact mode** (`data-compact-mode`). It restyles the whole workbench under either skin. Compact sessions is nested under that switch. Spec: [`design/COMPACT.md`](design/COMPACT.md).
+
+## Optional skins
+
+**Angelcore** is the first authorized optional skin. Its component presentation uses text actions, selected-row markers, command-style input, labeled transcript entries, and a textual context gauge. It remains a clickable GUI, rendered in the selected code font rather than a separate terminal runtime. Shared header geometry and single-pixel separators keep its pale edges deliberate. It adds no inferred religious or gothic subject matter, animated noise, blanket glow, or metaphorical control names. Useful text remains readable, semantic states retain labels, and the manual terminal stays visibly separate from Pi tools.
+
+Skins are structural; themes remain palettes. Angelcore derives all color from the selected `--theme-*` tokens and must work with dark, light, custom Fate, and trusted-project Pi themes. Selecting a skin never changes the palette, font, or Compact preference. See [`docs/skins.md`](docs/skins.md).
 
 ## Colors
 

@@ -1,0 +1,10 @@
+.workspace { isolation: isolate; }
+.workspace-backdrop {
+  position: absolute; z-index: -1; inset: var(--dreamcore-header-height, 72px) 0 0; pointer-events: none;
+  background: var(--theme-text); mask-size: cover; mask-position: center; mask-repeat: no-repeat; mask-mode: alpha;
+  image-rendering: pixelated;
+}
+:root[data-compact-mode="true"] .workspace-backdrop { top: var(--dreamcore-header-height, 36px); }
+.background-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; }
+.background-help { color: var(--theme-muted); font-size: 11px; line-height: 1.5; }
+.background-settings .settings-theme-row > div { min-width: 0; overflow-wrap: anywhere; }

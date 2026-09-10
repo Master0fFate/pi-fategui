@@ -23,6 +23,7 @@ import { SubagentSessionsPanel } from './SubagentSessionsPanel';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { inspectorDestinationForTab, useUiStore } from '../../stores/uiStore';
 import { GoalMaxInspector } from '../goalmaxxing/GoalMaxInspector';
+import { useSkinComponents } from '../../skins/SkinProvider';
 
 interface InspectorProps {
   /** Kept optional for compatibility with embedded inspector tests. */
@@ -105,6 +106,7 @@ function ToolsPanel() {
 }
 
 export function Inspector(_props: InspectorProps = {}) {
+  const { TabContent } = useSkinComponents();
   const activeChildren = useRuntimeStore((state) => state.subagentOrder.reduce((count, id) => {
     const status = state.subagentsById[id]?.status;
     return count + (status === 'queued' || status === 'running' ? 1 : 0);
@@ -134,7 +136,7 @@ export function Inspector(_props: InspectorProps = {}) {
                 if (!isActive) openDestination(value);
               }}
             >
-              <span className="inspector-primary-label">{label}</span>
+              <TabContent label={label} active={isActive} labelClassName="inspector-primary-label" />
               {value === 'run' && activeChildren > 0 ? (
                 <span className="inspector-run-count" aria-hidden="true">{activeChildren}</span>
               ) : null}
@@ -151,8 +153,7 @@ export function Inspector(_props: InspectorProps = {}) {
                 className="inspector-secondary-trigger"
                 aria-label={value === 'sessions' ? `Subagent sessions${activeChildren > 0 ? `, ${activeChildren} active` : ''}` : label}
               >
-                <Icon size={13} strokeWidth={1.75} aria-hidden="true" />
-                <span className="inspector-secondary-label">{label}</span>
+                <TabContent label={label} active={activeTab === value} labelClassName="inspector-secondary-label" icon={<Icon size={13} strokeWidth={1.75} aria-hidden="true" />} />
               </Tabs.Trigger>
             </AppTooltip>
           ))}

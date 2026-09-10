@@ -23,7 +23,15 @@ Run the real Pi coding agent in a focused graphical workspace for durable conver
     <td align="center"><img src="screenshots/fate-ui-dark.png" alt="Fate UI in dark mode" width="100%"></td>
     <td align="center"><img src="screenshots/fate-ui-light.png" alt="Fate UI in light mode" width="100%"></td>
   </tr>
+  <tr>
+    <th colspan="2" align="center">Angelcore</th>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="screenshots/fate-ui-angelcore.png" alt="Fate UI with the Angelcore skin and Monochrome palette: terminal-style controls, conversation, command input, and Git diff" width="100%"></td>
+  </tr>
 </table>
+
+<p align="center"><sub>Angelcore skin + Monochrome palette. Actual Electron capture with deterministic demo content.</sub></p>
 
 ## What Fate UI is
 
@@ -103,7 +111,8 @@ Fate UI opens the canonical directory and shows its trust prompt — choose **Tr
 - **First-class Git and files.** Status, history, commits, Monaco diffs, and project-confined file browsing without leaving the app.
 - **A manual terminal and an embedded browser** alongside agent activity.
 - **Session references and direct session messages.** Attach saved sessions as read-only context, or message a saved session without switching away from your current one.
-- **Native media.** Local voice transcription, ambient audio, image generation, and custom themes. See [Features](docs/features.md) and [Themes](docs/themes.md).
+- **Native media.** Local voice transcription, ambient audio, and image generation. See [Features](docs/features.md).
+- **Skins, themes, and dithered backgrounds.** Keep the Default workbench or choose the built-in, terminal-style **Angelcore** skin. **Settings → Skins** supports folder-based skin pack imports/exports, independent color palettes, and locally processed image backgrounds. See [Skins](docs/skins.md) and [Themes](docs/themes.md).
 
 ## Stay safe
 
@@ -122,7 +131,7 @@ Full trust, boundary, and hardening detail lives in [Architecture and security](
 | Understand the whole doc set | [Docs index](docs/README.md) |
 | Get oriented and open your first project | [Get started](#get-started-in-60-seconds) · [Sessions and processes](docs/sessions-and-processes.md) |
 | See what agents are doing | [Features (Flight Deck)](docs/features.md) |
-| Author a theme | [Themes](docs/themes.md) |
+| Choose, create, or import a skin; customize colors | [Skins](docs/skins.md) · [Example skin pack](examples/skins/ashen-terminal) · [Themes](docs/themes.md) |
 | Drive Agent Teams or subagents | [Agent orchestration](docs/agent-orchestration.md) |
 | Review trust, permissions, and isolation | [Architecture and security](docs/architecture.md) · [SECURITY.md](SECURITY.md) |
 | Build, package, or release | [Development and release](docs/development.md) |

@@ -2,6 +2,8 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { defaultSpeechSettings, type AppCommand, type PiEvent, type RuntimeState } from '../../shared/contracts/ipc';
 import { AppToast } from '../components/AppToast';
 import { applyNonThemeVisualSettings, applyVisualSettings } from '../appearance';
+import { setSkinDefinitions } from '../skin';
+import { builtInSkins } from '../../shared/skins';
 import { useRuntimeStore } from '../stores/runtimeStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useUiStore } from '../stores/uiStore';
@@ -255,7 +257,13 @@ export function App() {
   useEffect(() => {
     if (!('piDesktop' in window) || typeof window.piDesktop.getSettings !== 'function') return undefined;
     let active = true;
-    const settingsPromise = window.piDesktop.getSettings();
+    const skinPromise = typeof window.piDesktop.getSkins === 'function'
+      ? window.piDesktop.getSkins().then((catalog) => catalog.skins).catch(() => builtInSkins)
+      : Promise.resolve(builtInSkins);
+    const settingsPromise = Promise.all([window.piDesktop.getSettings(), skinPromise]).then(([settings, skins]) => {
+      if (active) setSkinDefinitions(skins);
+      return settings;
+    });
     const themesPromise = typeof window.piDesktop.getThemes === 'function'
       ? window.piDesktop.getThemes().catch(() => fallbackThemes)
       : Promise.resolve(fallbackThemes);
@@ -294,11 +302,11 @@ export function App() {
       if (!active) return;
       setThemeCatalog(fallbackThemes);
       applyVisualSettings(
-        { appearance: 'dark', themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', performanceMode: false, reduceMotion: false, holyShitMode: false, compactMode: false },
+        { appearance: 'dark', skinId: 'default', themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', performanceMode: false, reduceMotion: false, holyShitMode: false, compactMode: false },
         fallbackThemes,
         // A corrupt settings file must not overwrite the last good theme
         // snapshot, or the next launch would boot into the wrong palette.
-        { persistTheme: false },
+        { persistSkin: false, persistTheme: false },
       );
       console.error('[Fate UI] Failed to load initial settings.', error);
     });

@@ -10,6 +10,7 @@ import {
   Folder,
   LockKeyhole,
   Plus,
+  Palette,
   Rows3,
   Save,
   ShieldCheck,
@@ -27,6 +28,9 @@ import { defaultAgentWorkspacePolicy } from '../../../shared/contracts/multiAgen
 import { defaultMemoryLearning, type LearningStorage } from '../../../shared/contracts/learning';
 import { useLearningStore } from '../learning/learningStore';
 import '../learning/learning.css';
+import { builtInSkins, builtInSkinName, skinPackThemeId, type SkinId, type SkinCatalog } from '../../../shared/skins';
+import { getSkinDefinitions, persistAppliedSkin, setSkinDefinitions } from '../../skin';
+import { SkinPackSettings, type RemovedSkin } from './SkinPackSettings';
 import type { ThemeDefinition } from '../../../shared/themes';
 import {
   defaultImageGenerationModel,
@@ -36,12 +40,14 @@ import {
   type ImageGenerationProviderId,
 } from '../../../shared/imageGeneration';
 import { applyVisualSettings } from '../../appearance';
+import { useSkinComponents } from '../../skins/SkinProvider';
+import { BackgroundSettings } from '../../background/BackgroundSettings';
 import { AppTooltip } from '../../components/AppTooltip';
 import { ProviderLogo } from '../../components/ProviderLogo';
 import { SelectControl, type SelectOption } from '../../components/SelectControl';
 import { ipcErrorMessage } from '../../lib/ipcError';
 import { codeFontOptions, interfaceFontOptions } from '../../fonts';
-import { fallbackThemes } from '../../theme';
+import { fallbackThemes, persistAppliedTheme, resolveTheme } from '../../theme';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { enumerateMicrophones, microphoneAccessError, requestMicrophoneDevices, type MicrophoneDevice } from './microphoneDevices';
@@ -51,18 +57,19 @@ import { enabledModelIdentity, modelIdentity, visibleModels } from '../../../sha
 
 const fallback: AppSettings = {
   appearance: 'dark', defaultModel: null, disabledModels: [], thinkingLevel: 'medium', agentTeamMode: 'legacy', agentWorkspace: defaultAgentWorkspacePolicy, confirmRiskyCommands: true,
-  terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight',
+  terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, skinId: 'default', themeId: 'midnight',
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
   speech: defaultSpeechSettings,
   memoryLearning: defaultMemoryLearning,
 };
 
-type SettingsSection = 'general' | 'compaction' | 'agent' | 'learning' | 'voice' | 'workspace' | 'system';
+type SettingsSection = 'general' | 'skins' | 'compaction' | 'agent' | 'learning' | 'voice' | 'workspace' | 'system';
 type SettingsToast = { kind: 'success' | 'error'; title: string; message: string };
 
 const sections = [
-  { id: 'general', label: 'General', detail: 'Look & performance', icon: SlidersHorizontal },
+  { id: 'general', label: 'General', detail: 'Performance', icon: SlidersHorizontal },
+  { id: 'skins', label: 'Skins', detail: 'Style, color & type', icon: Palette },
   { id: 'compaction', label: 'Compaction', detail: 'Density controls', icon: Rows3 },
   { id: 'agent', label: 'Agent', detail: 'Models & workspaces', icon: Bot },
   { id: 'learning', label: 'Memory Learning', detail: 'Reviewed knowledge', icon: Brain },
@@ -118,7 +125,8 @@ function acceleratorFromEvent(event: KeyboardEvent): string | null {
   return tokens.join('+');
 }
 
-export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog?: ThemeDefinition[] }) {
+export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThemes }: { themeCatalog?: ThemeDefinition[] }) {
+  const { ActionContent, Symbol } = useSkinComponents();
   const open = useUiStore((state) => state.settingsOpen);
   const setOpen = useUiStore((state) => state.setSettingsOpen);
   const setMusicPlayerEnabled = useUiStore((state) => state.setMusicPlayerEnabled);
@@ -149,6 +157,9 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
   );
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
   const [selectedProvider, setSelectedProvider] = useState('');
+  const [themeCatalog, setThemeCatalog] = useState(initialThemeCatalog);
+  const [skinCatalog, setSkinCatalog] = useState<SkinCatalog>(() => ({ skins: [...getSkinDefinitions()], storagePath: '', diagnostics: [] }));
+  useEffect(() => setThemeCatalog(initialThemeCatalog), [initialThemeCatalog]);
   const [settings, setSettings] = useState<AppSettings>(fallback);
   const [persistedSettings, setPersistedSettings] = useState<AppSettings>(fallback);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -203,9 +214,15 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
     const activeDownload = useUiStore.getState().speechDownload;
     setSpeechBusy(activeDownload?.modelId ?? null);
     setSpeechProgress(activeDownload);
-    void window.piDesktop.getSettings()
-      .then((nextSettings) => {
+    const skinPromise = typeof window.piDesktop.getSkins === 'function'
+      ? window.piDesktop.getSkins().catch(() => ({ skins: [...builtInSkins], storagePath: '', diagnostics: ['Skin packs could not load. Built-in skins remain available.'] }))
+      : Promise.resolve({ skins: [...builtInSkins], storagePath: '', diagnostics: [] });
+    void Promise.all([window.piDesktop.getSettings(), skinPromise])
+      .then(([nextSettings, catalog]) => {
         if (!active) return;
+        setSkinCatalog(catalog);
+        setSkinDefinitions(catalog.skins);
+        if (!catalog.skins.some((skin) => skin.id === nextSettings.skinId)) nextSettings = { ...nextSettings, skinId: 'default' };
         const defaultModel = enabledModelIdentity(nextSettings.disabledModels, nextSettings.defaultModel);
         const loaded = defaultModel === nextSettings.defaultModel ? nextSettings : { ...nextSettings, defaultModel };
         setSettings(loaded);
@@ -324,7 +341,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
 
   useEffect(() => {
     if (!open || !settingsLoaded) return;
-    applyVisualSettings(settings, themeCatalog);
+    applyVisualSettings(settings, themeCatalog, { persistSkin: false, persistTheme: false });
     setCompactMode(settings.compactMode);
     setCompactSessions(settings.compactSessions);
   }, [
@@ -335,11 +352,13 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
     settings.performanceMode,
     settings.reduceMotion,
     settings.holyShitMode,
+    settings.skinId,
     settings.themeId,
     settings.compactMode,
     settings.compactSessions,
     settingsLoaded,
     themeCatalog,
+    skinCatalog,
   ]);
 
   useEffect(() => {
@@ -583,6 +602,28 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
     })),
   ];
 
+  const updateSkinCatalog = async (catalog: SkinCatalog, removed?: RemovedSkin) => {
+    setSkinDefinitions(catalog.skins);
+    setSkinCatalog(catalog);
+    const removedThemeId = removed ? skinPackThemeId(removed.id) : null;
+    const fallbackCatalog = [...themeCatalog.filter((theme) => theme.id !== removedThemeId)];
+    for (const skin of catalog.skins) { if (skin.palette && !fallbackCatalog.some((theme) => theme.id === skin.palette?.id)) fallbackCatalog.push(skin.palette); }
+    const themes = typeof window.piDesktop.getThemes === 'function'
+      ? await window.piDesktop.getThemes().catch(() => fallbackCatalog) : fallbackCatalog;
+    setThemeCatalog(themes);
+    const normalize = (current: AppSettings): AppSettings => ({
+      ...current,
+      skinId: catalog.skins.some((skin) => skin.id === current.skinId) ? current.skinId : 'default',
+      themeId: removed && current.themeId === removedThemeId ? removed.settings.themeId : current.themeId,
+    });
+    setSettings(normalize);
+    setPersistedSettings(normalize);
+    if (removed) {
+      persistAppliedSkin(removed.settings.skinId);
+      persistAppliedTheme(resolveTheme(themes, removed.settings.themeId));
+    }
+  };
+
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Portal>
@@ -590,14 +631,14 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
         <Dialog.Content className="settings-dialog" aria-describedby="settings-description">
           <header className="settings-header">
             <div><Dialog.Title>Settings</Dialog.Title><Dialog.Description id="settings-description">Appearance, agent, voice, and workspace preferences.</Dialog.Description></div>
-            <Dialog.Close aria-label="Close settings"><X size={17} /></Dialog.Close>
+            <Dialog.Close aria-label="Close settings"><ActionContent text="close"><X size={17} /></ActionContent></Dialog.Close>
           </header>
 
           <div className="settings-layout">
             <nav className="settings-nav" aria-label="Settings categories" role="tablist" aria-orientation="vertical">
               {sections.map(({ id, label, detail, icon: Icon }) => (
                 <button key={id} type="button" role="tab" id={`settings-tab-${id}`} aria-selected={activeSection === id} aria-controls={`settings-panel-${id}`} onClick={() => chooseSection(id)}>
-                  <Icon size={14} aria-hidden="true" />
+                  <Symbol text={activeSection === id ? '>' : ' '}><Icon size={14} aria-hidden="true" /></Symbol>
                   <span><strong>{label}</strong><small>{detail}</small></span>
                 </button>
               ))}
@@ -606,17 +647,7 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
             <div ref={settingsScroll} className="settings-scroll">
               {activeSection === 'general' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general">
-                  <div className="settings-title"><div><h3>Interface</h3><p>Theme, type, and visual behavior across Fate UI.</p></div></div>
-                  <div className="settings-group">
-                    <div className="settings-theme-row"><div><strong>Theme</strong><small>Built-in, Fate custom, and Pi themes. Project themes load only after you trust the project.</small></div><SelectControl compact={settings.compactMode} label="Interface theme" value={settings.themeId} className="settings-theme-select" options={themeCatalog.map((theme) => ({ value: theme.id, label: theme.name, detail: theme.tone === 'light' ? 'Light' : 'Dark' }))} onValueChange={(themeId) => setSettings({ ...settings, themeId })} /></div>
-                  </div>
-                  <div className="settings-title settings-title--spaced"><div><h3>Typography</h3><p>Bundled typefaces with a Noto fallback chain for extended Unicode.</p></div></div>
-                  <div className="settings-group settings-font-group">
-                    <div className="settings-theme-row"><div><strong>Interface font</strong><small>Applies across navigation, settings, and conversation text.</small></div><SelectControl compact={settings.compactMode} label="Interface font" value={settings.interfaceFont} className="settings-font-select" options={interfaceFontOptions} onValueChange={(interfaceFont) => setSettings({ ...settings, interfaceFont: interfaceFont as AppSettings['interfaceFont'] })} /></div>
-                    <div className="settings-theme-row"><div><strong>Code & terminal</strong><small>Used for code, tool output, diffs, and the integrated terminal.</small></div><SelectControl compact={settings.compactMode} label="Code and terminal font" value={settings.codeFont} className="settings-font-select" options={codeFontOptions} onValueChange={(codeFont) => setSettings({ ...settings, codeFont: codeFont as AppSettings['codeFont'] })} /></div>
-                    <div className="settings-font-preview" aria-label="Extended Unicode font preview"><span lang="hr">Čć Đđ Šš Žž</span><span lang="ru">Привет</span><span lang="hi">नमस्ते</span><span lang="he" dir="rtl">שלום</span><span lang="zh-Hans">中文</span></div>
-                  </div>
-                  <div className="settings-title settings-title--spaced"><div><h3>Performance</h3><p>Lower rendering cost without disabling any app capability.</p></div></div>
+                  <div className="settings-title"><div><h3>Performance</h3><p>Lower rendering cost without disabling any app capability.</p></div></div>
                   <div className="settings-group">
                     <label className="settings-toggle"><div><strong>Performance mode</strong><small>Includes Reduced Motion and disables transitions, entrance motion, ambient gradients, blur, and deep shadows.</small></div><input type="checkbox" checked={settings.performanceMode || settings.reduceMotion} onChange={(event) => setSettings({ ...settings, performanceMode: event.target.checked, reduceMotion: event.target.checked })} /><span aria-hidden="true" /></label>
                     <label className="settings-toggle"><div><strong>Holy sh*t</strong><small>Bare-bones fallback for very weak hardware: removes gradients, shadows, blur, animation, and smooth scrolling. Turn it off to restore your visual settings.</small></div><input type="checkbox" checked={settings.holyShitMode} onChange={(event) => setSettings({ ...settings, holyShitMode: event.target.checked })} /><span aria-hidden="true" /></label>
@@ -624,6 +655,27 @@ export function SettingsDialog({ themeCatalog = fallbackThemes }: { themeCatalog
                   <div className="settings-title settings-title--spaced"><div><h3>Ambient audio</h3><p>An optional player that stays separate from Pi and your project.</p></div></div>
                   <div className="settings-group">
                     <label className="settings-toggle"><div><strong>Music player</strong><small>Shows the minimal lower-right dock. Requires yt-dlp on PATH and accepts user-supplied HTTPS links or playlists.</small></div><input type="checkbox" checked={settings.musicPlayerEnabled} onChange={(event) => setSettings({ ...settings, musicPlayerEnabled: event.target.checked })} /><span aria-hidden="true" /></label>
+                  </div>
+                </div>
+              )}
+
+              {activeSection === 'skins' && (
+                <div className="settings-panel" role="tabpanel" id="settings-panel-skins" aria-labelledby="settings-tab-skins">
+                  <div className="settings-title"><div><h3>Interface skin</h3><p>Change components and layout without changing your saved palette, density, or font choices.</p></div></div>
+                  <div className="settings-group">
+                    <div className="settings-theme-row"><div><strong>Skin</strong><small>Default keeps the established workbench. Angelcore uses text controls, command input, and an open terminal-style transcript.</small></div><SelectControl compact={settings.compactMode} label="Interface skin" value={settings.skinId} className="settings-theme-select" options={skinCatalog.skins.map((skin) => ({ value: skin.id, label: skin.name, detail: skin.origin === 'pack' ? `Installed pack · ${builtInSkinName(skin.base)} · ${skin.version}` : skin.description }))} onValueChange={(skinId) => setSettings({ ...settings, skinId: skinId as SkinId })} /></div>
+                  </div>
+                  <SkinPackSettings catalog={skinCatalog} selectedId={settings.skinId} disabled={!settingsLoaded || saving} onSelect={(skinId) => setSettings((current) => ({ ...current, skinId }))} onCatalog={updateSkinCatalog} />
+                  <div className="settings-title settings-title--spaced"><div><h3>Color theme</h3><p>Palettes remain independent and work with every skin. Pack palettes are optional choices.</p></div></div>
+                  <div className="settings-group">
+                    <div className="settings-theme-row"><div><strong>Palette</strong><small>Built-in, Fate custom, and Pi themes. Project themes load only after you trust the project.</small></div><SelectControl compact={settings.compactMode} label="Interface theme" value={settings.themeId} className="settings-theme-select" options={themeCatalog.map((theme) => ({ value: theme.id, label: theme.name, detail: theme.tone === 'light' ? 'Light' : 'Dark' }))} onValueChange={(themeId) => setSettings({ ...settings, themeId })} /></div>
+                  </div>
+                  <BackgroundSettings />
+                  <div className="settings-title settings-title--spaced"><div><h3>Typography</h3><p>Bundled typefaces with a Noto fallback chain for extended Unicode.</p></div></div>
+                  <div className="settings-group settings-font-group">
+                    <div className="settings-theme-row"><div><strong>Interface font</strong><small>Applies across navigation, settings, and conversation text.</small></div><SelectControl compact={settings.compactMode} label="Interface font" value={settings.interfaceFont} className="settings-font-select" options={interfaceFontOptions} onValueChange={(interfaceFont) => setSettings({ ...settings, interfaceFont: interfaceFont as AppSettings['interfaceFont'] })} /></div>
+                    <div className="settings-theme-row"><div><strong>Code & terminal</strong><small>Used for code, tool output, diffs, and the integrated terminal.</small></div><SelectControl compact={settings.compactMode} label="Code and terminal font" value={settings.codeFont} className="settings-font-select" options={codeFontOptions} onValueChange={(codeFont) => setSettings({ ...settings, codeFont: codeFont as AppSettings['codeFont'] })} /></div>
+                    <div className="settings-font-preview" aria-label="Extended Unicode font preview"><span lang="hr">Čć Đđ Šš Žž</span><span lang="ru">Привет</span><span lang="hi">नमस्ते</span><span lang="he" dir="rtl">שלום</span><span lang="zh-Hans">中文</span></div>
                   </div>
                 </div>
               )}

@@ -1,0 +1,18 @@
+:root[data-skin-pack] { --pack-content-padding: var(--skin-content-padding, 24px); }
+:root[data-skin-pack][data-compact-mode="true"] { --pack-content-padding: min(16px, var(--skin-content-padding, 16px)); }
+:root[data-skin-pack] .welcome--conversation { padding-inline: var(--pack-content-padding); }
+:root[data-skin-pack] .conversation { width: min(100%, var(--skin-content-width, var(--dreamcore-thread-width, 820px))); }
+:root[data-skin-pack] .welcome--conversation .composer-wrap {
+  width: min(calc(100% - 2 * var(--pack-content-padding)), var(--skin-content-width, var(--dreamcore-thread-width, 820px)));
+}
+:root[data-skin-pack] :is(.composer, .custom-select-trigger, .settings-inline-action) { border-radius: var(--skin-control-radius, 0px); }
+:root[data-skin-pack] :is(.workspace-header, .inspector-primary-nav, .inspector-secondary-tabs) { border-bottom-color: var(--skin-rule-color, var(--theme-border)); }
+:root[data-skin-pack] .app-shell > .resize-handle::after { background: var(--skin-rule-color, var(--theme-border)); }
+
+.skin-pack-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.skin-pack-storage { display: block; max-width: 100%; overflow-wrap: anywhere; color: var(--theme-muted); font: 10px/1.6 var(--font-code); }
+.skin-pack-row { padding-block: 12px; border-top: 1px solid var(--theme-border); }
+.skin-pack-row > strong { font-size: 12px; }
+.skin-pack-row > small { margin-left: 8px; color: var(--theme-muted); }
+.skin-pack-row > p, .skin-pack-help { margin-block: 5px; color: var(--theme-muted); font-size: 11px; line-height: 1.5; }
+.skin-pack-warning { color: var(--theme-warning); font-size: 11px; overflow-wrap: anywhere; }

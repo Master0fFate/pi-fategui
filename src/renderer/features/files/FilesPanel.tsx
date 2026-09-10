@@ -7,6 +7,7 @@ import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle'
 import { flattenTree, useWorkspaceStore, type VisibleFileEntry } from '../../stores/workspaceStore';
 import { LazyFileViewer } from './LazyMonaco';
 import { RasterImagePreview } from './RasterImagePreview';
+import { useSkinComponents } from '../../skins/SkinProvider';
 
 function FileRow({ entry, selected, expanded, loading, onActivate }: {
   entry: VisibleFileEntry;
@@ -15,6 +16,7 @@ function FileRow({ entry, selected, expanded, loading, onActivate }: {
   loading: boolean;
   onActivate: (entry: FileEntry) => void;
 }) {
+  const { Symbol } = useSkinComponents();
   const Icon = entry.kind === 'directory' ? (expanded ? FolderOpen : Folder) : File;
   return (
     <AppTooltip content={entry.path}>
@@ -24,8 +26,8 @@ function FileRow({ entry, selected, expanded, loading, onActivate }: {
         style={{ paddingLeft: 9 + entry.depth * 15 }}
         onClick={() => onActivate(entry)}
       >
-        {entry.kind === 'directory' ? (expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : <span className="file-row-spacer" />}
-        <Icon size={14} className={loading ? 'file-row-loading' : ''} />
+        <Symbol text={entry.kind === 'directory' ? expanded ? '-' : '+' : ' '}>{entry.kind === 'directory' ? (expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : <span className="file-row-spacer" />}</Symbol>
+        <Symbol text={loading ? '...' : entry.kind === 'directory' ? '/' : ':'}><Icon size={14} className={loading ? 'file-row-loading' : ''} /></Symbol>
         <span className="icon-label">{entry.name}</span>
         {entry.symlink && <em className="icon-label">link</em>}
       </button>
@@ -34,6 +36,7 @@ function FileRow({ entry, selected, expanded, loading, onActivate }: {
 }
 
 function PreviewState() {
+  const { ActionContent } = useSkinComponents();
   const preview = useWorkspaceStore((state) => state.preview);
   const loading = useWorkspaceStore((state) => state.previewLoading);
   const selected = useWorkspaceStore((state) => state.selectedFile);
@@ -44,7 +47,7 @@ function PreviewState() {
     <div className="file-preview">
       <div className="preview-heading">
         <AppTooltip content={preview.path}><span>{preview.path}</span></AppTooltip>
-        {preview.state === 'text' && preview.openable && <AppTooltip content="Open in the system editor"><button type="button" aria-label="Open in the system editor" onClick={() => void open()}><ExternalLink size={13} aria-hidden="true" /></button></AppTooltip>}
+        {preview.state === 'text' && preview.openable && <AppTooltip content="Open in the system editor"><button type="button" aria-label="Open in the system editor" onClick={() => void open()}><ActionContent text="edit"><ExternalLink size={13} aria-hidden="true" /></ActionContent></button></AppTooltip>}
       </div>
       <div className="preview-body">
         {preview.state === 'text' && <LazyFileViewer value={preview.content ?? ''} language={preview.language} path={preview.path} />}
@@ -57,6 +60,7 @@ function PreviewState() {
 }
 
 export function FilesPanel() {
+  const { Symbol } = useSkinComponents();
   const panelRef = useRef<HTMLDivElement>(null);
   const [treeHeight, setTreeHeight] = useState(240);
   const resizeTree = (height: number) => {
@@ -97,7 +101,7 @@ export function FilesPanel() {
   if (!project) return <div className="inspector-empty"><Folder size={24} /><strong>No project files</strong><p>Open a project to browse its file tree.</p></div>;
   return (
     <div ref={panelRef} className="files-panel">
-      <label className="file-search"><Search size={13} /><input className="icon-label" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search project files" aria-label="Search project files" />{searching && <span className="preview-spinner" />}</label>
+      <label className="file-search"><Symbol text="/"><Search size={13} /></Symbol><input className="icon-label" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search project files" aria-label="Search project files" />{searching && <span className="preview-spinner" />}</label>
       {error && <div className="workspace-error" role="alert">{error}</div>}
       <div className="file-tree" aria-label="Project file tree" style={{ flexBasis: treeHeight }}>
         {visible.length > 0 ? (

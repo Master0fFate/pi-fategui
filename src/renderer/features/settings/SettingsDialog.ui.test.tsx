@@ -26,6 +26,7 @@ const settings: AppSettings = {
   compactSessions: false,
   advancedPromptImprovement: false,
   crashTelemetryEnabled: false,
+  skinId: 'default',
   themeId: 'catppuccin-mocha',
   interfaceFont: 'noto-sans',
   codeFont: 'jetbrains-mono',
@@ -88,6 +89,8 @@ beforeEach(() => {
   document.documentElement.dataset.performanceMode = 'false';
   document.documentElement.dataset.reduceMotion = 'false';
   document.documentElement.dataset.holyShitMode = 'false';
+  document.documentElement.dataset.skin = 'default';
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -97,6 +100,7 @@ afterEach(() => {
   document.documentElement.dataset.reduceMotion = 'false';
   document.documentElement.dataset.holyShitMode = 'false';
   document.documentElement.dataset.compactMode = 'false';
+  document.documentElement.dataset.skin = 'default';
   useUiStore.setState({ compactMode: false, compactSessions: false });
   delete document.documentElement.dataset.interfaceFont;
   delete document.documentElement.dataset.codeFont;
@@ -150,6 +154,7 @@ describe('SettingsDialog feedback', () => {
     const user = userEvent.setup();
     render(<SettingsDialog themeCatalog={[...builtInThemes, piTheme]} />);
 
+    await user.click(await screen.findByRole('tab', { name: /Skins/u }));
     expect(await screen.findByRole('combobox', { name: 'Interface theme' })).toHaveTextContent('Pi · Terminal');
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe(piTheme.id));
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -158,10 +163,44 @@ describe('SettingsDialog feedback', () => {
     expect(screen.getByText(/Pi themes.*trust the project/iu)).toBeInTheDocument();
   });
 
+  it('previews, cancels, and saves skins without changing palette or font preferences', async () => {
+    const setSettings = vi.fn(async (value: AppSettings) => value);
+    installBridge(setSettings);
+    const user = userEvent.setup();
+    render(<SettingsDialog />);
+
+    await user.click(await screen.findByRole('tab', { name: /Skins/u }));
+    const skin = screen.getByRole('combobox', { name: 'Interface skin' });
+    await user.click(skin);
+    await user.click(screen.getByRole('option', { name: /Angelcore/u }));
+    await waitFor(() => expect(document.documentElement.dataset.skin).toBe('dreamcore'));
+    expect(document.documentElement.dataset.theme).toBe('catppuccin-mocha');
+    expect(document.documentElement.dataset.interfaceFont).toBe('noto-sans');
+    expect(localStorage.getItem('fate:skin:last-applied')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Close settings' }));
+    await waitFor(() => expect(document.documentElement.dataset.skin).toBe('default'));
+    expect(setSettings).not.toHaveBeenCalled();
+
+    useUiStore.getState().setSettingsOpen(true);
+    await user.click(await screen.findByRole('tab', { name: /Skins/u }));
+    await user.click(screen.getByRole('combobox', { name: 'Interface skin' }));
+    await user.click(screen.getByRole('option', { name: /Angelcore/u }));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({
+      skinId: 'dreamcore',
+      themeId: 'catppuccin-mocha',
+      interfaceFont: 'noto-sans',
+    }));
+    expect(localStorage.getItem('fate:skin:last-applied')).toBe('dreamcore');
+  });
+
   it('loads bundled font preferences and exposes the extended Unicode preview', async () => {
     installBridge(vi.fn(async (value) => value), { ...settings, interfaceFont: 'poppins', codeFont: 'noto-sans-mono' });
     render(<SettingsDialog />);
 
+    await userEvent.setup().click(await screen.findByRole('tab', { name: /Skins/u }));
     const interfaceFont = await screen.findByRole('combobox', { name: 'Interface font' });
     expect(interfaceFont).toHaveTextContent('Poppins');
     expect(screen.getByRole('combobox', { name: 'Code and terminal font' })).toHaveTextContent('Noto Sans Mono');
@@ -312,7 +351,7 @@ describe('SettingsDialog feedback', () => {
     const user = userEvent.setup();
     render(<SettingsDialog />);
 
-    await screen.findByRole('combobox', { name: 'Interface font' });
+    await screen.findByRole('checkbox', { name: /Performance mode/ });
     expect(bridge.checkForUpdates).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Check for Updates' }));
 
@@ -349,7 +388,7 @@ describe('SettingsDialog feedback', () => {
     const user = userEvent.setup();
     render(<SettingsDialog />);
 
-    await screen.findByRole('combobox', { name: 'Interface font' });
+    await screen.findByRole('checkbox', { name: /Performance mode/ });
     expect(window.piDesktop.getDiagnostics).not.toHaveBeenCalled();
     expect(window.piDesktop.getLogs).not.toHaveBeenCalled();
 

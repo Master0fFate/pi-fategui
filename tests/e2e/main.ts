@@ -1,7 +1,8 @@
 import { app, BrowserWindow, protocol } from 'electron';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { appCommandSchema, ipcChannels, type AppSettings, type ProjectState, type TerminalEvent } from '../../src/shared/contracts/ipc';
+import { appCommandSchema, appSettingsSchema, ipcChannels, type AppSettings, type ProjectState, type TerminalEvent } from '../../src/shared/contracts/ipc';
 import { browserEventBatchSchema } from '../../src/shared/contracts/browser';
 import { builtInThemes } from '../../src/shared/themes';
 import { AutomationRepository } from '../../src/main/automations/AutomationRepository';
@@ -19,6 +20,8 @@ import type { ProjectActivation, ProjectService } from '../../src/main/projects/
 import { secureWebPreferences } from '../../src/main/security/windowOptions';
 import { createTrustedRendererPolicy } from '../../src/main/security/trustedRenderer';
 import type { SettingsService } from '../../src/main/settings/SettingsService';
+import { SkinPackService } from '../../src/main/settings/SkinPackService';
+import { skinPackThemeId } from '../../src/shared/skins';
 import type { SpeechService } from '../../src/main/speech/SpeechService';
 import type { TerminalService } from '../../src/main/terminal/TerminalService';
 import { installWindowZoomShortcuts } from '../../src/main/windowZoom';
@@ -55,16 +58,39 @@ const projects = {
   selectFile: async () => 'src/example.ts',
 } as unknown as ProjectService;
 const profileVisualMode = process.env.FATE_GUI_PROFILE_VISUAL_MODE;
-let settingsValue: AppSettings = { memoryLearning: { enabled: false, global: true, project: true }, appearance: 'dark', defaultModel: 'test/deterministic', disabledModels: [], thinkingLevel: 'medium', agentTeamMode: 'legacy', agentWorkspace: { preferredMode: 'worktree', strict: false }, confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } };
+const settingsPath = path.join(process.env.FATE_GUI_DATA_DIR ?? app.getPath('userData'), 'settings.json');
+const defaultSettings: AppSettings = { memoryLearning: { enabled: false, global: true, project: true }, appearance: 'dark', defaultModel: 'test/deterministic', disabledModels: [], thinkingLevel: 'medium', agentTeamMode: 'legacy', agentWorkspace: { preferredMode: 'worktree', strict: false }, confirmRiskyCommands: true, terminalShell: null, reduceMotion: profileVisualMode === 'performance', performanceMode: profileVisualMode === 'performance', holyShitMode: profileVisualMode === 'holy', musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, skinId: 'default', themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } };
+let settingsValue = defaultSettings;
+try {
+  settingsValue = appSettingsSchema.parse(JSON.parse(readFileSync(settingsPath, 'utf8')));
+} catch {
+  // Each deterministic E2E profile starts from the same validated defaults.
+}
 const learning = new LearningService(new LearningRepository(path.join(app.getPath('userData'), 'learning-data')), () => settingsValue.memoryLearning);
 runtime.setLearningService(learning);
 const e2ePiTheme = { ...builtInThemes[4]!, id: 'pi-e2e-theme-0123456789ab', name: 'Pi · E2E Theme' };
+const skinPacks = new SkinPackService(path.dirname(settingsPath));
 const settings = {
-  getStoragePath: () => path.join(process.env.FATE_GUI_DATA_DIR ?? app.getPath('userData'), 'settings.json'),
+  skinPacks,
+  removeSkinPack: async (id: string) => {
+    const catalog = await skinPacks.remove(id);
+    const saved = await settings.set({
+      ...settingsValue,
+      skinId: settingsValue.skinId === id ? 'default' : settingsValue.skinId,
+      themeId: settingsValue.themeId === skinPackThemeId(id) ? 'midnight' : settingsValue.themeId,
+    });
+    return { catalog, settings: saved };
+  },
+  getStoragePath: () => settingsPath,
   load: async () => settingsValue,
   get: () => settingsValue,
-  set: async (value: AppSettings) => { settingsValue = value; return value; },
-  loadThemes: async () => [...builtInThemes, e2ePiTheme],
+  set: async (value: AppSettings) => {
+    settingsValue = appSettingsSchema.parse(value);
+    mkdirSync(path.dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, `${JSON.stringify(settingsValue, null, 2)}\n`, 'utf8');
+    return settingsValue;
+  },
+  loadThemes: async () => [...builtInThemes, e2ePiTheme, ...(await skinPacks.list()).skins.flatMap((skin) => skin.palette ? [skin.palette] : [])],
 } as unknown as SettingsService;
 const logs = { list: () => [], write: () => undefined } as unknown as AppLogService;
 const automations = new AutomationRepository(logs, path.join(process.env.PI_DESKTOP_E2E_USER_DATA ?? app.getPath('userData'), 'automations'));
