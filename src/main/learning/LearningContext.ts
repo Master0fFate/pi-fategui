@@ -51,7 +51,7 @@ export class LearningContextAdapter {
         const stream = await original(model, augmented, options);
         if (prepared.manifest.state === 'prepared') {
           prepared.manifest.state = 'handed-to-runtime';
-          void this.service.markDispatch(origin, active.dispatch.id, 'handed-to-runtime');
+          await this.service.markDispatch(origin, active.dispatch.id, 'handed-to-runtime');
         }
         return stream;
       } catch (error) {

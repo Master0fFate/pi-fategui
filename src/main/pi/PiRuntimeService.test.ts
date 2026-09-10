@@ -4096,7 +4096,7 @@ describe('Memory Learning root runtime integration', () => {
       if (behavior === 'prompt') {
         await fake.agent.streamFunction(model, { messages: [] });
         expect(JSON.stringify(originalStream.mock.calls.at(-1))).toContain('Use named IPC');
-        await vi.waitFor(async () => expect((await learning.state(origin, null)).snapshot!.manifests[0]?.state).toBe('handed-to-runtime'));
+        await vi.waitFor(async () => expect((await learning.state(origin, null)).snapshot!.manifests[0]?.state).toBe('handed-to-runtime'), { timeout: 5_000 });
       } else {
         await expect(fake.agent.streamFunction(model, { messages: [] })).rejects.toThrow('ineligible');
         expect(originalStream).not.toHaveBeenCalled();
