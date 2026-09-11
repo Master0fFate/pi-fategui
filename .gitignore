@@ -1,6 +1,5 @@
 node_modules/
 dist/
-design-concepts/
 release/
 artifacts/
 /.ci-artifact-inspect/
@@ -20,17 +19,26 @@ models-store.json
 __pycache__/
 *.py[cod]
 .DS_Store
+Thumbs.db
 .env
 .env.*
 !.env.example
 coverage/
 .parallax/
-test-results/
-playwright-report/
-.test-dist/
 .aislop/
 .codeviewer-mcp.sqlite
 .claude/
 text.txt
 videos/
 NUL
+
+# Scratch dumps only. Canonical product, docs, and concept art lives in
+# screenshots/ and stays tracked. Do not ignore screenshots/ or profiles/.
+design-concepts/
+
+# Playwright / Electron captures. Tests write here, never into screenshots/.
+test-results/
+playwright-report/
+.test-dist/
+/failure.png
+/failure-page.txt

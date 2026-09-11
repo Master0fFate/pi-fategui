@@ -24,7 +24,7 @@ test('off-by-default scoped learning supports manual approval and an actual diff
     await expect(settings.getByRole('region', { name: 'Memory storage locations' })).toContainText('settings.json');
     await expect(settings.getByRole('region', { name: 'Memory storage locations' })).toContainText('current.json');
     await settings.locator('.settings-scroll').evaluate((element) => { element.scrollTop = 0; });
-    await settings.screenshot({ path: 'screenshots/memory-learning-settings.png' });
+    await settings.screenshot({ path: 'test-results/memory-learning-settings.png' });
     await page.getByRole('button', { name: 'Close settings' }).click();
     await page.getByRole('button', { name: /Open project/u }).first().click();
     await page.getByRole('button', { name: /Memory Learning/u }).click();
