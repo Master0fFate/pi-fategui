@@ -35,6 +35,8 @@ pnpm package         # target-native unpacked package + packaged smoke
 pnpm dist            # target-native installer artifacts
 ```
 
+The `test` and `test:watch` scripts resolve Electron before starting Vitest workers. Electron 43 installs its binary on first use; doing this once prevents parallel test imports from extracting into the same directory on a fresh checkout.
+
 `node-pty`, transcription libraries, and other native dependencies are built or selected on the target operating system. Do not treat cross-compilation as equivalent to a native build.
 
 ## Build an installer from source
