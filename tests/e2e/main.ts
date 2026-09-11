@@ -22,6 +22,7 @@ import { createTrustedRendererPolicy } from '../../src/main/security/trustedRend
 import type { SettingsService } from '../../src/main/settings/SettingsService';
 import { SkinPackService } from '../../src/main/settings/SkinPackService';
 import { skinPackThemeId } from '../../src/shared/skins';
+import { removePackFontPreferences } from '../../src/shared/skinAppearance';
 import type { SpeechService } from '../../src/main/speech/SpeechService';
 import type { TerminalService } from '../../src/main/terminal/TerminalService';
 import { installWindowZoomShortcuts } from '../../src/main/windowZoom';
@@ -75,7 +76,7 @@ const settings = {
   removeSkinPack: async (id: string) => {
     const catalog = await skinPacks.remove(id);
     const saved = await settings.set({
-      ...settingsValue,
+      ...removePackFontPreferences(settingsValue, id),
       skinId: settingsValue.skinId === id ? 'default' : settingsValue.skinId,
       themeId: settingsValue.themeId === skinPackThemeId(id) ? 'midnight' : settingsValue.themeId,
     });
@@ -103,9 +104,9 @@ const music = {
   setDurationSink: () => undefined,
 } as unknown as MusicService;
 const speechModels = [
-  { id: 'mini', tier: 'mini', name: 'Mini', model: 'Test Mini', description: 'Test model', detail: '1 MB', bytes: 1, installed: true, downloadedBytes: 1, streaming: true },
-  { id: 'balanced', tier: 'balanced', name: 'Medium', model: 'Test Medium', description: 'Test model', detail: '2 MB', bytes: 2, installed: false, downloadedBytes: 0, streaming: false },
-  { id: 'max', tier: 'max', name: 'Max', model: 'Test Max', description: 'Test model', detail: '3 MB', bytes: 3, installed: false, downloadedBytes: 0, streaming: false },
+  { id: 'parakeet-unified', tier: 'mini', name: 'Mini', model: 'Test Mini', description: 'Test model', detail: '1 MB', bytes: 1, installed: true, downloadedBytes: 1, streaming: true },
+  { id: 'canary-flash', tier: 'balanced', name: 'Medium', model: 'Test Medium', description: 'Test model', detail: '2 MB', bytes: 2, installed: false, downloadedBytes: 0, streaming: false },
+  { id: 'nemotron-stream', tier: 'max', name: 'Max', model: 'Test Max', description: 'Test model', detail: '3 MB', bytes: 3, installed: false, downloadedBytes: 0, streaming: false },
 ] as const;
 const speech = {
   setEventSink: () => undefined,

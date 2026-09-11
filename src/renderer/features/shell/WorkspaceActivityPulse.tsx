@@ -48,8 +48,8 @@ export function WorkspaceActivityPulse() {
   }), [git, projection.activeSessionRunning, projection.contextUsage, projection.error, projection.project, projection.queue, projection.sessionOperation, projection.status, projection.streaming, projection.teams, projection.workflows, subagents, tools]);
   const Icon = pulse.tone === 'active' ? LoaderCircle : pulse.tone === 'attention' ? CircleAlert : pulse.tone === 'success' ? CircleCheck : Activity;
   return (
-    <div className="activity-pulse" data-tone={pulse.tone} aria-label={`Activity: ${pulse.label}. ${pulse.context}`}>
-      <span className="activity-pulse-state"><Icon size={10} className={pulse.tone === 'active' ? 'tool-spinner' : undefined} aria-hidden="true" />{pulse.label}</span>
+    <div className="activity-pulse" data-tone={pulse.tone} aria-label={`Activity: ${pulse.label}. ${pulse.context}`} title={`Activity: ${pulse.label}. ${pulse.context}`}>
+      <span className="activity-pulse-state"><Icon size={10} className={pulse.tone === 'active' ? 'tool-spinner' : undefined} aria-hidden="true" /><span className="activity-pulse-label">{pulse.label}</span></span>
       {pulse.evidence.slice(0, 3).map((item) => <span className="activity-pulse-chip" key={item}>{item}</span>)}
       <span className="activity-pulse-context">{pulse.context}</span>
     </div>

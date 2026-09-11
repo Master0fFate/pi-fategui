@@ -16,8 +16,10 @@ import { browserOrigin, currentBrowserTab, grantForOrigin, useBrowserStore } fro
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { DEFAULT_DEVICE_EMULATION } from './devicePresets';
+import { useSkinComponents } from '../../skins/SkinProvider';
 
 export function BrowserToolbar() {
+  const { ActionContent, Symbol } = useSkinComponents();
   const state = useBrowserStore((store) => store.state);
   const pending = useBrowserStore((store) => store.pending);
   const error = useBrowserStore((store) => store.error);
@@ -75,6 +77,7 @@ export function BrowserToolbar() {
       useBrowserStore.getState().setError('Enter a URL, search, or local HTML path.');
       return;
     }
+    addressFocused.current = false;
     void run('navigation', () => window.piDesktop.navigateBrowser(address));
   };
 
@@ -118,12 +121,12 @@ export function BrowserToolbar() {
     <>
       <div className="browser-toolbar" role="toolbar" aria-label="Browser controls">
         <div className="browser-history-controls">
-          <AppTooltip content="Back"><button type="button" aria-label="Go back" disabled={!tab?.canGoBack || Boolean(pending)} onClick={() => void run('back', () => window.piDesktop.controlBrowserHistory('back'))}><ArrowLeft size={15} /></button></AppTooltip>
-          <AppTooltip content="Forward"><button type="button" aria-label="Go forward" disabled={!tab?.canGoForward || Boolean(pending)} onClick={() => void run('forward', () => window.piDesktop.controlBrowserHistory('forward'))}><ArrowRight size={15} /></button></AppTooltip>
-          <AppTooltip content={tab?.loading ? 'Stop loading' : 'Reload'}><button type="button" aria-label={tab?.loading ? 'Stop loading' : 'Reload page'} disabled={!tab || Boolean(pending)} onClick={() => void run(tab?.loading ? 'stop' : 'reload', () => window.piDesktop.controlBrowserHistory(tab?.loading ? 'stop' : 'reload'))}>{tab?.loading ? <X size={14} /> : <RefreshCw size={14} />}</button></AppTooltip>
+          <AppTooltip content="Back"><button type="button" aria-label="Go back" disabled={!tab?.canGoBack || Boolean(pending)} onClick={() => void run('back', () => window.piDesktop.controlBrowserHistory('back'))}><ActionContent text="<"><ArrowLeft size={15} /></ActionContent></button></AppTooltip>
+          <AppTooltip content="Forward"><button type="button" aria-label="Go forward" disabled={!tab?.canGoForward || Boolean(pending)} onClick={() => void run('forward', () => window.piDesktop.controlBrowserHistory('forward'))}><ActionContent text=">"><ArrowRight size={15} /></ActionContent></button></AppTooltip>
+          <AppTooltip content={tab?.loading ? 'Stop loading' : 'Reload'}><button type="button" aria-label={tab?.loading ? 'Stop loading' : 'Reload page'} disabled={!tab || Boolean(pending)} onClick={() => void run(tab?.loading ? 'stop' : 'reload', () => window.piDesktop.controlBrowserHistory(tab?.loading ? 'stop' : 'reload'))}><ActionContent text={tab?.loading ? 'x' : 'r'}>{tab?.loading ? <X size={14} /> : <RefreshCw size={14} />}</ActionContent></button></AppTooltip>
         </div>
         <form className="browser-address" onSubmit={(event: FormEvent) => { event.preventDefault(); navigate(); }}>
-          {isLocalPage ? <FileCode2 size={13} aria-hidden="true" /> : <Globe2 size={13} aria-hidden="true" />}
+          <Symbol text=">">{isLocalPage ? <FileCode2 size={13} aria-hidden="true" /> : <Globe2 size={13} aria-hidden="true" />}</Symbol>
           <input
             value={address}
             aria-label="Browser address"
@@ -132,7 +135,7 @@ export function BrowserToolbar() {
             disabled={!browserReady || Boolean(pending)}
             onFocus={(event) => { addressFocused.current = true; event.currentTarget.select(); }}
             onBlur={() => { addressFocused.current = false; }}
-            onChange={(event) => setAddress(event.target.value)}
+            onChange={(event) => { addressFocused.current = true; setAddress(event.target.value); }}
             onKeyDown={(event) => {
               if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
               event.preventDefault();
@@ -141,7 +144,7 @@ export function BrowserToolbar() {
           />
           {pending && <LoaderCircle className="tool-spinner" size={13} aria-label="Browser busy" />}
         </form>
-        <AppTooltip content="Open local HTML"><button type="button" className="browser-open-file" aria-label="Open local HTML file" disabled={!browserReady || Boolean(pending)} onClick={openLocalFile}><FileCode2 size={14} /></button></AppTooltip>
+        <AppTooltip content="Open local HTML"><button type="button" className="browser-open-file" aria-label="Open local HTML file" disabled={!browserReady || Boolean(pending)} onClick={openLocalFile}><ActionContent text="open"><FileCode2 size={14} /></ActionContent></button></AppTooltip>
         <div className="browser-tool-group" role="group" aria-label="Browser tools">
           <AppTooltip content={state.mode === 'annotate' ? 'Stop annotating (Esc)' : 'Annotate page elements'}>
             <button
@@ -151,7 +154,7 @@ export function BrowserToolbar() {
               aria-pressed={state.mode === 'annotate'}
               disabled={!canAnnotate || Boolean(pending)}
               onClick={toggleAnnotate}
-            ><ScanSearch size={15} /></button>
+            ><ActionContent text="pick"><ScanSearch size={15} /></ActionContent></button>
           </AppTooltip>
           <AppTooltip content={state.deviceEmulation ? 'Turn off device toolbar' : 'Toggle device toolbar'}>
             <button
@@ -161,10 +164,10 @@ export function BrowserToolbar() {
               aria-pressed={Boolean(state.deviceEmulation)}
               disabled={!browserReady || Boolean(pending)}
               onClick={toggleDevice}
-            ><Smartphone size={15} /></button>
+            ><ActionContent text="size"><Smartphone size={15} /></ActionContent></button>
           </AppTooltip>
         </div>
-        <AppTooltip content="Close browser"><button type="button" className="browser-close" aria-label="Close browser" onClick={closeBrowser}><X size={14} /></button></AppTooltip>
+        <AppTooltip content="Close browser"><button type="button" className="browser-close" aria-label="Close browser" onClick={closeBrowser}><ActionContent text="x"><X size={14} /></ActionContent></button></AppTooltip>
       </div>
       {accessOpen && currentOrigin && (
         <div className="browser-grant-strip" role="status">

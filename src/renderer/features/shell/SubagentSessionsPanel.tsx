@@ -33,6 +33,7 @@ import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIde
 import { AssistantMarkdown, MessageImages } from '../chat/RichMessageContent';
 import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
 import { InlineConfirm } from '../../components/InlineConfirm';
+import { useSkinComponents } from '../../skins/SkinProvider';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
@@ -98,11 +99,12 @@ function thinkingLabel(level: string): string {
 }
 
 function StatusIcon({ status, size = 13 }: { status: SubagentStatus; size?: number }) {
-  if (status === 'blocked' || status === 'queued') return <Clock3 size={size} aria-hidden="true" />;
-  if (status === 'running') return <LoaderCircle size={size} className="tool-spinner" aria-hidden="true" />;
-  if (status === 'completed') return <Check size={size} aria-hidden="true" />;
-  if (status === 'error') return <CircleAlert size={size} aria-hidden="true" />;
-  return <OctagonX size={size} aria-hidden="true" />;
+  const { Symbol } = useSkinComponents();
+  if (status === 'blocked' || status === 'queued') return <Symbol text="[ ]"><Clock3 size={size} aria-hidden="true" /></Symbol>;
+  if (status === 'running') return <Symbol text="[>]"><LoaderCircle size={size} className="tool-spinner" aria-hidden="true" /></Symbol>;
+  if (status === 'completed') return <Symbol text="[x]"><Check size={size} aria-hidden="true" /></Symbol>;
+  if (status === 'error') return <Symbol text="[!]"><CircleAlert size={size} aria-hidden="true" /></Symbol>;
+  return <Symbol text="[-]"><OctagonX size={size} aria-hidden="true" /></Symbol>;
 }
 
 type Activity =
@@ -678,6 +680,7 @@ function AgentTeamBranch({ team, goalLinks }: { team: AgentTeam; goalLinks: Read
 }
 
 export function SubagentSessionsPanel() {
+  const { Symbol } = useSkinComponents();
   const runtime = useRuntimeStore(useShallow((state) => ({
     project: state.runtime.project,
     sessionId: state.runtime.sessionId,
@@ -766,7 +769,7 @@ export function SubagentSessionsPanel() {
   return (
     <section ref={panelRef} className={`subagent-sessions${hasChildren ? ' subagent-sessions--has-children' : ''}`} aria-label="Agent sessions">
       <div className="agent-tree-root">
-        <span className="agent-tree-root-mark"><Bot size={15} aria-hidden="true" /></span>
+        <span className="agent-tree-root-mark"><Symbol text="@"><Bot size={15} aria-hidden="true" /></Symbol></span>
         <span className="agent-tree-root-copy">
           <span className="agent-tree-root-title">
             <strong>Main agent</strong>

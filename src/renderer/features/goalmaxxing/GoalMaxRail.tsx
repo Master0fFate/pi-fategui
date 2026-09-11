@@ -7,6 +7,7 @@ import { SelectControl } from '../../components/SelectControl';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { useUiStore } from '../../stores/uiStore';
 import { goalMaxStatusLabel } from './goalMaxPresentation';
+import { useSkinComponents } from '../../skins/SkinProvider';
 
 const resumable = new Set<GoalMaxState['status']>(['paused', 'blocked', 'budget-limited', 'usage-limited', 'failed']);
 const terminal = new Set<GoalMaxState['status']>(['completed', 'cancelled']);
@@ -20,6 +21,7 @@ function RailStatusIcon({ goal }: { goal: GoalMaxState }) {
 }
 
 export function GoalMaxRail() {
+  const { ActionContent } = useSkinComponents();
   const goal = useGoalMaxStore((state) => state.goal);
   const setGoal = useGoalMaxStore((state) => state.setGoal);
   const openGoalMax = useUiStore((state) => state.openGoalMax);
@@ -65,11 +67,11 @@ export function GoalMaxRail() {
           </button>
         </AppTooltip>
         <div className="goalmax-rail-actions">
-          <AppTooltip content="Edit goal" wrapTrigger><button type="button" aria-label="Edit goal" disabled={busy || terminal.has(goal.status)} onClick={() => setEditorOpen(true)}><Pencil size={14} /></button></AppTooltip>
-          {canPause ? <AppTooltip content="Pause future goal continuations" wrapTrigger><button type="button" aria-label="Pause goal" disabled={busy} onClick={() => void control({ action: 'pause' })}><Pause size={14} /></button></AppTooltip> : null}
-          {canResume ? <AppTooltip content="Resume goal" wrapTrigger><button type="button" aria-label="Resume goal" disabled={busy} onClick={() => void control({ action: 'resume' })}><Play size={14} /></button></AppTooltip> : null}
+          <AppTooltip content="Edit goal" wrapTrigger><button type="button" aria-label="Edit goal" disabled={busy || terminal.has(goal.status)} onClick={() => setEditorOpen(true)}><ActionContent text="edit"><Pencil size={14} /></ActionContent></button></AppTooltip>
+          {canPause ? <AppTooltip content="Pause future goal continuations" wrapTrigger><button type="button" aria-label="Pause goal" disabled={busy} onClick={() => void control({ action: 'pause' })}><ActionContent text="pause"><Pause size={14} /></ActionContent></button></AppTooltip> : null}
+          {canResume ? <AppTooltip content="Resume goal" wrapTrigger><button type="button" aria-label="Resume goal" disabled={busy} onClick={() => void control({ action: 'resume' })}><ActionContent text="run"><Play size={14} /></ActionContent></button></AppTooltip> : null}
           <AppTooltip content={terminal.has(goal.status) ? 'Clear goal' : 'Cancel work and clear goal'} wrapTrigger>
-            <button type="button" aria-label="Clear goal" disabled={busy} onClick={() => terminal.has(goal.status) ? void clear() : setConfirmClear(true)}>{busy ? <LoaderCircle className="tool-spinner" size={14} /> : <X size={14} />}</button>
+            <button type="button" aria-label="Clear goal" disabled={busy} onClick={() => terminal.has(goal.status) ? void clear() : setConfirmClear(true)}><ActionContent text={busy ? '~' : 'x'}>{busy ? <LoaderCircle className="tool-spinner" size={14} /> : <X size={14} />}</ActionContent></button>
           </AppTooltip>
         </div>
       </section>
@@ -89,6 +91,7 @@ export function GoalMaxRail() {
 }
 
 function GoalMaxEditor({ goal }: { goal: GoalMaxState }) {
+  const { ActionContent } = useSkinComponents();
   const open = useUiStore((state) => state.goalEditorOpen);
   const setOpen = useUiStore((state) => state.setGoalEditorOpen);
   const showToast = useUiStore((state) => state.showToast);
@@ -153,7 +156,7 @@ function GoalMaxEditor({ goal }: { goal: GoalMaxState }) {
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
         <Dialog.Content className="goalmax-editor-dialog" aria-describedby="goalmax-editor-description">
-          <header><div><Dialog.Title>Edit goal</Dialog.Title><Dialog.Description id="goalmax-editor-description">Update the objective, completion gate, or explicit limits.</Dialog.Description></div><Dialog.Close aria-label="Close goal editor"><X size={15} /></Dialog.Close></header>
+          <header><div><Dialog.Title>Edit goal</Dialog.Title><Dialog.Description id="goalmax-editor-description">Update the objective, completion gate, or explicit limits.</Dialog.Description></div><Dialog.Close aria-label="Close goal editor"><ActionContent text="x"><X size={15} /></ActionContent></Dialog.Close></header>
           <label className="goalmax-field"><span>Objective</span><textarea value={objective} maxLength={200_000} rows={6} onChange={(event) => setObjective(event.target.value)} autoFocus /></label>
           <details className="goalmax-criteria-editor">
             <summary>Criteria <span>{criteria.length}</span></summary>

@@ -1,15 +1,22 @@
 import { Check, ChevronDown, ChevronUp, CircleAlert, Clock3, LoaderCircle, X } from 'lucide-react';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import { useSkinComponents } from '../../skins/SkinProvider';
+
 import type { GoalMaxCriterion, GoalMaxState } from '../../../shared/contracts/goalmaxxing';
 import type { Task, TaskStatus } from '../../../shared/contracts/tasks';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { useTaskStore } from '../../stores/taskStore';
 
+function StateMark({ text, children }: { text: string; children: ReactNode }) {
+  const { Symbol } = useSkinComponents();
+  return <Symbol text={text}>{children}</Symbol>;
+}
+
 function criterionStatusIcon(status: GoalMaxCriterion['status']) {
-  if (status === 'satisfied' || status === 'waived') return <Check size={11} aria-hidden="true" />;
-  if (status === 'failed') return <CircleAlert size={11} aria-hidden="true" />;
-  if (status === 'active') return <LoaderCircle className="tool-spinner" size={11} aria-hidden="true" />;
-  return <Clock3 size={11} aria-hidden="true" />;
+  if (status === 'satisfied' || status === 'waived') return <StateMark text="[x]"><Check size={11} aria-hidden="true" /></StateMark>;
+  if (status === 'failed') return <StateMark text="[!]"><CircleAlert size={11} aria-hidden="true" /></StateMark>;
+  if (status === 'active') return <StateMark text="[>]"><LoaderCircle className="tool-spinner" size={11} aria-hidden="true" /></StateMark>;
+  return <StateMark text="[ ]"><Clock3 size={11} aria-hidden="true" /></StateMark>;
 }
 
 function criterionStatusLabel(status: GoalMaxCriterion['status']): string {
@@ -23,10 +30,10 @@ function criterionStatusLabel(status: GoalMaxCriterion['status']): string {
 }
 
 function taskStatusIcon(status: TaskStatus) {
-  if (status === 'done') return <Check size={11} aria-hidden="true" />;
-  if (status === 'blocked') return <CircleAlert size={11} aria-hidden="true" />;
-  if (status === 'in-progress') return <LoaderCircle className="tool-spinner" size={11} aria-hidden="true" />;
-  return <Clock3 size={11} aria-hidden="true" />;
+  if (status === 'done') return <StateMark text="[x]"><Check size={11} aria-hidden="true" /></StateMark>;
+  if (status === 'blocked') return <StateMark text="[!]"><CircleAlert size={11} aria-hidden="true" /></StateMark>;
+  if (status === 'in-progress') return <StateMark text="[>]"><LoaderCircle className="tool-spinner" size={11} aria-hidden="true" /></StateMark>;
+  return <StateMark text="[ ]"><Clock3 size={11} aria-hidden="true" /></StateMark>;
 }
 
 function taskStatusLabel(status: TaskStatus): string {
@@ -50,6 +57,7 @@ interface TaskRow {
 
 /** Task creation and status belong to the agent; ordinary tasks may still be cancelled. */
 function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
+  const { ActionContent } = useSkinComponents();
   const [expanded, setExpanded] = useState(false);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -104,9 +112,9 @@ function TaskListStrip({ tasks }: { tasks: readonly Task[] }) {
                     <span className="goalmax-task-strip-criterion-mark">{taskStatusIcon(row.status)}</span>
                   ) : (
                     <button type="button" className="goalmax-task-strip-criterion-mark goalmax-task-strip-criterion-cancel" aria-label={`Cancel task ${row.title}`} title="Cancel task" disabled={busy} data-busy={busy || undefined} onClick={() => void cancelTask(row)}>
-                      {busy ? <LoaderCircle className="tool-spinner" size={11} aria-hidden="true" /> : (
+                      <ActionContent text={busy ? '~' : 'x'}>{busy ? <LoaderCircle className="tool-spinner" size={11} aria-hidden="true" /> : (
                         <><span className="goalmax-task-strip-criterion-status-icon">{taskStatusIcon(row.status)}</span><X className="goalmax-task-strip-criterion-cancel-icon" size={11} aria-hidden="true" /></>
-                      )}
+                      )}</ActionContent>
                     </button>
                   )}
                   <span className="goalmax-task-strip-criterion-body">

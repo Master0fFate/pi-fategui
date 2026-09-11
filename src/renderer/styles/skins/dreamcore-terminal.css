@@ -17,7 +17,9 @@
 
 .terminal-action { display: inline-flex; gap: 1px; white-space: nowrap; font: inherit; line-height: 1.4; }
 .terminal-action > span { color: var(--theme-muted); }
-.terminal-symbol { display: inline-block; flex: none; min-width: 1ch; text-align: center; font: inherit; line-height: 1.4; }
+.terminal-action > .terminal-action-long { color: inherit; }
+.terminal-action-short { display: none; }
+.terminal-symbol { display: inline-block; flex: none; min-width: 1ch; text-align: center; font: inherit; line-height: 1.4; white-space: pre; }
 .terminal-tab { display: inline-flex; min-width: 0; align-items: baseline; gap: 5px; }
 .terminal-tab-marker { flex: none; width: 1ch; color: var(--theme-accent); }
 .terminal-tab[data-active="true"] { color: var(--theme-text); }
@@ -75,22 +77,36 @@
 :root[data-skin="dreamcore"] .composer {
   --composer-surface: var(--theme-canvas);
   min-height: 0; padding: 10px 0 6px; border-inline: 0; border-radius: 0; background: var(--composer-surface);
+  container-type: inline-size; container-name: composer;
 }
 .terminal-prompt-heading { display: flex; min-width: 0; justify-content: space-between; gap: 12px; margin-bottom: 12px; color: var(--theme-muted); font: 10px/1.5 var(--font-code); }
 .terminal-prompt-heading strong { color: var(--theme-text-soft); font-weight: 500; }
 .terminal-prompt-heading small { font: inherit; }
 .terminal-prompt-prefix { position: absolute; top: 3px; left: 0; color: var(--theme-accent); font: 13px/1.65 var(--font-code); }
 :root[data-skin="dreamcore"] .composer textarea { padding-left: 20px; }
-:root[data-skin="dreamcore"] .composer-toolbar { flex-wrap: wrap; gap: 4px 10px; padding-top: 6px; border-top: 1px solid var(--theme-border); }
-:root[data-skin="dreamcore"] .composer-toolbar-leading { flex: 1 1 160px; flex-wrap: wrap; gap: 4px; }
-:root[data-skin="dreamcore"] .composer-toolbar-trailing { flex: 1 1 390px; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+:root[data-skin="dreamcore"] .composer-toolbar { flex-wrap: nowrap; gap: 6px; padding-top: 6px; border-top: 1px solid var(--theme-border); white-space: nowrap; }
+:root[data-skin="dreamcore"] .composer-toolbar-leading { flex: 0 0 auto; flex-wrap: nowrap; gap: 3px; }
+:root[data-skin="dreamcore"] .composer-toolbar-trailing { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; justify-content: flex-end; gap: 3px; }
 :root[data-skin="dreamcore"] .composer-toolbar :is(button.permission-toggle, button.composer-tools-toggle, button.composer-icon-action, button.voice-button, .send-button) {
   width: auto; min-width: 28px; height: 28px; flex: none; padding: 0 3px; border: 0; border-radius: 0;
   background: transparent; font: 11px/1.4 var(--font-code); box-shadow: none; transform: none;
 }
 :root[data-skin="dreamcore"] .composer-toolbar .send-button { color: var(--theme-accent); }
 :root[data-skin="dreamcore"] .composer-toolbar .send-button:disabled { color: var(--theme-subtle); }
-:root[data-skin="dreamcore"] .composer-model-context { flex: 1 1 180px; min-width: 0; justify-content: flex-end; }
+:root[data-skin="dreamcore"] .composer-model-context { flex: 1 1 0; min-width: 0; justify-content: flex-end; }
+:root[data-skin="dreamcore"] .composer-toolbar button.model-pill { min-width: 28px; }
+:root[data-skin="dreamcore"] .composer-toolbar .learning-indicator { flex: none; width: 24px; height: 24px; padding: 0; }
+@container composer (max-width: 640px) {
+  .composer-toolbar .terminal-action-long { display: none; }
+  .composer-toolbar .terminal-action-short { display: inline; color: inherit; }
+  .composer-toolbar .context-wheel { display: none; }
+  .composer-toolbar .model-pill strong { max-width: 16ch; }
+  .composer-toolbar .terminal-action { font-size: 10px; gap: 0; }
+}
+@container composer (max-width: 360px) {
+  .composer-toolbar-trailing, .composer-toolbar-leading { gap: 0; }
+  .composer-toolbar .model-pill strong { max-width: 7ch; }
+}
 :root[data-skin="dreamcore"] .context-wheel { width: auto; min-width: 6ch; height: 24px; flex: none; }
 .terminal-context { font: 10px var(--font-code); white-space: nowrap; }
 :root[data-skin="dreamcore"] .context-wheel[data-level="warning"] { color: var(--theme-warning); }

@@ -6,6 +6,7 @@ import type { GoalMaxCriterion, GoalMaxEvidence, GoalMaxState, GoalMaxTimelineEv
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { useUiStore } from '../../stores/uiStore';
 import { goalMaxStatusLabel } from './goalMaxPresentation';
+import { useSkinComponents } from '../../skins/SkinProvider';
 
 const integer = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 function compactNumber(value: number): string {
@@ -42,6 +43,7 @@ function timelinePresentation(type: GoalMaxTimelineEvent['type']) {
 }
 
 export function GoalMaxInspector() {
+  const { ActionContent, Symbol } = useSkinComponents();
   const goal = useGoalMaxStore((state) => state.goal);
   const loading = useGoalMaxStore((state) => state.loading);
   const setGoal = useGoalMaxStore((state) => state.setGoal);
@@ -72,11 +74,11 @@ export function GoalMaxInspector() {
   return (
     <section className="goalmax-flight-deck" aria-label="Goal Flight Deck">
       <header className="goalmax-deck-header" data-status={goal.status}>
-        <span className="goalmax-deck-mark"><Target size={15} /></span>
+        <span className="goalmax-deck-mark"><Symbol text=">"><Target size={15} /></Symbol></span>
         <span><strong>{goalMaxStatusLabel(goal.status)}</strong><small>{goal.phase} · revision {goal.revision}</small></span>
         <div>
-          <button type="button" disabled={Boolean(busy) || goal.status === 'completed' || goal.status === 'cancelled'} onClick={() => void control('checkpoint')}>{busy === 'checkpoint' ? <LoaderCircle className="tool-spinner" size={12} /> : <Gauge size={12} />}<span>Checkpoint</span></button>
-          <button type="button" disabled={Boolean(busy) || goal.status === 'completed' || goal.status === 'cancelled'} onClick={() => void control('verify')}>{busy === 'verify' ? <LoaderCircle className="tool-spinner" size={12} /> : <TestTube2 size={12} />}<span>Verify</span></button>
+          <button type="button" aria-label="Checkpoint" disabled={Boolean(busy) || goal.status === 'completed' || goal.status === 'cancelled'} onClick={() => void control('checkpoint')}><ActionContent text={busy === 'checkpoint' ? 'wait' : 'checkpoint'}>{busy === 'checkpoint' ? <LoaderCircle className="tool-spinner" size={12} /> : <Gauge size={12} />}<span>Checkpoint</span></ActionContent></button>
+          <button type="button" aria-label="Verify" disabled={Boolean(busy) || goal.status === 'completed' || goal.status === 'cancelled'} onClick={() => void control('verify')}><ActionContent text={busy === 'verify' ? 'wait' : 'verify'}>{busy === 'verify' ? <LoaderCircle className="tool-spinner" size={12} /> : <TestTube2 size={12} />}<span>Verify</span></ActionContent></button>
         </div>
       </header>
       <Tabs.Root defaultValue="overview" className="goalmax-deck-tabs">
@@ -92,7 +94,7 @@ export function GoalMaxInspector() {
           </dl>
           <section className="goalmax-policy"><ShieldCheck size={13} /><span><strong>{goal.permission.permissionLevel} · {agentPolicy}</strong><small>{goal.verificationLevel} verification · {goal.permission.projectTrusted ? 'trusted project' : 'untrusted project'} · policy r{goal.permission.revision}</small></span></section>
           <section className="goalmax-progress-ledger"><span>Progress</span><dl><div><dt>Meaningful turns</dt><dd>{goal.progress.meaningfulTurnCount}</dd></div><div><dt>Stalled</dt><dd>{goal.progress.noProgressTurnCount}</dd></div><div><dt>Steering</dt><dd>{goal.steering.length}</dd></div><div><dt>Changed files</dt><dd>{goal.progress.changedFileCount}</dd></div><div><dt>Continuations</dt><dd>{goal.continuation.attempt}</dd></div></dl></section>
-          <button className="goalmax-agents-link" type="button" onClick={openAgents}><MessagesSquare size={13} /><span>Open linked agents</span><em>{goal.childAssignments.length}</em></button>
+          <button className="goalmax-agents-link" type="button" onClick={openAgents}><Symbol text=">"><MessagesSquare size={13} /></Symbol><span>Open linked agents</span><em>{goal.childAssignments.length}</em></button>
         </Tabs.Content>
         <Tabs.Content value="criteria" className="goalmax-deck-content goalmax-criteria-list">
           {goal.criteria.map((criterion) => <CriterionRow key={criterion.id} criterion={criterion} assignments={goal.childAssignments} />)}
@@ -109,8 +111,9 @@ export function GoalMaxInspector() {
 }
 
 function CriterionRow({ criterion, assignments }: { criterion: GoalMaxCriterion; assignments: GoalMaxState['childAssignments'] }) {
+  const { Symbol } = useSkinComponents();
   const owners = criterion.ownerNodeIds.flatMap((nodeId) => assignments.find((assignment) => assignment.nodeId === nodeId)?.label ?? []).join(', ');
-  return <article className="goalmax-criterion-row" data-status={criterion.status}><span>{criterionIcon(criterion.status)}</span><div><strong>{criterion.title}</strong>{criterion.description && criterion.description !== criterion.title ? <p>{criterion.description}</p> : null}<small>{owners || `${criterion.evidenceIds.length} evidence`}</small></div><em>{criterion.status}</em></article>;
+  return <article className="goalmax-criterion-row" data-status={criterion.status}><span><Symbol text={criterion.status === 'satisfied' ? '[x]' : criterion.status === 'failed' ? '[!]' : criterion.status === 'active' ? '[>]' : '[ ]'}>{criterionIcon(criterion.status)}</Symbol></span><div><strong>{criterion.title}</strong>{criterion.description && criterion.description !== criterion.title ? <p>{criterion.description}</p> : null}<small>{owners || `${criterion.evidenceIds.length} evidence`}</small></div><em>{criterion.status}</em></article>;
 }
 function EvidenceRow({ evidence }: { evidence: GoalMaxEvidence }) {
   return <article className="goalmax-evidence-row" data-current={evidence.current}><span>{evidence.kind}</span><div><strong>{evidence.title}</strong><small>{new Date(evidence.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}{evidence.exitCode === undefined ? '' : ` · exit ${evidence.exitCode}`}</small>{evidence.summary ? <details><summary>Details</summary><pre>{evidence.summary}</pre></details> : null}</div></article>;

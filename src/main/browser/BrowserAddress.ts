@@ -51,7 +51,7 @@ export function parseBrowserAddress(value: string, projectRoot: string): Browser
 }
 
 function looksProjectRelative(value: string): boolean {
-  if (/\s/u.test(value) || value.startsWith('//')) return false;
+  if (/\s/u.test(value) || value.startsWith('//') || NETWORK_SCHEME.test(value) || LOCALHOST_ADDRESS.test(value) || (DOMAIN_LIKE.test(value) && value.includes('/'))) return false;
   const normalized = value.replace(/\\/gu, '/');
   return normalized.startsWith('./')
     || normalized.startsWith('../')

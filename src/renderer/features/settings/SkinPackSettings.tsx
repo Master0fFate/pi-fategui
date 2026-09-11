@@ -38,7 +38,7 @@ export function SkinPackSettings({ catalog, selectedId, disabled, onSelect, onCa
       <button className="settings-inline-action" type="button" disabled={!available || disabled || busy} onClick={() => void perform(async () => { await onCatalog(await window.piDesktop.getSkins()); })}>Refresh packs</button>
     </div>
     {catalog.storagePath && <code className="skin-pack-storage">{catalog.storagePath}</code>}
-    <p className="skin-pack-help">Version 1 packs use existing components and approved layout options. No scripts, CSS, or remote assets. Import and removal take effect on disk immediately.</p>
+    <p className="skin-pack-help">Packs use existing components and approved styles. Version 2 adds local fonts, embedded PNGs, and per-surface density styles. No scripts, CSS, or remote assets. Import and removal take effect on disk immediately.</p>
     {packs.map((skin) => <div className="skin-pack-row" key={skin.id}>
       <strong>{skin.name}</strong><small>{skin.version} · {builtInSkinName(skin.base)}</small>
       <p>{skin.description}</p>

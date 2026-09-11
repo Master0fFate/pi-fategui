@@ -4,6 +4,7 @@ import { AppToast } from '../components/AppToast';
 import { applyNonThemeVisualSettings, applyVisualSettings } from '../appearance';
 import { setSkinDefinitions } from '../skin';
 import { builtInSkins } from '../../shared/skins';
+import { resolveSkinAppearance } from '../../shared/skinAppearance';
 import { useRuntimeStore } from '../stores/runtimeStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useUiStore } from '../stores/uiStore';
@@ -262,7 +263,7 @@ export function App() {
       : Promise.resolve(builtInSkins);
     const settingsPromise = Promise.all([window.piDesktop.getSettings(), skinPromise]).then(([settings, skins]) => {
       if (active) setSkinDefinitions(skins);
-      return settings;
+      return resolveSkinAppearance(settings, skins);
     });
     const themesPromise = typeof window.piDesktop.getThemes === 'function'
       ? window.piDesktop.getThemes().catch(() => fallbackThemes)

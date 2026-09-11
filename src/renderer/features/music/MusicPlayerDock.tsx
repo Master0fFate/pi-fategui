@@ -19,6 +19,7 @@ import {
 import { type ChangeEvent, type CSSProperties, type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import type { MusicQueue, MusicStream, MusicTrack } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
+import { useSkinComponents } from '../../skins/SkinProvider';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { MAX_LOCAL_AUDIO_TRACKS, MAX_MUSIC_QUEUE_TRACKS, appendMusicQueue, isSupportedLocalAudio, localAudioTitle, remoteMusicSourceError } from './musicSources';
@@ -57,6 +58,7 @@ const loopModeLabels: Record<LoopMode, string> = {
 };
 
 export function MusicPlayerDock() {
+  const { ActionContent, Symbol } = useSkinComponents();
   const enabled = useUiStore((state) => state.musicPlayerEnabled);
   const browserOpen = useUiStore((state) => state.browserOpen);
   const projectTrusted = useRuntimeStore((state) => state.runtime.project?.trusted ?? false);
@@ -524,7 +526,7 @@ export function MusicPlayerDock() {
           <div className="music-queue-actions">
             <small>{queue ? `${queue.tracks.length} ${queue.tracks.length === 1 ? 'track' : 'tracks'}` : 'Empty'}</small>
             <AppTooltip content="Clear playlist"><button type="button" aria-label="Clear playlist" disabled={!queue && !busy} onClick={() => void clearQueue()}>
-              <ListX size={14} aria-hidden="true" />
+              <ActionContent text="clear"><ListX size={14} aria-hidden="true" /></ActionContent>
             </button></AppTooltip>
           </div>
         </header>
@@ -561,7 +563,7 @@ export function MusicPlayerDock() {
 
       <section ref={panelRef} className="music-player-panel" aria-label="Music player" aria-hidden={!open}>
         <form className="music-source" onSubmit={(event) => void loadSource(event)}>
-          <Link2 size={14} aria-hidden="true" />
+          <Symbol text=">"><Link2 size={14} aria-hidden="true" /></Symbol>
           <label className="visually-hidden" htmlFor="music-source-url">Media or playlist link</label>
           <input
             ref={sourceRef}
@@ -588,10 +590,10 @@ export function MusicPlayerDock() {
             onChange={(event) => void loadLocalAudio(event)}
           />
           <AppTooltip content="Open local audio"><button className="music-local-button" type="button" aria-label="Open local audio" disabled={busy} onClick={() => localFileInputRef.current?.click()}>
-            <FolderOpen size={14} aria-hidden="true" />
+            <ActionContent text="open"><FolderOpen size={14} aria-hidden="true" /></ActionContent>
           </button></AppTooltip>
           <AppTooltip content="Load link"><button type="submit" aria-label="Load music link" disabled={busy || !source.trim()}>
-            {busy && !queue ? <LoaderCircle className="tool-spinner" size={14} /> : <ArrowRight size={14} />}
+            <ActionContent text={busy && !queue ? 'wait' : 'load'}>{busy && !queue ? <LoaderCircle className="tool-spinner" size={14} /> : <ArrowRight size={14} />}</ActionContent>
           </button></AppTooltip>
         </form>
 
@@ -635,7 +637,7 @@ export function MusicPlayerDock() {
                 aria-expanded={playlistOpen}
                 onClick={() => setPlaylistOpen((value) => !value)}
               >
-                <ListMusic size={16} />
+                <ActionContent text="list"><ListMusic size={16} /></ActionContent>
               </button>
             </AppTooltip>
             <AppTooltip content={loopModeLabels[loopMode]}>
@@ -647,17 +649,17 @@ export function MusicPlayerDock() {
                 data-active={loopMode !== 'off'}
                 onClick={() => setLoopMode((current) => current === 'off' ? 'all' : current === 'all' ? 'one' : 'off')}
               >
-                {loopMode === 'one' ? <Repeat1 size={16} /> : <Repeat size={16} />}
+                <ActionContent text={loopMode === 'one' ? 'loop1' : 'loop'}>{loopMode === 'one' ? <Repeat1 size={16} /> : <Repeat size={16} />}</ActionContent>
               </button>
             </AppTooltip>
           </div>
 
           <div className="music-transport">
-            <AppTooltip content="Previous"><button type="button" aria-label="Previous track" disabled={!queue || trackIndex === 0 || busy} onClick={() => move(-1)}><SkipBack size={16} /></button></AppTooltip>
+            <AppTooltip content="Previous"><button type="button" aria-label="Previous track" disabled={!queue || trackIndex === 0 || busy} onClick={() => move(-1)}><ActionContent text="<"><SkipBack size={16} /></ActionContent></button></AppTooltip>
             <AppTooltip content={playing ? 'Pause' : 'Play'}><button className="music-play" type="button" aria-label={playing ? 'Pause music' : 'Play music'} disabled={!stream || busy} onClick={() => void togglePlayback()}>
-              {busy ? <LoaderCircle className="tool-spinner" size={16} /> : playing ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}
+              <ActionContent text={busy ? 'wait' : playing ? '||' : 'play'}>{busy ? <LoaderCircle className="tool-spinner" size={16} /> : playing ? <Pause size={17} fill="currentColor" /> : <Play size={17} fill="currentColor" />}</ActionContent>
             </button></AppTooltip>
-            <AppTooltip content="Next"><button type="button" aria-label="Next track" disabled={!queue || trackIndex >= queue.tracks.length - 1 || busy} onClick={() => move(1)}><SkipForward size={16} /></button></AppTooltip>
+            <AppTooltip content="Next"><button type="button" aria-label="Next track" disabled={!queue || trackIndex >= queue.tracks.length - 1 || busy} onClick={() => move(1)}><ActionContent text=">"><SkipForward size={16} /></ActionContent></button></AppTooltip>
           </div>
 
           <div className="music-volume-control">
@@ -678,7 +680,7 @@ export function MusicPlayerDock() {
               aria-label={silent ? 'Unmute music' : 'Mute music'}
               onClick={toggleMute}
             >
-              <VolumeIcon size={16} />
+              <ActionContent text={silent ? 'vol' : 'mute'}><VolumeIcon size={16} /></ActionContent>
             </button></AppTooltip>
           </div>
         </div>
@@ -692,7 +694,7 @@ export function MusicPlayerDock() {
           aria-expanded={open}
           onClick={toggleDock}
         >
-          <ChevronUp size={18} />
+          <ActionContent text="music"><ChevronUp size={18} /></ActionContent>
         </button>
       </AppTooltip>
 

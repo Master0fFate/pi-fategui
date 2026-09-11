@@ -4,10 +4,11 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { ditherMask } from '../../shared/dither';
 import {
-  builtInSkins, MAX_SKIN_IMAGE_BYTES, MAX_SKIN_MANIFEST_BYTES, MAX_SKIN_MASK_BYTES, MAX_SKIN_PACKS,
+  builtInSkins, MAX_SKIN_IMAGE_BYTES, MAX_SKIN_MANIFEST_BYTES, MAX_SKIN_V2_MANIFEST_BYTES, MAX_SKIN_MASK_BYTES, MAX_SKIN_PACKS,
   skinCatalogSchema, skinDefinitionSchema, skinPackFolderIdSchema, skinPackIdSchema, skinPackManifestSchema, skinPackThemeId,
   type SkinCatalog, type SkinDefinition, type SkinPackManifest,
 } from '../../shared/skins';
+import { MAX_SKIN_FONT_BYTES, packFontId } from '../../shared/skinFonts';
 
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const ignoredFiles = new Set(['.DS_Store', 'Thumbs.db']);
@@ -71,6 +72,13 @@ export function preparePackBackground(bytes: Buffer): Buffer {
   return mask;
 }
 
+export function validatePackFont(bytes: Buffer, filename: string): void {
+  const woff2 = filename.endsWith('.woff2');
+  if (bytes.length < (woff2 ? 48 : 44) || bytes.length > MAX_SKIN_FONT_BYTES || bytes.toString('ascii', 0, 4) !== (woff2 ? 'wOF2' : 'wOFF')) throw new Error('Skin fonts must be WOFF or WOFF2 files up to 256 KB.');
+  if (bytes.readUInt32BE(8) !== bytes.length || bytes.readUInt16BE(14) !== 0 || bytes.readUInt16BE(12) < 1 || bytes.readUInt16BE(12) > 128 || bytes.readUInt32BE(16) > 8 * 1024 * 1024) throw new Error('The font header is invalid or exceeds its expanded-size budget.');
+  if (![0x00010000, 0x4f54544f, 0x74727565].includes(bytes.readUInt32BE(4))) throw new Error('Use a single TrueType/OpenType WOFF font, not a font collection.');
+}
+
 export class SkinPackService {
   readonly storagePath: string;
   private queue: Promise<void> = Promise.resolve();
@@ -94,20 +102,37 @@ export class SkinPackService {
   private async readPack(folder: string, managed = false): Promise<ReadPack> {
     const root = await directory(folder);
     const files = new Map<string, Buffer>();
+    const json = await boundedFile(path.join(root, 'skin.json'), managed ? MAX_SKIN_MANIFEST_BYTES : MAX_SKIN_V2_MANIFEST_BYTES).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') throw new Error('This folder does not contain skin.json.');
+      throw error;
+    });
+    let manifest: SkinPackManifest;
+    try {
+      const raw = JSON.parse(json.toString('utf8'));
+      if (raw.schemaVersion !== 2 && json.length > MAX_SKIN_MANIFEST_BYTES) throw new Error('Version 1 manifest exceeds its size limit.');
+      manifest = skinPackManifestSchema.parse(raw);
+    } catch { throw new Error('Invalid skin.json or size limit exceeded. Use schemaVersion 1 or 2 and only documented properties.'); }
+    const declaredFonts = new Map((manifest.fonts ?? []).map((font) => [font.file, font]));
+    files.set('skin.json', json);
     const entries = await fs.opendir(root);
     let count = 0;
     for await (const entry of entries) {
       if (++count > 8) throw new Error('A skin folder contains too many files.');
-      if (ignoredFiles.has(entry.name)) continue;
-      if (!allowedFiles.has(entry.name)) throw new Error(`Unsupported skin file: ${entry.name.slice(0, 80)}. Packs cannot contain scripts, stylesheets, or subfolders.`);
-      const limit = entry.name === 'background.png' ? managed ? MAX_SKIN_MASK_BYTES : MAX_SKIN_IMAGE_BYTES : MAX_SKIN_MANIFEST_BYTES;
-      files.set(entry.name, await boundedFile(path.join(root, entry.name), limit));
+      if (ignoredFiles.has(entry.name) || entry.name === 'skin.json') continue;
+      if (!allowedFiles.has(entry.name) && !declaredFonts.has(entry.name)) throw new Error(`Unsupported skin file: ${entry.name.slice(0, 80)}. Packs cannot contain scripts, stylesheets, or subfolders.`);
+      const limit = declaredFonts.has(entry.name) ? MAX_SKIN_FONT_BYTES : entry.name === 'background.png' ? managed ? MAX_SKIN_MASK_BYTES : MAX_SKIN_IMAGE_BYTES : MAX_SKIN_MANIFEST_BYTES;
+      const content = await boundedFile(path.join(root, entry.name), limit);
+      if (declaredFonts.has(entry.name)) validatePackFont(content, entry.name);
+      files.set(entry.name, content);
     }
-    const json = files.get('skin.json');
-    if (!json) throw new Error('This folder does not contain skin.json.');
-    let manifest: SkinPackManifest;
-    try { manifest = skinPackManifestSchema.parse(JSON.parse(json.toString('utf8'))); }
-    catch { throw new Error('Invalid skin.json. Use schemaVersion 1, a unique safe ID, a supported base, and only documented properties.'); }
+    for (const filename of declaredFonts.keys()) { if (!files.has(filename)) throw new Error(`Missing declared font: ${filename}`); }
+    if (manifest.background && 'data' in manifest.background) {
+      if (files.has('background.png')) throw new Error('Use either an embedded image or background.png, not both.');
+      const image = Buffer.from(manifest.background.data, 'base64');
+      if (image.length > MAX_SKIN_IMAGE_BYTES || image.toString('base64') !== manifest.background.data) throw new Error('The embedded image is invalid or too large.');
+      files.set('background.png', image);
+      manifest = { ...manifest, background: { file: 'background.png', opacity: manifest.background.opacity } };
+    }
     if (Boolean(manifest.background) !== files.has('background.png')) throw new Error('Declare background.png in the manifest, or remove the unused image.');
     const image = files.get('background.png');
     if (image) pngDimensions(image, managed ? 640 * 640 : 8_000_000);
@@ -120,6 +145,7 @@ export class SkinPackService {
     const digest = createHash('sha256').update(JSON.stringify(manifest));
     const image = pack.files.get('background.png');
     if (image) digest.update(image);
+    for (const font of manifest.fonts ?? []) digest.update(pack.files.get(font.file)!);
     const fingerprint = digest.digest('hex');
     const cached = this.cache.get(id);
     if (cached?.fingerprint === fingerprint) return cached.definition;
@@ -127,6 +153,13 @@ export class SkinPackService {
       id, base: manifest.base, origin: 'pack', name: manifest.name, description: manifest.description, version: manifest.version,
       ...(manifest.author ? { author: manifest.author } : {}),
       ...(manifest.layout ? { layout: manifest.layout } : {}),
+      ...(manifest.styles ? { styles: manifest.styles } : {}),
+      ...(manifest.fonts ? { fonts: manifest.fonts.map((font) => ({ id: packFontId(manifest.id, font.id), name: font.name, monospace: font.monospace, format: font.file.endsWith('.woff2') ? 'woff2' : 'woff', data: pack.files.get(font.file)!.toString('base64') })) } : {}),
+      ...(manifest.appearance ? { appearance: {
+        ...manifest.appearance,
+        ...(manifest.appearance.interfaceFont ? { interfaceFont: manifest.appearance.interfaceFont.startsWith('local:') ? packFontId(manifest.id, manifest.appearance.interfaceFont.slice(6)) : manifest.appearance.interfaceFont } : {}),
+        ...(manifest.appearance.codeFont ? { codeFont: manifest.appearance.codeFont.startsWith('local:') ? packFontId(manifest.id, manifest.appearance.codeFont.slice(6)) : manifest.appearance.codeFont } : {}),
+      } } : {}),
       ...(manifest.palette ? { palette: { id: skinPackThemeId(id), name: manifest.name, ...manifest.palette } } : {}),
       ...(manifest.background && image ? { background: { data: image.toString('base64'), opacity: manifest.background.opacity } } : {}),
     });

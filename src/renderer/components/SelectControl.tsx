@@ -216,11 +216,11 @@ export function SelectControl({
           )}
           <Select.Viewport ref={viewportRef} className="custom-select-viewport">
             {visibleOptions.map((option) => (
-              <Select.Item className="custom-select-item" key={option.value} value={option.value}>
+              <Select.Item className="custom-select-item" key={option.value} value={option.value} title={option.label}>
                 <Select.ItemIndicator className="custom-select-indicator"><Symbol text=">"><Check size={compact ? 11 : 13} /></Symbol></Select.ItemIndicator>
                 <span className="custom-select-copy">
                   <Select.ItemText>{option.label}</Select.ItemText>
-                  {option.detail && <small>{option.detail}</small>}
+                  {option.detail && <small title={option.detail}>{option.detail}</small>}
                 </span>
               </Select.Item>
             ))}
