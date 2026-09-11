@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { RuntimeState, SubagentControlInput, SubagentRun } from '../../../shared/contracts/ipc';
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AppTooltip } from '../../components/AppTooltip';
+import { useSkinComponents } from '../../skins/SkinProvider';
 import { writeClipboardText } from '../../lib/clipboard';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -18,6 +19,7 @@ function applyControlState(origin: RuntimeState, state: RuntimeState): void {
 }
 
 export function SubagentControls({ run, compact = false }: { run: SubagentControlTarget; compact?: boolean }) {
+  const { ActionContent } = useSkinComponents();
   const [mode, setMode] = useState<EditorMode>(null);
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState<SubagentControlInput['action'] | 'copy' | null>(null);
@@ -114,8 +116,8 @@ export function SubagentControls({ run, compact = false }: { run: SubagentContro
               disabled={Boolean(busy)}
               onClick={() => void control({ action: 'cancel', target: mention, reason: 'Stopped from the Agents inspector.' })}
             >
-              {busy === 'cancel' ? <LoaderCircle className="tool-spinner" size={13} /> : <CircleStop size={13} />}
-              {!compact && <span className="icon-label">Stop</span>}
+              <ActionContent text={busy === 'cancel' ? '~' : 'stop'}>{busy === 'cancel' ? <LoaderCircle className="tool-spinner" size={13} /> : <CircleStop size={13} />}
+              {!compact && <span className="icon-label">Stop</span>}</ActionContent>
             </button>
           </AppTooltip>
         ) : null}
@@ -127,26 +129,26 @@ export function SubagentControls({ run, compact = false }: { run: SubagentContro
               disabled={Boolean(busy)}
               onClick={() => void control({ action: 'close', target: mention })}
             >
-              {busy === 'close' ? <LoaderCircle className="tool-spinner" size={13} /> : <Mailbox size={13} />}
-              {!compact && <span className="icon-label">Close mailbox</span>}
+              <ActionContent text={busy === 'close' ? '~' : 'close'}>{busy === 'close' ? <LoaderCircle className="tool-spinner" size={13} /> : <Mailbox size={13} />}
+              {!compact && <span className="icon-label">Close mailbox</span>}</ActionContent>
             </button>
           </AppTooltip>
         ) : null}
         {canMessage ? (
           <AppTooltip content={`${messageLabel} ${mention}`}>
             <button type="button" aria-label={`${messageLabel} ${mention}`} disabled={Boolean(busy)} data-active={mode === 'message'} onClick={() => openEditor('message')}>
-              <MessageSquarePlus size={13} />{!compact && <span className="icon-label">{messageLabel}</span>}
+              <ActionContent text="msg"><MessageSquarePlus size={13} />{!compact && <span className="icon-label">{messageLabel}</span>}</ActionContent>
             </button>
           </AppTooltip>
         ) : null}
         <AppTooltip content={`Copy ${mention}`}>
           <button type="button" aria-label={`Copy ${mention}`} disabled={Boolean(busy)} onClick={() => void copyMention()}>
-            {busy === 'copy' || copied ? <Check size={13} /> : <Copy size={13} />}{!compact && <span className="icon-label">Copy mention</span>}
+            <ActionContent text={copied ? 'ok' : 'copy'}>{busy === 'copy' || copied ? <Check size={13} /> : <Copy size={13} />}{!compact && <span className="icon-label">Copy mention</span>}</ActionContent>
           </button>
         </AppTooltip>
         <AppTooltip content={`Rename ${mention}`}>
           <button type="button" aria-label={`Rename ${mention}`} disabled={Boolean(busy)} data-active={mode === 'rename'} onClick={() => openEditor('rename')}>
-            <Pencil size={13} />{!compact && <span className="icon-label">Rename</span>}
+            <ActionContent text="name"><Pencil size={13} />{!compact && <span className="icon-label">Rename</span>}</ActionContent>
           </button>
         </AppTooltip>
       </div>
@@ -173,9 +175,9 @@ export function SubagentControls({ run, compact = false }: { run: SubagentContro
               onKeyDown={editorKeyDown}
             />
           )}
-          <button type="button" aria-label={`Cancel ${mode}`} onClick={() => { setMode(null); setValue(''); }}><X size={13} /></button>
+          <button type="button" aria-label={`Cancel ${mode}`} onClick={() => { setMode(null); setValue(''); }}><ActionContent text="x"><X size={13} /></ActionContent></button>
           <button type="button" aria-label={mode === 'rename' ? 'Save display name' : messageLabel} disabled={!value.trim() || Boolean(busy)} onClick={() => void submitEditor()}>
-            {busy ? <LoaderCircle className="tool-spinner" size={13} /> : mode === 'rename' ? <Check size={13} /> : <Send size={13} />}
+            <ActionContent text={busy ? '~' : mode === 'rename' ? 'save' : 'send'}>{busy ? <LoaderCircle className="tool-spinner" size={13} /> : mode === 'rename' ? <Check size={13} /> : <Send size={13} />}</ActionContent>
           </button>
         </div>
       ) : null}

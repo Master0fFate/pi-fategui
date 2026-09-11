@@ -113,7 +113,10 @@ test('Skins previews independently, preserves live work, and restores after rest
     await expect(page.locator('.terminal-prompt-prefix')).toHaveText('>');
     await expect(page.locator('.terminal-message-heading')).toHaveCount(2);
     await expect(page.locator('.context-wheel svg')).toHaveCount(0);
+    await expect(page.locator('.terminal-context')).toBeHidden();
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1680, 900));
     await expect(page.locator('.terminal-context')).toBeVisible();
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1280, 720));
     const messageEdges = await page.evaluate(() => {
       const assistant = document.querySelector<HTMLElement>('.chat-message:not(.chat-message--user):not(.chat-message--system)');
       const user = document.querySelector<HTMLElement>('.chat-message--user');

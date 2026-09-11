@@ -1,6 +1,7 @@
 import { Hand, RotateCcw } from 'lucide-react';
 import { useEffect, useState, type ChangeEvent } from 'react';
 import { AppTooltip } from '../../components/AppTooltip';
+import { useSkinComponents } from '../../skins/SkinProvider';
 import { useBrowserStore } from '../../stores/browserStore';
 import type { BrowserState } from '../../../shared/contracts/ipc';
 import {
@@ -20,6 +21,7 @@ import {
  * see that mouse input is translated into touch (finger swipe).
  */
 export function BrowserDeviceToolbar({ state }: { state: BrowserState }) {
+  const { ActionContent } = useSkinComponents();
   const emulation = state.deviceEmulation;
   const [widthText, setWidthText] = useState(String(emulation?.width ?? 390));
   const [heightText, setHeightText] = useState(String(emulation?.height ?? 844));
@@ -100,7 +102,7 @@ export function BrowserDeviceToolbar({ state }: { state: BrowserState }) {
         />
       </div>
       <AppTooltip content="Rotate viewport">
-        <button type="button" aria-label="Rotate viewport" onClick={rotate}><RotateCcw size={13} /></button>
+        <button type="button" aria-label="Rotate viewport" onClick={rotate}><ActionContent text="rot"><RotateCcw size={13} /></ActionContent></button>
       </AppTooltip>
       <span className="browser-device-touch-hint" title="Mouse input is translated into touch events">
         <Hand size={11} aria-hidden="true" /> Touch

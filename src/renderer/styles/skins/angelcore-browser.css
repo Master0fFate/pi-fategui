@@ -1,0 +1,29 @@
+/* Only the app-owned chrome is styled; the WebContentsView remains untouched. */
+:root[data-skin][data-skin-styled] .browser-workspace { --browser-chrome: var(--surface-background); background: var(--surface-background); font-size: var(--surface-font-size); }
+:root[data-skin][data-skin-styled] :is(.browser-tab-strip, .browser-toolbar, .browser-device-toolbar) { background: var(--surface-background); border-color: var(--surface-border); font-family: var(--font-interface); }
+:root[data-skin][data-skin-styled] .browser-tab-strip { flex-wrap: nowrap; gap: 3px; }
+:root[data-skin][data-skin-styled] .browser-tab { border-radius: var(--surface-control-radius); box-shadow: none; background: transparent; }
+:root[data-skin][data-skin-styled] .browser-tab--active { color: var(--theme-text); }
+:root[data-skin][data-skin-styled] .browser-tab--active::after { position: absolute; right: 4px; bottom: -1px; left: 4px; height: 1px; background: var(--theme-accent); content: ''; }
+:root[data-skin][data-skin-styled] .browser-tab > [role="tab"] { padding-right: 30px; font-family: var(--font-interface); font-size: clamp(10px, var(--surface-font-size), 13px); }
+:root[data-skin][data-skin-styled] .browser-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-skin][data-skin-styled] :is(.browser-tab-close, .browser-new-tab) { min-width: 24px; width: auto; height: 24px; padding: 0 2px; font-size: 10px; }
+:root[data-skin][data-skin-styled] .browser-toolbar { flex-wrap: nowrap; gap: 4px; min-height: calc(var(--surface-row-height) + 8px); padding-inline: var(--surface-padding); }
+:root[data-skin][data-skin-styled] :is(.browser-history-controls, .browser-tool-group) { flex-wrap: nowrap; gap: 1px; }
+:root[data-skin][data-skin-styled] .browser-history-controls button:nth-child(2) { display: inline-flex; }
+:root[data-skin][data-skin-styled] .browser-open-file { display: inline-flex !important; }
+:root[data-skin][data-skin-styled] :is(.browser-toolbar, .browser-device-toolbar) button { flex: none; min-width: 24px; width: auto; padding: 0 2px; font: 10px var(--font-interface); }
+:root[data-skin][data-skin-styled] .browser-address { min-width: 60px; flex: 1 1 0; border-radius: var(--surface-control-radius); background: var(--theme-canvas); border: 1px solid var(--surface-border); box-shadow: none; padding-inline: 6px; }
+:root[data-skin][data-skin-styled] .browser-address:focus-within { border-color: var(--theme-accent); box-shadow: none; }
+:root[data-skin][data-skin-styled] .browser-address input { font-family: var(--font-interface); font-size: var(--surface-font-size); }
+:root[data-skin][data-skin-styled] .browser-address input:focus-visible { outline: none; }
+:root[data-skin][data-skin-styled] .browser-device-toolbar { flex-wrap: nowrap; gap: 6px; }
+:root[data-skin][data-skin-styled] .browser-device-size { flex-wrap: nowrap; gap: 4px; }
+:root[data-skin][data-skin-styled] .browser-device-size input { border-radius: var(--surface-control-radius); font-family: var(--font-interface); }
+:root[data-skin][data-skin-styled] :is(.browser-annotation-hint, .browser-grant-strip, .browser-error-strip, .browser-confirmation, .browser-blank-mark) { border-radius: var(--surface-surface-radius); box-shadow: none; border-color: var(--surface-border); }
+:root[data-skin][data-skin-styled] :is(.browser-grant-strip, .browser-confirmation),
+:root[data-skin][data-skin-styled] :is(.browser-grant-strip, .browser-confirmation) * { font-family: "Noto Sans Variable", system-ui, sans-serif !important; }
+@container browser-workspace (max-width: 460px) {
+  :root[data-skin][data-skin-styled] .browser-toolbar { gap: 2px; padding-inline: 4px; }
+  :root[data-skin][data-skin-styled] .browser-device-touch-hint { display: none; }
+}

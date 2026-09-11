@@ -10,6 +10,7 @@ import type { AppLogService } from '../logging/AppLogService';
 import { PiThemeService } from './PiThemeService';
 import { SkinPackService } from './SkinPackService';
 import { skinPackIdSchema, skinPackThemeId, type SkinCatalog } from '../../shared/skins';
+import { removePackFontPreferences } from '../../shared/skinAppearance';
 
 const defaults: AppSettings = {
   appearance: 'dark',
@@ -138,11 +139,11 @@ export class SettingsService {
       const catalog = await this.skinPacks.remove(id);
       const current = this.settings;
       const next = {
-        ...current,
+        ...removePackFontPreferences(current, id),
         skinId: current.skinId === id ? 'default' : current.skinId,
         themeId: current.themeId === skinPackThemeId(id) ? defaults.themeId : current.themeId,
       };
-      if (next.skinId !== current.skinId || next.themeId !== current.themeId) {
+      if (JSON.stringify(next) !== JSON.stringify(current)) {
         await this.persist(next);
         this.settings = next;
       }

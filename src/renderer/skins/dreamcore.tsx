@@ -1,7 +1,9 @@
 import type { GaugeProps, MessageHeadingProps, PromptProps, SkinComponents, SymbolProps, TabProps } from './types';
 
+const shortActions: Record<string, string> = { tools: '+', 'full!': '!', read: 'ro', edit: 'rw', tag: '#', image: 'img', session: '~', improve: 'fix', send: '>', queue: '+', 'stop mic': 'stop', 'mic...': '...' };
 function ActionContent({ text }: SymbolProps) {
-  return <span className="terminal-action"><span aria-hidden="true">[</span>{text}<span aria-hidden="true">]</span></span>;
+  const short = shortActions[text];
+  return <span className="terminal-action"><span aria-hidden="true">[</span>{short ? <><span className="terminal-action-long">{text}</span><span className="terminal-action-short" aria-hidden="true">{short}</span></> : text}<span aria-hidden="true">]</span></span>;
 }
 function Symbol({ text }: SymbolProps) {
   return <span className="terminal-symbol" aria-hidden="true">{text}</span>;
@@ -22,4 +24,4 @@ function ContextGauge({ percent, estimated }: GaugeProps) {
   return <span className="terminal-context" aria-hidden="true">ctx {percent === null ? '?' : `${estimated ? '~' : ''}${Math.round(percent)}%`}</span>;
 }
 
-export const dreamcoreComponents: SkinComponents = { ActionContent, Symbol, TabContent, PromptHeading, PromptPrefix, MessageHeading, ContextGauge };
+export const dreamcoreComponents: SkinComponents = { toolbarBreakpoint: 1040, ActionContent, Symbol, TabContent, PromptHeading, PromptPrefix, MessageHeading, ContextGauge };

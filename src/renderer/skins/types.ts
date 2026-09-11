@@ -8,6 +8,7 @@ export interface GaugeProps { percent: number | null; estimated: boolean; childr
 
 // Only presentation leaves vary. Features retain controls, state, refs, and actions.
 export interface SkinComponents {
+  toolbarBreakpoint: number;
   ActionContent: ComponentType<SymbolProps>;
   Symbol: ComponentType<SymbolProps>;
   TabContent: ComponentType<TabProps>;

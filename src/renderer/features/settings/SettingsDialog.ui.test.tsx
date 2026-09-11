@@ -175,7 +175,8 @@ describe('SettingsDialog feedback', () => {
     await user.click(screen.getByRole('option', { name: /Angelcore/u }));
     await waitFor(() => expect(document.documentElement.dataset.skin).toBe('dreamcore'));
     expect(document.documentElement.dataset.theme).toBe('catppuccin-mocha');
-    expect(document.documentElement.dataset.interfaceFont).toBe('noto-sans');
+    expect(document.documentElement.dataset.interfaceFont).toBe('jetbrains-mono');
+    expect(screen.getByRole('combobox', { name: 'Interface font' })).toHaveTextContent('JetBrains Mono');
     expect(localStorage.getItem('fate:skin:last-applied')).toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Close settings' }));
@@ -225,7 +226,7 @@ describe('SettingsDialog feedback', () => {
     expect(compactSessions).toBeEnabled();
     await user.click(compactSessions);
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({ compactMode: false, compactSessions: true }));
+    expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({ skinAppearanceOverrides: { default: { compactSessions: true } } }));
     await waitFor(() => {
       expect(useUiStore.getState().compactMode).toBe(false);
       expect(useUiStore.getState().compactSessions).toBe(true);
@@ -478,9 +479,7 @@ describe('SettingsDialog feedback', () => {
     await user.click(performanceMode);
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(setSettings).toHaveBeenCalledWith(expect.objectContaining({
-      performanceMode: true,
-      reduceMotion: true,
-      holyShitMode: false,
+      skinAppearanceOverrides: { default: { performanceMode: true, reduceMotion: true, holyShitMode: false } },
     }));
   });
 

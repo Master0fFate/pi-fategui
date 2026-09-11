@@ -216,7 +216,7 @@ export async function resampleVoiceAudioOptimized(buffer: AudioBuffer, targetRat
 }
 
 export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject: () => void; connectRequest?: number }) {
-  const { ActionContent, Symbol, PromptHeading, PromptPrefix } = useSkinComponents();
+  const { ActionContent, Symbol, PromptHeading, PromptPrefix, toolbarBreakpoint } = useSkinComponents();
   const [draft, setDraft] = useState('');
   const [images, setImages] = useState<Attachment[]>([]);
   const [browserAnnotationIds, setBrowserAnnotationIds] = useState<string[]>([]);
@@ -746,13 +746,13 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     const element = composer.current;
     if (!element) return;
     const update = (width: number) => {
-      if (width > 0) setCompactToolbar(width < 640);
+      if (width > 0) setCompactToolbar(width < toolbarBreakpoint);
     };
     update(element.getBoundingClientRect().width);
     const observer = new ResizeObserver((entries) => update(entries[0]?.contentRect.width ?? 0));
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+  }, [toolbarBreakpoint]);
 
   useLayoutEffect(() => {
     const form = composer.current;
@@ -2192,11 +2192,11 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                 <span className="queued-message-status">Saved instruction</span>
                 <div className="queued-message-actions">
                   <AppTooltip content="Edit goal update" wrapTrigger>
-                    <button className="queued-message-edit" type="button" aria-label={`Edit goal update: ${preview}`} disabled={Boolean(goalUpdateBusyId)} onClick={() => void mutateGoalUpdate(item.id, 'edit')}><Pencil size={13} aria-hidden="true" /></button>
+                    <button className="queued-message-edit" type="button" aria-label={`Edit goal update: ${preview}`} disabled={Boolean(goalUpdateBusyId)} onClick={() => void mutateGoalUpdate(item.id, 'edit')}><ActionContent text="edit"><Pencil size={13} aria-hidden="true" /></ActionContent></button>
                   </AppTooltip>
                   <AppTooltip content="Cancel goal update" wrapTrigger>
                     <button className="queued-message-cancel" type="button" aria-label={`Cancel goal update: ${preview}`} disabled={Boolean(goalUpdateBusyId)} onClick={() => void mutateGoalUpdate(item.id, 'cancel')}>
-                      {busy ? <LoaderCircle className="tool-spinner" size={13} /> : <Trash2 size={13} aria-hidden="true" />}
+                      <ActionContent text={busy ? '~' : 'x'}>{busy ? <LoaderCircle className="tool-spinner" size={13} /> : <Trash2 size={13} aria-hidden="true" />}</ActionContent>
                     </button>
                   </AppTooltip>
                 </div>
@@ -2214,7 +2214,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
             const recovered = recoveredQueueIds.has(item.id);
             return (
               <div className="queued-message" key={item.id} data-behavior={item.behavior} data-held={held || undefined}>
-                <CornerUpLeft size={13} aria-hidden="true" />
+                <Symbol text="[q]"><CornerUpLeft size={13} aria-hidden="true" /></Symbol>
                 <AppTooltip content={item.text}><span className="queued-message-preview icon-label">{item.text}</span></AppTooltip>
                 <div className="queued-message-actions">
                   {item.images?.length ? <span className="queued-message-attachments">{item.images.length} image{item.images.length === 1 ? '' : 's'}</span> : null}
@@ -2231,15 +2231,15 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                       disabled={Boolean(queueBusyId)}
                       onClick={() => void mutateQueuedMessage(item.id, item.behavior === 'steer' ? 'followUp' : 'steer')}
                     >
-                      <CornerUpLeft size={13} aria-hidden="true" />
+                      <ActionContent text={item.behavior === 'steer' ? 'steer' : 'next'}><CornerUpLeft size={13} aria-hidden="true" /></ActionContent>
                     </button>
                   </AppTooltip>}
                   <AppTooltip content="Edit message" wrapTrigger>
-                    <button className="queued-message-edit" type="button" aria-label={`Edit queued message: ${item.text}`} disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'edit')}><Pencil size={13} aria-hidden="true" /></button>
+                    <button className="queued-message-edit" type="button" aria-label={`Edit queued message: ${item.text}`} disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'edit')}><ActionContent text="edit"><Pencil size={13} aria-hidden="true" /></ActionContent></button>
                   </AppTooltip>
                   <AppTooltip content="Cancel queued message" wrapTrigger>
                     <button className="queued-message-cancel" type="button" aria-label={`Cancel queued message: ${item.text}`} disabled={Boolean(queueBusyId)} onClick={() => void mutateQueuedMessage(item.id, 'cancel')}>
-                      {busy ? <LoaderCircle className="tool-spinner" size={13} /> : <Trash2 size={13} aria-hidden="true" />}
+                      <ActionContent text={busy ? '~' : 'x'}>{busy ? <LoaderCircle className="tool-spinner" size={13} /> : <Trash2 size={13} aria-hidden="true" />}</ActionContent>
                     </button>
                   </AppTooltip>
                 </div>
@@ -2411,6 +2411,12 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                   <Popover.Content className="composer-tools-popover" role="dialog" aria-label="Composer tools" side="top" align="start" sideOffset={9} collisionPadding={12}>
                     <div className="composer-tools-heading">Composer tools</div>
                     <div className="composer-tools-list">
+                      <details className="composer-saved-session-menu">
+                        <summary>Message saved session</summary>
+                        <div role="group" aria-label="Saved sessions">
+                          {attachableSessions.length ? attachableSessions.map((session) => <button key={session.id} type="button" title={session.title} onClick={() => { setUtilityMenuOpen(false); selectSessionTarget(session); }}>{session.title}</button>) : <p>No other saved sessions are available.</p>}
+                        </div>
+                      </details>
                       <AppTooltip content={runtime.project?.name ?? 'Open project'}>
                         <button type="button" onClick={() => { setUtilityMenuOpen(false); onOpenProject(); }}>
                           <FolderOpen size={14} aria-hidden="true" /><span className="icon-label">{runtime.project?.name ?? 'Open project'}</span>

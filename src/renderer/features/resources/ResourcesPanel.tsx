@@ -1,5 +1,6 @@
 import { Bot, ChevronRight, FileText, Plug, Sparkles } from 'lucide-react';
 import { useRuntimeStore } from '../../stores/runtimeStore';
+import { useSkinComponents } from '../../skins/SkinProvider';
 
 type ResourceKind = 'extension' | 'prompt' | 'skill';
 
@@ -9,20 +10,21 @@ interface ResourceItem {
 }
 
 function ResourceGroup({ id, title, kind, items }: { id: string; title: string; kind: ResourceKind; items: ResourceItem[] }) {
+  const { Symbol } = useSkinComponents();
   if (items.length === 0) return null;
   const Icon = kind === 'extension' ? Plug : kind === 'skill' ? Bot : FileText;
   const fallback = kind === 'extension' ? 'Pi extension command' : kind === 'skill' ? 'Project skill' : 'Reusable Pi prompt';
   return (
     <details className="resource-group" open aria-label={title}>
       <summary id={`${id}-title`}>
-        <ChevronRight className="resource-group-chevron" size={13} aria-hidden="true" />
+        <Symbol text=">"><ChevronRight className="resource-group-chevron" size={13} aria-hidden="true" /></Symbol>
         <span className="icon-label">{title}</span>
         <em className="icon-label">{items.length}</em>
       </summary>
       <div className="resource-list" aria-labelledby={`${id}-title`}>
         {items.map((item) => (
           <article key={item.name}>
-            <Icon size={14} aria-hidden="true" />
+            <Symbol text={kind === 'skill' ? ':' : '/'}><Icon size={14} aria-hidden="true" /></Symbol>
             <div><strong>{kind === 'skill' ? item.name : `/${item.name}`}</strong><p>{item.description || fallback}</p></div>
           </article>
         ))}

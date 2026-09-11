@@ -14,7 +14,7 @@ describe('declarative skin contracts', () => {
     expect(skinPackManifestSchema.safeParse({ ...pack, id }).success).toBe(false);
     expect(skinPackIdSchema.safeParse(`pack:${id}`).success).toBe(false);
   });
-  it.each([{ css: '*{display:none}' }, { script: 'run.js' }, { schemaVersion: 2 }, { base: 'custom-react' }, { layout: { contentWidth: 1 } }, { layout: { opacity: 0 } }, { background: { file: '../secret.png' } }, { background: { file: 'https://example.com/a.png' } }])('rejects unsupported or executable fields %j', (extra) => {
+  it.each([{ css: '*{display:none}' }, { script: 'run.js' }, { schemaVersion: 3 }, { base: 'custom-react' }, { layout: { contentWidth: 1 } }, { layout: { opacity: 0 } }, { background: { file: '../secret.png' } }, { background: { file: 'https://example.com/a.png' } }])('rejects unsupported or executable fields %j', (extra) => {
     expect(skinPackManifestSchema.safeParse({ ...pack, ...extra }).success).toBe(false);
   });
 });

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { SkinPackService } from './SkinPackService';
+import { SkinPackService, validatePackFont } from './SkinPackService';
 import { MAX_SKIN_MANIFEST_BYTES } from '../../shared/skins';
 
 vi.mock('electron', () => ({ nativeImage: {} }));
@@ -19,6 +19,32 @@ async function source(extra: Record<string, unknown> = {}) {
 const service = () => new SkinPackService(path.join(root, 'data'));
 
 describe('skin pack filesystem boundary', () => {
+  it('imports v2 bundled fonts and normalizes embedded PNG data into a managed file', async () => {
+    const png = await readFile(path.resolve('examples/skins/ashen-terminal/background.png'));
+    const font = await readFile(path.resolve('node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2'));
+    const packs = new SkinPackService(path.join(root, 'data'), () => png);
+    const input = await source({ schemaVersion: 2, fonts: [{ id: 'mono', name: 'Pack Mono', file: 'mono.woff2', monospace: true }], appearance: { interfaceFont: 'local:mono', codeFont: 'local:mono', compactMode: true }, background: { data: png.toString('base64'), opacity: 0.1 }, styles: { compact: { music: { controlRadius: 2 } } } });
+    await writeFile(path.join(input, 'mono.woff2'), font);
+    const result = await packs.importFolder(input);
+    const skin = result.catalog.skins.at(-1)!;
+    expect(skin.fonts?.[0]).toMatchObject({ id: 'skin-font:test-pack:mono', name: 'Pack Mono', format: 'woff2' });
+    expect(skin.appearance).toMatchObject({ interfaceFont: 'skin-font:test-pack:mono', codeFont: 'skin-font:test-pack:mono', compactMode: true });
+    expect(skin.styles?.compact?.music?.controlRadius).toBe(2);
+    const stored = JSON.parse(await readFile(path.join(packs.storagePath, manifest.id, 'skin.json'), 'utf8'));
+    expect(stored.background).toEqual({ file: 'background.png', opacity: 0.1 });
+    expect(await readFile(path.join(packs.storagePath, manifest.id, 'mono.woff2'))).toEqual(font);
+  });
+
+  it('rejects fake font binaries, expansion bombs, and undeclared font files', async () => {
+    expect(() => validatePackFont(Buffer.from('<script/>'), 'mono.woff2')).toThrow('WOFF');
+    const font = await readFile(path.resolve('node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2'));
+    font.writeUInt32BE(64 * 1024 * 1024, 16);
+    expect(() => validatePackFont(font, 'mono.woff2')).toThrow('expanded-size');
+    const input = await source();
+    await writeFile(path.join(input, 'mono.woff2'), font);
+    await expect(service().importFolder(input)).rejects.toThrow('Unsupported skin file');
+  });
+
   it('installs, discovers after restart, exports, and removes only its pack folder', async () => {
     const input = await source();
     await writeFile(path.join(input, 'README.md'), 'Pack credits');

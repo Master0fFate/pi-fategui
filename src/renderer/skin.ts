@@ -46,7 +46,7 @@ export function readStoredSkinDefinition(): SkinDefinition | null {
   if (!id.startsWith('pack:')) return builtInSkins.find((skin) => skin.id === id) ?? builtInSkins[0]!;
   try {
     const raw = localStorage.getItem(SKIN_SNAPSHOT_STORAGE_KEY);
-    if (!raw || raw.length > 256 * 1024) return null;
+    if (!raw || raw.length > 1536 * 1024) return null;
     const skin = skinDefinitionSchema.parse(JSON.parse(raw));
     return skin.id === id ? skin : null;
   } catch { return null; }

@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react';
 import './learning.css';
 import { Brain } from 'lucide-react';
 import { AppTooltip } from '../../components/AppTooltip';
+import { useSkinComponents } from '../../skins/SkinProvider';
 import { defaultMemoryLearning, type MemoryLearningSettings } from '../../../shared/contracts/learning';
 import { useLearningStore } from './learningStore';
 
 export function LearningIndicator() {
+  const { ActionContent } = useSkinComponents();
   const [memory, setMemory] = useState<MemoryLearningSettings | null>(null);
   useEffect(() => {
     let current = true;
@@ -22,9 +24,9 @@ export function LearningIndicator() {
   if (!memory?.enabled) return null;
   const modes = [memory.global ? 'GLOBAL' : null, memory.project ? 'PROJECT' : null].filter(Boolean).join(' · ') || 'None';
   return (
-    <AppTooltip content={modes} wrapTrigger>
+    <AppTooltip content={`Memory Learning · ${modes}`} wrapTrigger>
       <button type="button" className="learning-indicator" aria-label={`Memory Learning ${modes}`} onClick={() => useLearningStore.getState().show()}>
-        <Brain size={14} />
+        <ActionContent text="m"><Brain size={14} /></ActionContent>
       </button>
     </AppTooltip>
   );

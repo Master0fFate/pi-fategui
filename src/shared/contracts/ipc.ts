@@ -7,6 +7,8 @@ import {
   SUBAGENT_HANDLE_PATTERN,
 } from '../subagentIdentity';
 import { skinIdSchema, skinCatalogSchema, skinImportResultSchema, skinExportResultSchema } from '../skins';
+import { interfaceFontSchema, codeFontSchema } from '../skinFonts';
+import { skinAppearanceOverridesSchema } from '../skinStyles';
 import { themeCatalogSchema, type ThemeDefinition } from '../themes';
 import { agentTeamSchema, agentTeamControlInputSchema, agentWorkspacePolicySchema, type AgentTeamControlInput } from './multiAgent';
 
@@ -261,8 +263,7 @@ export const appErrorSchema = z.object({
 
 export const thinkingLevelSchema = z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 export const permissionLevelSchema = z.enum(['read-only', 'edit', 'full-access']);
-export const interfaceFontSchema = z.enum(['noto-sans', 'system', 'inter', 'poppins', 'montserrat', 'jetbrains-mono']);
-export const codeFontSchema = z.enum(['jetbrains-mono', 'noto-sans-mono', 'system-mono']);
+export { interfaceFontSchema, codeFontSchema };
 export const speechTierSchema = z.enum(['mini', 'balanced', 'max']);
 /** Every downloadable local voice model. Stored settings with the legacy
  *  tier-as-id values are migrated by `speechModelIdSchema`. */
@@ -1296,6 +1297,7 @@ export const appSettingsSchema = z.object({
   advancedPromptImprovement: z.boolean().default(false),
   crashTelemetryEnabled: z.boolean().default(false),
   skinId: skinIdSchema.default('default'),
+  skinAppearanceOverrides: skinAppearanceOverridesSchema.optional(),
   themeId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,47}$/).default('catppuccin-mocha'),
   interfaceFont: interfaceFontSchema.default('noto-sans'),
   codeFont: codeFontSchema.default('jetbrains-mono'),

@@ -4,8 +4,10 @@ import { useBrowserStore } from '../../stores/browserStore';
 import { BrowserDeviceToolbar } from './BrowserDeviceToolbar';
 import { BrowserToolbar } from './BrowserToolbar';
 import { BrowserViewport } from './BrowserViewport';
+import { useSkinComponents } from '../../skins/SkinProvider';
 
 export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
+  const { ActionContent, TabContent } = useSkinComponents();
   const state = useBrowserStore((store) => store.state);
   const pending = useBrowserStore((store) => store.pending);
 
@@ -37,8 +39,7 @@ export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
                 disabled={Boolean(pending)}
                 onClick={() => void run('tab switch', () => window.piDesktop.activateBrowserTab(tab.id))}
               >
-                {local ? <FileCode2 size={12} aria-hidden="true" /> : <Globe2 size={12} aria-hidden="true" />}
-                <span>{tab.title || localFileName(tab.url) || (tab.url === 'about:blank' ? 'New tab' : tab.url)}</span>
+                <TabContent active={active} label={tab.title || localFileName(tab.url) || (tab.url === 'about:blank' ? 'New tab' : tab.url)} labelClassName="browser-tab-label" icon={local ? <FileCode2 size={12} aria-hidden="true" /> : <Globe2 size={12} aria-hidden="true" />} />
                 {tab.loading && <LoaderCircle className="tool-spinner" size={11} aria-label="Loading tab" />}
               </button>
               <button
@@ -47,7 +48,7 @@ export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
                 aria-label={`Close ${tab.title || 'browser tab'}`}
                 disabled={Boolean(pending)}
                 onClick={() => void run('tab close', () => window.piDesktop.closeBrowserTab(tab.id))}
-              ><X size={11} /></button>
+              ><ActionContent text="x"><X size={11} /></ActionContent></button>
             </div>
           );
         })}
@@ -57,7 +58,7 @@ export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
           aria-label="New browser tab"
           disabled={Boolean(pending) || state.tabs.length >= 16}
           onClick={() => void run('new tab', () => window.piDesktop.createBrowserTab())}
-        ><Plus size={13} /></button>
+        ><ActionContent text="+"><Plus size={13} /></ActionContent></button>
       </div>
       <BrowserToolbar />
       <BrowserDeviceToolbar state={state} />

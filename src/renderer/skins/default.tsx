@@ -5,6 +5,7 @@ const Empty = () => null;
 const TabContent = ({ label, icon, labelClassName }: TabProps) => <>{icon}<span className={labelClassName}>{label}</span></>;
 
 export const defaultComponents: SkinComponents = {
+  toolbarBreakpoint: 640,
   ActionContent: Original,
   Symbol: Original,
   TabContent,

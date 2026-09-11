@@ -11,6 +11,14 @@ describe('parseBrowserAddress', () => {
     expect(parseBrowserAddress('localhost:4173/preview', root)).toEqual({ kind: 'network', url: 'http://localhost:4173/preview' });
   });
 
+  it('does not mistake web pages for local files because of their extension', () => {
+    expect(parseBrowserAddress('http://127.0.0.1:4173/index.html', root)).toEqual({ kind: 'network', url: 'http://127.0.0.1:4173/index.html' });
+    expect(parseBrowserAddress('https://example.com/image.svg', root)).toEqual({ kind: 'network', url: 'https://example.com/image.svg' });
+    expect(parseBrowserAddress('example.com/index.html', root)).toEqual({ kind: 'network', url: 'https://example.com/index.html' });
+    expect(parseBrowserAddress('localhost:4173/index.html', root)).toEqual({ kind: 'network', url: 'http://localhost:4173/index.html' });
+    expect(() => parseBrowserAddress('javascript:alert(1).html', root)).toThrow();
+  });
+
   it('accepts absolute, relative, and file URL paths', () => {
     const absolute = path.resolve(root, 'dist/index.html');
     expect(parseBrowserAddress(absolute, root)).toEqual({ kind: 'local-file', path: path.normalize(absolute) });
