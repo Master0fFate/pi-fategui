@@ -116,6 +116,13 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
     await page.getByRole('button', { name: 'Show playlist' }).click();
     await expect(page.locator('.music-queue-list > li')).toHaveCount(2);
     await squareSurface(page, '.music-player-panel'); await squareSurface(page, '.music-queue-panel');
+    const [playlistBox, playerBox] = await Promise.all([
+      page.locator('.music-queue-panel').boundingBox(),
+      page.locator('.music-player-panel').boundingBox(),
+    ]);
+    expect(playlistBox!.x + playlistBox!.width).toBeLessThanOrEqual(playerBox!.x);
+    expect(Math.abs(playlistBox!.y - playerBox!.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(playlistBox!.y + playlistBox!.height - (playerBox!.y + playerBox!.height))).toBeLessThanOrEqual(1);
     await page.screenshot({ path: 'test-results/angelcore-playlist.png', animations: 'disabled' });
     await page.getByRole('button', { name: 'Close music player' }).click();
 
@@ -193,6 +200,13 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
     await page.getByRole('button', { name: 'Show playlist' }).click();
     await squareSurface(page, '.music-player-panel');
     await squareSurface(page, '.music-queue-panel');
+    const [compactPlaylistBox, compactPlayerBox] = await Promise.all([
+      page.locator('.music-queue-panel').boundingBox(),
+      page.locator('.music-player-panel').boundingBox(),
+    ]);
+    expect(compactPlaylistBox!.x + compactPlaylistBox!.width).toBeLessThanOrEqual(compactPlayerBox!.x);
+    expect(Math.abs(compactPlaylistBox!.y - compactPlayerBox!.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(compactPlaylistBox!.y + compactPlaylistBox!.height - (compactPlayerBox!.y + compactPlayerBox!.height))).toBeLessThanOrEqual(1);
     await page.screenshot({ path: 'test-results/angelcore-playlist-compact.png', animations: 'disabled' });
     await page.getByRole('button', { name: 'Close music player' }).click();
     await page.getByRole('button', { name: /^Memory Learning/ }).click();

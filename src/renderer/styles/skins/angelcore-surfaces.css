@@ -124,7 +124,6 @@
 /* Music is a compact transport and playlist, with the same text actions. */
 :root[data-skin][data-skin-styled] .music-dock { --music-panel-width: 340px; font-family: var(--font-interface); font-size: var(--surface-font-size); }
 :root[data-skin][data-skin-styled] :is(.music-player-panel, .music-queue-panel) { padding: var(--surface-padding); border: 1px solid var(--surface-border); }
-:root[data-skin][data-skin-styled] .music-queue-panel { bottom: 76px; }
 :root[data-skin][data-skin-styled] :is(.music-source, .music-queue-heading) { border-radius: 0; border-color: var(--surface-border); background: transparent; }
 :root[data-skin][data-skin-styled] .music-source input { min-width: 0; font-family: var(--font-interface); }
 :root[data-skin][data-skin-styled] .music-source button { width: auto; flex: none; min-width: 24px; font-size: 10px; }

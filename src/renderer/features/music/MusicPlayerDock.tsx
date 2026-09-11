@@ -511,6 +511,7 @@ export function MusicPlayerDock() {
       data-playlist-open={playlistOpen}
       style={{ '--music-dock-inset': `${browserInset}px` } as CSSProperties}
     >
+      <div className="music-dock-stage">
       <aside
         ref={playlistRef}
         id="music-playlist"
@@ -685,6 +686,7 @@ export function MusicPlayerDock() {
           </div>
         </div>
       </section>
+      </div>
 
       <AppTooltip content={open ? 'Close music player' : 'Open music player'}>
         <button

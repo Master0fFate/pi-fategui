@@ -1499,6 +1499,8 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(playlist.getByRole('button', { name: 'Clear playlist' })).toBeDisabled();
     const [playlistBox, playerBox] = await Promise.all([playlist.boundingBox(), musicPlayer.boundingBox()]);
     expect(playlistBox!.x + playlistBox!.width).toBeLessThanOrEqual(playerBox!.x);
+    expect(Math.abs(playlistBox!.y - playerBox!.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(playlistBox!.y + playlistBox!.height - (playerBox!.y + playerBox!.height))).toBeLessThanOrEqual(1);
     const audio = page.locator('.music-dock audio');
     await audio.dispatchEvent('play');
     await expect(page.locator('.music-equalizer')).toBeVisible();
