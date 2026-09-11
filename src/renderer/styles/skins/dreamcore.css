@@ -1,0 +1,376 @@
+/* Dreamcore is a structural skin. Every color remains derived from the active
+   --theme-* palette so skin and palette stay independent. */
+:root[data-skin="dreamcore"] {
+  --dreamcore-hairline: color-mix(in srgb, var(--theme-text) 18%, var(--theme-border));
+  --dreamcore-edge: color-mix(in srgb, var(--theme-text) 48%, var(--theme-border));
+  --dreamcore-shadow: color-mix(in srgb, var(--theme-shadow) 38%, transparent);
+  --dreamcore-field: color-mix(in srgb, var(--theme-canvas) 94%, var(--theme-panel));
+  --dreamcore-chrome-inset: 38px;
+  --dreamcore-header-row: 42px;
+  --dreamcore-header-height: calc(var(--dreamcore-chrome-inset) + var(--dreamcore-header-row));
+  --dreamcore-thread-width: 780px;
+  --dreamcore-thread-inset: clamp(20px, 3vw, 40px);
+}
+
+:root[data-skin="dreamcore"][data-platform="darwin"] { --dreamcore-chrome-inset: 0px; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] {
+  --dreamcore-header-row: 30px;
+  --dreamcore-thread-inset: 16px;
+}
+
+:root[data-skin="dreamcore"] .app-shell {
+  background: var(--theme-canvas);
+  transition: none;
+}
+
+/* The six-pixel resize target owns one visible stroke; adjacent panes own none. */
+:root[data-skin="dreamcore"] .app-shell > .resize-handle::after {
+  inset: 0 auto 0 2px;
+  width: 1px;
+  background: var(--dreamcore-hairline);
+  transition: none;
+}
+:root[data-skin="dreamcore"] .app-shell > .resize-handle:hover::after,
+:root[data-skin="dreamcore"] .app-shell > .resize-handle:focus-visible::after { background: var(--theme-accent); }
+:root[data-skin="dreamcore"] .workspace + .resize-handle::before {
+  position: absolute;
+  top: calc(var(--dreamcore-header-height) - 1px);
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--dreamcore-hairline);
+  content: "";
+  pointer-events: none;
+}
+
+:root[data-skin="dreamcore"] .sidebar,
+:root[data-skin="dreamcore"] .inspector {
+  background: color-mix(in srgb, var(--theme-panel) 82%, var(--theme-canvas));
+}
+
+:root[data-skin="dreamcore"] .sidebar {
+  padding-inline: 18px;
+  border-right: 0;
+}
+
+:root[data-skin="dreamcore"] .sidebar--collapsed {
+  padding-inline: 12px;
+  border-right: 1px solid var(--dreamcore-hairline);
+}
+:root[data-skin="dreamcore"] .brand-row { min-height: 48px; margin-bottom: 18px; }
+:root[data-skin="dreamcore"] .brand-mark {
+  color: var(--theme-text-soft);
+  font-weight: 400;
+  filter: none;
+}
+:root[data-skin="dreamcore"] .brand-copy strong {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: .035em;
+}
+:root[data-skin="dreamcore"] .brand-copy span { letter-spacing: .035em; }
+:root[data-skin="dreamcore"] .brand-dev-tag { color: var(--theme-text-soft); }
+
+:root[data-skin="dreamcore"] .sidebar-primary-nav,
+:root[data-skin="dreamcore"] .inspector-primary-nav {
+  border-color: var(--dreamcore-hairline);
+}
+:root[data-skin="dreamcore"] .sidebar-primary-trigger,
+:root[data-skin="dreamcore"] .inspector-primary-trigger,
+:root[data-skin="dreamcore"] .inspector-secondary-trigger,
+:root[data-skin="dreamcore"] .sidebar-search input {
+  font-family: var(--font-code);
+  font-weight: 400;
+}
+:root[data-skin="dreamcore"] .sidebar-primary-trigger::after,
+:root[data-skin="dreamcore"] .inspector-primary-trigger::after {
+  right: 16px;
+  left: 16px;
+  height: 1px;
+  border-radius: 0;
+  background: var(--theme-accent);
+  opacity: 0;
+  transform: none;
+  transition: none;
+}
+:root[data-skin="dreamcore"] .sidebar-primary-trigger[data-state="active"],
+:root[data-skin="dreamcore"] .inspector-primary-trigger[aria-current="page"] { color: var(--theme-text); }
+:root[data-skin="dreamcore"] .sidebar-primary-trigger[data-state="active"]::after,
+:root[data-skin="dreamcore"] .inspector-primary-trigger[aria-current="page"]::after {
+  opacity: 1;
+  transform: none;
+}
+
+:root[data-skin="dreamcore"] .sidebar-search,
+:root[data-skin="dreamcore"] .file-search {
+  border: 0;
+  border-bottom: 1px solid var(--dreamcore-hairline);
+  border-radius: 0;
+  background: transparent;
+}
+:root[data-skin="dreamcore"] .session-open,
+:root[data-skin="dreamcore"] .resource-type-row,
+:root[data-skin="dreamcore"] .resource-result-row,
+:root[data-skin="dreamcore"] .automation-open { border-radius: 2px; }
+:root[data-skin="dreamcore"] .session-row[data-current="true"] .session-open,
+:root[data-skin="dreamcore"] .session-row.active .session-open,
+:root[data-skin="dreamcore"] .nav-list button.active {
+  box-shadow: inset 1px 0 0 var(--theme-text);
+}
+:root[data-skin="dreamcore"] .nav-list button,
+:root[data-skin="dreamcore"] .sidebar-footer button,
+:root[data-skin="dreamcore"] .icon-button { border-radius: 2px; }
+
+:root[data-skin="dreamcore"] .workspace { background: var(--dreamcore-field); }
+:root[data-skin="dreamcore"] .workspace-header {
+  flex: 0 0 var(--dreamcore-header-height);
+  border-bottom-color: var(--dreamcore-hairline);
+}
+:root[data-skin="dreamcore"] .workspace-header-drag {
+  padding: var(--dreamcore-chrome-inset) 24px 0;
+}
+:root[data-skin="dreamcore"] .workspace-header-identity {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 10px;
+  font-family: var(--font-code);
+}
+:root[data-skin="dreamcore"] .workspace-header .eyebrow {
+  color: var(--theme-muted);
+  font-family: inherit;
+  font-weight: 400;
+  letter-spacing: .12em;
+}
+:root[data-skin="dreamcore"] .workspace-header strong {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+:root[data-skin="dreamcore"] .activity-pulse { grid-column: 1 / -1; }
+:root[data-skin="dreamcore"] .app-shell .extension-status-rail {
+  position: relative;
+  inset: auto;
+  flex: 0 0 20px;
+  align-self: flex-end;
+  max-width: calc(100% - 48px);
+  height: 20px;
+  margin: 8px 24px 0;
+  color: var(--theme-muted);
+  font: 10px/1.4 var(--font-code);
+  opacity: 1;
+}
+:root[data-skin="dreamcore"] .extension-status-details-trigger {
+  height: 20px;
+  border-radius: 0;
+  font: 9px var(--font-code);
+}
+:root[data-skin="dreamcore"] .welcome--conversation { padding: 14px var(--dreamcore-thread-inset) 0; }
+:root[data-skin="dreamcore"] .conversation { width: min(100%, var(--dreamcore-thread-width)); }
+:root[data-skin="dreamcore"] .welcome--conversation .composer-wrap {
+  width: min(calc(100% - 2 * var(--dreamcore-thread-inset)), var(--dreamcore-thread-width));
+}
+:root[data-skin="dreamcore"] .timeline-row { padding-block: 10px; }
+:root[data-skin="dreamcore"] .chat-message {
+  border: 0;
+  border-inline-start: 1px solid var(--dreamcore-hairline);
+  border-radius: 0;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--theme-panel) 68%, transparent), transparent 88%);
+  box-shadow: none;
+}
+:root[data-skin="dreamcore"] .chat-message--user {
+  border-inline-start: 0;
+  border-inline-end: 1px solid var(--dreamcore-edge);
+  background: linear-gradient(270deg, color-mix(in srgb, var(--theme-raised) 72%, var(--theme-canvas)), transparent 92%);
+}
+:root[data-skin="dreamcore"] .chat-message--system { border-inline: 0; }
+:root[data-skin="dreamcore"] .timeline-notice,
+:root[data-skin="dreamcore"] .tool-card { border-radius: 2px; }
+
+:root[data-skin="dreamcore"] .composer {
+  --composer-surface: color-mix(in srgb, var(--theme-panel) 78%, var(--theme-canvas));
+  width: 100%;
+  padding: 15px 17px 13px;
+  border: 1px solid var(--dreamcore-hairline);
+  border-radius: 2px;
+  background: var(--composer-surface);
+  box-shadow: none;
+  font-family: var(--font-code);
+  transition: border-color 120ms ease;
+}
+:root[data-skin="dreamcore"] .composer:focus-within {
+  border-color: var(--theme-text-soft);
+  box-shadow: none;
+}
+:root[data-skin="dreamcore"] .composer[data-session-drop="true"] {
+  border-color: var(--theme-accent);
+  box-shadow: none;
+}
+:root[data-skin="dreamcore"] .composer textarea {
+  font-family: var(--font-code);
+  font-size: 13px;
+  line-height: 1.65;
+}
+:root[data-skin="dreamcore"] .composer textarea::placeholder { color: var(--theme-muted); }
+:root[data-skin="dreamcore"] .composer-toolbar button:not(.send-button),
+:root[data-skin="dreamcore"] .send-button { border-radius: 2px; }
+:root[data-skin="dreamcore"] .send-button {
+  border: 1px solid var(--theme-accent);
+  color: var(--theme-on-accent);
+  box-shadow: none;
+}
+
+:root[data-skin="dreamcore"] .inspector {
+  border-left: 0;
+  box-shadow: none;
+}
+:root[data-skin="dreamcore"] .app-shell--inspector-open .inspector { padding-top: var(--dreamcore-chrome-inset); }
+:root[data-skin="dreamcore"] .inspector-primary-nav { height: var(--dreamcore-header-row); }
+:root[data-skin="dreamcore"] .inspector-secondary-tabs {
+  flex-basis: 36px;
+  border-color: var(--theme-border);
+}
+:root[data-skin="dreamcore"] .inspector-secondary-trigger { height: 35px; }
+:root[data-skin="dreamcore"] .inspector-secondary-trigger[data-state="active"] {
+  color: var(--theme-text);
+  text-decoration: none;
+}
+:root[data-skin="dreamcore"] .inspector-secondary-trigger[data-state="active"]::after {
+  position: absolute;
+  right: 16px;
+  bottom: 0;
+  left: 16px;
+  height: 1px;
+  background: var(--theme-accent);
+  content: "";
+}
+
+:root[data-skin="dreamcore"] .dialog-overlay {
+  background: color-mix(in srgb, var(--theme-shadow) 78%, transparent);
+  backdrop-filter: none;
+}
+:root[data-skin="dreamcore"] .command-palette,
+:root[data-skin="dreamcore"] .settings-dialog,
+:root[data-skin="dreamcore"] .automation-editor,
+:root[data-skin="dreamcore"] .model-popover,
+:root[data-skin="dreamcore"] .permission-popover,
+:root[data-skin="dreamcore"] .composer-tools-popover {
+  border-color: var(--dreamcore-edge);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--theme-panel) 92%, var(--theme-canvas));
+  box-shadow: 0 26px 90px var(--dreamcore-shadow), inset 0 1px 0 color-mix(in srgb, var(--theme-text) 12%, transparent);
+}
+:root[data-skin="dreamcore"] .settings-header {
+  flex-basis: 76px;
+  padding-inline: 28px 22px;
+  border-color: var(--dreamcore-hairline);
+}
+:root[data-skin="dreamcore"] .settings-dialog h2,
+:root[data-skin="dreamcore"] .settings-title h3 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 500;
+  letter-spacing: .035em;
+}
+:root[data-skin="dreamcore"] .settings-dialog h2 { font-size: 18px; }
+:root[data-skin="dreamcore"] .settings-layout { grid-template-columns: 210px minmax(0, 1fr); }
+:root[data-skin="dreamcore"] .settings-nav {
+  gap: 1px;
+  padding: 20px 12px;
+  border-color: var(--dreamcore-hairline);
+  background: color-mix(in srgb, var(--theme-canvas) 44%, var(--theme-panel));
+}
+:root[data-skin="dreamcore"] .settings-nav button {
+  min-height: 50px;
+  border-radius: 1px;
+}
+:root[data-skin="dreamcore"] .settings-nav button[aria-selected="true"] {
+  background: transparent;
+  box-shadow: inset 1px 0 0 var(--theme-text);
+}
+:root[data-skin="dreamcore"] .settings-panel { padding: 30px 34px 38px; }
+:root[data-skin="dreamcore"] .settings-group { border-color: var(--dreamcore-hairline); }
+:root[data-skin="dreamcore"] .settings-dialog .custom-select-trigger,
+:root[data-skin="dreamcore"] .settings-inline-action,
+:root[data-skin="dreamcore"] .settings-input-row input,
+:root[data-skin="dreamcore"] .settings-notice,
+:root[data-skin="dreamcore"] .settings-shortcuts,
+:root[data-skin="dreamcore"] .settings-diagnostics,
+:root[data-skin="dreamcore"] .settings-logs { border-radius: 2px; }
+:root[data-skin="dreamcore"] .settings-dialog > footer {
+  border-color: var(--dreamcore-hairline);
+  background: color-mix(in srgb, var(--theme-canvas) 34%, var(--theme-panel));
+}
+
+:root[data-skin="dreamcore"] .terminal-panel {
+  border-top-color: var(--dreamcore-edge);
+  background: color-mix(in srgb, var(--theme-canvas) 96%, var(--theme-panel));
+}
+:root[data-skin="dreamcore"] .terminal-panel header {
+  border-bottom-color: var(--dreamcore-hairline);
+  letter-spacing: .04em;
+}
+
+:root[data-skin="dreamcore"][data-compact-mode="true"] .workspace-header-drag { padding-inline: 12px; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .workspace-header-identity { display: flex; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .app-shell .extension-status-rail {
+  inset: auto;
+  margin-inline: 12px;
+  max-width: calc(100% - 24px);
+}
+:root[data-skin="dreamcore"][data-compact-mode="true"] .settings-header { flex-basis: 36px; padding: 0 10px 0 14px; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .settings-layout { grid-template-columns: 156px minmax(0, 1fr); }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .settings-panel { padding: 12px 14px 16px; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .sidebar { padding: 8px; }
+:root[data-skin="dreamcore"][data-platform="darwin"][data-compact-mode="true"] .sidebar { padding-top: 40px; }
+:root[data-skin="dreamcore"][data-platform="darwin"][data-compact-mode="true"] .window-drag-region { left: 76px; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .brand-row { margin-bottom: 4px; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .composer { padding: 8px 10px; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .composer textarea { font-size: 12px; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .inspector-secondary-tabs { flex-basis: 28px; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .inspector-secondary-trigger { height: 27px; }
+
+:root[data-skin="dreamcore"][data-performance-mode="true"] .app-shell,
+:root[data-skin="dreamcore"][data-performance-mode="true"] .workspace {
+  background: var(--theme-canvas);
+}
+:root[data-skin="dreamcore"][data-performance-mode="true"] .composer,
+:root[data-skin="dreamcore"][data-performance-mode="true"] .settings-dialog,
+:root[data-skin="dreamcore"][data-performance-mode="true"] .command-palette,
+:root[data-skin="dreamcore"][data-performance-mode="true"] .automation-editor {
+  box-shadow: none;
+}
+
+@media (max-width: 700px) {
+  :root[data-skin="dreamcore"] .settings-header {
+    flex-basis: 62px;
+    padding-inline: 16px 12px;
+  }
+  :root[data-skin="dreamcore"] .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  :root[data-skin="dreamcore"] .settings-nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding: 6px;
+    border-right: 0;
+    border-bottom: 1px solid var(--dreamcore-hairline);
+  }
+  :root[data-skin="dreamcore"] .settings-nav button {
+    min-height: 34px;
+    justify-content: center;
+    padding: 5px 4px;
+  }
+  :root[data-skin="dreamcore"] .settings-nav button span { display: none; }
+  :root[data-skin="dreamcore"] .settings-panel { padding: 12px 12px 14px; }
+  :root[data-skin="dreamcore"][data-compact-mode="true"] .settings-header {
+    flex-basis: 36px;
+    padding-inline: 12px 8px;
+  }
+  :root[data-skin="dreamcore"][data-compact-mode="true"] .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  :root[data-skin="dreamcore"][data-compact-mode="true"] .settings-panel { padding: 12px 12px 14px; }
+}

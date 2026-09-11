@@ -77,4 +77,8 @@ export const builtInThemes: readonly ThemeDefinition[] = [
     id: 'ember', name: 'Ember', tone: 'light',
     colors: { canvas: '#faf6f2', panel: '#fffdfb', raised: '#f2eae3', raisedHover: '#eaded4', border: '#ddcfc3', borderStrong: '#c3ad9c', text: '#2a211c', textSoft: '#493b33', muted: '#716158', subtle: '#918078', accent: '#b94f33', accentHover: '#9e3f27', accentSoft: '#f6ddd3', currentSession: '#f1d6cf', lastActiveSession: '#f2eae3', onAccent: '#ffffff', success: '#327452', warning: '#8b650c', danger: '#af3f47', shadow: '#806b5d' },
   },
+  {
+    id: 'monochrome', name: 'Monochrome', tone: 'dark',
+    colors: { canvas: '#090a0b', panel: '#0f1113', raised: '#16191c', raisedHover: '#202429', border: '#2c3136', borderStrong: '#4c535a', text: '#f0f1ef', textSoft: '#c8ccca', muted: '#929997', subtle: '#68706e', accent: '#d8ddda', accentHover: '#f3f5f2', accentSoft: '#292e2b', currentSession: '#343a36', lastActiveSession: '#16191c', onAccent: '#101211', success: '#b8c2ba', warning: '#c9c3b2', danger: '#c5b4b6', shadow: '#000000' },
+  },
 ] as const;

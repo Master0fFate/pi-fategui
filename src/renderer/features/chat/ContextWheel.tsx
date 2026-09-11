@@ -1,5 +1,6 @@
 import type { RuntimeState } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
+import { useSkinComponents } from '../../skins/SkinProvider';
 
 const radius = 10;
 const circumference = 2 * Math.PI * radius;
@@ -15,6 +16,7 @@ export function ContextWheel({ usage, fallbackWindow, windowOverride }: {
   fallbackWindow?: number;
   windowOverride?: number;
 }) {
+  const { ContextGauge } = useSkinComponents();
   // A staged model switch swaps the window before Pi reports usage for it.
   // Rescale the latest token measurement against the upcoming window so the
   // meter shows the next message's budget instead of the retired model's.
@@ -54,6 +56,7 @@ export function ContextWheel({ usage, fallbackWindow, windowOverride }: {
         data-level={level}
         tabIndex={0}
       >
+        <ContextGauge percent={percent} estimated={estimated}>
         <svg viewBox="0 0 28 28" aria-hidden="true">
           <circle className="context-wheel-track" cx="14" cy="14" r={radius} />
           <circle
@@ -65,6 +68,7 @@ export function ContextWheel({ usage, fallbackWindow, windowOverride }: {
             strokeDashoffset={percent === null ? circumference : circumference * (1 - percent / 100)}
           />
         </svg>
+        </ContextGauge>
       </span>
     </AppTooltip>
   );

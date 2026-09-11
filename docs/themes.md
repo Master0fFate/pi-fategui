@@ -1,6 +1,8 @@
 # Themes
 
-Fate UI ships with built-in themes across dark and light tones — and maps any Pi-compatible theme into the same palette. Pick one under **Settings → Interface → Theme**.
+Fate UI ships with built-in themes across dark and light tones — and maps any Pi-compatible theme into the same palette. Pick one under **Settings → Skins → Color theme**.
+
+Themes provide colors; [interface skins](skins.md) provide structural styling. They are independent: every built-in, custom Fate, or trusted-project Pi palette works under Default or Angelcore, and choosing one never silently changes the other.
 
 ## Create your own theme
 

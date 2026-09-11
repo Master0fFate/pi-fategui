@@ -3,6 +3,7 @@ import { memo, useEffect, useRef, useState } from 'react';
 import type { RuntimeTool, SubagentRun } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
+import { useSkinComponents } from '../../skins/SkinProvider';
 import { MessageImages } from './RichMessageContent';
 import { previewHotPathText, shouldAutoShowRunningOutput } from './hotPathBudgets';
 
@@ -25,6 +26,7 @@ export function presentedSubagentToolStatus(toolStatus: RuntimeTool['status'], c
 }
 
 export const ToolCard = memo(function ToolCard({ toolCallId, compact = false, waitPollCount = 1 }: { toolCallId: string; compact?: boolean; waitPollCount?: number | undefined }) {
+  const { Symbol } = useSkinComponents();
   const tool = useRuntimeStore((state) => state.toolsById[toolCallId]);
   const childStatusKey = useRuntimeStore((state) => state.toolsById[toolCallId]?.subagentRunIds
     ?.flatMap((runId) => state.subagentsById[runId]?.status ?? [])
@@ -57,10 +59,10 @@ export const ToolCard = memo(function ToolCard({ toolCallId, compact = false, wa
   return (
     <article ref={cardRef} tabIndex={-1} data-flight-focus={focused || undefined} className={`tool-card tool-card--${presentedStatus}${tool.images?.length ? ' tool-card--with-images' : ''}${compact ? ' tool-card--compact' : ''}`} aria-label={`${tool.name} tool ${ariaStatus}`}>
       <button className="tool-card-header" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
-        <Icon size={13} className={`tool-status-icon${presentedStatus === 'running' ? ' tool-spinner' : ''}`} aria-hidden="true" />
+        <Symbol text={presentedStatus === 'running' ? '[run]' : presentedStatus === 'error' ? '[err]' : presentedStatus === 'stopped' ? '[stop]' : '[ok]'}><Icon size={13} className={`tool-status-icon${presentedStatus === 'running' ? ' tool-spinner' : ''}`} aria-hidden="true" /></Symbol>
         <span className="tool-heading icon-label"><strong>{tool.name}</strong><small>{summary}</small></span>
         <span className="tool-meta icon-label">{isSubagentTool ? presentedStatusLabel : tool.status === 'running' ? 'Running' : elapsed(tool.startedAt, tool.endedAt ?? tool.updatedAt)}</span>
-        {expanded ? <ChevronDown className="tool-disclosure-icon" size={13} /> : <ChevronRight className="tool-disclosure-icon" size={13} />}
+        <Symbol text={expanded ? '-' : '+'}>{expanded ? <ChevronDown className="tool-disclosure-icon" size={13} /> : <ChevronRight className="tool-disclosure-icon" size={13} />}</Symbol>
       </button>
       {tool.subagentRunIds?.length ? (
         <button

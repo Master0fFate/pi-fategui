@@ -55,11 +55,14 @@ export const codeFontOptions: ReadonlyArray<{ value: CodeFont; label: string; de
 
 export function applyFonts(interfaceFont: InterfaceFont, codeFont: CodeFont): void {
   const root = document.documentElement;
+  const interfaceFontChanged = root.dataset.interfaceFont !== interfaceFont;
   const codeFontChanged = root.dataset.codeFont !== codeFont;
-  root.dataset.interfaceFont = interfaceFont;
-  root.dataset.codeFont = codeFont;
-  root.style.setProperty('--font-interface', interfaceFamilies[interfaceFont]);
-  root.style.setProperty('--font-code', codeFamilies[codeFont]);
-  loadOptionalInterfaceFont(interfaceFont);
+  if (interfaceFontChanged) root.dataset.interfaceFont = interfaceFont;
+  if (codeFontChanged) root.dataset.codeFont = codeFont;
+  const interfaceFamily = interfaceFamilies[interfaceFont];
+  const codeFamily = codeFamilies[codeFont];
+  if (root.style.getPropertyValue('--font-interface') !== interfaceFamily) root.style.setProperty('--font-interface', interfaceFamily);
+  if (root.style.getPropertyValue('--font-code') !== codeFamily) root.style.setProperty('--font-code', codeFamily);
+  if (interfaceFontChanged) loadOptionalInterfaceFont(interfaceFont);
   if (codeFontChanged) window.dispatchEvent(new CustomEvent('fate-font-change', { detail: { interfaceFont, codeFont } }));
 }

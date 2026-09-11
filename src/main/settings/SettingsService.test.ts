@@ -30,12 +30,38 @@ function createSettings(logs = new AppLogService(), piThemes: ConstructorParamet
 }
 
 describe('SettingsService', () => {
+  it('persists installed pack identities and resets only owned appearance fields on removal', async () => {
+    const service = createSettings();
+    const baseline = await service.load();
+    const source = path.join(directory, 'source-pack');
+    await mkdir(source);
+    await writeFile(path.join(source, 'skin.json'), JSON.stringify({ schemaVersion: 1, id: 'test-pack', name: 'Test pack', version: '1.0.0', description: 'Fixture.', base: 'dreamcore', palette: { tone: 'dark', colors: builtInThemes[2]!.colors } }));
+    await service.skinPacks.importFolder(source);
+    const saved = await service.set({ ...baseline, skinId: 'pack:test-pack', themeId: 'pack-test-pack', codeFont: 'noto-sans-mono', thinkingLevel: 'high' });
+    expect((await createSettings().load()).skinId).toBe('pack:test-pack');
+    expect((await service.loadThemes()).some((theme) => theme.id === 'pack-test-pack')).toBe(true);
+    const removed = await service.removeSkinPack('pack:test-pack');
+    expect(removed.settings).toEqual({ ...saved, skinId: 'default', themeId: baseline.themeId });
+    expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(removed.settings);
+  });
+
+  it('falls back from a missing pack without losing unrelated settings and refuses stale saves', async () => {
+    const baseline = await createSettings().load();
+    await mkdir(dataRoot, { recursive: true });
+    const stored = { ...baseline, skinId: 'pack:missing-pack', themeId: 'graphite', thinkingLevel: 'high', codeFont: 'noto-sans-mono' };
+    await writeFile(path.join(dataRoot, 'settings.json'), JSON.stringify(stored));
+    const service = createSettings();
+    expect(await service.load()).toEqual({ ...stored, skinId: 'default' });
+    await expect(service.set({ ...baseline, skinId: 'pack:missing-pack' })).rejects.toThrow('unavailable');
+    expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(stored);
+  });
+
   it('persists and reloads validated settings atomically', async () => {
     const logs = new AppLogService();
     const service = createSettings(logs);
     const saved = await service.set({
       appearance: 'system', defaultModel: 'provider/model', disabledModels: ['crof/glm-5'], thinkingLevel: 'high', agentTeamMode: 'v2', agentWorkspace: { preferredMode: 'shared', strict: true },
-      confirmRiskyCommands: false, terminalShell: 'pwsh.exe', reduceMotion: true, performanceMode: true, holyShitMode: true, musicPlayerEnabled: true, sendMessageWithModifier: true, compactMode: false, compactSessions: false, advancedPromptImprovement: true, crashTelemetryEnabled: false, themeId: 'graphite',
+      confirmRiskyCommands: false, terminalShell: 'pwsh.exe', reduceMotion: true, performanceMode: true, holyShitMode: true, musicPlayerEnabled: true, sendMessageWithModifier: true, compactMode: false, compactSessions: false, advancedPromptImprovement: true, crashTelemetryEnabled: false, skinId: 'dreamcore', themeId: 'graphite',
       interfaceFont: 'poppins', codeFont: 'noto-sans-mono',
       memoryLearning: { enabled: true, global: true, project: false },
       imageGeneration: { provider: 'google', model: 'gemini-3.1-flash-image', customProvider: null },
@@ -48,6 +74,7 @@ describe('SettingsService', () => {
     expect(saved.musicPlayerEnabled).toBe(true);
     expect(saved.sendMessageWithModifier).toBe(true);
     expect(saved.interfaceFont).toBe('poppins');
+    expect(saved.skinId).toBe('dreamcore');
     expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(saved);
     expect(await createSettings(logs).load()).toEqual(saved);
     expect(logs.list().at(-1)?.message).toContain('saved');
@@ -59,7 +86,7 @@ describe('SettingsService', () => {
     }), 'utf8');
     const logs = new AppLogService();
     const loaded = await createSettings(logs).load();
-    expect(loaded).toMatchObject({ appearance: 'system', thinkingLevel: 'high', agentWorkspace: { preferredMode: 'worktree', strict: false }, holyShitMode: false, sendMessageWithModifier: false, interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null } });
+    expect(loaded).toMatchObject({ appearance: 'system', thinkingLevel: 'high', agentWorkspace: { preferredMode: 'worktree', strict: false }, holyShitMode: false, sendMessageWithModifier: false, skinId: 'default', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null } });
     expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(loaded);
   });
 
@@ -115,7 +142,7 @@ describe('SettingsService', () => {
   it('serializes concurrent writes and returns each persisted snapshot', async () => {
     const logs = new AppLogService();
     const service = createSettings(logs);
-    const first = { memoryLearning: { enabled: false, global: true, project: true }, appearance: 'dark', defaultModel: null, disabledModels: [] as string[], thinkingLevel: 'low', agentTeamMode: 'legacy', agentWorkspace: { preferredMode: 'worktree', strict: false }, confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } } as const;
+    const first = { memoryLearning: { enabled: false, global: true, project: true }, appearance: 'dark', defaultModel: null, disabledModels: [] as string[], thinkingLevel: 'low', agentTeamMode: 'legacy', agentWorkspace: { preferredMode: 'worktree', strict: false }, confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, skinId: 'default', themeId: 'midnight', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: { enabled: true, modelId: 'canary-flash', language: 'auto', inputDeviceId: null, liveTranscription: true, finalAccuracyPass: false, voiceHotkey: null, voiceHotkeyMode: 'toggle' } } as const;
     const second = { ...first, thinkingLevel: 'high' as const, reduceMotion: true };
 
     const [firstSaved, secondSaved] = await Promise.all([service.set(first), service.set(second)]);

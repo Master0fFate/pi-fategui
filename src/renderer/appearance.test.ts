@@ -3,7 +3,7 @@ import type { AppSettings } from '../shared/contracts/ipc';
 import { applyNonThemeVisualSettings, applyVisualSettings } from './appearance';
 import { fallbackThemes, resolveTheme } from './theme';
 
-type VisualSettings = Pick<AppSettings, 'appearance' | 'codeFont' | 'compactMode' | 'holyShitMode' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'themeId'>;
+type VisualSettings = Pick<AppSettings, 'appearance' | 'codeFont' | 'compactMode' | 'holyShitMode' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'skinId' | 'themeId'>;
 
 const visualSettings = (overrides: Partial<VisualSettings> = {}): VisualSettings => ({
   appearance: 'dark',
@@ -13,6 +13,7 @@ const visualSettings = (overrides: Partial<VisualSettings> = {}): VisualSettings
   interfaceFont: 'noto-sans',
   performanceMode: false,
   reduceMotion: false,
+  skinId: 'default',
   themeId: 'midnight',
   ...overrides,
 });
@@ -22,6 +23,7 @@ afterEach(() => {
   delete document.documentElement.dataset.performanceMode;
   delete document.documentElement.dataset.reduceMotion;
   delete document.documentElement.dataset.compactMode;
+  delete document.documentElement.dataset.skin;
 });
 
 describe('applyVisualSettings', () => {
@@ -50,6 +52,16 @@ describe('applyVisualSettings', () => {
     expect(document.documentElement.dataset.compactMode).toBe('true');
     applyVisualSettings(visualSettings(), fallbackThemes);
     expect(document.documentElement.dataset.compactMode).toBe('false');
+  });
+
+  it('keeps skin and palette independent in either direction', () => {
+    applyVisualSettings(visualSettings({ skinId: 'dreamcore', themeId: 'daylight' }), fallbackThemes);
+    expect(document.documentElement.dataset.skin).toBe('dreamcore');
+    expect(document.documentElement.dataset.theme).toBe('daylight');
+
+    applyVisualSettings(visualSettings({ skinId: 'default', themeId: 'daylight' }), fallbackThemes);
+    expect(document.documentElement.dataset.skin).toBe('default');
+    expect(document.documentElement.dataset.theme).toBe('daylight');
   });
 
   it('applies non-theme settings without repainting the theme', () => {

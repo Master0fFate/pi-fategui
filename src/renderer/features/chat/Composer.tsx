@@ -9,6 +9,7 @@ import type { BrowserAnnotation, FileEntry, PromptInput, QueueMutationInput, Spe
 import { readSessionReference, type SessionReferenceAttachment } from '../../../shared/sessionReferences';
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AppTooltip } from '../../components/AppTooltip';
+import { useSkinComponents } from '../../skins/SkinProvider';
 import { SelectControl } from '../../components/SelectControl';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -215,6 +216,7 @@ export async function resampleVoiceAudioOptimized(buffer: AudioBuffer, targetRat
 }
 
 export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject: () => void; connectRequest?: number }) {
+  const { ActionContent, Symbol, PromptHeading, PromptPrefix } = useSkinComponents();
   const [draft, setDraft] = useState('');
   const [images, setImages] = useState<Attachment[]>([]);
   const [browserAnnotationIds, setBrowserAnnotationIds] = useState<string[]>([]);
@@ -2341,7 +2343,9 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
         {images.length > 0 && <div className="composer-attachments">{images.map((image, index) => (
           <span key={`${image.name}-${index}`}><button type="button" className="composer-attachment-preview" aria-label={`Expand image: ${image.name}`} onClick={() => setPreviewImage(image)}><img alt="" src={`data:${image.mimeType};base64,${image.data}`} /></button><em>{image.name}</em><button type="button" aria-label={`Remove ${image.name}`} onClick={() => updateImages((current) => current.filter((_item, itemIndex) => itemIndex !== index))}><X size={12} /></button></span>
         ))}</div>}
+        <PromptHeading target={liveAgentTarget ? `@${liveAgentTarget.handle}` : 'Pi'} hint={sendMessageWithModifier ? 'Ctrl/Cmd+Enter to send' : 'Enter to send'} />
         <div ref={inputShell} className="composer-input-shell" data-overflow-top="false" data-overflow-bottom="false">
+          <PromptPrefix />
           <textarea
             ref={textarea}
             id="pi-composer"
@@ -2399,7 +2403,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                 <AppTooltip content="Project and attachment tools">
                   <Popover.Trigger asChild>
                     <button className="composer-tools-toggle" type="button" aria-label="Open composer tools">
-                      <ChevronUp size={16} aria-hidden="true" />
+                      <ActionContent text="tools"><ChevronUp size={16} aria-hidden="true" /></ActionContent>
                     </button>
                   </Popover.Trigger>
                 </AppTooltip>
@@ -2449,7 +2453,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                     aria-haspopup="dialog"
                     disabled={!connected || runtime.streaming || Boolean(runtime.sessionOperation) || permissionBusy}
                   >
-                    {permissionBusy ? <LoaderCircle className="tool-spinner" size={16} /> : <PermissionIcon size={16} />}
+                    <ActionContent text={permissionBusy ? 'wait' : permissionLevel === 'full-access' ? 'full!' : permissionLevel === 'read-only' ? 'read' : 'edit'}>{permissionBusy ? <LoaderCircle className="tool-spinner" size={16} /> : <PermissionIcon size={16} />}</ActionContent>
                   </button>
                 </Popover.Trigger>
               </AppTooltip>
@@ -2487,9 +2491,9 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
             <input ref={fileInput} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" multiple onChange={attachImages} />
             {!compactToolbar && (
               <>
-                <AppTooltip content="Tag a project file or folder with #" wrapTrigger><button className="composer-icon-action" type="button" aria-label="Tag project file or folder" disabled={!connected} onClick={startResourceTag}><Hash size={15} aria-hidden="true" /></button></AppTooltip>
-                <AppTooltip content={imageCapable ? 'Attach up to four images' : 'The model selected for the next message does not support images'} wrapTrigger><button className="composer-icon-action" type="button" aria-label="Attach image" disabled={!imageCapable || images.length >= 4} onClick={() => fileInput.current?.click()}><ImagePlus size={15} aria-hidden="true" /></button></AppTooltip>
-                {runtime.sessionCapabilities?.fork && forkPoint && <AppTooltip content={forkTooltip} wrapTrigger><button className="composer-icon-action" type="button" aria-label="Create new session from latest prompt" disabled={!canFork || forking} onClick={() => void forkConversation()}>{forking ? <LoaderCircle className="tool-spinner" size={15} aria-label="Creating session" /> : <GitFork size={15} aria-hidden="true" />}</button></AppTooltip>}
+                <AppTooltip content="Tag a project file or folder with #" wrapTrigger><button className="composer-icon-action" type="button" aria-label="Tag project file or folder" disabled={!connected} onClick={startResourceTag}><ActionContent text="tag"><Hash size={15} aria-hidden="true" /></ActionContent></button></AppTooltip>
+                <AppTooltip content={imageCapable ? 'Attach up to four images' : 'The model selected for the next message does not support images'} wrapTrigger><button className="composer-icon-action" type="button" aria-label="Attach image" disabled={!imageCapable || images.length >= 4} onClick={() => fileInput.current?.click()}><ActionContent text="image"><ImagePlus size={15} aria-hidden="true" /></ActionContent></button></AppTooltip>
+                {runtime.sessionCapabilities?.fork && forkPoint && <AppTooltip content={forkTooltip} wrapTrigger><button className="composer-icon-action" type="button" aria-label="Create new session from latest prompt" disabled={!canFork || forking} onClick={() => void forkConversation()}><ActionContent text={forking ? 'wait' : 'fork'}>{forking ? <LoaderCircle className="tool-spinner" size={15} aria-label="Creating session" /> : <GitFork size={15} aria-hidden="true" />}</ActionContent></button></AppTooltip>}
                 <Popover.Root
                   open={sessionReferenceMenuOpen}
                   onOpenChange={(nextOpen) => {
@@ -2503,7 +2507,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                   <AppTooltip content="Message a saved session with ~" wrapTrigger>
                     <Popover.Trigger asChild>
                       <button className="composer-icon-action" type="button" aria-label="Message saved session" disabled={!connected}>
-                        <History size={15} aria-hidden="true" />
+                        <ActionContent text="session"><History size={15} aria-hidden="true" /></ActionContent>
                       </button>
                     </Popover.Trigger>
                   </AppTooltip>
@@ -2546,7 +2550,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                         {modelBusy && <LoaderCircle className="tool-spinner" size={14} />}
                         <strong className="icon-label">{modelLabel}</strong>
                         <span className="icon-label">{reasoningCapable ? thinkingLabel(nextThinkingLevel) : 'No reasoning'}</span>
-                        <ChevronDown size={12} />
+                        <Symbol text="v"><ChevronDown size={12} /></Symbol>
                       </button>
                     </Popover.Trigger>
                   </AppTooltip>
@@ -2620,7 +2624,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                   disabled={!connected || !draft.trim() || runtime.streaming || Boolean(runtime.activeSessionRunning) || Boolean(runtime.sessionOperation) || voiceState !== 'idle'}
                   onClick={() => void (optimizingPrompt ? cancelOptimizePrompt() : optimizePrompt())}
                 >
-                  {optimizingPrompt ? <><LoaderCircle className="tool-spinner prompt-optimize-spinner" size={17} aria-hidden="true" /><X className="prompt-optimize-cancel-icon" size={17} aria-hidden="true" /></> : <Sparkles size={17} aria-hidden="true" />}
+                  <ActionContent text={optimizingPrompt ? 'cancel' : 'improve'}>{optimizingPrompt ? <><LoaderCircle className="tool-spinner prompt-optimize-spinner" size={17} aria-hidden="true" /><X className="prompt-optimize-cancel-icon" size={17} aria-hidden="true" /></> : <Sparkles size={17} aria-hidden="true" />}</ActionContent>
                 </button>
               </AppTooltip>
               {speech.enabled && (
@@ -2638,7 +2642,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                     onClick={() => voiceState === 'recording' ? stopVoiceRecording() : void startVoiceRecording()}
                     aria-busy={voiceState === 'preparing' || voiceState === 'downloading' || voiceState === 'transcribing'}
                   >
-                    <Mic size={17} />
+                    <ActionContent text={voiceState === 'recording' ? 'stop mic' : voiceState === 'idle' ? 'mic' : 'mic...'}><Mic size={17} /></ActionContent>
                   </button>
                 </AppTooltip>
               )}
@@ -2654,7 +2658,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                     aria-busy={submitting || liveAgentBusy}
                     disabled={(!connected && runtime.status !== 'auth-required') || liveAgentBusy || (!runtime.streaming && submitting) || (!liveAgentMessageTarget && !runtime.streaming && !activeSessionRunning && !goalCancelable && !hasPendingPrompt)}
                   >
-                    {submitting && !runtime.streaming ? <LoaderCircle className="tool-spinner" size={16} /> : sendButtonStops ? <Square size={16} strokeWidth={2.5} aria-hidden="true" /> : <ArrowUp size={18} aria-hidden="true" />}
+                    <ActionContent text={submitting && !runtime.streaming ? 'sending' : liveAgentMessageTarget ? 'send' : sendButtonStops ? 'stop' : activeSessionRunning ? 'queue' : 'send'}>{submitting && !runtime.streaming ? <LoaderCircle className="tool-spinner" size={16} /> : sendButtonStops ? <Square size={16} strokeWidth={2.5} aria-hidden="true" /> : <ArrowUp size={18} aria-hidden="true" />}</ActionContent>
                   </button>
                 </span>
               </AppTooltip>

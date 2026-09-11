@@ -1,29 +1,38 @@
 import type { AppSettings } from '../shared/contracts/ipc';
 import type { ThemeDefinition } from '../shared/themes';
 import { applyFonts } from './fonts';
+import { applySkin } from './skin';
 import { applyTheme, resolveTheme } from './theme';
 
 type VisualSettings = Pick<
   AppSettings,
-  'appearance' | 'codeFont' | 'compactMode' | 'holyShitMode' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'themeId'
+  'appearance' | 'codeFont' | 'compactMode' | 'holyShitMode' | 'interfaceFont' | 'performanceMode' | 'reduceMotion' | 'skinId' | 'themeId'
 >;
 
-export function applyNonThemeVisualSettings(settings: VisualSettings): void {
+function setDatasetValue(root: HTMLElement, key: string, value: string): void {
+  if (root.dataset[key] !== value) root.dataset[key] = value;
+}
+
+export function applyNonThemeVisualSettings(
+  settings: VisualSettings,
+  options: { persistSkin?: boolean | undefined } = {},
+): void {
   const root = document.documentElement;
   const performanceMode = settings.performanceMode || settings.reduceMotion || settings.holyShitMode;
-  root.dataset.reduceMotion = String(performanceMode);
-  root.dataset.performanceMode = String(performanceMode);
-  root.dataset.holyShitMode = String(settings.holyShitMode);
-  root.dataset.compactMode = String(settings.compactMode);
-  root.dataset.appearance = settings.appearance;
+  setDatasetValue(root, 'reduceMotion', String(performanceMode));
+  setDatasetValue(root, 'performanceMode', String(performanceMode));
+  setDatasetValue(root, 'holyShitMode', String(settings.holyShitMode));
+  setDatasetValue(root, 'compactMode', String(settings.compactMode));
+  setDatasetValue(root, 'appearance', settings.appearance);
+  applySkin(settings.skinId, { persist: options.persistSkin });
   applyFonts(settings.interfaceFont, settings.codeFont);
 }
 
 export function applyVisualSettings(
   settings: VisualSettings,
   themes: readonly ThemeDefinition[],
-  options: { persistTheme?: boolean } = {},
+  options: { persistSkin?: boolean | undefined; persistTheme?: boolean | undefined } = {},
 ): void {
-  applyNonThemeVisualSettings(settings);
+  applyNonThemeVisualSettings(settings, { persistSkin: options.persistSkin });
   applyTheme(resolveTheme(themes, settings.themeId), { persist: options.persistTheme });
 }

@@ -1,11 +1,13 @@
 import { ipcRenderer } from 'electron';
 import { learningApi } from './learningApi';
+import { skinCatalogSchema, skinExportResultSchema, skinImportResultSchema, skinPackRequestSchema } from '../shared/skins';
 import {
   abortResultSchema,
   appCommandSchema,
   automationSessionPreparationResultSchema,
   appInfoSchema,
   appSettingsSchema,
+  skinRemovalResultSchema,
   compactInputSchema,
   clipboardTextInputSchema,
   clipboardWriteResultSchema,
@@ -730,6 +732,21 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
     };
     ipcRenderer.on(ipcChannels.updatesProgress, handler);
     return () => ipcRenderer.off(ipcChannels.updatesProgress, handler);
+  },
+  async getSkins() {
+    return skinCatalogSchema.parse(await ipcRenderer.invoke(ipcChannels.skinsGet, emptyInputSchema.parse({})));
+  },
+  async importSkinPack() {
+    return skinImportResultSchema.parse(await ipcRenderer.invoke(ipcChannels.skinsImport, emptyInputSchema.parse({})));
+  },
+  async removeSkinPack(id: string) {
+    return skinRemovalResultSchema.parse(await ipcRenderer.invoke(ipcChannels.skinsRemove, skinPackRequestSchema.parse({ id })));
+  },
+  async exportSkinPack(id: string) {
+    return skinExportResultSchema.parse(await ipcRenderer.invoke(ipcChannels.skinsExport, skinPackRequestSchema.parse({ id })));
+  },
+  async openSkinsFolder() {
+    return skinExportResultSchema.parse(await ipcRenderer.invoke(ipcChannels.skinsOpenFolder, emptyInputSchema.parse({})));
   },
   async getThemes() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.themesGet, emptyInputSchema.parse({}));

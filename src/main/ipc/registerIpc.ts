@@ -156,6 +156,7 @@ import type { GitService } from '../git/GitService';
 import type { PiRuntimeService } from '../pi/PiRuntimeService';
 import type { ProjectActivation, ProjectService } from '../projects/ProjectService';
 import type { SettingsService } from '../settings/SettingsService';
+import { registerSkinIpc } from '../settings/registerSkinIpc';
 import type { TerminalService } from '../terminal/TerminalService';
 import type { AppLogService } from '../logging/AppLogService';
 import type { MusicService } from '../music/MusicService';
@@ -592,6 +593,7 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
     if (!owner || owner.isDestroyed()) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The application window is unavailable.', retryable: false });
     return owner;
   };
+  registerSkinIpc(handle, settings, ownerWindow);
   handle(ipcChannels.windowGetState, (event, input) => {
     emptyInputSchema.parse(input);
     return windowState(ownerWindow(event));

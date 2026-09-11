@@ -30,6 +30,7 @@ import type { SessionBranch, SessionSummary } from '../../../shared/contracts/ip
 import { serializeSessionReference, SESSION_REFERENCE_TRANSFER_TYPE } from '../../../shared/sessionReferences';
 import { AppTooltip } from '../../components/AppTooltip';
 import { IconButton } from '../../components/IconButton';
+import { useSkinComponents } from '../../skins/SkinProvider';
 import { SelectControl } from '../../components/SelectControl';
 import { formatRelativeTime } from '../../lib/relativeTime';
 import { useAutomationStore } from '../../stores/automationStore';
@@ -80,6 +81,7 @@ function sidebarErrorMessage(error: unknown, fallback: string): string {
 }
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+  const { ActionContent, Symbol, TabContent } = useSkinComponents();
   const runtime = useRuntimeStore(useShallow((state) => ({
     project: state.runtime.project,
     sessionId: state.runtime.sessionId,
@@ -1152,27 +1154,27 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         onDrop={(event) => { event.preventDefault(); reorderFolder(project.path); setDragOverFolderPath(null); }}
       >
         <button className="folder-chevron" type="button" aria-label={expanded ? `Collapse ${project.name}` : `Expand ${project.name}`} onClick={() => toggleFolderExpanded(project.path)}>
-          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          <Symbol text={expanded ? '-' : '+'}>{expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</Symbol>
         </button>
         <AppTooltip content={`Move ${project.name} folder up (ArrowUp/ArrowDown)`} wrapTrigger>
           <button className="folder-reorder" type="button" aria-label={`Move ${project.name} folder up`} onClick={() => reorderFolderByKeyboard(project.path, -1)} onKeyDown={(event) => {
             if (event.key === 'ArrowUp') { event.preventDefault(); reorderFolderByKeyboard(project.path, -1); }
             if (event.key === 'ArrowDown') { event.preventDefault(); reorderFolderByKeyboard(project.path, 1); }
-          }}><GripVertical size={12} aria-hidden="true" /></button>
+          }}><Symbol text=":"><GripVertical size={12} aria-hidden="true" /></Symbol></button>
         </AppTooltip>
         <button className="folder-open" type="button" disabled={replacementBusy} onClick={() => openFolder(project)} title={project.path} aria-current={isActive ? 'true' : undefined}>
-          <Folder size={14} aria-hidden="true" />
+          <Symbol text="/"><Folder size={14} aria-hidden="true" /></Symbol>
           <span className="folder-name">{project.name}</span>
           {count !== undefined && <span className="folder-count">{count}</span>}
         </button>
         <div className="folder-header-actions">
           <AppTooltip content="New session" wrapTrigger>
-            <button className="folder-new-session" type="button" aria-label={`New session in ${project.name}`} disabled={replacementBusy} onClick={() => createSessionInFolder(project)}><Plus size={13} /></button>
+            <button className="folder-new-session" type="button" aria-label={`New session in ${project.name}`} disabled={replacementBusy} onClick={() => createSessionInFolder(project)}><Symbol text="+"><Plus size={13} /></Symbol></button>
           </AppTooltip>
           <Popover.Root>
             <AppTooltip content="Folder actions">
               <Popover.Trigger asChild>
-                <button className="folder-menu-trigger" type="button" aria-label={`Actions for ${project.name}`}><MoreHorizontal size={14} /></button>
+                <button className="folder-menu-trigger" type="button" aria-label={`Actions for ${project.name}`}><Symbol text="..."><MoreHorizontal size={14} /></Symbol></button>
               </Popover.Trigger>
             </AppTooltip>
             <Popover.Portal>
@@ -1296,10 +1298,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         )}
         {!collapsed && renderExpanded && <AppTooltip content="Settings" wrapTrigger triggerClassName="sidebar-settings-tooltip">
           <button className="sidebar-settings-button icon-button" type="button" aria-label="Settings" onClick={() => openSettings(true)}>
-            <Settings size={16} strokeWidth={2} />
+            <ActionContent text="cfg"><Settings size={16} strokeWidth={2} /></ActionContent>
           </button>
         </AppTooltip>}
-        <IconButton label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={onToggle}>
+        <IconButton label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} terminalLabel={collapsed ? '>' : '<'} onClick={onToggle}>
           {collapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}
         </IconButton>
       </div>
@@ -1310,14 +1312,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <Tabs.Content value="sessions" className="sidebar-tab-content sidebar-session-panel">
           <div className="sidebar-tab-toolbar session-toolbar">
             <label className="session-search sidebar-search">
-              <Search size={15} aria-hidden="true" />
+              <Symbol text="/"><Search size={15} aria-hidden="true" /></Symbol>
               <input className="icon-label" type="search" aria-label="Search sessions" placeholder="Search sessions" value={query} onChange={(event) => setQuery(event.target.value)} disabled={!runtime.project} />
             </label>
             <AppTooltip content="New session" wrapTrigger triggerClassName="sidebar-toolbar-action sidebar-toolbar-action--primary session-toolbar-action--new">
-              <button type="button" aria-label="New session" disabled={!runtime.project || replacementBusy} onClick={createSession}><Plus size={15} /></button>
+              <button type="button" aria-label="New session" disabled={!runtime.project || replacementBusy} onClick={createSession}><ActionContent text="new"><Plus size={15} /></ActionContent></button>
             </AppTooltip>
             <AppTooltip content="Open project" wrapTrigger triggerClassName="sidebar-toolbar-action session-toolbar-action--open">
-              <button type="button" aria-label="Open project" disabled={replacementBusy} onClick={selectProject}><FolderOpen size={15} /></button>
+              <button type="button" aria-label="Open project" disabled={replacementBusy} onClick={selectProject}><ActionContent text="open"><FolderOpen size={15} /></ActionContent></button>
             </AppTooltip>
           </div>
           <div className="session-sort-row">
@@ -1351,9 +1353,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <Tabs.Content value="automations" className="sidebar-tab-content"><SidebarAutomations /></Tabs.Content>
             <Tabs.Content value="resources" className="sidebar-tab-content"><SidebarResources onOpenProject={selectProject} projectSelectionBusy={replacementBusy} /></Tabs.Content>
             <Tabs.List className="sidebar-primary-nav" aria-label="Sidebar destinations">
-              <Tabs.Trigger value="sessions" className="sidebar-primary-trigger">Sessions</Tabs.Trigger>
-              <Tabs.Trigger value="automations" className="sidebar-primary-trigger">Automations</Tabs.Trigger>
-              <Tabs.Trigger value="resources" className="sidebar-primary-trigger">Resources</Tabs.Trigger>
+              <Tabs.Trigger value="sessions" className="sidebar-primary-trigger" aria-label="Sessions"><TabContent label="Sessions" active={sidebarTab === 'sessions'} /></Tabs.Trigger>
+              <Tabs.Trigger value="automations" className="sidebar-primary-trigger" aria-label="Automations"><TabContent label="Automations" active={sidebarTab === 'automations'} /></Tabs.Trigger>
+              <Tabs.Trigger value="resources" className="sidebar-primary-trigger" aria-label="Resources"><TabContent label="Resources" active={sidebarTab === 'resources'} /></Tabs.Trigger>
             </Tabs.List>
           </Tabs.Root>
         </div>
@@ -1361,12 +1363,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
       {collapsed && !renderExpanded && <nav className="nav-list">
         <AppTooltip content="Settings" wrapTrigger triggerClassName="sidebar-settings-tooltip">
-          <button className="sidebar-settings-button sidebar-settings-rail-button" type="button" aria-label="Settings" onClick={() => openSettings(true)}><Settings size={18} /></button>
+          <button className="sidebar-settings-button sidebar-settings-rail-button" type="button" aria-label="Settings" onClick={() => openSettings(true)}><ActionContent text="cfg"><Settings size={18} /></ActionContent></button>
         </AppTooltip>
         <AppTooltip content="New session" wrapTrigger>
-          <button className="new-session icon-only" type="button" aria-label="New session" disabled={!runtime.project || replacementBusy} onClick={createSession}><MessageSquarePlus size={17} /></button>
+          <button className="new-session icon-only" type="button" aria-label="New session" disabled={!runtime.project || replacementBusy} onClick={createSession}><ActionContent text="new"><MessageSquarePlus size={17} /></ActionContent></button>
         </AppTooltip>
-        <AppTooltip content="Open project" wrapTrigger><button type="button" aria-label="Open project" disabled={replacementBusy} onClick={selectProject}><FolderOpen size={18} /></button></AppTooltip>
+        <AppTooltip content="Open project" wrapTrigger><button type="button" aria-label="Open project" disabled={replacementBusy} onClick={selectProject}><ActionContent text="dir"><FolderOpen size={18} /></ActionContent></button></AppTooltip>
       </nav>}
 
     </aside>

@@ -1,0 +1,143 @@
+:root[data-skin="dreamcore"] {
+  font-family: var(--font-code);
+  --dreamcore-thread-width: 960px;
+}
+
+:root[data-skin="dreamcore"] :is(.workspace, .sidebar, .inspector) { background: var(--theme-canvas); }
+:root[data-skin="dreamcore"] :is(.workspace-header, .inspector-primary-nav, .inspector-secondary-tabs) { background: var(--theme-canvas); }
+:root[data-skin="dreamcore"] :is(.brand-copy strong, .workspace-header strong, .settings-dialog h2, .settings-title h3) {
+  font-family: var(--font-code);
+  letter-spacing: 0;
+}
+:root[data-skin="dreamcore"] :is(.markdown-content, .message-plain, .reasoning-row pre, .custom-select-content, .tooltip, .terminal-panel, .tool-details pre) { font-family: var(--font-code); }
+:root[data-skin="dreamcore"] :is(.sidebar, .inspector, .settings-dialog) { font-size: 12px; }
+:root[data-skin="dreamcore"] .markdown-content { font-size: 13px; line-height: 1.7; }
+:root[data-skin="dreamcore"] .brand-copy strong { font-size: 13px; }
+:root[data-skin="dreamcore"] .brand-copy span { letter-spacing: 0; }
+
+.terminal-action { display: inline-flex; gap: 1px; white-space: nowrap; font: inherit; line-height: 1.4; }
+.terminal-action > span { color: var(--theme-muted); }
+.terminal-symbol { display: inline-block; flex: none; min-width: 1ch; text-align: center; font: inherit; line-height: 1.4; }
+.terminal-tab { display: inline-flex; min-width: 0; align-items: baseline; gap: 5px; }
+.terminal-tab-marker { flex: none; width: 1ch; color: var(--theme-accent); }
+.terminal-tab[data-active="true"] { color: var(--theme-text); }
+:root[data-skin="dreamcore"] .icon-button {
+  width: auto; min-width: 28px; height: 28px; flex-basis: auto; padding: 0 3px;
+  border-radius: 0; font: 11px var(--font-code); transform: none;
+}
+:root[data-skin="dreamcore"] .session-controls { gap: 4px; }
+:root[data-skin="dreamcore"] .session-controls .icon-button { width: auto; flex-basis: auto; }
+:root[data-skin="dreamcore"] .workspace-header-identity { max-width: calc(100% - 256px); }
+:root[data-skin="dreamcore"] .icon-button[aria-pressed="true"] { color: var(--theme-accent); }
+:root[data-skin="dreamcore"] .sidebar-settings-button { width: auto; flex-basis: auto; }
+:root[data-skin="dreamcore"] .brand-row { gap: 6px; margin-bottom: 10px; }
+:root[data-skin="dreamcore"] .brand-mark { flex-basis: 24px; font-size: 27px; }
+:root[data-skin="dreamcore"] .sidebar-primary-nav {
+  order: -1; display: flex; flex: none; flex-wrap: wrap; gap: 3px 6px;
+  margin: 0 0 12px; padding: 6px 0 9px; border-top: 0; border-bottom: 1px solid var(--dreamcore-hairline);
+}
+:root[data-skin="dreamcore"] .sidebar-primary-trigger { padding: 2px 0; font-size: 10px; }
+:root[data-skin="dreamcore"] .sidebar-primary-trigger::after { content: none; }
+:root[data-skin="dreamcore"] .sidebar-tab-toolbar { flex-wrap: wrap; gap: 4px; }
+:root[data-skin="dreamcore"] .sidebar-search { flex: 1 0 100%; padding: 0 4px; margin-bottom: 4px; }
+:root[data-skin="dreamcore"] .sidebar-search input { font-size: 12px; }
+:root[data-skin="dreamcore"] .sidebar-toolbar-action { flex: none; }
+:root[data-skin="dreamcore"] .sidebar-toolbar-action > button { width: auto; min-width: 44px; height: 26px; padding: 0 3px; border-radius: 0; background: transparent; }
+:root[data-skin="dreamcore"] :is(.folder-header, .session-row, .session-open, .folder-preview-row, .change-row, .resource-type-row, .resource-result-row, .automation-row) { border-radius: 0; box-shadow: none; }
+:root[data-skin="dreamcore"] .session-row { border: 0; border-left: 1px solid transparent; background: transparent; }
+:root[data-skin="dreamcore"] .session-row[data-current="true"] { border-left-color: var(--theme-accent); }
+:root[data-skin="dreamcore"] .session-open { padding: 7px 8px 26px; }
+:root[data-skin="dreamcore"] .folder-open { font-family: var(--font-code); }
+:root[data-skin="dreamcore"] .inspector-primary-trigger { justify-content: flex-start; padding-inline: 8px; }
+:root[data-skin="dreamcore"] .inspector-secondary-trigger { justify-content: flex-start; }
+:root[data-skin="dreamcore"] .inspector-secondary-trigger[data-state="active"]::after { content: none; }
+
+:root[data-skin="dreamcore"] .welcome--conversation { padding-top: 8px; }
+:root[data-skin="dreamcore"] .chat-message-row { width: 100%; max-width: 100%; }
+:root[data-skin="dreamcore"] .chat-message-row--user { margin-left: 0; }
+:root[data-skin="dreamcore"] .chat-message {
+  width: 100%; padding: 10px 0 10px 12px; border: 0; border-inline-start: 1px solid var(--dreamcore-hairline);
+  border-radius: 0; background: transparent; box-shadow: none;
+}
+:root[data-skin="dreamcore"] .chat-message--user { border-inline-end: 0; border-inline-start-color: var(--theme-accent); }
+.terminal-message-heading { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; color: var(--theme-muted); font: 11px/1.5 var(--font-code); }
+.terminal-message-heading > span:first-child { color: var(--theme-accent); }
+:root[data-skin="dreamcore"] .message-footer { right: auto; left: 12px; }
+:root[data-skin="dreamcore"] .message-footer-meta { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-skin="dreamcore"] .message-footer-actions { gap: 4px; }
+:root[data-skin="dreamcore"] .message-action { width: auto; height: 24px; padding: 0 3px; border-radius: 0; font: 10px var(--font-code); }
+:root[data-skin="dreamcore"] .tool-card { border: 0; background: transparent; }
+:root[data-skin="dreamcore"] .tool-card-header { gap: 9px; padding-inline: 0; font: 11px var(--font-code); }
+:root[data-skin="dreamcore"] .tool-card--succeeded .terminal-symbol:first-child { color: var(--theme-success); }
+:root[data-skin="dreamcore"] .tool-card--error .terminal-symbol:first-child { color: var(--theme-danger); }
+:root[data-skin="dreamcore"] .tool-card--running .terminal-symbol:first-child { color: var(--theme-accent); }
+
+:root[data-skin="dreamcore"] .composer {
+  --composer-surface: var(--theme-canvas);
+  min-height: 0; padding: 10px 0 6px; border-inline: 0; border-radius: 0; background: var(--composer-surface);
+}
+.terminal-prompt-heading { display: flex; min-width: 0; justify-content: space-between; gap: 12px; margin-bottom: 12px; color: var(--theme-muted); font: 10px/1.5 var(--font-code); }
+.terminal-prompt-heading strong { color: var(--theme-text-soft); font-weight: 500; }
+.terminal-prompt-heading small { font: inherit; }
+.terminal-prompt-prefix { position: absolute; top: 3px; left: 0; color: var(--theme-accent); font: 13px/1.65 var(--font-code); }
+:root[data-skin="dreamcore"] .composer textarea { padding-left: 20px; }
+:root[data-skin="dreamcore"] .composer-toolbar { flex-wrap: wrap; gap: 4px 10px; padding-top: 6px; border-top: 1px solid var(--theme-border); }
+:root[data-skin="dreamcore"] .composer-toolbar-leading { flex: 1 1 160px; flex-wrap: wrap; gap: 4px; }
+:root[data-skin="dreamcore"] .composer-toolbar-trailing { flex: 1 1 390px; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+:root[data-skin="dreamcore"] .composer-toolbar :is(button.permission-toggle, button.composer-tools-toggle, button.composer-icon-action, button.voice-button, .send-button) {
+  width: auto; min-width: 28px; height: 28px; flex: none; padding: 0 3px; border: 0; border-radius: 0;
+  background: transparent; font: 11px/1.4 var(--font-code); box-shadow: none; transform: none;
+}
+:root[data-skin="dreamcore"] .composer-toolbar .send-button { color: var(--theme-accent); }
+:root[data-skin="dreamcore"] .composer-toolbar .send-button:disabled { color: var(--theme-subtle); }
+:root[data-skin="dreamcore"] .composer-model-context { flex: 1 1 180px; min-width: 0; justify-content: flex-end; }
+:root[data-skin="dreamcore"] .context-wheel { width: auto; min-width: 6ch; height: 24px; flex: none; }
+.terminal-context { font: 10px var(--font-code); white-space: nowrap; }
+:root[data-skin="dreamcore"] .context-wheel[data-level="warning"] { color: var(--theme-warning); }
+:root[data-skin="dreamcore"] .context-wheel[data-level="critical"] { color: var(--theme-danger); }
+
+:root[data-skin="dreamcore"] :is(.settings-dialog, .command-palette, .custom-select-content, .model-popover, .permission-popover, .extension-status-popover, .session-reference-popover, .folder-action-menu, .tooltip) { border-radius: 0; box-shadow: none; background: var(--theme-panel); font-family: var(--font-code); }
+:root[data-skin="dreamcore"] .settings-header { flex-basis: 62px; }
+:root[data-skin="dreamcore"] .settings-header > button { width: auto; font: 11px var(--font-code); }
+:root[data-skin="dreamcore"] .settings-dialog h2 { font-size: 15px; }
+:root[data-skin="dreamcore"] .settings-nav { padding: 12px 8px; }
+:root[data-skin="dreamcore"] .settings-nav button { min-height: 38px; padding: 8px; font-family: var(--font-code); }
+:root[data-skin="dreamcore"] .settings-nav button[aria-selected="true"] { box-shadow: none; background: var(--theme-raised); }
+:root[data-skin="dreamcore"] .settings-nav button > .terminal-symbol { flex: 0 0 1ch; width: 1ch; padding: 0; }
+:root[data-skin="dreamcore"] .settings-nav button > span:not(.terminal-symbol) { padding-inline-end: 0; }
+:root[data-skin="dreamcore"] .settings-panel { padding: 22px 26px; }
+:root[data-skin="dreamcore"] :is(.custom-select-trigger, .settings-inline-action, .settings-input-row input, .primary-button) { border-radius: 0; box-shadow: none; font-family: var(--font-code); }
+:root[data-skin="dreamcore"] .settings-toggle > span { display: grid; width: 32px; height: 24px; place-items: center; border: 0; border-radius: 0; background: transparent; }
+:root[data-skin="dreamcore"] .settings-toggle > span::after { position: static; width: auto; height: auto; border-radius: 0; background: transparent; box-shadow: none; transform: none; content: '[ ]'; color: var(--theme-muted); font: 13px var(--font-code); }
+:root[data-skin="dreamcore"] .settings-toggle input:checked + span { background: transparent; }
+:root[data-skin="dreamcore"] .settings-toggle input:checked + span::after { content: '[x]'; color: var(--theme-accent); transform: none; }
+
+:root[data-skin="dreamcore"] .settings-inline-action:disabled { opacity: .4; cursor: not-allowed; }
+:root[data-skin="dreamcore"] .changes-summary { flex: none; min-height: 56px; flex-wrap: wrap; gap: 2px 6px; padding-block: 4px; }
+:root[data-skin="dreamcore"] .changes-branch { max-width: 110px; }
+:root[data-skin="dreamcore"] :is(.git-refresh-button, .git-remote-button, .summary-counts button) { width: auto; border-radius: 0; padding-inline: 3px; }
+:root[data-skin="dreamcore"] .changes-summary > .git-remote-actions { margin-left: 0; }
+:root[data-skin="dreamcore"] .review-runway-bar { flex-wrap: wrap; overflow: visible; background: var(--theme-canvas); }
+:root[data-skin="dreamcore"] .review-actions { flex: 1 1 100%; flex-wrap: wrap; }
+:root[data-skin="dreamcore"] :is(.review-navigation, .review-actions) button { width: auto; padding: 0 3px; border-radius: 0; font: 10px var(--font-code); }
+:root[data-skin="dreamcore"] .review-navigation .terminal-action,
+:root[data-skin="dreamcore"] .review-navigation .terminal-action > span { min-width: 0; color: inherit; font: inherit; }
+:root[data-skin="dreamcore"] .file-row { border-radius: 0; font-family: var(--font-code); }
+:root[data-skin="dreamcore"] .preview-heading button { width: auto; border-radius: 0; font: 10px var(--font-code); }
+
+:root[data-skin="dreamcore"][data-compact-mode="true"] .composer { padding: 8px 0 4px; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .composer textarea { padding-left: 20px; }
+:root[data-skin="dreamcore"][data-compact-mode="true"] .terminal-prompt-heading { margin-bottom: 6px; }
+@container workspace (max-width: 540px) {
+  :root[data-skin="dreamcore"] .workspace-header-drag { padding-inline: 12px; }
+  :root[data-skin="dreamcore"] .workspace-header-identity { max-width: calc(100% - 220px); }
+  :root[data-skin="dreamcore"] .session-controls { gap: 0; }
+  :root[data-skin="dreamcore"] .session-controls .icon-button { padding: 0 1px; font-size: 10px; }
+  :root[data-skin="dreamcore"] .terminal-prompt-heading small { display: none; }
+}
+@media (max-width: 700px) {
+  :root[data-skin="dreamcore"] .settings-nav button > span { display: flex; }
+  :root[data-skin="dreamcore"] .settings-nav button > .terminal-symbol,
+  :root[data-skin="dreamcore"] .settings-nav button small { display: none; }
+  :root[data-skin="dreamcore"] .settings-nav button strong { font-size: 10px; }
+}

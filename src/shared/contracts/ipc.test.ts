@@ -84,9 +84,20 @@ describe('IPC contracts', () => {
       sendMessageWithModifier: true, compactMode: true, compactSessions: true, advancedPromptImprovement: true, crashTelemetryEnabled: true,
       themeId: 'midnight', interfaceFont: 'poppins', codeFont: 'noto-sans-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null }, speech: defaultSpeechSettings,
     };
-    expect(appSettingsSchema.parse(base)).toMatchObject({ ...base, agentWorkspace: { preferredMode: 'worktree', strict: false } });
+    expect(appSettingsSchema.parse(base)).toMatchObject({ ...base, skinId: 'default', agentWorkspace: { preferredMode: 'worktree', strict: false } });
     expect(appSettingsSchema.parse({ ...base, agentWorkspace: { preferredMode: 'shared' } })).toMatchObject({ ...base, agentWorkspace: { preferredMode: 'shared', strict: false } });
     expect(() => appSettingsSchema.parse({ ...base, agentWorkspace: { preferredMode: 'shared', strict: 'no' } })).toThrow();
+  });
+
+  it('migrates old appearance settings and safely falls back from unknown skins', () => {
+    const legacy = appSettingsSchema.parse({
+      appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true,
+      terminalShell: null, reduceMotion: false, themeId: 'daylight', interfaceFont: 'poppins',
+    });
+    expect(legacy).toMatchObject({ skinId: 'default', themeId: 'daylight', interfaceFont: 'poppins' });
+    expect(appSettingsSchema.parse({ ...legacy, skinId: 'downloaded-code' })).toMatchObject({
+      skinId: 'default', themeId: 'daylight', interfaceFont: 'poppins',
+    });
   });
 
   it('migrates image settings written before custom providers were added', () => {

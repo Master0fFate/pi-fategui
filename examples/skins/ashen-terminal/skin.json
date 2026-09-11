@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "ashen-terminal",
+  "name": "Ashen Terminal",
+  "version": "1.0.0",
+  "author": "Fate UI example",
+  "description": "A narrow terminal workbench with pale rules and a still folded-light background.",
+  "base": "dreamcore",
+  "layout": {
+    "contentWidth": 840,
+    "contentPadding": 32,
+    "controlRadius": 0,
+    "ruleContrast": "strong"
+  },
+  "palette": {
+    "tone": "dark",
+    "colors": {
+      "canvas": "#0e1011", "panel": "#141617", "raised": "#1c1f20",
+      "raisedHover": "#292d2f", "border": "#3a3f42", "borderStrong": "#686e72",
+      "text": "#eeece7", "textSoft": "#c9c8c3", "muted": "#a2a6a5",
+      "subtle": "#747c7e", "accent": "#d9d5cf", "accentHover": "#ffffff",
+      "accentSoft": "#303536", "currentSession": "#383e3f", "lastActiveSession": "#222728",
+      "onAccent": "#101213", "success": "#c4d0c7", "warning": "#d9c9aa",
+      "danger": "#d6b5b3", "shadow": "#000000"
+    }
+  },
+  "background": { "file": "background.png", "opacity": 0.1 }
+}

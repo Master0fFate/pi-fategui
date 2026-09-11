@@ -34,6 +34,7 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { useShallow } from 'zustand/react/shallow';
 import type { GitChange, GitCommitDetails, GitCommitSummary } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
+import { useSkinComponents } from '../../skins/SkinProvider';
 import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
 import { writeClipboardText } from '../../lib/clipboard';
 import { useRuntimeStore } from '../../stores/runtimeStore';
@@ -159,10 +160,11 @@ function MetricTooltip({ label, children }: { label: string; children: React.Rea
 }
 
 export function ChangeRow({ change, selected, reviewed = false, disabled = false, onSelect, onFocus }: { change: GitChange; selected: boolean; reviewed?: boolean; disabled?: boolean; onSelect: () => void; onFocus?: () => void }) {
+  const { Symbol } = useSkinComponents();
   const status = changeStatus(change);
   return (
     <button className={`change-row${selected ? ' selected' : ''}${reviewed ? ' reviewed' : ''}`} type="button" onClick={onSelect} onFocus={onFocus} disabled={disabled}>
-      <AppTooltip content={status.label}><span className={`change-kind change-kind--${status.className}`} aria-label={`${status.label} file`}><status.Icon size={13} aria-hidden="true" /></span></AppTooltip>
+      <AppTooltip content={status.label}><span className={`change-kind change-kind--${status.className}`} aria-label={`${status.label} file`}><Symbol text={status.label[0]!}><status.Icon size={13} aria-hidden="true" /></Symbol></span></AppTooltip>
       <AppTooltip content={change.path}><span className="change-path icon-label">{change.oldPath && <small>{change.oldPath} → </small>}{change.path}</span></AppTooltip>
       {reviewed ? <Check size={11} className="change-reviewed-mark" aria-label="Reviewed" /> : null}
     </button>
@@ -310,6 +312,7 @@ function DiffPreview({ origins, onOrigin }: { origins: readonly ChangeOrigin[]; 
 }
 
 export function ChangesPanel() {
+  const { ActionContent, Symbol } = useSkinComponents();
   const project = useWorkspaceStore((state) => state.projectPath);
   const git = useWorkspaceStore((state) => state.git);
   const loading = useWorkspaceStore((state) => state.gitLoading);
@@ -498,7 +501,7 @@ export function ChangesPanel() {
         <div className="changes-summary">
           <Popover.Root onOpenChange={(open) => { if (open) void loadWorktrees(); }}>
             <Popover.Trigger asChild>
-              <button className="changes-branch" type="button" aria-label={`Change worktree. Current branch: ${branch}`} disabled={controlsBusy}><GitBranch size={13} aria-hidden="true" /><span className="icon-label">{branch}</span></button>
+              <button className="changes-branch" type="button" aria-label={`Change worktree. Current branch: ${branch}`} disabled={controlsBusy}><Symbol text="@"><GitBranch size={13} aria-hidden="true" /></Symbol><span className="icon-label">{branch}</span></button>
             </Popover.Trigger>
             <Popover.Portal>
               <Popover.Content className="worktree-popover" side="bottom" align="start" sideOffset={7} collisionPadding={12}>
@@ -516,30 +519,30 @@ export function ChangesPanel() {
           </Popover.Root>
           <span className="summary-counts">
             <AppTooltip content={`Switch to ${nextViewLabel}`}>
-              <button className="git-view-toggle" type="button" aria-label={`Switch to ${nextViewLabel}`} onClick={() => switchView(nextView)}><ViewIcon size={12} /><span className="icon-label">{viewLabel}</span></button>
+              <button className="git-view-toggle" type="button" aria-label={`Switch to ${nextViewLabel}`} onClick={() => switchView(nextView)}><ActionContent text={viewLabel}><ViewIcon size={12} /><span className="icon-label">{viewLabel}</span></ActionContent></button>
             </AppTooltip>
-            <MetricTooltip label={`${changes.length} changed file${changes.length === 1 ? '' : 's'}`}><button className="summary-metric summary-metric--files" type="button" aria-label={`${changes.length} changed files. Open combined diff`} onClick={() => void loadCombinedDiff()}><Files size={12} /><strong className="icon-label">{changes.length}</strong></button></MetricTooltip>
+            <MetricTooltip label={`${changes.length} changed file${changes.length === 1 ? '' : 's'}`}><button className="summary-metric summary-metric--files" type="button" aria-label={`${changes.length} changed files. Open combined diff`} onClick={() => void loadCombinedDiff()}><Symbol text="files"><Files size={12} /></Symbol><strong className="icon-label">{changes.length}</strong></button></MetricTooltip>
             <MetricTooltip label={`${git?.additions ?? 0} lines added`}><button className="summary-metric summary-metric--added" type="button" aria-label={`${git?.additions ?? 0} lines added. Open combined diff`} onClick={() => void loadCombinedDiff()}>+{git?.additions ?? 0}</button></MetricTooltip>
             <MetricTooltip label={`${git?.deletions ?? 0} lines removed`}><button className="summary-metric summary-metric--removed" type="button" aria-label={`${git?.deletions ?? 0} lines removed. Open combined diff`} onClick={() => void loadCombinedDiff()}>−{git?.deletions ?? 0}</button></MetricTooltip>
           </span>
           <span className="git-remote-actions" aria-label="Git remote actions">
             <AppTooltip content="Fetch all remotes" wrapTrigger>
               <button className="git-remote-button" type="button" aria-label="Git fetch" disabled={controlsBusy || detached} onClick={() => void runRemoteGit('fetch')}>
-                <CloudDownload className={gitOperation === 'fetch' ? 'tool-spinner' : ''} size={12} aria-hidden="true" /><span className="icon-label">Fetch</span>
+                <ActionContent text={gitOperation === 'fetch' ? 'fetch...' : 'fetch'}><CloudDownload className={gitOperation === 'fetch' ? 'tool-spinner' : ''} size={12} aria-hidden="true" /><span className="icon-label">Fetch</span></ActionContent>
               </button>
             </AppTooltip>
             <AppTooltip content={detached ? 'Check out a branch before pull' : 'Pull with fast-forward only'} wrapTrigger>
               <button className="git-remote-button" type="button" aria-label="Git pull" disabled={controlsBusy || detached} onClick={() => void runRemoteGit('pull')}>
-                <ArrowDownToLine className={gitOperation === 'pull' ? 'tool-spinner' : ''} size={12} aria-hidden="true" /><span className="icon-label">Pull</span>
+                <ActionContent text={gitOperation === 'pull' ? 'pull...' : 'pull'}><ArrowDownToLine className={gitOperation === 'pull' ? 'tool-spinner' : ''} size={12} aria-hidden="true" /><span className="icon-label">Pull</span></ActionContent>
               </button>
             </AppTooltip>
             <AppTooltip content={detached ? 'Check out a branch before push' : 'Push current branch'} wrapTrigger>
               <button className="git-remote-button" type="button" aria-label="Git push" disabled={controlsBusy || detached} onClick={() => void runRemoteGit('push')}>
-                <ArrowUpFromLine className={gitOperation === 'push' ? 'tool-spinner' : ''} size={12} aria-hidden="true" /><span className="icon-label">Push</span>
+                <ActionContent text={gitOperation === 'push' ? 'push...' : 'push'}><ArrowUpFromLine className={gitOperation === 'push' ? 'tool-spinner' : ''} size={12} aria-hidden="true" /><span className="icon-label">Push</span></ActionContent>
               </button>
             </AppTooltip>
           </span>
-          <MetricTooltip label={detached ? 'Refresh detached HEAD status' : 'Refresh Git status'}><button className="git-refresh-button" type="button" aria-label={detached ? 'Refresh detached HEAD status' : 'Refresh Git status'} disabled={controlsBusy} onClick={() => void refreshAll()}><RefreshCw className={loading ? 'tool-spinner' : ''} size={13} /></button></MetricTooltip>
+          <MetricTooltip label={detached ? 'Refresh detached HEAD status' : 'Refresh Git status'}><button className="git-refresh-button" type="button" aria-label={detached ? 'Refresh detached HEAD status' : 'Refresh Git status'} disabled={controlsBusy} onClick={() => void refreshAll()}><ActionContent text={loading ? 'wait' : 'refresh'}><RefreshCw className={loading ? 'tool-spinner' : ''} size={13} /></ActionContent></button></MetricTooltip>
         </div>
         {error && <div className="workspace-error" role="alert">{error}</div>}
         {reviewNotice && <div className="review-notice" role="status">{reviewNotice}</div>}
@@ -561,17 +564,17 @@ export function ChangesPanel() {
         {view === 'diff' && changes.length > 0 ? (
           <div className="review-runway-bar" aria-label="Review actions">
             <div className="review-navigation">
-              <AppTooltip content="Previous changed file" wrapTrigger><button type="button" aria-label="Previous changed file" disabled={focusedChangeIndex <= 0} onClick={() => inspectChange(focusedChangeIndex - 1)}><ArrowUp size={12} aria-hidden="true" /></button></AppTooltip>
-              <AppTooltip content="Next changed file" wrapTrigger><button type="button" aria-label="Next changed file" disabled={focusedChangeIndex >= changes.length - 1} onClick={() => inspectChange(focusedChangeIndex + 1)}><ArrowDown size={12} aria-hidden="true" /></button></AppTooltip>
+              <AppTooltip content="Previous changed file" wrapTrigger><button type="button" aria-label="Previous changed file" disabled={focusedChangeIndex <= 0} onClick={() => inspectChange(focusedChangeIndex - 1)}><ActionContent text="prev"><ArrowUp size={12} aria-hidden="true" /></ActionContent></button></AppTooltip>
+              <AppTooltip content="Next changed file" wrapTrigger><button type="button" aria-label="Next changed file" disabled={focusedChangeIndex >= changes.length - 1} onClick={() => inspectChange(focusedChangeIndex + 1)}><ActionContent text="next"><ArrowDown size={12} aria-hidden="true" /></ActionContent></button></AppTooltip>
               <span>{selected ? `${changes.findIndex((change) => change.path === selected) + 1}/${changes.length}` : `${changes.length} files`}</span>
             </div>
             <div className="review-actions">
-              <AppTooltip content={selected && reviewedPaths.has(selected) ? 'Reviewed' : 'Mark reviewed'} wrapTrigger><button type="button" aria-label={selected && reviewedPaths.has(selected) ? 'Reviewed' : 'Mark reviewed'} disabled={!selected} data-active={selected ? reviewedPaths.has(selected) : undefined} onClick={() => { if (selected) toggleReviewed(selected); }}><CheckCircle2 size={12} aria-hidden="true" /></button></AppTooltip>
-              <AppTooltip content="Explain selected change" wrapTrigger><button type="button" aria-label="Explain selected change" disabled={!selected} onClick={() => draftReviewAction('explain')}><SearchCode size={12} aria-hidden="true" /></button></AppTooltip>
-              <AppTooltip content="Test selected change" wrapTrigger><button type="button" aria-label="Test selected change" disabled={!selected} onClick={() => draftReviewAction('test')}><TestTube2 size={12} aria-hidden="true" /></button></AppTooltip>
-              <AppTooltip content="Revise selected change" wrapTrigger><button type="button" aria-label="Revise selected change" disabled={!selected} onClick={() => draftReviewAction('revise')}><Wrench size={12} aria-hidden="true" /></button></AppTooltip>
-              <AppTooltip content="Revert selected change to HEAD" wrapTrigger><button type="button" aria-label="Revert selected change to HEAD" disabled={!selected || controlsBusy} onClick={() => void revertSelected()}><RotateCcw size={12} aria-hidden="true" /></button></AppTooltip>
-              <AppTooltip content="Open related activity" wrapTrigger><button type="button" aria-label="Open related activity" disabled={!origins[0]} onClick={() => { if (origins[0]) openTarget(origins[0].target); }}><Route size={12} aria-hidden="true" /></button></AppTooltip>
+              <AppTooltip content={selected && reviewedPaths.has(selected) ? 'Reviewed' : 'Mark reviewed'} wrapTrigger><button type="button" aria-label={selected && reviewedPaths.has(selected) ? 'Reviewed' : 'Mark reviewed'} disabled={!selected} data-active={selected ? reviewedPaths.has(selected) : undefined} onClick={() => { if (selected) toggleReviewed(selected); }}><ActionContent text={selected && reviewedPaths.has(selected) ? 'reviewed' : 'review'}><CheckCircle2 size={12} aria-hidden="true" /></ActionContent></button></AppTooltip>
+              <AppTooltip content="Explain selected change" wrapTrigger><button type="button" aria-label="Explain selected change" disabled={!selected} onClick={() => draftReviewAction('explain')}><ActionContent text="explain"><SearchCode size={12} aria-hidden="true" /></ActionContent></button></AppTooltip>
+              <AppTooltip content="Test selected change" wrapTrigger><button type="button" aria-label="Test selected change" disabled={!selected} onClick={() => draftReviewAction('test')}><ActionContent text="test"><TestTube2 size={12} aria-hidden="true" /></ActionContent></button></AppTooltip>
+              <AppTooltip content="Revise selected change" wrapTrigger><button type="button" aria-label="Revise selected change" disabled={!selected} onClick={() => draftReviewAction('revise')}><ActionContent text="revise"><Wrench size={12} aria-hidden="true" /></ActionContent></button></AppTooltip>
+              <AppTooltip content="Revert selected change to HEAD" wrapTrigger><button type="button" aria-label="Revert selected change to HEAD" disabled={!selected || controlsBusy} onClick={() => void revertSelected()}><ActionContent text="revert"><RotateCcw size={12} aria-hidden="true" /></ActionContent></button></AppTooltip>
+              <AppTooltip content="Open related activity" wrapTrigger><button type="button" aria-label="Open related activity" disabled={!origins[0]} onClick={() => { if (origins[0]) openTarget(origins[0].target); }}><ActionContent text="activity"><Route size={12} aria-hidden="true" /></ActionContent></button></AppTooltip>
             </div>
           </div>
         ) : null}

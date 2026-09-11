@@ -1,6 +1,7 @@
 import * as Select from '@radix-ui/react-select';
 import { Check, ChevronDown, Search, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSkinComponents } from '../skins/SkinProvider';
 
 export interface SelectOption {
   readonly value: string;
@@ -47,6 +48,7 @@ export function SelectControl({
   searchLabel = 'Filter options',
   onValueChange,
 }: SelectControlProps) {
+  const { Symbol } = useSkinComponents();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const searchRef = useRef<HTMLInputElement>(null);
@@ -141,7 +143,7 @@ export function SelectControl({
     >
       <Select.Trigger className={`custom-select-trigger${compact ? ' custom-select-trigger--compact' : ''} ${className}`.trim()} aria-label={label} autoFocus={autoFocus}>
         <Select.Value placeholder={placeholder} />
-        <Select.Icon className="custom-select-chevron"><ChevronDown size={compact ? 11 : 13} /></Select.Icon>
+        <Select.Icon className="custom-select-chevron"><Symbol text="v"><ChevronDown size={compact ? 11 : 13} /></Symbol></Select.Icon>
       </Select.Trigger>
       <Select.Portal>
         <Select.Content
@@ -215,7 +217,7 @@ export function SelectControl({
           <Select.Viewport ref={viewportRef} className="custom-select-viewport">
             {visibleOptions.map((option) => (
               <Select.Item className="custom-select-item" key={option.value} value={option.value}>
-                <Select.ItemIndicator className="custom-select-indicator"><Check size={compact ? 11 : 13} /></Select.ItemIndicator>
+                <Select.ItemIndicator className="custom-select-indicator"><Symbol text=">"><Check size={compact ? 11 : 13} /></Symbol></Select.ItemIndicator>
                 <span className="custom-select-copy">
                   <Select.ItemText>{option.label}</Select.ItemText>
                   {option.detail && <small>{option.detail}</small>}

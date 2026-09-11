@@ -6,6 +6,7 @@ import {
   SUBAGENT_HANDLE_MAX_LENGTH,
   SUBAGENT_HANDLE_PATTERN,
 } from '../subagentIdentity';
+import { skinIdSchema, skinCatalogSchema, skinImportResultSchema, skinExportResultSchema } from '../skins';
 import { themeCatalogSchema, type ThemeDefinition } from '../themes';
 import { agentTeamSchema, agentTeamControlInputSchema, agentWorkspacePolicySchema, type AgentTeamControlInput } from './multiAgent';
 
@@ -178,6 +179,11 @@ export const ipcChannels = {
   updatesDownloadInstall: 'updates:download-and-install',
   updatesProgress: 'updates:progress',
   themesGet: 'themes:get',
+  skinsGet: 'skins:get',
+  skinsImport: 'skins:import',
+  skinsRemove: 'skins:remove',
+  skinsExport: 'skins:export',
+  skinsOpenFolder: 'skins:open-folder',
   speechGetStatus: 'speech:get-status',
   speechEnsureModel: 'speech:ensure-model',
   speechDownloadModel: 'speech:download-model',
@@ -1289,6 +1295,7 @@ export const appSettingsSchema = z.object({
   compactSessions: z.boolean().default(false),
   advancedPromptImprovement: z.boolean().default(false),
   crashTelemetryEnabled: z.boolean().default(false),
+  skinId: skinIdSchema.default('default'),
   themeId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,47}$/).default('catppuccin-mocha'),
   interfaceFont: interfaceFontSchema.default('noto-sans'),
   codeFont: codeFontSchema.default('jetbrains-mono'),
@@ -1337,6 +1344,7 @@ export const musicDurationsEventSchema = z.object({
   updates: z.array(musicDurationUpdateSchema).min(1).max(200),
 }).strict();
 export { themeCatalogSchema };
+export const skinRemovalResultSchema = z.object({ catalog: skinCatalogSchema, settings: appSettingsSchema }).strict();
 export const diagnosticsSchema = z.object({
   appVersion: z.string(), electronVersion: z.string(), nodeVersion: z.string(), chromeVersion: z.string(),
   piVersion: z.string(), platform: z.string(), arch: z.string(), agentDirectory: z.string(), projectPath: z.string().nullable(),
@@ -1587,6 +1595,11 @@ export interface PiDesktopApi extends LearningApi {
   downloadAndInstallUpdate: (version: string) => Promise<void>;
   onUpdatesProgress: (listener: (progress: { downloaded: number; total: number; percent: number; version: string }) => void) => () => void;
   getThemes: () => Promise<ThemeDefinition[]>;
+  getSkins: () => Promise<z.infer<typeof skinCatalogSchema>>;
+  importSkinPack: () => Promise<z.infer<typeof skinImportResultSchema>>;
+  removeSkinPack: (id: string) => Promise<z.infer<typeof skinRemovalResultSchema>>;
+  exportSkinPack: (id: string) => Promise<z.infer<typeof skinExportResultSchema>>;
+  openSkinsFolder: () => Promise<z.infer<typeof skinExportResultSchema>>;
   getSpeechStatus: () => Promise<SpeechStatus>;
   ensureSpeechModel: (modelId: SpeechModelId) => Promise<void>;
   downloadSpeechModel: (modelId: SpeechModelId) => Promise<SpeechStatus>;

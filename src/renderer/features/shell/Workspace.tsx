@@ -10,6 +10,7 @@ import { useBrowserStore } from '../../stores/browserStore';
 import { BROWSER_PANE_MAX, BROWSER_PANE_MIN, useUiStore } from '../../stores/uiStore';
 import { BrowserWorkspace } from '../browser/BrowserWorkspace';
 import { WorkspaceActivityPulse } from './WorkspaceActivityPulse';
+import { WorkspaceBackground } from '../../background/BackgroundProvider';
 
 const TerminalPanel = lazy(() => import('../terminal/TerminalPanel').then((module) => ({ default: module.TerminalPanel })));
 
@@ -124,6 +125,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
 
   return (
     <main className="workspace">
+      <WorkspaceBackground />
       <header className="workspace-header">
         <div className="workspace-header-drag">
           <div className="workspace-header-identity">
@@ -134,19 +136,22 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
           <div className="session-controls">
             <IconButton
               label="Open command palette"
+              terminalLabel="cmd"
               className="workspace-command-palette"
               onClick={() => setPaletteOpen(true)}
             ><Search size={17} /></IconButton>
             <IconButton
               label={showBrowser ? 'Close browser' : 'Open browser'}
+              terminalLabel="web"
               className="workspace-browser-toggle"
               aria-pressed={showBrowser}
               disabled={!browserAvailable}
               onClick={toggleBrowser}
             ><Globe2 size={17} /></IconButton>
-            <IconButton label="Show project in file browser" onClick={() => void revealProject()} disabled={!runtime.project}><FolderSearch size={17} /></IconButton>
+            <IconButton label="Show project in file browser" terminalLabel="dir" onClick={() => void revealProject()} disabled={!runtime.project}><FolderSearch size={17} /></IconButton>
             <IconButton
               label={terminalOpen ? 'Close terminal' : 'Open terminal'}
+              terminalLabel="term"
               className="workspace-terminal-toggle"
               aria-pressed={terminalOpen}
               onClick={toggleTerminal}
@@ -154,6 +159,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
             ><TerminalSquare size={17} /></IconButton>
             <IconButton
               label={inspectorCollapsed ? 'Open inspector' : 'Collapse inspector'}
+              terminalLabel="panel"
               className="workspace-inspector-toggle"
               aria-pressed={!inspectorCollapsed}
               onClick={onToggleInspector}

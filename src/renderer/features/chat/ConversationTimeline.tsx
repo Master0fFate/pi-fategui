@@ -10,6 +10,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { MentionText } from './AgentMention';
 import { AssistantMarkdown, ConversationImageViewerProvider } from './RichMessageContent';
 import { ToolCard } from './ToolCard';
+import { useSkinComponents } from '../../skins/SkinProvider';
 
 export { AssistantMarkdown } from './RichMessageContent';
 
@@ -63,6 +64,7 @@ export function forkEntryForMessage(messageId: string, messageOrder: readonly st
 }
 
 export const MessageRow = memo(function MessageRow({ messageId }: { messageId: string }) {
+  const { ActionContent, MessageHeading } = useSkinComponents();
   const { message, streaming, streamingThisMessage, modelName, forkPoints, forkMessageOrder, forkCapable, sessionOperation } = useRuntimeStore(useShallow((state) => ({
     message: state.messagesById[messageId],
     streaming: state.runtime.streaming,
@@ -138,6 +140,7 @@ export const MessageRow = memo(function MessageRow({ messageId }: { messageId: s
   return (
     <div className={`chat-message-row chat-message-row--${message.role}`}>
       <article className={`chat-message chat-message--${message.role}${message.error ? ' chat-message--error' : ''}`}>
+        <MessageHeading role={message.role} label={label} />
         {richContent && !(message.role === 'assistant' && streamingThisMessage && !message.images?.length)
           ? <AssistantMarkdown text={message.text} images={message.images} />
           : <p className="message-plain"><MentionText text={message.text} /></p>}
@@ -145,10 +148,10 @@ export const MessageRow = memo(function MessageRow({ messageId }: { messageId: s
       <footer className="message-footer">
         <span className="message-footer-meta">{message.role === 'system' ? <><Plug size={11} aria-hidden="true" /><span className="icon-label">{label} <span aria-hidden="true">·</span> {formatMessageTimestamp(message.timestamp)}</span></> : <>{label} <span aria-hidden="true">·</span> {formatMessageTimestamp(message.timestamp)}</>}</span>
         <span className="message-footer-actions">
-          <AppTooltip content={copied ? 'Copied' : message.text ? 'Copy message' : 'This message has no text to copy'} wrapTrigger><button className="message-action" type="button" aria-label={copied ? 'Message copied' : 'Copy message'} disabled={!message.text || copying} onClick={() => { void copyMessage(); }}>{copied ? <Check size={14} /> : <Copy size={14} />}</button></AppTooltip>
-          {message.role === 'user' && <AppTooltip content="Review a correction as learning; no model request is made yet" wrapTrigger><button className="message-action" type="button" aria-label="Learn from this correction" disabled={!message.text} onClick={() => useLearningStore.getState().show(message.text)}><Brain size={14} /></button></AppTooltip>}
-          {message.role !== 'system' && <AppTooltip content={forkUnavailable ?? 'Fork from this message'} wrapTrigger><button className="message-action" type="button" aria-label="Fork from this message" disabled={!canFork || forking} onClick={() => { void forkMessage(); }}><GitFork size={14} /></button></AppTooltip>}
-          {message.role === 'assistant' && <AppTooltip content={forkUnavailable ?? 'Try again from this prompt'} wrapTrigger><button className="message-action" type="button" aria-label="Try again" disabled={!canFork || forking} onClick={() => { void forkMessage(true); }}><RotateCcw size={14} /></button></AppTooltip>}
+          <AppTooltip content={copied ? 'Copied' : message.text ? 'Copy message' : 'This message has no text to copy'} wrapTrigger><button className="message-action" type="button" aria-label={copied ? 'Message copied' : 'Copy message'} disabled={!message.text || copying} onClick={() => { void copyMessage(); }}><ActionContent text={copied ? 'copied' : 'copy'}>{copied ? <Check size={14} /> : <Copy size={14} />}</ActionContent></button></AppTooltip>
+          {message.role === 'user' && <AppTooltip content="Review a correction as learning; no model request is made yet" wrapTrigger><button className="message-action" type="button" aria-label="Learn from this correction" disabled={!message.text} onClick={() => useLearningStore.getState().show(message.text)}><ActionContent text="learn"><Brain size={14} /></ActionContent></button></AppTooltip>}
+          {message.role !== 'system' && <AppTooltip content={forkUnavailable ?? 'Fork from this message'} wrapTrigger><button className="message-action" type="button" aria-label="Fork from this message" disabled={!canFork || forking} onClick={() => { void forkMessage(); }}><ActionContent text="fork"><GitFork size={14} /></ActionContent></button></AppTooltip>}
+          {message.role === 'assistant' && <AppTooltip content={forkUnavailable ?? 'Try again from this prompt'} wrapTrigger><button className="message-action" type="button" aria-label="Try again" disabled={!canFork || forking} onClick={() => { void forkMessage(true); }}><ActionContent text="retry"><RotateCcw size={14} /></ActionContent></button></AppTooltip>}
         </span>
       </footer>
     </div>
