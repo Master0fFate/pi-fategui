@@ -1055,8 +1055,9 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
   display: grid; min-height: 36px; grid-template-columns: 17px minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 3px 5px 3px 10px;
   border: 1px solid var(--theme-border); border-radius: 12px; color: var(--theme-muted); background: color-mix(in srgb, var(--theme-raised) 94%, var(--theme-panel));
 }
-.queued-message > svg { color: var(--theme-subtle); }
-.queued-message[data-behavior="steer"] > svg { color: var(--theme-accent); }
+.queued-message > svg, .queued-message > .terminal-symbol { color: var(--theme-subtle); }
+.queued-message > .terminal-symbol { font-size: 11px; line-height: 1.2; }
+.queued-message[data-behavior="steer"] > svg, .queued-message[data-behavior="steer"] > .terminal-symbol { color: var(--theme-accent); }
 .queued-message-preview { overflow: hidden; color: var(--theme-text-soft); font-size: 11px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
 .queued-message-attachments, .queued-message-status { flex: none; color: var(--theme-subtle); font-size: 11px; white-space: nowrap; }
 .queued-message-status { display: grid; width: 52px; place-items: center; color: var(--theme-accent); }

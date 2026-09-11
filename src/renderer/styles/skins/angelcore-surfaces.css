@@ -62,7 +62,7 @@
 :root[data-skin][data-skin-styled] .queued-message-actions { flex-wrap: nowrap; white-space: nowrap; }
 :root[data-skin][data-skin-styled] .queued-message :is(.queued-message-edit, .queued-message-cancel, .queued-message-behavior) { width: auto; min-width: 24px; padding-inline: 2px; font-size: 10px; }
 :root[data-skin][data-skin-styled] .goalmax-task-strip-toggle { min-height: var(--surface-row-height); }
-:root[data-skin][data-skin-styled] :is(.goalmax-task-strip-mark, .goalmax-task-strip-criterion-mark, .subagent-status-mark) { width: 3ch; min-width: 3ch; font: 11px var(--font-interface); }
+:root[data-skin][data-skin-styled] :is(.goalmax-task-strip-mark, .goalmax-task-strip-criterion-mark, .subagent-status-mark, .queued-message > .terminal-symbol) { width: 3ch; min-width: 3ch; font: 11px var(--font-interface); line-height: 1.2; }
 :root[data-skin][data-skin-styled] .goalmax-task-strip-criterion { grid-template-columns: auto minmax(0, 1fr) auto; }
 :root[data-skin][data-skin-styled] .goalmax-rail-actions button { width: auto; min-width: 24px; padding: 0 2px; font-size: 10px; }
 :root[data-skin][data-skin-styled] :is(.goalmax-task-strip-criterion, .goalmax-criterion-row, .goalmax-evidence-row) { border-radius: var(--surface-control-radius); border-color: var(--surface-border); background: transparent; min-height: var(--surface-row-height); }
