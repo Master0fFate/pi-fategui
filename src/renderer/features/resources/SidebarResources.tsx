@@ -3,11 +3,11 @@ import {
   ChevronRight,
   FileCode2,
   Files,
+  FolderOpen,
   FolderTree,
   Globe2,
   Library,
   LoaderCircle,
-  Plus,
   Search,
   Sparkles,
   TerminalSquare,
@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AppTooltip } from '../../components/AppTooltip';
+import { useSkinComponents } from '../../skins/SkinProvider';
 import { useAutomationStore } from '../../stores/automationStore';
 import { useBrowserStore } from '../../stores/browserStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
@@ -38,6 +39,7 @@ interface SidebarResourcesProps {
 }
 
 export function SidebarResources({ onOpenProject, projectSelectionBusy }: SidebarResourcesProps) {
+  const { ActionContent } = useSkinComponents();
   const project = useRuntimeStore((state) => state.runtime.project);
   const commands = useRuntimeStore((state) => state.runtime.commands);
   const skills = useRuntimeStore((state) => state.runtime.skills);
@@ -83,7 +85,7 @@ export function SidebarResources({ onOpenProject, projectSelectionBusy }: Sideba
           {search.searching && <LoaderCircle className="tool-spinner" size={13} aria-label="Searching resources" />}
         </label>
         <AppTooltip content="Open project" wrapTrigger triggerClassName="sidebar-toolbar-action sidebar-toolbar-action--primary">
-          <button type="button" aria-label="Open project" disabled={projectSelectionBusy} onClick={onOpenProject}><Plus size={15} /></button>
+          <button type="button" aria-label="Open project" disabled={projectSelectionBusy} onClick={onOpenProject}><ActionContent text="open"><FolderOpen size={15} /></ActionContent></button>
         </AppTooltip>
       </div>
 

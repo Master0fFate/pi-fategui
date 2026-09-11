@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AutomationCreateInput, AutomationDefinition } from '../../../shared/contracts/automations';
 import type { RuntimeState } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
+import { useSkinComponents } from '../../skins/SkinProvider';
 import { formatRelativeTime } from '../../lib/relativeTime';
 import { useAutomationStore } from '../../stores/automationStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
@@ -11,6 +12,7 @@ import { AutomationEditorDialog } from './AutomationEditorDialog';
 import { automationPromptPreview, automationSearchPattern } from './automationText';
 
 export function SidebarAutomations() {
+  const { ActionContent } = useSkinComponents();
   const project = useRuntimeStore((state) => state.runtime.project);
   const sessionOperation = useRuntimeStore((state) => state.runtime.sessionOperation === true);
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
@@ -142,7 +144,7 @@ export function SidebarAutomations() {
           <input className="icon-label" type="search" aria-label="Search automations" placeholder="Search automations" value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
         <AppTooltip content="New automation" wrapTrigger triggerClassName="sidebar-toolbar-action sidebar-toolbar-action--primary">
-          <button type="button" aria-label="New automation" disabled={!project || loading || Boolean(mutatingId) || Boolean(preparingId)} onClick={() => openEditor(null)}><Plus size={15} /></button>
+          <button type="button" aria-label="New automation" disabled={!project || loading || Boolean(mutatingId) || Boolean(preparingId)} onClick={() => openEditor(null)}><ActionContent text="new"><Plus size={15} /></ActionContent></button>
         </AppTooltip>
       </div>
 
