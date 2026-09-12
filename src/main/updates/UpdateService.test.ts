@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp } from 'node:fs/promises';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -19,6 +19,12 @@ import {
   updateMessages,
   updateVerifyMessages,
 } from './UpdateService';
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
 
 const parsed = (value: string) => {
   const version = parseSemanticVersion(value);
@@ -302,14 +308,17 @@ describe('UpdateService download and install', () => {
   });
 
   it('keeps arbitrary display suffixes out of every download URL and filesystem path', async () => {
+    const tmp = await mkdtemp(path.join(tmpdir(), 'fate-update-'));
+    temporaryDirectories.push(tmp);
     const assetName = 'Fate-UI-1.0.0-Windows-x64.exe';
+    const expectedTarget = path.join(tmp, assetName);
     const empty = new Uint8Array();
     const fetchVersion = fetchForPublishedRelease('1.0.0', assetName, checksumsResponse(assetName, empty));
     const fetchAsset = vi.fn(async () => ({ ok: true, status: 200, total: 0, body: (async function* () { /* empty */ })() }));
     const launchInstaller = vi.fn(async () => undefined);
     const removeFile = vi.fn(async () => undefined);
     const updates = new UpdateService('/p', {
-      fetchVersion, fetchAsset, launchInstaller, removeFile, downloadDir: '/tmp', platform: 'win32', arch: 'x64',
+      fetchVersion, fetchAsset, launchInstaller, removeFile, downloadDir: tmp, platform: 'win32', arch: 'x64',
     });
 
     await updates.downloadAndInstall('V1.0.0 - ../../evil?! 🎉');
@@ -317,8 +326,10 @@ describe('UpdateService download and install', () => {
       'https://github.com/Master0fFate/pi-fategui/releases/download/v1.0.0/Fate-UI-1.0.0-Windows-x64.exe',
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(removeFile).toHaveBeenCalledWith(expect.stringMatching(/Fate-UI-1\.0\.0-Windows-x64\.exe$/u));
-    expect(launchInstaller).toHaveBeenCalledWith(expect.stringMatching(/Fate-UI-1\.0\.0-Windows-x64\.exe$/u), '1.0.0');
+    expect(path.dirname(expectedTarget)).toBe(tmp);
+    expect(path.basename(expectedTarget)).toBe(assetName);
+    expect(removeFile).toHaveBeenCalledWith(expectedTarget);
+    expect(launchInstaller).toHaveBeenCalledWith(expectedTarget, '1.0.0');
   });
 
   it('refuses a direct download when the GitHub release is not publication-ready', async () => {

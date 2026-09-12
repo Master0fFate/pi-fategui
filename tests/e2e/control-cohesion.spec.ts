@@ -6,7 +6,7 @@ import { appSettingsSchema } from '../../src/shared/contracts/ipc';
 
 async function railMetrics(page: Page) {
   return page.evaluate(() => {
-    const selectors = ['.queued-message', '.goalmax-rail', '.goalmax-task-strip', '.goalmax-saved-instructions'];
+    const selectors = ['[aria-label="Queued messages"] .queued-message', '.goalmax-rail', '.goalmax-task-strip', '.goalmax-saved-instructions'];
     return selectors.map((selector) => {
       const element = document.querySelector<HTMLElement>(selector)!;
       const label = element.querySelector<HTMLElement>('.queued-message-preview, .goalmax-rail-objective strong, .goalmax-task-strip-copy strong, .composer-rail-copy')!;
@@ -39,7 +39,7 @@ for (const skin of ['default', 'dreamcore'] as const) {
       await page.evaluate(() => window.piDesktop.createGoalMax({ objective: 'Keep every composer control aligned', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null }));
       await expect.poll(() => page.evaluate(async () => (await window.piDesktop.getRuntimeState()).streaming)).toBe(false);
       await page.evaluate(() => window.piDesktop.prompt({ text: '__FATE_COMPOSER_RAILS__', behavior: 'prompt' }));
-      await expect(page.locator('.queued-message')).toHaveCount(2);
+      await expect(page.getByRole('region', { name: 'Queued messages', exact: true }).locator('.queued-message')).toHaveCount(2);
 
       for (const compact of [false, true]) {
         if (compact) {
