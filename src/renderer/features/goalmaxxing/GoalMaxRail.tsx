@@ -21,7 +21,7 @@ function RailStatusIcon({ goal }: { goal: GoalMaxState }) {
 }
 
 export function GoalMaxRail() {
-  const { ActionContent } = useSkinComponents();
+  const { ActionContent, Symbol } = useSkinComponents();
   const goal = useGoalMaxStore((state) => state.goal);
   const setGoal = useGoalMaxStore((state) => state.setGoal);
   const openGoalMax = useUiStore((state) => state.openGoalMax);
@@ -59,7 +59,7 @@ export function GoalMaxRail() {
   return (
     <>
       <section className="goalmax-rail" data-status={goal.status} aria-label="Current GoalMax goal" aria-live="polite">
-        <span className="goalmax-rail-status" aria-label={goalMaxStatusLabel(goal.status)}><RailStatusIcon goal={goal} /></span>
+        <span className="goalmax-rail-status composer-rail-mark" aria-label={goalMaxStatusLabel(goal.status)}><Symbol text="[g]"><RailStatusIcon goal={goal} /></Symbol></span>
         <AppTooltip content={`${objectiveTooltip}\n${goalMaxStatusLabel(goal.status)} · ${goal.phase} · ${satisfied}/${required.length} required`}>
           <button className="goalmax-rail-objective" type="button" aria-label="Open Goal Flight Deck" onClick={openGoalMax}>
             <strong>{railObjective}</strong>

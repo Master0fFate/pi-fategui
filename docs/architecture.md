@@ -42,6 +42,16 @@ Fate UI stores provider credentials and model configuration under `~/.pi/fateGUI
 
 The provider store is private: Fate UI creates its directory with user-only permissions on supported POSIX systems, writes imported credential files with user-only permissions, and refuses a non-regular provider file. Git ignores the mutable provider files for repository-root development overrides. After the first run, Fate UI never falls back to Pi Terminal credential or model files.
 
+## Recovery and evidence limits
+
+Queued and compaction-held drafts use a bounded local outbox. Unacknowledged delivery reopens for review instead of automatically replaying work. SDK acceptance is not proof that a recipient recorded or acted on a message, and exactly-once external effects require tool-level idempotency.
+
+Agent execution, result delivery, and resource cleanup have separate states. A successful task is not rerun merely because its result could not be delivered. A failed-to-stop writer remains tracked with its lease until actual settlement; cancellation errors are surfaced after all requested stop attempts.
+
+Worktree leases coordinate this application runtime, not other processes, external editors, or manual terminals. Outboxes and session records are local plaintext and may include user drafts or attachments. File flushes and atomic replacements mitigate ordinary crashes but do not guarantee recovery from every filesystem or power-loss failure.
+
+Activity path correlation and local SHA-256 records are useful investigation evidence, not cryptographic authorship or tamper-proof audit trails. Automatic model verification does not replace review of important changes. See [GoalMax](goalmax.md), [Agent orchestration](agent-orchestration.md), and [Features](features.md).
+
 ## Reporting vulnerabilities
 
 Please report vulnerabilities privately according to [SECURITY.md](../SECURITY.md). Do not open a public issue for an unpatched security vulnerability.

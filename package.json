@@ -1,6 +1,7 @@
 {
   "name": "pi-fategui",
-  "version": "0.9.9-beta4",
+  "version": "1.0.0",
+  "releaseName": "Modulo",
   "description": "A local-first desktop interface for the Pi coding agent",
   "type": "module",
   "main": "dist/main/index.js",

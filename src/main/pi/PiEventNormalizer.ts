@@ -151,16 +151,25 @@ function messageError(message: unknown): boolean {
   return value.isError === true || value.stopReason === 'error';
 }
 
+function boundedReferenceId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 100
+    && value.trim() === value && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
 export function subagentRunIds(value: unknown): string[] | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const details = (value as { details?: unknown }).details;
   const parsed = subagentToolDetailsSchema.safeParse(details);
-  if (parsed.success && parsed.data.runIds.length > 0) return parsed.data.runIds;
-  if (!details || typeof details !== 'object') return undefined;
-  const workflow = details as { kind?: unknown; version?: unknown; runIds?: unknown };
-  if (workflow.kind !== 'fate-subagent-workflow' || workflow.version !== 1 || !Array.isArray(workflow.runIds)) return undefined;
-  const runIds = workflow.runIds.filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 100);
-  return runIds.length === workflow.runIds.length && runIds.length > 0 ? runIds : undefined;
+  if (parsed.success && parsed.data.runIds.length > 0) {
+    return parsed.data.runIds.every(boundedReferenceId) ? [...new Set(parsed.data.runIds)] : undefined;
+  }
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return undefined;
+  const reference = details as { kind?: unknown; version?: unknown; nodeId?: unknown; runIds?: unknown };
+  if (reference.kind === 'fate-agent-team-spawn' && reference.version === 1) {
+    return boundedReferenceId(reference.nodeId) ? [reference.nodeId] : undefined;
+  }
+  if (reference.kind !== 'fate-subagent-workflow' || reference.version !== 1 || !Array.isArray(reference.runIds)) return undefined;
+  return reference.runIds.every(boundedReferenceId) ? [...new Set(reference.runIds)] : undefined;
 }
 
 export class PiEventNormalizer {

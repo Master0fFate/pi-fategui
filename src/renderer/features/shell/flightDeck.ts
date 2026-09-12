@@ -187,7 +187,7 @@ function legacyRecorderRows(sources: RecorderSources): { rows: FlightRecorderRow
   for (const run of runs) {
     rows.push({
       id: `legacy:run:${run.id}`, source: 'legacy', sourceRank: 1, sourceIndex: sourceIndex++, timestamp: run.createdAt,
-      kind: 'run', title: run.displayName ?? run.handle ?? run.role, detail: `Legacy agent ${run.status}`, target: { kind: 'agent', runId: run.id },
+      kind: 'run', title: run.displayName ?? run.handle ?? run.role, detail: `Historical agent ${run.status}`, target: { kind: 'agent', runId: run.id },
     });
     for (const message of run.messages) {
       rows.push({

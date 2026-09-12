@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { AGENT_TEAM_MAX_MESSAGE_BYTES, type AgentTeam } from '../../../shared/contracts/multiAgent';
+import { AGENT_TEAM_MAX_MESSAGE_BYTES, AGENT_TEAM_MAX_NODES, agentTeamSchema, type AgentTeam } from '../../../shared/contracts/multiAgent';
 import { AgentWorkspaceGitService } from '../../git/AgentWorkspaceGitService';
 import { createSdkChildSession, type ChildSessionInput } from '../SubagentSessionFactory';
 import type { AgentTeamLedgerEvent } from './AgentTeamTypes';
@@ -12,7 +12,11 @@ import type { AgentTeamLedgerEvent } from './AgentTeamTypes';
 const createdInputs: ChildSessionInput[] = [];
 const childSessions: AgentSession[] = [];
 const childUnsubscribes: ReturnType<typeof vi.fn>[] = [];
+const childEventEmitters: Array<(event: unknown) => void> = [];
 let promptBarrier: Promise<void> | null = null;
+let promptHook: ((text: string) => Promise<void>) | null = null;
+let promptResultText: string | null = null;
+let promptResultStopReason: 'stop' | 'aborted' = 'stop';
 
 vi.mock('../SubagentSessionFactory', async () => {
   const actual = await vi.importActual<typeof import('../SubagentSessionFactory')>('../SubagentSessionFactory');
@@ -26,6 +30,7 @@ vi.mock('../SubagentSessionFactory', async () => {
       let listener: ((event: unknown) => void) | null = null;
       const unsubscribe = vi.fn(() => { listener = null; });
       childUnsubscribes.push(unsubscribe);
+      childEventEmitters.push((event) => listener?.(event));
       const session = {
         sessionId: `child-${childSessions.length + 1}`,
         sessionFile: path.join(input.sessionDirectory ?? os.tmpdir(), `child-${childSessions.length + 1}.jsonl`),
@@ -41,8 +46,9 @@ vi.mock('../SubagentSessionFactory', async () => {
           messages.push({ role: 'user', content: text });
           listener?.({ type: 'tool_execution_start', toolCallId: 'read-1', toolName: 'read', args: { path: 'src/example.ts' } });
           listener?.({ type: 'tool_execution_end', toolCallId: 'read-1', toolName: 'read', result: 'ok', isError: false });
-          if (promptBarrier) await Promise.race([promptBarrier, aborted]);
-          const assistant = { role: 'assistant', content: [{ type: 'text', text: `result:${input.teamIdentity?.path}` }], stopReason: 'stop' };
+          if (promptHook) await promptHook(text);
+          else if (promptBarrier) await Promise.race([promptBarrier, aborted]);
+          const assistant = { role: 'assistant', content: [{ type: 'text', text: promptResultText ?? `result:${input.teamIdentity?.path}` }], stopReason: promptResultStopReason };
           messages.push(assistant);
           listener?.({ type: 'message_end', message: assistant });
         }),
@@ -73,10 +79,15 @@ beforeEach(async () => {
   createdInputs.length = 0;
   childSessions.length = 0;
   childUnsubscribes.length = 0;
+  childEventEmitters.length = 0;
   promptBarrier = null;
+  promptHook = null;
+  promptResultText = null;
+  promptResultStopReason = 'stop';
   dataRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'fate-agent-team-test-')));
 });
 afterEach(async () => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   await fs.rm(dataRoot, { recursive: true, force: true });
 });
@@ -372,6 +383,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const secondIsolated = await coordinator.spawn(rootId, { task: 'second isolate', name: 'isolated-two', permission: 'full-access' }, 'workspace-second-isolated', runtime());
     expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === secondIsolated.nodeId)?.status).toBe('active');
     await coordinator.interrupt(rootId, secondIsolated.nodeId);
+    await vi.waitFor(() => expect(coordinator.inspectNode(rootId, secondIsolated.nodeId).resources.turnActive).toBe(false));
     await coordinator.release(rootId, secondIsolated.nodeId);
     await coordinator.workspace(rootId, secondIsolated.nodeId, 'cleanup');
     const sharedWriter = await coordinator.spawn(rootId, { task: 'shared write', name: 'shared-writer', permission: 'full-access', workspace: { mode: 'shared' } }, 'workspace-shared-writer', runtime());
@@ -690,6 +702,266 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(persisted.length).toBeGreaterThan(0);
   });
 
+  it('persists an internal result without unsolicited parent delivery when deliverFinalAnswer is false', async () => {
+    const root = rootSession();
+    const persisted: AgentTeamLedgerEvent[] = [];
+    const sendRootMessage = vi.fn(async () => undefined);
+    const host = {
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' as const }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), sendRootMessage,
+      emit: () => undefined,
+      persist: (_root: string, event: AgentTeamLedgerEvent) => { persisted.push(event); },
+    };
+    const coordinator = new AgentTeamCoordinator(host, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'workflow-owned result', name: 'silent' }, 'silent-spawn', runtime(), undefined, { deliverFinalAnswer: false });
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks[0]?.status).toBe('completed'));
+
+    const team = coordinator.getTeams('root-session')[0]!;
+    const task = team.tasks.find((candidate) => candidate.assigneeNodeId === child.nodeId)!;
+    expect(task).toMatchObject({ status: 'completed', deliverFinalAnswer: false });
+    expect(team.envelopes.find((envelope) => envelope.id === task.resultEnvelopeId)).toMatchObject({ kind: 'FINAL_ANSWER', state: 'consumed', content: 'result:/root/silent' });
+    expect(sendRootMessage).not.toHaveBeenCalled();
+
+    const reopened = rootSession();
+    vi.spyOn(reopened.sessionManager, 'getBranch').mockReturnValue(persisted.map((event) => ({ type: 'custom', customType: 'fate-agent-team-event', data: event })) as never);
+    const restored = new AgentTeamCoordinator({
+      ...host,
+      resolveRoot: () => ({ projectPath: dataRoot, session: reopened, permissionLevel: 'read-only' as const }),
+      persist: () => undefined,
+    }, dataRoot);
+    restored.restoreRoot(reopened);
+    expect(restored.getTeams('root-session')[0]?.tasks.find((candidate) => candidate.id === task.id)).toMatchObject({ deliverFinalAnswer: false, status: 'completed' });
+    expect(sendRootMessage).not.toHaveBeenCalled();
+  });
+
+  it('retains a workflow node through follow-up, resets its idle deadline, and releases capacity after restored expiry', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const root = rootSession();
+    const persisted: AgentTeamLedgerEvent[] = [];
+    const sendRootMessage = vi.fn(async (): Promise<void> => undefined);
+    const host = {
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' as const }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), sendRootMessage,
+      emit: () => undefined,
+      persist: (_root: string, event: AgentTeamLedgerEvent) => { persisted.push(event); },
+    };
+    const coordinator = new AgentTeamCoordinator(host, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(
+      rootId,
+      { task: 'workflow initial', name: 'retained-workflow' },
+      'retained-workflow-spawn',
+      runtime(),
+      undefined,
+      { allowDelegation: false, deliverFinalAnswer: false, idleReleaseMs: 10_000 },
+    );
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks[0]?.status).toBe('completed'));
+    const firstDeadline = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.idleReleaseAt!;
+    expect(firstDeadline).toBe(Date.now() + 10_000);
+    expect(coordinator.inspectNode(rootId, child.nodeId).resources.idleReleaseTimerArmed).toBe(true);
+    expect(sendRootMessage).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(50);
+    const follow = await coordinator.followUp(rootId, child.nodeId, 'retained follow-up', 'retained-workflow-followup', runtime());
+    await vi.waitFor(() => {
+      const team = coordinator.getTeams('root-session')[0]!;
+      expect(team.tasks.find((task) => task.id === follow.taskId)?.status).toBe('completed');
+      expect(team.nodes.find((node) => node.id === child.nodeId)?.idleReleaseAt).toBeGreaterThan(firstDeadline);
+    });
+    const retained = coordinator.getTeams('root-session')[0]!;
+    const resetDeadline = retained.nodes.find((node) => node.id === child.nodeId)!.idleReleaseAt!;
+    expect(resetDeadline).toBeGreaterThan(firstDeadline);
+    expect(sendRootMessage).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(Math.max(0, firstDeadline - Date.now()));
+    expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)?.status).toBe('ready');
+    const restorable = structuredClone(persisted.findLast((event) => {
+      const team = event.payload.team as AgentTeam;
+      return team.nodes.some((node) => node.id === child.nodeId && node.status === 'ready' && node.idleReleaseAt === resetDeadline);
+    })!);
+    await coordinator.cancelRoot('root-session');
+
+    vi.setSystemTime(resetDeadline - 25);
+    const reopened = rootSession();
+    vi.spyOn(reopened.sessionManager, 'getBranch').mockReturnValue([{ type: 'custom', customType: 'fate-agent-team-event', data: restorable }] as never);
+    const restored = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: reopened, permissionLevel: 'read-only' as const }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    restored.restoreRoot(reopened);
+    const restoredTeam = restored.getTeams('root-session')[0]!;
+    expect(restored.inspectNode(restoredTeam.rootNodeId, child.nodeId).resources.idleReleaseTimerArmed).toBe(true);
+    expect(restoredTeam.tasks).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(24);
+    expect(restored.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)?.status).toBe('ready');
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(restored.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)?.status).toBe('released'));
+    expect(restored.getTeams('root-session')[0]).toMatchObject({ activeTurns: 0, writerNodeId: null });
+    expect(restored.getTeams('root-session')[0]!.tasks).toHaveLength(2);
+    await expect(fs.stat(childSessions[0]!.sessionFile!)).resolves.toBeDefined();
+  });
+
+  it('holds an expired idle deadline while a descendant is retained, then releases only after capacity is free', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const parent = await coordinator.spawn(
+      rootId,
+      { task: 'retain a descendant', name: 'idle-parent' },
+      'idle-parent-spawn',
+      runtime(),
+      undefined,
+      { deliverFinalAnswer: false, idleReleaseMs: 10 },
+    );
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks[0]?.status).toBe('completed'));
+    const deadline = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === parent.nodeId)!.idleReleaseAt!;
+    const descendant = await coordinator.spawn(parent.nodeId, { task: 'remain retained', name: 'retained-child' }, 'retained-child-spawn', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === descendant.nodeId)?.status).toBe('ready'));
+
+    await vi.advanceTimersByTimeAsync(Math.max(0, deadline - Date.now()));
+    const held = coordinator.getTeams('root-session')[0]!;
+    expect(held.nodes.find((node) => node.id === parent.nodeId)).toMatchObject({ status: 'ready', idleReleaseAt: deadline });
+    expect(held.nodes.find((node) => node.id === descendant.nodeId)?.status).toBe('ready');
+    expect(coordinator.inspectNode(rootId, parent.nodeId).resources.idleReleaseTimerArmed).toBe(true);
+
+    await coordinator.release(parent.nodeId, descendant.nodeId);
+    await vi.advanceTimersByTimeAsync(Math.max(0, deadline + 1_000 - Date.now()));
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === parent.nodeId)?.status).toBe('released'));
+    expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === descendant.nodeId)?.status).toBe('released');
+  });
+
+  it('keeps an idle-release failure observable, retries without spinning, then releases capacity', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(
+      rootId,
+      { task: 'release after transient failure', name: 'retry-release' },
+      'retry-release-spawn',
+      runtime(),
+      undefined,
+      { deliverFinalAnswer: false, idleReleaseMs: 10 },
+    );
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks[0]?.status).toBe('completed'));
+    const deadline = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.idleReleaseAt!;
+    const internals = coordinator as unknown as { releaseNode: (...args: unknown[]) => Promise<void> };
+    const releaseNode = vi.spyOn(internals, 'releaseNode');
+    releaseNode.mockRejectedValueOnce(new Error('transient release failure'));
+
+    await vi.advanceTimersByTimeAsync(deadline - Date.now());
+    await vi.waitFor(() => expect(releaseNode).toHaveBeenCalledTimes(1));
+    const failed = coordinator.getTeams('root-session')[0]!;
+    expect(failed.nodes.find((node) => node.id === child.nodeId)).toMatchObject({
+      status: 'ready',
+      idleReleaseAt: deadline,
+      lastError: 'Idle release failed: transient release failure',
+    });
+    expect(failed.timeline.at(-1)).toMatchObject({ type: 'error', summary: expect.stringContaining('retry remains armed') });
+    expect(coordinator.inspectNode(rootId, child.nodeId).resources.idleReleaseTimerArmed).toBe(true);
+
+    const retryAt = deadline + 1_000;
+    await vi.advanceTimersByTimeAsync(Math.max(0, retryAt - Date.now() - 1));
+    expect(releaseNode).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === child.nodeId)?.status).toBe('released'));
+    expect(releaseNode).toHaveBeenCalledTimes(2);
+    expect(coordinator.getTeams('root-session')[0]).toMatchObject({ activeTurns: 0, writerNodeId: null });
+  });
+
+  it('keeps oversized result admission failure separate from successful execution without retaining the output', async () => {
+    promptResultText = 'x'.repeat(AGENT_TEAM_MAX_MESSAGE_BYTES + 1);
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'produce an oversized result', name: 'oversized-result' }, 'oversized-result-spawn', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks[0]?.status).toBe('completed'));
+
+    const team = coordinator.getTeams('root-session')[0]!;
+    const task = team.tasks[0]!;
+    expect(task).toMatchObject({
+      status: 'completed',
+      resultTransportError: expect.stringContaining(`limited to ${AGENT_TEAM_MAX_MESSAGE_BYTES} UTF-8 bytes`),
+    });
+    expect(task.resultEnvelopeId).toBeUndefined();
+    expect(task.error).toBeUndefined();
+    expect(task.resultTransportError!.length).toBeLessThanOrEqual(2_000);
+    expect(team.envelopes).toHaveLength(1);
+    expect(team.nodes.find((node) => node.id === child.nodeId)?.status).toBe('ready');
+    expect(team).toMatchObject({ activeTurns: 0, writerNodeId: null });
+    await settle();
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an exhausted result-envelope slot separate from successful execution', async () => {
+    let releasePrompt!: () => void;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    await coordinator.spawn(rootId, { task: 'complete after the result slot fills', name: 'full-result-slot' }, 'full-result-slot-spawn', runtime());
+    const teamId = coordinator.getTeams('root-session')[0]!.id;
+    const internals = coordinator as unknown as { teamsById: Map<string, { state: AgentTeam }> };
+    internals.teamsById.get(teamId)!.state.limits.maxMessages = 1;
+    releasePrompt();
+    promptBarrier = null;
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks[0]?.status).toBe('completed'));
+
+    const team = coordinator.getTeams('root-session')[0]!;
+    expect(team.tasks[0]).toMatchObject({
+      status: 'completed',
+      resultTransportError: expect.stringContaining('message limit (1) reached'),
+    });
+    expect(team.tasks[0]!.resultEnvelopeId).toBeUndefined();
+    expect(team.tasks[0]!.error).toBeUndefined();
+    expect(team.envelopes).toHaveLength(1);
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(1);
+    expect(team).toMatchObject({ activeTurns: 0, writerNodeId: null });
+  });
+
+  it('retains successful execution and explicit envelope failure when parent notification exceeds context', async () => {
+    const root = rootSession();
+    root.getContextUsage = () => ({ tokens: model.contextWindow, contextWindow: model.contextWindow, percent: 100 });
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }),
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    await coordinator.spawn(rootId, { task: 'execute once', name: 'context-full' }, 'context-full-spawn', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.activeTurns).toBe(0));
+
+    const team = coordinator.getTeams('root-session')[0]!;
+    const task = team.tasks[0]!;
+    expect(task).toMatchObject({ status: 'completed', resultTransportError: expect.stringContaining('Result transport failed during delivery') });
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(1);
+    expect(team.envelopes.find((envelope) => envelope.id === task.resultEnvelopeId)).toMatchObject({
+      state: 'failed',
+      error: expect.stringContaining('Delivery refused'),
+    });
+  });
+
   it('projects a direct root message reply into the root timeline without waking its model', async () => {
     let releasePrompt: () => void = () => undefined;
     promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
@@ -750,6 +1022,638 @@ describe('AgentTeamCoordinator vertical slice', () => {
     await expect(coordinator.spawn(child.nodeId, { task: 'verify', name: 'tester', permission: 'full-access', tools: ['bash'] }, 'cap-spawn-2', runtime()))
       .rejects.toThrow(/caller already holds/u);
     expect(createdInputs).toHaveLength(1);
+  });
+
+  it('does not call session.prompt when a follow-up signal is already aborted at turn admission', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'initial', name: 'abort-boundary' }, 'abort-boundary-spawn', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.activeTurns).toBe(0));
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled before admission'));
+
+    const follow = await coordinator.followUp(rootId, child.nodeId, 'must not prompt', 'abort-boundary-followup', runtime(), controller.signal);
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === follow.taskId)?.status).toBe('interrupted'));
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(1);
+    expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === follow.taskId)).toMatchObject({ error: 'cancelled before admission' });
+    expect(coordinator.getTeams('root-session')[0]).toMatchObject({ activeTurns: 0, writerNodeId: null });
+    expect(coordinator.inspectNode(rootId, child.nodeId).resources).toMatchObject({ turnActive: false, leaseHeld: false });
+
+    const recovery = await coordinator.followUp(rootId, child.nodeId, 'reusable after cancelled admission', 'abort-boundary-recovery', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === recovery.taskId)?.status).toBe('completed'));
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not prompt when a synchronous started emit interrupts before deferred turn execution', async () => {
+    let coordinator!: AgentTeamCoordinator;
+    let rootId = '';
+    let interruptedDuringAdmission = false;
+    coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }),
+      emit: (_rootSessionId, team) => {
+        const child = team.nodes.find((node) => node.depth === 1 && node.status === 'active');
+        if (!child || interruptedDuringAdmission) return;
+        interruptedDuringAdmission = true;
+        void coordinator.interrupt(rootId, child.id, 'interrupted synchronously during admission');
+      },
+      persist: () => undefined,
+    }, dataRoot);
+    rootId = coordinator.rootNodeId('root-session');
+
+    const child = await coordinator.spawn(rootId, { task: 'must never prompt', name: 'emit-interrupted', permission: 'edit' }, 'emit-interrupted-spawn', runtime());
+    await vi.waitFor(() => expect(coordinator.inspectNode(rootId, child.nodeId).resources.turnActive).toBe(false));
+    const team = coordinator.getTeams('root-session')[0]!;
+    expect(interruptedDuringAdmission).toBe(true);
+    expect(childSessions[0]!.prompt).not.toHaveBeenCalled();
+    expect(team.tasks.find((task) => task.assigneeNodeId === child.nodeId)).toMatchObject({
+      status: 'interrupted',
+      error: 'interrupted synchronously during admission',
+    });
+    expect(team.nodes.find((node) => node.id === child.nodeId)?.status).toBe('interrupted');
+    expect(team).toMatchObject({ activeTurns: 0, writerNodeId: null });
+    expect(coordinator.inspectNode(rootId, child.nodeId).resources).toMatchObject({ turnActive: false, leaseHeld: false });
+  });
+
+  it('advances the live node activity clock for streaming events without per-token persistence or emits', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    let releasePrompt!: () => void;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const emitted: unknown[] = [];
+    const persisted: unknown[] = [];
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }),
+      emit: (_root, team) => emitted.push(team),
+      persist: (_root, event) => persisted.push(event),
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'stream while busy', name: 'busy-clock' }, 'busy-clock-spawn', runtime());
+    await Promise.resolve();
+    const before = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.updatedAt;
+    const emittedBefore = emitted.length;
+    const persistedBefore = persisted.length;
+
+    vi.setSystemTime(1_500);
+    childEventEmitters[0]!({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'still working' } });
+
+    expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.updatedAt).toBeGreaterThan(before);
+    expect(emitted).toHaveLength(emittedBefore);
+    expect(persisted).toHaveLength(persistedBefore);
+    releasePrompt();
+    promptBarrier = null;
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
+  });
+
+  it('publishes cumulative node and team usage at assistant completion before the prompt settles', async () => {
+    let observedUsage!: () => void;
+    const usageObserved = new Promise<void>((resolve) => { observedUsage = resolve; });
+    let releasePrompt!: () => void;
+    const heldAfterMessage = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    promptHook = async () => {
+      const assistant = {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'usage available while prompt is held' }],
+        stopReason: 'stop',
+        usage: { input: 11, output: 4, cacheRead: 2, cacheWrite: 1, totalTokens: 18, cost: { total: 0.125 } },
+      };
+      (childSessions[0]!.messages as unknown[]).push(assistant);
+      childEventEmitters[0]!({ type: 'message_end', message: assistant });
+      observedUsage();
+      await heldAfterMessage;
+    };
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'hold after usage', name: 'live-usage' }, 'live-usage-spawn', runtime());
+    await usageObserved;
+
+    const live = coordinator.getTeams('root-session')[0]!;
+    expect(live.nodes.find((node) => node.id === child.nodeId)).toMatchObject({
+      status: 'active',
+      usage: { input: 11, output: 4, cacheRead: 2, cacheWrite: 1, cost: 0.125, contextTokens: 18, turns: 1 },
+    });
+    expect(live).toMatchObject({
+      activeTurns: 1,
+      usage: { input: 11, output: 4, cacheRead: 2, cacheWrite: 1, cost: 0.125, contextTokens: 18, turns: 1 },
+    });
+    releasePrompt();
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
+  });
+
+  it('settles a provider-aborted result without leaving an active ghost and permits follow-up', async () => {
+    promptResultStopReason = 'aborted';
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'provider abort', name: 'provider-abort', permission: 'edit' }, 'provider-abort-spawn', runtime());
+    await vi.waitFor(() => expect(coordinator.inspectNode(rootId, child.nodeId).resources.turnActive).toBe(false));
+
+    const aborted = coordinator.getTeams('root-session')[0]!;
+    expect(aborted.nodes.find((node) => node.id === child.nodeId)?.status).toBe('interrupted');
+    expect(aborted.tasks.find((task) => task.assigneeNodeId === child.nodeId)?.status).toBe('interrupted');
+    expect(aborted).toMatchObject({ activeTurns: 0, writerNodeId: null });
+    expect(coordinator.inspectNode(rootId, child.nodeId).resources).toMatchObject({ turnActive: false, leaseHeld: false });
+
+    promptResultStopReason = 'stop';
+    const follow = await coordinator.followUp(rootId, child.nodeId, 'recover after provider abort', 'provider-abort-followup', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === follow.taskId)?.status).toBe('completed'));
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(2);
+  });
+
+  it('settles an external turn signal as interrupted even if the provider returns a normal stop', async () => {
+    promptBarrier = new Promise<void>(() => undefined);
+    const controller = new AbortController();
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'signal abort', name: 'signal-abort', permission: 'edit' }, 'signal-abort-spawn', runtime(), controller.signal);
+    await vi.waitFor(() => expect(childSessions[0]!.prompt).toHaveBeenCalledOnce());
+
+    controller.abort(new Error('external Stop signal'));
+    await vi.waitFor(() => expect(coordinator.inspectNode(rootId, child.nodeId).resources.turnActive).toBe(false));
+
+    const stopped = coordinator.getTeams('root-session')[0]!;
+    expect(stopped.nodes.find((node) => node.id === child.nodeId)?.status).toBe('interrupted');
+    expect(stopped.tasks.find((task) => task.assigneeNodeId === child.nodeId)?.status).toBe('interrupted');
+    expect(stopped).toMatchObject({ activeTurns: 0, writerNodeId: null });
+  });
+
+  it('clears turn ownership and the writer lease when session.prompt throws synchronously', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'initial', name: 'sync-throw', permission: 'edit' }, 'sync-throw-spawn', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.activeTurns).toBe(0));
+    vi.mocked(childSessions[0]!.prompt).mockImplementationOnce(() => { throw new Error('synchronous prompt failure'); });
+
+    const failed = await coordinator.followUp(rootId, child.nodeId, 'throw now', 'sync-throw-followup', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === failed.taskId)?.status).toBe('failed'));
+    expect(coordinator.getTeams('root-session')[0]).toMatchObject({ activeTurns: 0, writerNodeId: null });
+    expect(coordinator.inspectNode(rootId, child.nodeId).resources).toMatchObject({ turnActive: false, leaseHeld: false });
+  });
+
+  it('keeps an explicitly interrupted rejecting prompt fenced until it drains, then starts the queued follow-up', async () => {
+    let enterOld!: () => void;
+    const oldEntered = new Promise<void>((resolve) => { enterOld = resolve; });
+    let rejectOld!: (error: Error) => void;
+    const oldGate = new Promise<void>((_resolve, reject) => { rejectOld = reject; });
+    let concurrentPrompts = 0;
+    let maxConcurrentPrompts = 0;
+    promptHook = async (text) => {
+      concurrentPrompts += 1;
+      maxConcurrentPrompts = Math.max(maxConcurrentPrompts, concurrentPrompts);
+      try {
+        if (text === 'old prompt') {
+          enterOld();
+          await oldGate;
+        }
+      } finally {
+        concurrentPrompts -= 1;
+      }
+    };
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'old prompt', name: 'fenced', permission: 'edit' }, 'fenced-spawn', runtime());
+    await oldEntered;
+    vi.mocked(childSessions[0]!.abort).mockImplementation(() => new Promise<void>(() => undefined));
+
+    await expect(coordinator.interrupt(rootId, child.nodeId, 'stop old prompt')).resolves.toMatchObject({ status: 'interrupted' });
+    const follow = await coordinator.followUp(rootId, child.nodeId, 'new prompt', 'fenced-followup', runtime());
+    const draining = coordinator.getTeams('root-session')[0]!;
+    expect(draining.tasks.find((task) => task.summary === 'old prompt')).toMatchObject({ status: 'interrupted', error: 'stop old prompt' });
+    expect(draining.tasks.find((task) => task.id === follow.taskId)?.status).toBe('queued');
+    expect(draining).toMatchObject({ activeTurns: 1, writerNodeId: child.nodeId });
+    expect(coordinator.hasActiveWork('root-session')).toBe(true);
+    expect(coordinator.inspectNode(rootId, child.nodeId).resources).toMatchObject({ turnActive: true, leaseHeld: true });
+    await expect(coordinator.release(rootId, child.nodeId)).rejects.toThrow('while work is active');
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(1);
+
+    rejectOld(new Error('old prompt rejected after abort'));
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === follow.taskId)?.status).toBe('completed'));
+    const settled = coordinator.getTeams('root-session')[0]!;
+    expect(settled.tasks.find((task) => task.summary === 'old prompt')).toMatchObject({ status: 'interrupted', error: 'stop old prompt' });
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(2);
+    expect(maxConcurrentPrompts).toBe(1);
+    expect(settled).toMatchObject({ activeTurns: 0, writerNodeId: null });
+  });
+
+  it('finalizes interrupted-turn usage before starting a successor without clearing its ownership', async () => {
+    let rejectInterrupted!: (error: Error) => void;
+    const interruptedGate = new Promise<void>((_resolve, reject) => { rejectInterrupted = reject; });
+    let interruptedEntered!: () => void;
+    const enteredInterrupted = new Promise<void>((resolve) => { interruptedEntered = resolve; });
+    let finishSuccessor!: () => void;
+    const successorGate = new Promise<void>((resolve) => { finishSuccessor = resolve; });
+    let successorEntered!: () => void;
+    const enteredSuccessor = new Promise<void>((resolve) => { successorEntered = resolve; });
+    promptHook = async (text) => {
+      if (text === 'usage-bearing interrupted prompt') {
+        (childSessions[0]!.messages as unknown[]).push({
+          role: 'assistant',
+          content: [{ type: 'text', text: 'partial accounted result' }],
+          stopReason: 'aborted',
+          usage: { input: 7, output: 3, cacheRead: 2, cacheWrite: 1, totalTokens: 13, cost: { total: 0.25 } },
+        });
+        interruptedEntered();
+        await interruptedGate;
+      } else if (text === 'usage successor') {
+        successorEntered();
+        await successorGate;
+      }
+    };
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'usage-bearing interrupted prompt', name: 'usage-fenced', permission: 'edit' }, 'usage-fenced-spawn', runtime());
+    await enteredInterrupted;
+    vi.mocked(childSessions[0]!.abort).mockImplementation(() => new Promise<void>(() => undefined));
+
+    await coordinator.interrupt(rootId, child.nodeId, 'account this interruption');
+    const successor = await coordinator.followUp(rootId, child.nodeId, 'usage successor', 'usage-successor', runtime());
+    rejectInterrupted(new Error('interrupted prompt drained'));
+    await enteredSuccessor;
+
+    const running = coordinator.getTeams('root-session')[0]!;
+    expect(running.nodes.find((node) => node.id === child.nodeId)).toMatchObject({
+      status: 'active',
+      currentTaskId: successor.taskId,
+      usage: { input: 7, output: 3, cacheRead: 2, cacheWrite: 1, cost: 0.25, contextTokens: 13, turns: 1 },
+    });
+    expect(running).toMatchObject({
+      activeTurns: 1,
+      writerNodeId: child.nodeId,
+      usage: { input: 7, output: 3, cacheRead: 2, cacheWrite: 1, cost: 0.25, contextTokens: 13, turns: 1 },
+    });
+    expect(coordinator.inspectNode(rootId, child.nodeId).resources).toMatchObject({ turnActive: true, leaseHeld: true });
+
+    finishSuccessor();
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === successor.taskId)?.status).toBe('completed'));
+  });
+
+  it('queues a direct root message as executable work while an interrupted prompt drains', async () => {
+    let rejectInterrupted!: (error: Error) => void;
+    const interruptedGate = new Promise<void>((_resolve, reject) => { rejectInterrupted = reject; });
+    let interruptedEntered!: () => void;
+    const enteredInterrupted = new Promise<void>((resolve) => { interruptedEntered = resolve; });
+    promptHook = async (text) => {
+      if (text === 'interrupted before direct message') {
+        interruptedEntered();
+        await interruptedGate;
+      }
+    };
+    const sendRootMessage = vi.fn(async (): Promise<void> => undefined);
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), sendRootMessage,
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'interrupted before direct message', name: 'direct-drain', permission: 'edit' }, 'direct-drain-spawn', runtime());
+    await enteredInterrupted;
+    vi.mocked(childSessions[0]!.abort).mockImplementation(() => new Promise<void>(() => undefined));
+    await coordinator.interrupt(rootId, child.nodeId, 'drain before replying');
+
+    const sent = await coordinator.sendMessage(rootId, child.nodeId, 'answer after drain', 'direct-drain-message', 'steer', runtime(), true);
+    const queued = coordinator.getTeams('root-session')[0]!;
+    const directEnvelope = queued.envelopes.find((envelope) => envelope.id === sent.envelopeId)!;
+    expect(directEnvelope).toMatchObject({ state: 'queued', triggerTurn: true, taskId: expect.any(String) });
+    expect(queued.tasks.find((task) => task.id === directEnvelope.taskId)).toMatchObject({ status: 'queued', directReply: true });
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(1);
+    expect(childSessions[0]!.sendCustomMessage).not.toHaveBeenCalled();
+
+    rejectInterrupted(new Error('interrupted prompt drained'));
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === directEnvelope.taskId)?.status).toBe('completed'));
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(childSessions[0]!.prompt).mock.calls[1]?.[0]).toContain('[Direct message from /root; envelope');
+    expect(childSessions[0]!.sendCustomMessage).not.toHaveBeenCalled();
+    expect(sendRootMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a delayed old final delivery clear a successor turn or its writer lease', async () => {
+    let finishOldDelivery!: () => void;
+    const oldDelivery = new Promise<void>((resolve) => { finishOldDelivery = resolve; });
+    let finishSuccessor!: () => void;
+    const successorPrompt = new Promise<void>((resolve) => { finishSuccessor = resolve; });
+    let promptCount = 0;
+    promptHook = async () => {
+      promptCount += 1;
+      if (promptCount === 2) await successorPrompt;
+    };
+    const sendRootMessage = vi.fn(async (): Promise<void> => undefined);
+    sendRootMessage.mockImplementationOnce(() => oldDelivery);
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), sendRootMessage,
+      emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'old delivery', name: 'delivery-fenced', permission: 'edit' }, 'delivery-spawn', runtime());
+    await vi.waitFor(() => expect(sendRootMessage).toHaveBeenCalledTimes(1));
+
+    await coordinator.interrupt(rootId, child.nodeId, 'stop delayed delivery');
+    const follow = await coordinator.followUp(rootId, child.nodeId, 'successor prompt', 'delivery-followup', runtime());
+    expect(coordinator.getTeams('root-session')[0]).toMatchObject({ activeTurns: 1, writerNodeId: child.nodeId });
+    expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(1);
+    finishOldDelivery();
+
+    await vi.waitFor(() => expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(2));
+    const successorRunning = coordinator.getTeams('root-session')[0]!;
+    expect(successorRunning.tasks.find((task) => task.summary === 'old delivery')).toMatchObject({ status: 'interrupted', error: 'stop delayed delivery' });
+    expect(successorRunning.tasks.find((task) => task.id === follow.taskId)?.status).toBe('running');
+    expect(successorRunning.nodes.find((node) => node.id === child.nodeId)).toMatchObject({ status: 'active', currentTaskId: follow.taskId });
+    expect(successorRunning).toMatchObject({ activeTurns: 1, writerNodeId: child.nodeId });
+    expect(coordinator.inspectNode(rootId, child.nodeId).resources).toMatchObject({ turnActive: true, leaseHeld: true });
+
+    finishSuccessor();
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === follow.taskId)?.status).toBe('completed'));
+  });
+
+  it('preserves a waiting parent task and cached session until child join, then runs its queued follow-up', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    let coordinator!: AgentTeamCoordinator;
+    let parentNodeId = '';
+    let childNodeId = '';
+    let releaseChild!: () => void;
+    const childGate = new Promise<void>((resolve) => { releaseChild = resolve; });
+    let childStarted!: () => void;
+    const enteredChild = new Promise<void>((resolve) => { childStarted = resolve; });
+    let releaseSynthesis!: () => void;
+    const synthesisGate = new Promise<void>((resolve) => { releaseSynthesis = resolve; });
+    let synthesisStarted!: () => void;
+    const enteredSynthesis = new Promise<void>((resolve) => { synthesisStarted = resolve; });
+    let releaseFollowup!: () => void;
+    const followupGate = new Promise<void>((resolve) => { releaseFollowup = resolve; });
+    let followupStarted!: () => void;
+    const enteredFollowup = new Promise<void>((resolve) => { followupStarted = resolve; });
+    let activeParentPrompts = 0;
+    let maximumParentPrompts = 0;
+    const withParentPrompt = async (work: () => Promise<void>) => {
+      activeParentPrompts += 1;
+      maximumParentPrompts = Math.max(maximumParentPrompts, activeParentPrompts);
+      try { await work(); } finally { activeParentPrompts -= 1; }
+    };
+    promptHook = async (text) => {
+      if (text === 'delegate then join') {
+        await withParentPrompt(async () => {
+          const ownerNodeId = createdInputs[0]!.teamIdentity?.nodeId;
+          if (!ownerNodeId) throw new Error('Expected Team identity for waiting parent.');
+          parentNodeId = ownerNodeId;
+          const child = await coordinator.spawn(parentNodeId, { task: 'held hierarchy child', name: 'held-child' }, 'hierarchy-child-spawn', runtime());
+          childNodeId = child.nodeId;
+        });
+      } else if (text === 'held hierarchy child') {
+        childStarted();
+        await childGate;
+      } else if (text.startsWith('Your direct child tasks have settled.')) {
+        await withParentPrompt(async () => {
+          synthesisStarted();
+          await synthesisGate;
+        });
+      } else if (text === 'queued hierarchy follow-up') {
+        await withParentPrompt(async () => {
+          followupStarted();
+          await followupGate;
+        });
+      }
+    };
+    coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const parent = await coordinator.spawn(rootId, { task: 'delegate then join', name: 'waiting-parent' }, 'hierarchy-parent-spawn', runtime());
+    await enteredChild;
+    await vi.waitFor(() => {
+      const team = coordinator.getTeams('root-session')[0]!;
+      expect(team.tasks.find((task) => task.assigneeNodeId === parent.nodeId)?.status).toBe('waiting-for-children');
+    });
+    const waiting = coordinator.getTeams('root-session')[0]!;
+    const originalTask = waiting.tasks.find((task) => task.assigneeNodeId === parent.nodeId)!;
+    expect(waiting.nodes.find((node) => node.id === parent.nodeId)).toMatchObject({ status: 'interrupted', currentTaskId: originalTask.id });
+    expect(coordinator.hasActiveWork('root-session')).toBe(true);
+
+    const followup = await coordinator.followUp(rootId, parent.nodeId, 'queued hierarchy follow-up', 'hierarchy-parent-followup', runtime());
+    const queued = coordinator.getTeams('root-session')[0]!;
+    expect(queued.nodes.find((node) => node.id === parent.nodeId)?.currentTaskId).toBe(originalTask.id);
+    expect(queued.tasks.find((task) => task.id === followup.taskId)?.status).toBe('queued');
+    expect(coordinator.inspectNode(rootId, parent.nodeId).resources.retentionTimerArmed).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1);
+    expect(coordinator.inspectNode(rootId, parent.nodeId).resources).toMatchObject({
+      sessionLoaded: true,
+      listenerAttached: true,
+      retentionTimerArmed: false,
+      turnActive: false,
+      leaseHeld: false,
+    });
+    expect(coordinator.hasActiveWork('root-session')).toBe(true);
+
+    releaseChild();
+    await enteredSynthesis;
+    const joining = coordinator.getTeams('root-session')[0]!;
+    expect(joining.nodes.find((node) => node.id === parent.nodeId)).toMatchObject({ status: 'active', currentTaskId: originalTask.id });
+    expect(joining.tasks.find((task) => task.id === originalTask.id)?.status).toBe('running');
+    expect(joining.tasks.find((task) => task.id === followup.taskId)?.status).toBe('queued');
+    expect(coordinator.inspectNode(rootId, parent.nodeId).resources).toMatchObject({ turnActive: true, leaseHeld: true });
+    expect(maximumParentPrompts).toBe(1);
+
+    releaseSynthesis();
+    await enteredFollowup;
+    const following = coordinator.getTeams('root-session')[0]!;
+    expect(following.tasks.find((task) => task.id === originalTask.id)).toMatchObject({ status: 'completed', resultEnvelopeId: expect.any(String) });
+    expect(following.tasks.find((task) => task.id === followup.taskId)?.status).toBe('running');
+    expect(following.nodes.find((node) => node.id === parent.nodeId)).toMatchObject({ status: 'active', currentTaskId: followup.taskId });
+    expect(following.nodes.find((node) => node.id === childNodeId)?.status).toBe('ready');
+    expect(maximumParentPrompts).toBe(1);
+
+    releaseFollowup();
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === followup.taskId)?.status).toBe('completed'));
+    const settled = coordinator.getTeams('root-session')[0]!;
+    expect(settled.tasks.filter((task) => task.assigneeNodeId === parent.nodeId).map((task) => task.status)).toEqual(['completed', 'completed']);
+    expect(settled).toMatchObject({ activeTurns: 0, writerNodeId: null });
+    expect(maximumParentPrompts).toBe(1);
+  });
+
+  it('terminalizes an explicitly interrupted waiting parent and never admits late synthesis', async () => {
+    let coordinator!: AgentTeamCoordinator;
+    let releaseChild!: () => void;
+    const childGate = new Promise<void>((resolve) => { releaseChild = resolve; });
+    let childStarted!: () => void;
+    const enteredChild = new Promise<void>((resolve) => { childStarted = resolve; });
+    let synthesisPrompts = 0;
+    promptHook = async (text) => {
+      if (text === 'delegate before interruption') {
+        const parentId = createdInputs[0]?.teamIdentity?.nodeId;
+        if (!parentId) throw new Error('Expected parent identity.');
+        await coordinator.spawn(parentId, { task: 'held child before interruption', name: 'held-child' }, 'interrupt-child-spawn', runtime());
+      } else if (text === 'held child before interruption') {
+        childStarted();
+        await childGate;
+      } else if (text.startsWith('Your direct child tasks have settled.')) {
+        synthesisPrompts += 1;
+      }
+    };
+    coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const parent = await coordinator.spawn(rootId, { task: 'delegate before interruption', name: 'waiting-parent' }, 'interrupt-parent-spawn', runtime());
+    await enteredChild;
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.assigneeNodeId === parent.nodeId)?.status).toBe('waiting-for-children'));
+    const queued = await coordinator.followUp(rootId, parent.nodeId, 'must remain queued after interruption', 'interrupt-parent-queued', runtime());
+
+    await coordinator.interrupt(rootId, parent.nodeId, 'explicitly stopped while waiting');
+    expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.assigneeNodeId === parent.nodeId)).toMatchObject({
+      status: 'interrupted', error: 'explicitly stopped while waiting',
+    });
+
+    releaseChild();
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.path.endsWith('/held-child'))?.status).toBe('ready'));
+    await settle();
+    expect(synthesisPrompts).toBe(0);
+    expect(childSessions[0]?.prompt).toHaveBeenCalledTimes(1);
+    expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === queued.taskId)?.status).toBe('queued');
+    expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === parent.nodeId)?.status).toBe('interrupted');
+  });
+
+  it.each(['node', 'team'] as const)('does not admit parent synthesis when a forced %s close aborts a held child', async (scope) => {
+    let coordinator!: AgentTeamCoordinator;
+    let releaseChild!: () => void;
+    const childGate = new Promise<void>((resolve) => { releaseChild = resolve; });
+    let childStarted!: () => void;
+    const enteredChild = new Promise<void>((resolve) => { childStarted = resolve; });
+    let synthesisPrompts = 0;
+    promptHook = async (text) => {
+      if (text === 'delegate before forced close') {
+        const parentId = createdInputs[0]?.teamIdentity?.nodeId;
+        if (!parentId) throw new Error('Expected parent identity.');
+        await coordinator.spawn(parentId, { task: 'held child before forced close', name: 'held-child' }, `forced-${scope}-child`, runtime());
+      } else if (text === 'held child before forced close') {
+        childStarted();
+        await childGate;
+      } else if (text.startsWith('Your direct child tasks have settled.')) {
+        synthesisPrompts += 1;
+      }
+    };
+    coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const parent = await coordinator.spawn(rootId, { task: 'delegate before forced close', name: 'waiting-parent' }, `forced-${scope}-parent`, runtime());
+    await enteredChild;
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.assigneeNodeId === parent.nodeId)?.status).toBe('waiting-for-children'));
+    vi.mocked(childSessions[1]!.abort).mockImplementationOnce(async () => { releaseChild(); });
+
+    if (scope === 'node') await coordinator.close(rootId, parent.nodeId, true);
+    else await coordinator.closeTeam('root-session', coordinator.getTeams('root-session')[0]!.id, true);
+
+    expect(synthesisPrompts).toBe(0);
+    expect(childSessions[0]?.prompt).toHaveBeenCalledTimes(1);
+    expect(childSessions[1]?.abort).toHaveBeenCalledTimes(1);
+    const team = coordinator.getTeams('root-session')[0]!;
+    expect(team.tasks.find((task) => task.assigneeNodeId === parent.nodeId)?.status).toBe('cancelled');
+    expect(team.nodes.find((node) => node.id === parent.nodeId)?.status).toBe('closed');
+    if (scope === 'team') expect(team.status).toBe('closed');
+  });
+
+  it('defers an accepted child join and queued successor while paused, then drains them in order on resume', async () => {
+    let coordinator!: AgentTeamCoordinator;
+    let releaseChild!: () => void;
+    const childGate = new Promise<void>((resolve) => { releaseChild = resolve; });
+    let childStarted!: () => void;
+    const enteredChild = new Promise<void>((resolve) => { childStarted = resolve; });
+    let releaseSynthesis!: () => void;
+    const synthesisGate = new Promise<void>((resolve) => { releaseSynthesis = resolve; });
+    let synthesisStarted!: () => void;
+    const enteredSynthesis = new Promise<void>((resolve) => { synthesisStarted = resolve; });
+    let releaseFollowup!: () => void;
+    const followupGate = new Promise<void>((resolve) => { releaseFollowup = resolve; });
+    let followupStarted!: () => void;
+    const enteredFollowup = new Promise<void>((resolve) => { followupStarted = resolve; });
+    const promptOrder: string[] = [];
+    promptHook = async (text) => {
+      if (text === 'delegate before pause') {
+        promptOrder.push('parent');
+        const parentId = createdInputs[0]?.teamIdentity?.nodeId;
+        if (!parentId) throw new Error('Expected parent identity.');
+        await coordinator.spawn(parentId, { task: 'held child before pause', name: 'held-child' }, 'pause-child-spawn', runtime());
+      } else if (text === 'held child before pause') {
+        promptOrder.push('child');
+        childStarted();
+        await childGate;
+      } else if (text.startsWith('Your direct child tasks have settled.')) {
+        promptOrder.push('synthesis');
+        synthesisStarted();
+        await synthesisGate;
+      } else if (text === 'queued after join') {
+        promptOrder.push('follow-up');
+        followupStarted();
+        await followupGate;
+      }
+    };
+    coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const parent = await coordinator.spawn(rootId, { task: 'delegate before pause', name: 'waiting-parent' }, 'pause-parent-spawn', runtime());
+    await enteredChild;
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.assigneeNodeId === parent.nodeId)?.status).toBe('waiting-for-children'));
+    const followup = await coordinator.followUp(rootId, parent.nodeId, 'queued after join', 'pause-follow-up', runtime());
+    const teamId = coordinator.getTeams('root-session')[0]!.id;
+    coordinator.pauseTeam('root-session', teamId);
+
+    releaseChild();
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.path.endsWith('/held-child'))?.status).toBe('ready'));
+    await settle();
+    const paused = coordinator.getTeams('root-session')[0]!;
+    expect(paused.status).toBe('paused');
+    expect(paused.tasks.find((task) => task.assigneeNodeId === parent.nodeId && task.id !== followup.taskId)?.status).toBe('waiting-for-children');
+    expect(paused.tasks.find((task) => task.id === followup.taskId)?.status).toBe('queued');
+    expect(promptOrder).toEqual(['parent', 'child']);
+
+    coordinator.resumeTeam('root-session', teamId);
+    await enteredSynthesis;
+    expect(promptOrder).toEqual(['parent', 'child', 'synthesis']);
+    releaseSynthesis();
+    await enteredFollowup;
+    expect(promptOrder).toEqual(['parent', 'child', 'synthesis', 'follow-up']);
+    releaseFollowup();
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks.find((task) => task.id === followup.taskId)?.status).toBe('completed'));
   });
 
   it('waits for the terminal task result instead of an intermediate child change', async () => {
@@ -1014,6 +1918,28 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(restored.selectedTeamId('root-session')).toBe(second.id);
   });
 
+  it('preserves more than the live child cap in released historical topology', async () => {
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    for (let index = 0; index < AGENT_TEAM_MAX_NODES + 1; index += 1) {
+      const child = await coordinator.spawn(rootId, { task: `sequential task ${index}`, name: `historical-${index}` }, `historical-spawn-${index}`, runtime());
+      await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === child.nodeId)?.status).toBe('ready'));
+      await coordinator.release(rootId, child.nodeId);
+      const liveChildren = coordinator.getTeams('root-session')[0]!.nodes.filter((node) => node.depth > 0 && node.status !== 'released');
+      expect(liveChildren).toHaveLength(0);
+    }
+
+    const team = coordinator.getTeams('root-session')[0]!;
+    const root = team.nodes.find((node) => node.id === rootId)!;
+    expect(root.childIds).toHaveLength(AGENT_TEAM_MAX_NODES + 1);
+    expect(team.nodes.filter((node) => node.depth > 0)).toHaveLength(AGENT_TEAM_MAX_NODES + 1);
+    expect(() => agentTeamSchema.parse(team)).not.toThrow();
+  });
+
   it('releases ready and active nodes idempotently and makes team capacity reusable', async () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
@@ -1038,6 +1964,113 @@ describe('AgentTeamCoordinator vertical slice', () => {
     releasePrompt();
     promptBarrier = null;
     await settle();
+  });
+
+  it('retains a failed-to-stop writer lease while cancelRoot still attempts every sibling', async () => {
+    let rejectNextPersistence = false;
+    let releasePrompt!: () => void;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: (_rootSessionId: string, event: AgentTeamLedgerEvent) => {
+        if (!rejectNextPersistence || event.type !== 'node.closed') return;
+        rejectNextPersistence = false;
+        throw new Error('first sibling persistence failure');
+      },
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const writer = await coordinator.spawn(rootId, { task: 'held first sibling', name: 'first', permission: 'edit' }, 'shutdown-first', runtime());
+    await coordinator.spawn(rootId, { task: 'held second sibling', name: 'second', permission: 'read-only' }, 'shutdown-second', runtime());
+    const closingTeamId = coordinator.getTeams('root-session')[0]!.id;
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.activeTurns).toBe(2));
+    vi.mocked(childSessions[0]!.abort).mockRejectedValueOnce(new Error('first sibling abort failure'));
+    vi.mocked(childSessions[0]!.dispose).mockImplementationOnce(() => { throw new Error('first sibling dispose failure'); });
+    rejectNextPersistence = true;
+
+    await expect(coordinator.cancelRoot('root-session')).rejects.toBeInstanceOf(AggregateError);
+    expect(childSessions).toHaveLength(2);
+    for (const session of childSessions) {
+      expect(session.abort).toHaveBeenCalledTimes(1);
+      expect(session.dispose).toHaveBeenCalledTimes(1);
+    }
+    expect(coordinator.getTeams('root-session')[0]).toMatchObject({
+      status: 'closing', activeTurns: 1, writerNodeId: writer.nodeId,
+      nodes: expect.arrayContaining([
+        expect.objectContaining({ path: '/root/first', status: 'closing' }),
+        expect.objectContaining({ path: '/root/second', status: 'closed' }),
+      ]),
+    });
+    expect(coordinator.inspectNode(rootId, writer.nodeId).resources).toMatchObject({ turnActive: true, leaseHeld: true });
+    expect(coordinator.hasActiveWork('root-session')).toBe(true);
+    coordinator.releaseRoot('root-session');
+    expect(coordinator.getTeams('root-session')).toHaveLength(1);
+
+    const replacementTeam = coordinator.createTeam('root-session', 'Replacement writer team');
+    coordinator.selectTeam('root-session', replacementTeam.id);
+    const replacementRoot = coordinator.rootNodeId('root-session');
+    await expect(coordinator.spawn(replacementRoot, { task: 'must wait for old writer', permission: 'edit' }, 'blocked-replacement-writer', runtime()))
+      .rejects.toThrow(/Project writer lease is held/u);
+
+    releasePrompt();
+    promptBarrier = null;
+    await vi.waitFor(() => expect(coordinator.inspectNode(rootId, writer.nodeId).resources).toMatchObject({ turnActive: false, leaseHeld: false }));
+    expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === writer.nodeId)?.status).toBe('closing');
+    await coordinator.closeTeam('root-session', closingTeamId, true);
+    expect(coordinator.getTeams('root-session').find((team) => team.id === closingTeamId)?.status).toBe('closed');
+
+    const replacement = await coordinator.spawn(replacementRoot, { task: 'writer after confirmed settlement', permission: 'edit' }, 'replacement-writer', runtime());
+    expect(replacement.status).toBe('active');
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session').find((team) => team.id === replacementTeam.id)?.activeTurns).toBe(0));
+  });
+
+  it('keeps a failed-to-stop writer tracked when cancelAll rejects after attempting every team', async () => {
+    let rejectNextPersistence = false;
+    let releasePrompt!: () => void;
+    promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'full-access' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
+      persist: (_rootSessionId: string, event: AgentTeamLedgerEvent) => {
+        if (!rejectNextPersistence || event.type !== 'node.closed') return;
+        rejectNextPersistence = false;
+        throw new Error('first team persistence failure');
+      },
+    }, dataRoot);
+    const firstRoot = coordinator.rootNodeId('root-session');
+    const writer = await coordinator.spawn(firstRoot, { task: 'held first team', name: 'first-team-worker', permission: 'edit' }, 'cancel-all-first', runtime());
+    const firstTeamId = coordinator.getTeams('root-session')[0]!.id;
+    const secondTeam = coordinator.createTeam('root-session', 'Second shutdown team');
+    coordinator.selectTeam('root-session', secondTeam.id);
+    await coordinator.spawn(coordinator.rootNodeId('root-session'), { task: 'held second team', name: 'second-team-worker', permission: 'read-only' }, 'cancel-all-second', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session').reduce((sum, team) => sum + team.activeTurns, 0)).toBe(2));
+    vi.mocked(childSessions[0]!.abort).mockRejectedValueOnce(new Error('first team abort failure'));
+    vi.mocked(childSessions[0]!.dispose).mockImplementationOnce(() => { throw new Error('first team dispose failure'); });
+    rejectNextPersistence = true;
+
+    await expect(coordinator.cancelAll()).rejects.toBeInstanceOf(AggregateError);
+    expect(childSessions).toHaveLength(2);
+    for (const session of childSessions) {
+      expect(session.abort).toHaveBeenCalledTimes(1);
+      expect(session.dispose).toHaveBeenCalledTimes(1);
+    }
+    const cancelledTeams = coordinator.getTeams('root-session');
+    expect(cancelledTeams.find((team) => team.id === firstTeamId)).toMatchObject({ status: 'closing', activeTurns: 1, writerNodeId: writer.nodeId });
+    expect(cancelledTeams.find((team) => team.id === secondTeam.id)?.status).toBe('closed');
+
+    const replacementTeam = coordinator.createTeam('root-session', 'Post-cancel replacement');
+    coordinator.selectTeam('root-session', replacementTeam.id);
+    const replacementRoot = coordinator.rootNodeId('root-session');
+    await expect(coordinator.spawn(replacementRoot, { task: 'blocked until old prompt settles', permission: 'edit' }, 'cancel-all-blocked-writer', runtime()))
+      .rejects.toThrow(/Project writer lease is held/u);
+
+    releasePrompt();
+    promptBarrier = null;
+    await vi.waitFor(() => expect(coordinator.inspectNode(firstRoot, writer.nodeId).resources).toMatchObject({ turnActive: false, leaseHeld: false }));
+    await coordinator.closeTeam('root-session', firstTeamId, true);
+    const replacement = await coordinator.spawn(replacementRoot, { task: 'writer after cancelAll cleanup', permission: 'edit' }, 'cancel-all-replacement-writer', runtime());
+    expect(replacement.status).toBe('active');
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session').find((team) => team.id === replacementTeam.id)?.activeTurns).toBe(0));
   });
 
   it('refuses unsafe team close, force-closes work, and permits a new team', async () => {

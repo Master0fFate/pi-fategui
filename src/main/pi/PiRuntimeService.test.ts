@@ -28,8 +28,14 @@ import type { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
 import { LearningService } from '../learning/LearningService';
 import { LearningRepository } from '../learning/LearningRepository';
 import { emptyActivation } from '../../shared/contracts/learning';
+import { InMemoryGoalMaxRepository } from './goalmaxxing/GoalMaxRepository';
 
-const model = { provider: 'test', id: 'model', name: 'Test Model', reasoning: true, contextWindow: 1000, input: ['text', 'image'] as const };
+const model: Pick<NonNullable<AgentSessionRuntime['session']['model']>, 'provider' | 'id' | 'name' | 'reasoning' | 'contextWindow' | 'input' | 'thinkingLevelMap'> = {
+  provider: 'test', id: 'model', name: 'Test Model', reasoning: true, contextWindow: 1000, input: ['text', 'image'],
+};
+
+const AGENT_ORCHESTRATION_TOOL_NAMES = ['spawn_agent', 'agent_workspace', 'get_agent_workspace_policy', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'agent_workflow', 'subagent_catalog'] as const;
+const LEGACY_LAUNCH_TOOL_NAMES = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow'] as const;
 
 function fixture(availableModels: typeof model[] = [model]) {
   let settleRun: (() => void) | undefined;
@@ -209,6 +215,51 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it('uses low for basic improve when the model cannot disable reasoning, not minimal', async () => {
+    const fake = fixture();
+    const completeSimple = vi.fn(async () => ({ stopReason: 'stop', content: [{ type: 'text', text: 'A clearer task with the original constraints.' }] }));
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.session.thinkingLevel = 'high';
+    fake.session.model = {
+      ...model,
+      thinkingLevelMap: { off: null, minimal: 'minimal', low: 'low', medium: 'medium', high: 'high' },
+    };
+
+    await service.optimizePrompt('clarify this task');
+
+    expect(completeSimple).toHaveBeenCalledWith(
+      fake.session.model,
+      expect.anything(),
+      expect.objectContaining({ reasoning: 'low' }),
+    );
+    expect(fake.session.thinkingLevel).toBe('high');
+    expect(fake.session.setThinkingLevel).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  it('omits reasoning for basic improve when neither off nor low is supported', async () => {
+    const fake = fixture();
+    const completeSimple = vi.fn(async () => ({ stopReason: 'stop', content: [{ type: 'text', text: 'A clearer task with the original constraints.' }] }));
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.session.model = {
+      ...model,
+      thinkingLevelMap: { off: null, minimal: null, low: null, medium: 'medium', high: 'high' },
+    };
+
+    await service.optimizePrompt('clarify this task');
+
+    expect(completeSimple).toHaveBeenCalledWith(
+      fake.session.model,
+      expect.anything(),
+      expect.not.objectContaining({ reasoning: expect.anything() }),
+    );
+    await service.dispose();
+  });
+
   it('cancels a stalled prompt rewrite immediately without aborting the coding session', async () => {
     const fake = fixture();
     let finishFirst!: (value: unknown) => void;
@@ -229,6 +280,41 @@ describe('PiRuntimeService', () => {
     await expect(service.optimizePrompt('new draft')).resolves.toEqual({ text: 'New improved draft.' });
     finishFirst({ stopReason: 'stop', content: [{ type: 'text', text: 'Stale draft.' }] });
     expect(fake.session.messages).toEqual([]);
+    await service.dispose();
+  });
+
+  it('cancels in-flight prompt improvement when the user sends a message', async () => {
+    const fake = fixture();
+    const completeSimple = vi.fn().mockImplementationOnce(() => new Promise(() => undefined));
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const pending = service.optimizePrompt('old draft');
+    await vi.waitFor(() => expect(completeSimple).toHaveBeenCalledOnce());
+    const acceptance = await service.prompt({ text: 'old draft', behavior: 'prompt' });
+    expect(acceptance).toMatchObject({ accepted: true });
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(completeSimple.mock.calls[0]?.[2].signal.aborted).toBe(true);
+    expect(fake.session.prompt).toHaveBeenCalled();
+    expect(fake.session.abort).not.toHaveBeenCalled();
+    fake.settle();
+    await service.dispose();
+  });
+
+  it('does not let a cancelled prompt rewrite swallow the next session abort', async () => {
+    const fake = fixture();
+    const completeSimple = vi.fn().mockImplementationOnce(() => new Promise(() => undefined));
+    Object.assign(fake.modelRuntime, { completeSimple });
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const pending = service.optimizePrompt('old draft');
+    await vi.waitFor(() => expect(completeSimple).toHaveBeenCalledOnce());
+    await expect(service.abort()).resolves.toEqual({ aborted: true });
+    expect(fake.session.abort).not.toHaveBeenCalled();
+    fake.setStreaming(true);
+    await expect(service.abort()).resolves.toEqual({ aborted: true });
+    expect(fake.session.abort).toHaveBeenCalledOnce();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     await service.dispose();
   });
 
@@ -730,25 +816,101 @@ describe('PiRuntimeService', () => {
     }
   });
 
-  it('activates one orchestration protocol surface while registering both for restored sessions', async () => {
-    const allNames = ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'spawn_agent', 'agent_workspace', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'inspect_agent', 'close_agent', 'release_agent', 'list_agents', 'create_team', 'list_teams', 'inspect_team', 'get_agent_workspace_policy', 'select_team', 'pause_team', 'resume_team', 'close_team', 'reset_team', 'message_session', 'goalmax_status', 'goalmax_report', 'goalmax_complete', ...TASK_TOOL_NAMES];
-    const legacy = fixture();
-    const legacyService = new PiRuntimeService(legacy.adapter);
-    await legacyService.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'medium', defaultModel: null, agentTeamMode: 'legacy' });
-    const legacyTools = (legacy.adapter.createRuntime as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as ToolDefinition[];
-    expect(legacyTools.map((tool) => tool.name)).toEqual(allNames);
-    expect(legacy.session.getActiveToolNames()).toEqual(expect.arrayContaining(['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog']));
-    expect(legacy.session.getActiveToolNames()).not.toContain('spawn_agent');
-    await legacyService.dispose();
+  it.each([
+    { label: 'default settings', mode: undefined, legacyHistory: false },
+    { label: 'legacy settings', mode: 'legacy' as const, legacyHistory: false },
+    { label: 'v2 settings', mode: 'v2' as const, legacyHistory: false },
+    { label: 'saved legacy history', mode: 'legacy' as const, legacyHistory: true },
+  ])('always registers and activates only the canonical orchestration family for $label', async ({ mode, legacyHistory }) => {
+    const fake = fixture();
+    if (legacyHistory) {
+      fake.session.sessionManager.getBranch.mockReturnValue([{
+        type: 'message',
+        message: { role: 'assistant', timestamp: 1, content: [{ type: 'toolCall', id: 'legacy-call', name: 'subagent_start', arguments: { task: 'Archived child' } }] },
+      }]);
+    }
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject(
+      { path: '/project', name: 'project', trusted: true },
+      { thinkingLevel: 'medium', defaultModel: null, ...(mode ? { agentTeamMode: mode } : {}) },
+    );
+    const registered = ((fake.adapter.createRuntime as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as ToolDefinition[]).map((tool) => tool.name);
+    expect(registered).toEqual(expect.arrayContaining([...AGENT_ORCHESTRATION_TOOL_NAMES]));
+    expect(fake.session.getActiveToolNames()).toEqual(expect.arrayContaining([...AGENT_ORCHESTRATION_TOOL_NAMES]));
+    for (const forbidden of LEGACY_LAUNCH_TOOL_NAMES) {
+      expect(registered, `${forbidden} must not be registered`).not.toContain(forbidden);
+      expect(fake.session.getActiveToolNames(), `${forbidden} must not be active`).not.toContain(forbidden);
+    }
+    if (legacyHistory) {
+      const archived = (service.getState(false).subagents ?? [])[0]!;
+      expect(archived).toMatchObject({ task: 'Archived child', status: 'interrupted' });
+      await expect(service.controlSubagent({ action: 'rename', target: archived.id, displayName: 'Archived analyst' })).resolves.toMatchObject({
+        subagents: [expect.objectContaining({ displayName: 'Archived analyst' })],
+      });
+      await expect(service.controlSubagent({ action: 'followUp', target: archived.id, message: 'Wake the old executor' })).rejects.toThrow(/no live session context[\s\S]*cannot be reactivated/u);
+      await expect(service.controlSubagent({ action: 'cancel', target: 'all', reason: 'Cancel history' })).rejects.toThrow(/no live session contexts[\s\S]*cannot be reactivated/u);
+    }
+    await service.dispose();
+  });
 
-    const v2 = fixture();
-    const v2Service = new PiRuntimeService(v2.adapter);
-    await v2Service.openProject({ path: '/project', name: 'project', trusted: true }, { thinkingLevel: 'max', defaultModel: null, agentTeamMode: 'v2' });
-    const v2Tools = (v2.adapter.createRuntime as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as ToolDefinition[];
-    expect(v2Tools.map((tool) => tool.name)).toEqual(allNames);
-    expect(v2.session.getActiveToolNames()).toEqual(expect.arrayContaining(['spawn_agent', 'agent_workspace', 'get_agent_workspace_policy', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents', 'subagent_catalog']));
-    expect(v2.session.getActiveToolNames()).not.toContain('subagent_start');
-    await v2Service.dispose();
+  it('restores persisted legacy run IDs as history without creating live execution contexts', async () => {
+    const fake = fixture();
+    const fixedRunId = 'fixed-history-run-7';
+    fake.session.sessionManager.getBranch.mockReturnValue([{
+      type: 'custom', id: 'history-snapshot', parentId: null, timestamp: '2025-01-01T00:00:00.000Z',
+      customType: 'fate-subagent-run',
+      data: {
+        kind: 'fate-subagent-snapshot', version: 2,
+        run: {
+          id: fixedRunId,
+          parentSessionId: 'session-1',
+          parentToolCallId: 'historical-launch',
+          task: 'Persist this exact historical child identity',
+          role: 'archivist',
+          handle: 'fixed-history',
+          agentName: 'direct',
+          agentSource: 'direct',
+          permissionLevel: 'read-only',
+          enabledTools: ['read'],
+          skills: [],
+          skillMode: 'all',
+          preloadedSkills: [],
+          status: 'running',
+          model: { provider: 'test', id: 'model', name: 'Test Model', reasoning: true, contextWindow: 1_000 },
+          routingModels: [{ provider: 'test', id: 'model', name: 'Test Model', reasoning: true, contextWindow: 1_000 }],
+          thinkingLevel: 'medium',
+          executionMode: 'managed',
+          controlCount: 0,
+          attempt: 1,
+          maxAttempts: 1,
+          mailbox: { state: 'available', ttlMs: 60_000, expiresAt: 60_001, followUpCount: 0 },
+          notification: 'never',
+          dependsOn: [],
+          createdAt: 1,
+          updatedAt: 2,
+          startedAt: 1,
+          messages: [],
+          tools: [],
+          omittedActivity: 0,
+          transcriptTruncated: false,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+        },
+      },
+    }]);
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+
+    expect(service.getState(false).subagents).toContainEqual(expect.objectContaining({
+      id: fixedRunId,
+      handle: 'fixed-history',
+      status: 'interrupted',
+      mailbox: expect.objectContaining({ state: 'expired' }),
+    }));
+    await expect(service.controlSubagent({ action: 'followUp', target: fixedRunId, message: 'Do not reactivate history' })).rejects.toThrow(/no live session context[\s\S]*cannot be reactivated/u);
+    await expect(service.controlSubagent({ action: 'close', target: fixedRunId })).rejects.toThrow(/no live session context[\s\S]*cannot be reactivated/u);
+    await expect(service.controlSubagent({ action: 'cancel', target: fixedRunId, reason: 'History only' })).rejects.toThrow(/no live session context[\s\S]*cannot be reactivated/u);
+    expect(fake.session.prompt).not.toHaveBeenCalled();
+    await service.dispose();
   });
 
   it('loads enabled global extensions but excludes executable project extensions', () => {
@@ -2014,19 +2176,19 @@ describe('PiRuntimeService', () => {
     const initial = await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     expect(initial.permissionLevel).toBe('full-access');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, ...AGENT_ORCHESTRATION_TOOL_NAMES]);
 
     const readOnly = await service.setPermissionLevel('read-only');
     expect(readOnly.permissionLevel).toBe('read-only');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, ...AGENT_ORCHESTRATION_TOOL_NAMES]);
 
     const fullAccess = await service.setPermissionLevel('full-access');
     expect(fullAccess.permissionLevel).toBe('full-access');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'write', 'edit', 'bash']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, ...AGENT_ORCHESTRATION_TOOL_NAMES, 'write', 'edit', 'bash']);
 
     const editable = await service.setPermissionLevel('edit');
     expect(editable.permissionLevel).toBe('edit');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'subagent_catalog', 'write', 'edit']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, ...AGENT_ORCHESTRATION_TOOL_NAMES, 'write', 'edit']);
     await service.dispose();
   });
 
@@ -2042,9 +2204,8 @@ describe('PiRuntimeService', () => {
     expect(fake.adapter.createRuntime).toHaveBeenCalledWith(
       '/project', fake.modelRuntime, true,
       expect.arrayContaining([
-        expect.objectContaining({ name: 'subagent' }),
-        expect.objectContaining({ name: 'subagent_start' }),
-        expect.objectContaining({ name: 'subagent_manage' }),
+        expect.objectContaining({ name: 'spawn_agent' }),
+        expect.objectContaining({ name: 'agent_workflow' }),
         expect.objectContaining({ name: 'subagent_catalog' }),
       ]),
       expect.any(Function),
@@ -2123,7 +2284,8 @@ describe('PiRuntimeService', () => {
     expect(fake.session.getActiveToolNames().some((name) => name.startsWith('goalmax_'))).toBe(false);
 
     await service.createGoalMax({ objective: 'Report progress through the control plane', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
-    expect(fake.session.getActiveToolNames()).toEqual(expect.arrayContaining(['goalmax_status', 'goalmax_report', 'goalmax_complete']));
+    expect(fake.session.getActiveToolNames()).toEqual(expect.arrayContaining(['goalmax_status', 'goalmax_report', 'goalmax_complete', ...AGENT_ORCHESTRATION_TOOL_NAMES]));
+    expect(fake.session.getActiveToolNames()).toEqual(expect.not.arrayContaining([...LEGACY_LAUNCH_TOOL_NAMES]));
     fake.settle();
 
     await service.controlGoalMax({ action: 'cancel' });
@@ -2132,18 +2294,19 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
-  it('enforces root-only agent policy and restores the session orchestration surface after clear', async () => {
+  it('enforces root-only agent policy and restores the canonical session orchestration surface after clear', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
-    expect(fake.session.getActiveToolNames()).toContain('subagent_start');
+    expect(fake.session.getActiveToolNames()).toContain('spawn_agent');
 
     await service.createGoalMax({ objective: 'Complete this without delegation', verificationLevel: 'normal', agentStrategy: 'off', tokenLimit: null, timeLimitMs: null });
-    expect(fake.session.getActiveToolNames().some((name) => ['subagent', 'subagent_start', 'subagent_manage', 'subagent_workflow', 'spawn_agent'].includes(name))).toBe(false);
+    expect(fake.session.getActiveToolNames().some((name) => [...LEGACY_LAUNCH_TOOL_NAMES, ...AGENT_ORCHESTRATION_TOOL_NAMES].includes(name as never))).toBe(false);
 
     await service.controlGoalMax({ action: 'cancel' });
     await service.clearGoalMax();
-    expect(fake.session.getActiveToolNames()).toContain('subagent_start');
+    expect(fake.session.getActiveToolNames()).toEqual(expect.arrayContaining([...AGENT_ORCHESTRATION_TOOL_NAMES]));
+    expect(fake.session.getActiveToolNames()).toEqual(expect.not.arrayContaining([...LEGACY_LAUNCH_TOOL_NAMES]));
     await service.dispose();
   });
 
@@ -2319,6 +2482,148 @@ describe('PiRuntimeService', () => {
     active.mockRestore();
     cancel.mockRestore();
     await service.dispose();
+  });
+
+  it('treats active workflows as owned work and aggregates cancellation failures after attempting every backend', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const internals = service as unknown as {
+      agentWorkflows: { hasActive: (sessionId: string) => boolean; cancelParent: (sessionId: string) => Promise<void> };
+      subagents: { cancelParent: (sessionId: string) => Promise<void> };
+      agentTeams: { cancelRoot: (sessionId: string) => Promise<void> };
+    };
+    const active = vi.spyOn(internals.agentWorkflows, 'hasActive').mockReturnValue(true);
+    const workflowCancel = vi.spyOn(internals.agentWorkflows, 'cancelParent').mockRejectedValue(new Error('workflow cancel failed'));
+    const legacyCancel = vi.spyOn(internals.subagents, 'cancelParent').mockResolvedValue();
+    const teamCancel = vi.spyOn(internals.agentTeams, 'cancelRoot').mockResolvedValue();
+
+    await expect(service.compact()).rejects.toThrow(/child sessions or Agent Team nodes are live/u);
+    await expect(service.abort()).rejects.toMatchObject({ errors: [expect.objectContaining({ message: 'workflow cancel failed' })] });
+    expect(workflowCancel).toHaveBeenCalledWith('session-1');
+    expect(legacyCancel).toHaveBeenCalledWith('session-1');
+    expect(teamCancel).toHaveBeenCalledWith('session-1');
+
+    active.mockRestore();
+    workflowCancel.mockRestore();
+    legacyCancel.mockRestore();
+    teamCancel.mockRestore();
+    await service.dispose();
+  });
+
+  it('publishes workflow ownership to GoalMax before a Team child exists', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const internals = service as unknown as {
+      agentWorkflows: { hasActive: (sessionId: string) => boolean };
+      goalRuntimeSnapshot: (sessionId: string) => { activeChildren: number; activeWorkflows?: number } | null;
+    };
+    vi.spyOn(internals.agentWorkflows, 'hasActive').mockReturnValue(true);
+
+    expect(internals.goalRuntimeSnapshot('session-1')).toMatchObject({ activeChildren: 0, activeWorkflows: 1 });
+    await service.dispose();
+  });
+
+  it('projects Team join ownership and accepted queued work as active GoalMax children', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const internals = service as unknown as {
+      agentTeams: { getTeams: (sessionId: string) => unknown[] };
+      goalRuntimeSnapshot: (sessionId: string) => { activeChildren: number; children: Array<{ nodeId: string; objective: string; status: string; result: string | null; error: string | null }> } | null;
+    };
+    vi.spyOn(internals.agentTeams, 'getTeams').mockReturnValue([{
+      id: 'team-goal',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+      nodes: [
+        {
+          id: 'root', depth: 0,
+        },
+        {
+          id: 'waiting-node', depth: 1, currentTaskId: 'waiting-task', displayName: 'Waiting parent', role: 'worker', status: 'interrupted',
+          permissionLevel: 'read-only', model, thinkingLevel: 'medium', lastError: 'Waiting for children',
+        },
+        {
+          id: 'queued-node', depth: 1, currentTaskId: 'completed-task', displayName: 'Queued parent', role: 'worker', status: 'ready',
+          permissionLevel: 'read-only', model, thinkingLevel: 'medium',
+        },
+      ],
+      tasks: [
+        { id: 'waiting-task', assigneeNodeId: 'waiting-node', summary: 'Synthesize child result', status: 'waiting-for-children', createdAt: 1, startedAt: 2 },
+        { id: 'waiting-followup', assigneeNodeId: 'waiting-node', summary: 'Later waiting follow-up', status: 'queued', createdAt: 3 },
+        { id: 'completed-task', assigneeNodeId: 'queued-node', summary: 'Completed old work', status: 'completed', createdAt: 1, startedAt: 1, endedAt: 2, resultEnvelopeId: 'old-result' },
+        { id: 'accepted-task', assigneeNodeId: 'queued-node', summary: 'Accepted queued work', status: 'queued', createdAt: 4 },
+      ],
+      envelopes: [{ id: 'old-result', content: 'old completed result' }],
+      timeline: [],
+    }] as never);
+
+    const snapshot = internals.goalRuntimeSnapshot('session-1')!;
+    expect(snapshot.activeChildren).toBe(2);
+    expect(snapshot.children).toEqual(expect.arrayContaining([
+      expect.objectContaining({ nodeId: 'waiting-node', objective: 'Synthesize child result', status: 'running', error: null }),
+      expect.objectContaining({ nodeId: 'queued-node', objective: 'Accepted queued work', status: 'pending', result: null, error: null }),
+    ]));
+    await service.dispose();
+  });
+
+  it('keeps Stop fail-closed after pause persistence fails while still attempting every cancellation backend', async () => {
+    const fake = fixture();
+    const goalPersistence = new InMemoryGoalMaxRepository();
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, undefined, undefined, goalPersistence);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.createGoalMax({ objective: 'Stop every execution owner safely', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    const internals = service as unknown as {
+      agentWorkflows: { cancelParent: (sessionId: string) => Promise<void> };
+      subagents: { cancelParent: (sessionId: string) => Promise<void> };
+      agentTeams: { cancelRoot: (sessionId: string) => Promise<void> };
+      queuePersistence: { save: (projectPath: string, sessionId: string, messages: unknown[]) => Promise<void> };
+    };
+    let releasePause!: () => void;
+    const pauseBarrier = new Promise<void>((resolve) => { releasePause = resolve; });
+    const durableSave = goalPersistence.save.bind(goalPersistence);
+    vi.spyOn(goalPersistence, 'save').mockImplementation(async (state, expectedRevision) => {
+      if (state.status === 'paused') {
+        await pauseBarrier;
+        throw new Error('goal pause persistence failed');
+      }
+      await durableSave(state, expectedRevision);
+    });
+    const workflowCancel = vi.spyOn(internals.agentWorkflows, 'cancelParent').mockRejectedValue(new Error('workflow cancellation failed'));
+    const legacyCancel = vi.spyOn(internals.subagents, 'cancelParent').mockResolvedValue();
+    const teamCancel = vi.spyOn(internals.agentTeams, 'cancelRoot').mockResolvedValue();
+    const queueSave = vi.spyOn(internals.queuePersistence, 'save');
+
+    const stopping = service.abort();
+    await vi.waitFor(() => expect(workflowCancel).toHaveBeenCalledWith('session-1'));
+    expect(fake.session.abort).toHaveBeenCalledOnce();
+    expect(legacyCancel).toHaveBeenCalledWith('session-1');
+    expect(teamCancel).toHaveBeenCalledWith('session-1');
+    expect(queueSave).toHaveBeenCalledWith('/project', 'session-1', []);
+    releasePause();
+
+    await expect(stopping).rejects.toMatchObject({
+      errors: expect.arrayContaining([
+        expect.objectContaining({ message: 'goal pause persistence failed' }),
+        expect.objectContaining({ message: 'workflow cancellation failed' }),
+      ]),
+    });
+
+    fake.session.sendCustomMessage.mockClear();
+    fake.emitSession({ type: 'agent_settled' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await service.getGoalMax()).toMatchObject({ status: 'blocked', failure: { code: 'GOALMAX_CONTROL_PERSISTENCE_FAILED' } });
+    expect(fake.session.sendCustomMessage).not.toHaveBeenCalled();
+
+    workflowCancel.mockResolvedValue();
+    await service.controlGoalMax({ action: 'resume' });
+    await vi.waitFor(() => expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ customType: 'fate-goalmax-continuation' }),
+      { triggerTurn: true },
+    ));
+    expect(await service.getGoalMax()).toMatchObject({ status: 'active', executionState: 'running-root' });
+    await service.dispose().catch(() => undefined);
   });
 
   it('starts an idle parent turn for opt-in child completion notifications without cluttering the chat', async () => {
@@ -2914,6 +3219,32 @@ describe('PiRuntimeService', () => {
     ]));
 
     active.mockRestore();
+    await service.dispose();
+  });
+
+  it('preserves the owning parent slot when a workflow is pending before its first Team child', async () => {
+    const first = fixture();
+    const second = fixture();
+    first.session.messages = [{ role: 'user', content: 'Run a pending workflow', timestamp: 1 }];
+    first.agent.state.messages = first.session.messages;
+    second.session.sessionId = 'session-2';
+    const createRuntime = vi.fn()
+      .mockResolvedValueOnce(first.runtime as unknown as AgentSessionRuntime)
+      .mockResolvedValueOnce(second.runtime as unknown as AgentSessionRuntime);
+    const service = new PiRuntimeService({ ...first.adapter, createRuntime });
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const workflows = (service as unknown as { agentWorkflows: { hasActive: (sessionId: string) => boolean } }).agentWorkflows;
+    vi.spyOn(workflows, 'hasActive').mockImplementation((sessionId) => sessionId === 'session-1');
+
+    await expect(service.compact()).rejects.toThrow(/child sessions or Agent Team nodes are live/u);
+    const state = await service.newSession();
+
+    expect(state).toMatchObject({ sessionId: 'session-2', runningSessionCount: 1 });
+    expect(first.runtime.newSession).not.toHaveBeenCalled();
+    expect(first.runtime.dispose).not.toHaveBeenCalled();
+    expect(state.sessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'session-1', attention: 'running', active: false }),
+    ]));
     await service.dispose();
   });
 

@@ -15,9 +15,10 @@ import { AssistantMarkdown, coalesceSubagentWaitPolls, ConversationTimeline, fol
 import { ConversationImageViewerProvider, isSafeMermaidSource } from './RichMessageContent';
 import { ToolCard } from './ToolCard';
 
+const mermaidInitialize = vi.hoisted(() => vi.fn());
 vi.mock('mermaid', () => ({
   default: {
-    initialize: () => undefined,
+    initialize: mermaidInitialize,
     render: async (id: string) => ({ svg: `<svg data-diagram-id="${id}" viewBox="0 0 100 50"><script>bad()</script><text onclick="bad()">Flow</text></svg>` }),
   },
 }));
@@ -302,6 +303,7 @@ describe('conversation components', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Rendering diagram');
     const diagram = await screen.findByRole('img', { name: 'Mermaid diagram' });
     expect(diagram).toBeInTheDocument();
+    expect(mermaidInitialize).toHaveBeenCalledWith(expect.objectContaining({ htmlLabels: false, flowchart: { htmlLabels: false } }));
     expect(diagram.querySelector('script')).not.toBeInTheDocument();
     expect(diagram.querySelector('[onclick]')).not.toBeInTheDocument();
     expect(screen.queryByText('flowchart LR')).not.toBeInTheDocument();
@@ -526,7 +528,8 @@ describe('conversation components', () => {
 
     expect(optimizePrompt).toHaveBeenCalledWith('make it better', { advanced: false });
     expect(screen.getByRole('button', { name: 'Improving prompt' })).toHaveAttribute('aria-busy', 'true');
-    expect(screen.getByLabelText('Message Pi')).toBeDisabled();
+    expect(screen.getByLabelText('Message Pi')).toHaveProperty('readOnly', true);
+    expect(screen.getByLabelText('Message Pi')).toBeEnabled();
 
     resolveOptimization?.({ text: 'Improve this draft without changing its intent.' });
 
@@ -553,6 +556,32 @@ describe('conversation components', () => {
     expect(abort).toHaveBeenCalledOnce();
     await waitFor(() => expect(screen.getByLabelText('Message Pi')).toHaveValue('keep this draft'));
     expect(screen.getByRole('button', { name: 'Improve prompt' })).toHaveAttribute('aria-busy', 'false');
+  });
+
+  it('cancels in-flight prompt improvement and sends the original draft', async () => {
+    let resolveOptimization: ((value: { text: string }) => void) | undefined;
+    const optimizePrompt = vi.fn(() => new Promise<{ text: string }>((resolve) => { resolveOptimization = resolve; }));
+    const abort = vi.fn(async () => ({ aborted: true }));
+    const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { optimizePrompt, abort, prompt } as unknown as PiDesktopApi });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+
+    await user.type(screen.getByLabelText('Message Pi'), 'keep this draft');
+    await user.click(screen.getByRole('button', { name: 'Improve prompt' }));
+    expect(screen.getByRole('button', { name: 'Improving prompt' })).toHaveAttribute('aria-busy', 'true');
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+
+    await waitFor(() => expect(prompt).toHaveBeenCalledWith({ text: 'keep this draft', behavior: 'prompt' }));
+    expect(abort).toHaveBeenCalledOnce();
+    expect(abort.mock.invocationCallOrder[0]).toBeLessThan(prompt.mock.invocationCallOrder[0]!);
+    await waitFor(() => expect(screen.getByLabelText('Message Pi')).toHaveValue(''));
+    expect(screen.getByRole('button', { name: 'Improve prompt' })).toHaveAttribute('aria-busy', 'false');
+
+    resolveOptimization?.({ text: 'Improved rewrite that must not land.' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Improve prompt' })).toHaveAttribute('aria-busy', 'false'));
+    expect(screen.getByLabelText('Message Pi')).toHaveValue('');
+    expect(useUiStore.getState().toast).toBeNull();
   });
 
   it('supports undo and redo around prompt improvement', async () => {
@@ -1486,7 +1515,7 @@ describe('conversation components', () => {
     expect(screen.getByText('Saved goal instructions · 1').closest('details')).not.toHaveAttribute('open');
     await user.click(screen.getByText('Saved goal instructions · 1'));
     expect(screen.getByRole('region', { name: 'Saved goal instructions' })).toHaveTextContent('Also document the recovery path.');
-    expect(screen.getByRole('region', { name: 'Saved goal instructions' })).toHaveTextContent('Saved instruction');
+    expect(screen.getByRole('region', { name: 'Saved goal instructions' })).not.toHaveTextContent('Saved instruction');
     expect(screen.getByRole('button', { name: 'Edit goal update: Also document the recovery path.' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cancel goal update: Also document the recovery path.' })).toBeInTheDocument();
   });

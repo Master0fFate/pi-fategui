@@ -32,7 +32,7 @@ import type {
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AssistantMarkdown, MessageImages } from '../chat/RichMessageContent';
 import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
-import { InlineConfirm } from '../../components/InlineConfirm';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { useSkinComponents } from '../../skins/SkinProvider';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -272,7 +272,7 @@ function AgentTeamChatPreview({ team, node, goalLink, height }: AgentTeamSelecti
   const status = teamNodeStatus(node);
   const active = status === 'queued' || status === 'running';
   const task = node.currentTaskId ? team.tasks.find((candidate) => candidate.id === node.currentTaskId) : undefined;
-  const error = node.lastError ?? task?.error;
+  const error = node.lastError ?? task?.error ?? task?.resultTransportError;
   return (
     <section className="subagent-chat-preview" aria-label={`${node.displayName} chat preview`} style={{ flexBasis: height }}>
       <header className="subagent-chat-preview-header">
@@ -441,23 +441,37 @@ function workflowNodeStatus(node: SubagentWorkflowNode): SubagentStatus {
   }
 }
 
-function WorkflowNodeRow({ node, goalLink }: { node: SubagentWorkflowNode; goalLink?: GoalMaxAgentLink | undefined }) {
+function WorkflowNodeRow({ node, teamSelection, goalLink }: { node: SubagentWorkflowNode; teamSelection?: AgentTeamSelection | undefined; goalLink?: GoalMaxAgentLink | undefined }) {
   const status = workflowNodeStatus(node);
   const handle = node.handle ?? node.id;
   const displayName = node.displayName ?? node.id;
+  const selected = useUiStore((state) => Boolean(teamSelection && state.selectedAgent?.kind === 'team-node' && state.selectedAgent.teamId === teamSelection.team.id && state.selectedAgent.nodeId === teamSelection.node.id));
+  const openNode = useUiStore((state) => state.openAgentTeamNode);
+  const content = <>
+    <span className="subagent-status-mark"><StatusIcon status={status} /></span>
+    <span className="subagent-session-copy">
+      <span><strong>{displayName}</strong><code data-status={node.status}>@{handle}</code>{goalLink ? <GoalMaxAgentMarker link={goalLink} /> : null}</span>
+      <small>{node.task}</small>
+      <span className="subagent-session-meta">
+        <em>{node.status}</em>
+        <small>{node.dependsOn.length ? `After ${node.dependsOn.join(', ')}` : 'Workflow root'}</small>
+      </span>
+    </span>
+  </>;
   return (
-    <article className={`subagent-session-row subagent-session-row--${status} subagent-session-row--placeholder`}>
-      <div className="subagent-session-open">
-        <span className="subagent-status-mark"><StatusIcon status={status} /></span>
-        <span className="subagent-session-copy">
-          <span><strong>{displayName}</strong><code data-status={node.status}>@{handle}</code>{goalLink ? <GoalMaxAgentMarker link={goalLink} /> : null}</span>
-          <small>{node.task}</small>
-          <span className="subagent-session-meta">
-            <em>{node.status}</em>
-            <small>{node.dependsOn.length ? `After ${node.dependsOn.join(', ')}` : 'Workflow root'}</small>
-          </span>
-        </span>
-      </div>
+    <article className={`subagent-session-row subagent-session-row--${status}${teamSelection ? '' : ' subagent-session-row--placeholder'}`} data-selected={selected || undefined}>
+      {teamSelection ? (
+        <button
+          className="subagent-session-open"
+          type="button"
+          aria-current={selected || undefined}
+          aria-label={`Open ${displayName} workflow agent: ${statusLabel(status)}`}
+          onClick={() => openNode(teamSelection.team.id, teamSelection.node.id)}
+        >
+          {content}
+          <ChevronRight className="subagent-open-chevron" size={13} aria-hidden="true" />
+        </button>
+      ) : <div className="subagent-session-open">{content}</div>}
     </article>
   );
 }
@@ -468,21 +482,24 @@ function DelegationBranch({
   parentError,
   ordinal,
   goalLinks,
+  teamNodesById,
 }: {
   runs: SubagentRun[];
   workflow?: SubagentWorkflow;
   parentError: boolean;
   ordinal: number;
   goalLinks: ReadonlyMap<string, GoalMaxAgentLink>;
+  teamNodesById: ReadonlyMap<string, AgentTeamSelection>;
 }) {
   const runById = new Map(runs.map((run) => [run.id, run]));
   const renderedRunIds = new Set<string>();
   const workflowChildren = workflow?.nodes.map((node) => {
     const run = node.runId ? runById.get(node.runId) : undefined;
+    const teamSelection = node.runId ? teamNodesById.get(node.runId) : undefined;
     if (run) renderedRunIds.add(run.id);
     return run
       ? <AgentSessionRowById key={run.id} runId={run.id} goalLink={goalLinks.get(run.id)} />
-      : <WorkflowNodeRow key={`node:${node.id}`} node={node} goalLink={node.runId ? goalLinks.get(node.runId) : undefined} />;
+      : <WorkflowNodeRow key={`node:${node.id}`} node={node} teamSelection={teamSelection} goalLink={node.runId ? goalLinks.get(node.runId) : undefined} />;
   }) ?? [];
   const extraRuns = runs.filter((run) => !renderedRunIds.has(run.id));
   const children = [...workflowChildren, ...extraRuns.map((run) => <AgentSessionRowById key={run.id} runId={run.id} goalLink={goalLinks.get(run.id)} />)];
@@ -592,18 +609,27 @@ type TeamConfirmation = {
 
 function AgentTeamLifecycleControls({ team }: { team: AgentTeam }) {
   const [pending, setPending] = useState<string | null>(null);
+  const pendingRef = useRef(false);
   const [confirmation, setConfirmation] = useState<TeamConfirmation | null>(null);
+  const [controlError, setControlError] = useState<string | null>(null);
+  const ask = (next: TeamConfirmation) => { setControlError(null); setConfirmation(next); };
   const run = async (input: Parameters<typeof window.piDesktop.controlAgentTeam>[0]) => {
-    if (pending) return;
+    if (pendingRef.current) return false;
+    pendingRef.current = true;
+    setControlError(null);
     const origin = useRuntimeStore.getState().runtime;
     setPending(input.action);
     try {
       const state = await window.piDesktop.controlAgentTeam(input);
       const current = useRuntimeStore.getState().runtime;
       if (current.sessionId === origin.sessionId && current.project?.path === origin.project?.path) useRuntimeStore.getState().setRuntime(state);
+      return true;
     } catch (error) {
-      useUiStore.getState().showToast({ kind: 'error', title: `${team.name} control failed`, message: error instanceof Error ? error.message : `Team ${team.id} could not be changed.` });
-    } finally { setPending(null); }
+      const message = error instanceof Error ? error.message : `Team ${team.id} could not be changed.`;
+      setControlError(message);
+      useUiStore.getState().showToast({ kind: 'error', title: `${team.name} control failed`, message });
+      return false;
+    } finally { pendingRef.current = false; setPending(null); }
   };
   const active = team.activeTurns > 0;
   return (
@@ -614,24 +640,25 @@ function AgentTeamLifecycleControls({ team }: { team: AgentTeam }) {
       {team.status !== 'closed' && team.status !== 'released' ? <button type="button" disabled={Boolean(pending)} title="Close team and preserve history" aria-label={`Close team ${team.name}`} onClick={() => {
         const force = active;
         if (force) {
-          setConfirmation({ action: 'closeTeam', force, title: `Close ${team.name}?`, message: `${team.activeTurns} active turn(s) will be cancelled. Team history stays available.`, confirmLabel: 'Close team' });
+          ask({ action: 'closeTeam', force, title: `Close ${team.name}?`, message: `${team.activeTurns} active turn(s) will be cancelled. Team history stays available.`, confirmLabel: 'Close team' });
           return;
         }
         void run({ action: 'closeTeam', teamId: team.id, force, operationId: crypto.randomUUID() });
       }}><X size={12} /></button> : null}
-      {team.status !== 'released' ? <button type="button" disabled={Boolean(pending)} title="Reset team history and runtime" aria-label={`Reset team ${team.name}`} onClick={() => setConfirmation({ action: 'resetTeam', force: active, title: `Reset ${team.name}?`, message: 'Team tasks and messages will be cleared.', confirmLabel: 'Reset team' })}><RotateCcw size={12} /></button> : null}
-      {(team.status === 'closed' || team.status === 'released') ? <button type="button" className="subagent-control-danger" disabled={Boolean(pending)} title="Delete team history after safe cleanup" aria-label={`Delete team history for ${team.name}`} onClick={() => setConfirmation({ action: 'deleteTeam', title: `Delete ${team.name} history?`, message: 'This cannot be undone.', confirmLabel: 'Delete' })}><Trash2 size={12} /></button> : null}
+      {team.status !== 'released' ? <button type="button" disabled={Boolean(pending)} title="Reset team history and runtime" aria-label={`Reset team ${team.name}`} onClick={() => ask({ action: 'resetTeam', force: active, title: `Reset ${team.name}?`, message: 'Team tasks and messages will be cleared.', confirmLabel: 'Reset team' })}><RotateCcw size={12} /></button> : null}
+      {(team.status === 'closed' || team.status === 'released') ? <button type="button" className="subagent-control-danger" disabled={Boolean(pending)} title="Delete team history" aria-label={`Delete team history for ${team.name}`} onClick={() => ask({ action: 'deleteTeam', title: `Delete ${team.name} history?`, message: 'Saved tasks and conversations will be permanently removed. Repository files and Git branches are kept.', confirmLabel: 'Delete history' })}><Trash2 size={12} /></button> : null}
       {pending ? <LoaderCircle className="tool-spinner" size={12} aria-label={`${pending} pending`} /> : null}
-      {confirmation ? <InlineConfirm
+      {confirmation ? <ConfirmDialog
         title={confirmation.title}
         message={confirmation.message}
         confirmLabel={confirmation.confirmLabel}
         busy={Boolean(pending)}
+        error={controlError}
         onCancel={() => setConfirmation(null)}
         onConfirm={() => {
           const current = confirmation;
-          setConfirmation(null);
-          void run({ action: current.action, teamId: team.id, ...(current.force === undefined ? {} : { force: current.force }), operationId: crypto.randomUUID() });
+          void run({ action: current.action, teamId: team.id, ...(current.force === undefined ? {} : { force: current.force }), operationId: crypto.randomUUID() })
+            .then((success) => { if (success) setConfirmation(null); });
         }}
       /> : null}
     </div>
@@ -717,6 +744,19 @@ export function SubagentSessionsPanel() {
   const showToast = useUiStore((state) => state.showToast);
   void runStructure;
   const agentTeams = runtime.agentTeams ?? [];
+  const teamNodesById = useMemo(() => {
+    const indexed = new Map<string, AgentTeamSelection>();
+    const ambiguous = new Set<string>();
+    for (const team of agentTeams) {
+      for (const node of team.nodes) {
+        if (indexed.has(node.id)) {
+          indexed.delete(node.id);
+          ambiguous.add(node.id);
+        } else if (!ambiguous.has(node.id)) indexed.set(node.id, { team, node });
+      }
+    }
+    return indexed;
+  }, [agentTeams]);
   const selectedRunId = selectedAgent?.kind === 'subagent' ? selectedAgent.runId : null;
   const selectedTeamNode = useMemo<AgentTeamSelection | null>(() => {
     if (selectedAgent?.kind !== 'team-node') return null;
@@ -756,18 +796,22 @@ export function SubagentSessionsPanel() {
   const workflowRunIds = new Set(workflows.flatMap((workflow) => workflow.nodes.flatMap((node) => node.runId ? [node.runId] : [])));
   const standaloneRuns = runs.filter((run) => !workflowRunIds.has(run.id));
   const workflowNodes = workflows.flatMap((workflow) => workflow.nodes);
-  const totalAgents = standaloneRuns.length + workflowNodes.length;
-  const activeAgents = standaloneRuns.filter((run) => activeStatuses.has(run.status)).length
+  const workflowTeamNodeIds = new Set(workflowNodes.flatMap((node) => node.runId && teamNodesById.has(node.runId) ? [node.runId] : []));
+  const standaloneTeamAgents = agentTeams.flatMap((team) => team.nodes.filter((node) => node.depth > 0 && !workflowTeamNodeIds.has(node.id)));
+  const totalAgents = standaloneRuns.length + workflowNodes.length + standaloneTeamAgents.length;
+  const teamActive = agentTeams.reduce((total, team) => total + team.activeTurns, 0);
+  const activeAgents = teamActive
+    + standaloneRuns.filter((run) => activeStatuses.has(run.status)).length
     + workflowNodes.filter((node) => {
       const run = node.runId ? runsById[node.runId] : undefined;
-      return run ? activeStatuses.has(run.status) : node.status === 'running' || node.status === 'pending';
+      if (run) return activeStatuses.has(run.status);
+      if (node.runId && teamNodesById.has(node.runId)) return false;
+      return node.status === 'running' || node.status === 'pending';
     }).length;
-  const teamAgents = agentTeams.reduce((total, team) => total + Math.max(0, team.nodes.length - 1), 0);
-  const teamActive = agentTeams.reduce((total, team) => total + team.activeTurns, 0);
   const hasChildren = runs.length > 0 || workflows.length > 0 || agentTeams.length > 0;
 
   return (
-    <section ref={panelRef} className={`subagent-sessions${hasChildren ? ' subagent-sessions--has-children' : ''}`} aria-label="Agent sessions">
+    <section ref={panelRef} className={`subagent-sessions${hasChildren ? ' subagent-sessions--has-children' : ''}`} aria-label="Agent sessions" tabIndex={-1} data-dialog-return-focus>
       <div className="agent-tree-root">
         <span className="agent-tree-root-mark"><Symbol text="@"><Bot size={15} aria-hidden="true" /></Symbol></span>
         <span className="agent-tree-root-copy">
@@ -782,7 +826,7 @@ export function SubagentSessionsPanel() {
             </small>
           ) : null}
         </span>
-        {hasChildren ? <span className="agent-tree-overview">{totalAgents + teamAgents} {totalAgents + teamAgents === 1 ? 'agent' : 'agents'}{activeAgents + teamActive ? ` · ${activeAgents + teamActive} active` : ''}</span> : null}
+        {hasChildren ? <span className="agent-tree-overview">{totalAgents} {totalAgents === 1 ? 'agent' : 'agents'}{activeAgents ? ` · ${activeAgents} active` : ''}</span> : null}
       </div>
       {!hasChildren ? (
         <div className="inspector-empty subagent-empty"><MessagesSquare size={24} /><strong>No child sessions</strong><p>The AI creates teams and delegates work as needed. Set workspace preferences in Settings → Agent.</p></div>
@@ -797,6 +841,7 @@ export function SubagentSessionsPanel() {
               parentError={toolsById[workflow.parentToolCallId]?.status === 'error'}
               ordinal={workflows.length + delegations.length - index}
               goalLinks={goalLinks}
+              teamNodesById={teamNodesById}
             />
           ))}
           {delegations.map(([toolCallId, group], index) => (
@@ -806,6 +851,7 @@ export function SubagentSessionsPanel() {
               parentError={toolsById[toolCallId]?.status === 'error'}
               ordinal={delegations.length - index}
               goalLinks={goalLinks}
+              teamNodesById={teamNodesById}
             />
           ))}
         </div>

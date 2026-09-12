@@ -41,94 +41,146 @@ function textCost(run: SubagentRun): number {
 }
 
 function boundActivityImages(
-  inputMessages: readonly RuntimeMessage[],
-  inputTools: readonly RuntimeTool[],
+  messages: RuntimeMessage[],
+  tools: RuntimeTool[],
   maximum: number,
 ): { messages: RuntimeMessage[]; tools: RuntimeTool[]; remaining: number; truncated: boolean } {
-  const messages = inputMessages.map((message) => ({ ...message }));
-  const tools = inputTools.map((tool) => ({ ...tool }));
+  let hasImages = false;
+  for (const message of messages) {
+    if (message.images?.length) {
+      hasImages = true;
+      break;
+    }
+  }
+  if (!hasImages) {
+    for (const tool of tools) {
+      if (tool.images?.length) {
+        hasImages = true;
+        break;
+      }
+    }
+  }
+  if (!hasImages) return { messages, tools, remaining: maximum, truncated: false };
+
+  const firstMessageIndex = new Map<string, number>();
+  const firstToolIndex = new Map<string, number>();
   const ordered = [
-    ...messages.map((item) => ({ kind: 'message' as const, id: item.id, position: positionOf(item) })),
-    ...tools.map((item) => ({ kind: 'tool' as const, id: item.id, position: positionOf(item) })),
+    ...messages.map((item, index) => {
+      if (!firstMessageIndex.has(item.id)) firstMessageIndex.set(item.id, index);
+      return { kind: 'message' as const, id: item.id, position: positionOf(item) };
+    }),
+    ...tools.map((item, index) => {
+      if (!firstToolIndex.has(item.id)) firstToolIndex.set(item.id, index);
+      return { kind: 'tool' as const, id: item.id, position: positionOf(item) };
+    }),
   ].sort((left, right) => right.position - left.position);
+  let nextMessages = messages;
+  let nextTools = tools;
   let remaining = maximum;
   let truncated = false;
 
   for (const activity of ordered) {
     if (activity.kind === 'message') {
-      const index = messages.findIndex((message) => message.id === activity.id);
-      const message = messages[index];
+      const index = firstMessageIndex.get(activity.id);
+      if (index === undefined) continue;
+      const message = nextMessages[index];
       if (!message?.images?.length) continue;
-      const images = message.images.filter((image) => {
-        if (image.data.length > remaining) return false;
-        remaining -= image.data.length;
-        return true;
-      });
-      if (images.length === message.images.length) continue;
+      let images: NonNullable<RuntimeMessage['images']> | undefined;
+      for (let imageIndex = 0; imageIndex < message.images.length; imageIndex += 1) {
+        const image = message.images[imageIndex]!;
+        if (image.data.length > remaining) {
+          images ??= message.images.slice(0, imageIndex);
+        } else {
+          remaining -= image.data.length;
+          images?.push(image);
+        }
+      }
+      if (images === undefined) continue;
       const { images: _images, ...withoutImages } = message;
-      messages[index] = {
+      const nextMessage = {
         ...withoutImages,
         text: withoutImages.text || (!withoutImages.reasoning && images.length === 0 ? '[Image omitted from bounded child transcript.]' : ''),
         ...(images.length ? { images } : {}),
       };
+      if (nextMessages === messages) nextMessages = messages.slice();
+      nextMessages[index] = nextMessage;
       truncated = true;
     } else {
-      const index = tools.findIndex((tool) => tool.id === activity.id);
-      const tool = tools[index];
+      const index = firstToolIndex.get(activity.id);
+      if (index === undefined) continue;
+      const tool = nextTools[index];
       if (!tool?.images?.length) continue;
-      const images = tool.images.filter((image) => {
-        if (image.data.length > remaining) return false;
-        remaining -= image.data.length;
-        return true;
-      });
-      if (images.length === tool.images.length) continue;
+      let images: NonNullable<RuntimeTool['images']> | undefined;
+      for (let imageIndex = 0; imageIndex < tool.images.length; imageIndex += 1) {
+        const image = tool.images[imageIndex]!;
+        if (image.data.length > remaining) {
+          images ??= tool.images.slice(0, imageIndex);
+        } else {
+          remaining -= image.data.length;
+          images?.push(image);
+        }
+      }
+      if (images === undefined) continue;
       const { images: _images, ...withoutImages } = tool;
-      tools[index] = {
+      const nextTool = {
         ...withoutImages,
         output: withoutImages.output || (images.length === 0 ? '[Image omitted from bounded child transcript.]' : ''),
         outputTruncated: true,
         ...(images.length ? { images } : {}),
       };
+      if (nextTools === tools) nextTools = tools.slice();
+      nextTools[index] = nextTool;
       truncated = true;
     }
   }
 
-  return { messages, tools, remaining, truncated };
+  return { messages: nextMessages, tools: nextTools, remaining, truncated };
 }
 
 /** Keep child transcripts safe for IPC, renderer memory, and parent-session tool details. */
 export function boundSubagentRun(input: SubagentRun): SubagentRun {
   let truncated = input.transcriptTruncated;
-  let messages = input.messages.map((message) => {
+  let messages = input.messages;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
     const text = boundField(message.text);
     const reasoning = message.reasoning === undefined ? undefined : boundField(message.reasoning);
-    truncated ||= text.truncated || reasoning?.truncated === true;
-    return {
+    const fieldTruncated = text.truncated || reasoning?.truncated === true;
+    truncated ||= fieldTruncated;
+    if (!fieldTruncated) continue;
+    if (messages === input.messages) messages = input.messages.slice();
+    messages[index] = {
       ...message,
       text: text.value,
       ...(reasoning === undefined ? {} : { reasoning: reasoning.value }),
     };
-  });
-  let tools = input.tools.map((tool) => {
+  }
+  let tools = input.tools;
+  for (let index = 0; index < tools.length; index += 1) {
+    const tool = tools[index]!;
     const toolInput = boundField(tool.input);
     const output = boundField(tool.output);
-    truncated ||= toolInput.truncated || output.truncated;
-    return {
+    const outputTruncated = tool.outputTruncated || output.truncated;
+    const fieldTruncated = toolInput.truncated || output.truncated;
+    truncated ||= fieldTruncated;
+    if (!fieldTruncated && outputTruncated === tool.outputTruncated) continue;
+    if (tools === input.tools) tools = input.tools.slice();
+    tools[index] = {
       ...tool,
       input: toolInput.value,
       output: output.value,
-      outputTruncated: tool.outputTruncated || output.truncated,
+      outputTruncated,
     };
-  });
+  }
   const error = input.error === undefined ? undefined : boundField(input.error, 4_000);
   truncated ||= error?.truncated === true;
 
-  const ordered = [
-    ...messages.map((item) => ({ kind: 'message' as const, id: item.id, position: positionOf(item) })),
-    ...tools.map((item) => ({ kind: 'tool' as const, id: item.id, position: positionOf(item) })),
-  ].sort((left, right) => left.position - right.position);
-  const removed = Math.max(0, ordered.length - MAX_SUBAGENT_ACTIVITY);
+  const removed = Math.max(0, messages.length + tools.length - MAX_SUBAGENT_ACTIVITY);
   if (removed > 0) {
+    const ordered = [
+      ...messages.map((item) => ({ kind: 'message' as const, id: item.id, position: positionOf(item) })),
+      ...tools.map((item) => ({ kind: 'tool' as const, id: item.id, position: positionOf(item) })),
+    ].sort((left, right) => left.position - right.position);
     const retained = new Set(ordered.slice(removed).map((item) => `${item.kind}:${item.id}`));
     messages = messages.filter((item) => retained.has(`message:${item.id}`));
     tools = tools.filter((item) => retained.has(`tool:${item.id}`));

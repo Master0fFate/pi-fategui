@@ -1,5 +1,6 @@
 import { FolderOpen, FolderSearch, GitPullRequest, Globe2, KeyRound, PanelRightClose, PanelRightOpen, Search, SearchCode, TerminalSquare } from 'lucide-react';
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { ResizeHandle } from '../../components/ResizeHandle';
 import { IconButton } from '../../components/IconButton';
 import { Composer } from '../chat/Composer';
@@ -33,11 +34,16 @@ interface WorkspaceProps {
 }
 
 export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspaceProps) {
-  const runtime = useRuntimeStore((state) => state.runtime);
+  const { projectPath, projectName, projectTrusted, sessions } = useRuntimeStore(useShallow((state) => ({
+    projectPath: state.runtime.project?.path ?? null,
+    projectName: state.runtime.project?.name ?? null,
+    projectTrusted: state.runtime.project?.trusted === true,
+    sessions: state.runtime.sessions,
+  })));
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
   const entryCount = useRuntimeStore((state) => state.timelineOrder.length);
   const lastError = useRuntimeStore((state) => state.lastError);
-  const activeSession = runtime.sessions?.find((session) => session.active);
+  const activeSessionTitle = useMemo(() => sessions?.find((session) => session.active)?.title, [sessions]);
   const terminalOpen = useUiStore((state) => state.terminalOpen);
   const toggleTerminal = useUiStore((state) => state.toggleTerminal);
   const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed);
@@ -51,6 +57,11 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
   const [projectPending, setProjectPending] = useState(false);
   const [projectError, setProjectError] = useState<string | null>(null);
   const [connectRequest, setConnectRequest] = useState(0);
+
+  useEffect(() => {
+    setRevealError(null);
+    setProjectError(null);
+  }, [projectPath]);
 
   const openProject = (intent?: WelcomeIntent) => {
     if (!('piDesktop' in window) || projectPending) return;
@@ -69,17 +80,19 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
 
   const revealProject = async () => {
     if (!('piDesktop' in window) || typeof window.piDesktop.revealProject !== 'function') return;
+    const revealProjectPath = projectPath;
     setRevealError(null);
     try {
       await window.piDesktop.revealProject();
     } catch (error) {
+      if (useRuntimeStore.getState().runtime.project?.path !== revealProjectPath) return;
       setRevealError(error instanceof Error && error.message
         ? error.message
         : 'The project could not be shown in the file browser. Open it again and retry.');
     }
   };
   const toggleBrowser = () => {
-    if (!runtime.project?.trusted || !('piDesktop' in window)) return;
+    if (!projectTrusted || !('piDesktop' in window)) return;
     const opening = !browserOpen;
     setBrowserOpen(opening);
     if (opening) {
@@ -88,9 +101,10 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
       });
     }
   };
-  const showWelcome = !runtime.project && entryCount === 0;
-  const conversationMode = runtime.project !== null || entryCount > 0;
-  const browserAvailable = runtime.project?.trusted === true;
+  const projectPresent = projectPath !== null;
+  const showWelcome = !projectPresent && entryCount === 0;
+  const conversationMode = projectPresent || entryCount > 0;
+  const browserAvailable = projectTrusted;
   const showBrowser = browserAvailable && browserOpen;
   const conversationSurface = (
     <section className={`welcome ${conversationMode ? 'welcome--conversation' : ''}`} aria-labelledby={showWelcome ? 'welcome-title' : undefined}>
@@ -130,7 +144,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
         <div className="workspace-header-drag">
           <div className="workspace-header-identity">
             <span className="eyebrow">SESSION</span>
-            <strong>{activeSession?.title ?? runtime.project?.name ?? 'Welcome'}</strong>
+            <strong>{activeSessionTitle ?? projectName ?? 'Welcome'}</strong>
             <WorkspaceActivityPulse />
           </div>
           <div className="session-controls">
@@ -148,14 +162,14 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
               disabled={!browserAvailable}
               onClick={toggleBrowser}
             ><Globe2 size={17} /></IconButton>
-            <IconButton label="Show project in file browser" terminalLabel="dir" onClick={() => void revealProject()} disabled={!runtime.project}><FolderSearch size={17} /></IconButton>
+            <IconButton label="Show project in file browser" terminalLabel="dir" onClick={() => void revealProject()} disabled={!projectPresent}><FolderSearch size={17} /></IconButton>
             <IconButton
               label={terminalOpen ? 'Close terminal' : 'Open terminal'}
               terminalLabel="term"
               className="workspace-terminal-toggle"
               aria-pressed={terminalOpen}
               onClick={toggleTerminal}
-              disabled={!runtime.project?.trusted}
+              disabled={!projectTrusted}
             ><TerminalSquare size={17} /></IconButton>
             <IconButton
               label={inspectorCollapsed ? 'Open inspector' : 'Collapse inspector'}

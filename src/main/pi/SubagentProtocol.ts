@@ -11,6 +11,7 @@ import type {
   SubagentSkillMode,
   ThinkingLevel,
 } from '../../shared/contracts/ipc';
+import type { AgentWorkspaceRequest } from '../../shared/contracts/multiAgent';
 
 export const DEFAULT_RUNNING_CONCURRENCY = 4;
 export const DEFAULT_TIMEOUT_SECONDS = 0;
@@ -51,6 +52,7 @@ export interface RequestedTask {
   notification: SubagentNotification;
   budget?: SubagentBudget;
   routing: RoutingPolicy;
+  workspace?: AgentWorkspaceRequest;
 }
 
 export interface WorkflowNodeRequest extends RequestedTask {
@@ -118,6 +120,11 @@ export const taskOptions = {
   notifyParent: Type.Optional(stringEnum(notificationModes, 'Completion delivery: never sends nothing; next-turn queues model-visible context; immediate also triggers or queues a parent turn.', 'never')),
   budget: Type.Optional(budgetSchema),
   routing: Type.Optional(routingSchema),
+  workspace: Type.Optional(Type.Object({
+    mode: stringEnum(['shared', 'worktree'] as const, 'Agent Team workspace mode.'),
+    baseRef: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+    branch: Type.Optional(Type.String({ minLength: 1, maxLength: 240 })),
+  }, { additionalProperties: false })),
 };
 
 export const taskSchema = Type.Object({
@@ -200,11 +207,12 @@ export function normalizeModel(value: unknown): ModelSelection | undefined {
   return provider && id && provider.length <= 200 && id.length <= 500 ? { provider, id } : undefined;
 }
 
-function normalizeSeconds(value: unknown, fallback: number | undefined): number | undefined | null {
-  if (value === undefined) return fallback;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
-  const rounded = Math.round(value);
-  return Number.isSafeInteger(rounded) && rounded <= Math.floor(Number.MAX_SAFE_INTEGER / 1_000) ? rounded : null;
+function normalizeDurationMs(value: unknown, fallbackSeconds: number | undefined): number | undefined | null {
+  const seconds = value === undefined ? fallbackSeconds : value;
+  if (seconds === undefined) return undefined;
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0 || seconds > Number.MAX_SAFE_INTEGER / 1_000) return null;
+  const milliseconds = Math.ceil(seconds * 1_000);
+  return Number.isSafeInteger(milliseconds) ? milliseconds : null;
 }
 
 function normalizeBudget(value: unknown): SubagentBudget | undefined | null {
@@ -232,10 +240,10 @@ function normalizeBudget(value: unknown): SubagentBudget | undefined | null {
 function normalizeTask(candidate: Record<string, unknown>, managed: boolean): RequestedTask | null {
   const task = candidate.task;
   if (typeof task !== 'string' || !task.trim()) return null;
-  const timeoutSeconds = normalizeSeconds(candidate.timeoutSeconds, DEFAULT_TIMEOUT_SECONDS);
-  const idleTimeoutSeconds = normalizeSeconds(candidate.idleTimeoutSeconds, undefined);
-  const mailboxTtlSeconds = normalizeSeconds(candidate.mailboxTtlSeconds, managed ? DEFAULT_MAILBOX_TTL_SECONDS : 0);
-  if (timeoutSeconds === null || timeoutSeconds === undefined || idleTimeoutSeconds === null || mailboxTtlSeconds === null || mailboxTtlSeconds === undefined) return null;
+  const timeoutMs = normalizeDurationMs(candidate.timeoutSeconds, DEFAULT_TIMEOUT_SECONDS);
+  const idleTimeoutMs = normalizeDurationMs(candidate.idleTimeoutSeconds, undefined);
+  const mailboxTtlMs = normalizeDurationMs(candidate.mailboxTtlSeconds, managed ? DEFAULT_MAILBOX_TTL_SECONDS : 0);
+  if (timeoutMs === null || timeoutMs === undefined || idleTimeoutMs === null || mailboxTtlMs === null || mailboxTtlMs === undefined) return null;
 
   const agent = typeof candidate.agent === 'string' && candidate.agent.trim() && candidate.agent.length <= 100 ? candidate.agent.trim() : undefined;
   if (candidate.agent !== undefined && !agent) return null;
@@ -295,6 +303,19 @@ function normalizeTask(candidate: Record<string, unknown>, managed: boolean): Re
     routing = { fallbackModels: uniqueModels, maxAttempts: maxAttempts as number };
   }
 
+  let workspace: AgentWorkspaceRequest | undefined;
+  if (candidate.workspace !== undefined) {
+    if (!candidate.workspace || typeof candidate.workspace !== 'object' || Array.isArray(candidate.workspace)) return null;
+    const raw = candidate.workspace as Record<string, unknown>;
+    if (Object.keys(raw).some((key) => !['mode', 'baseRef', 'branch'].includes(key))) return null;
+    if (raw.mode !== 'shared' && raw.mode !== 'worktree') return null;
+    const baseRef = typeof raw.baseRef === 'string' && raw.baseRef.trim() && raw.baseRef.trim().length <= 500 ? raw.baseRef.trim() : undefined;
+    const branch = typeof raw.branch === 'string' && raw.branch.trim() && raw.branch.trim().length <= 240 ? raw.branch.trim() : undefined;
+    if ((raw.baseRef !== undefined && !baseRef) || (raw.branch !== undefined && !branch)) return null;
+    if (raw.mode === 'shared' && (baseRef || branch)) return null;
+    workspace = { mode: raw.mode, ...(baseRef ? { baseRef } : {}), ...(branch ? { branch } : {}) };
+  }
+
   return {
     task: task.trim(),
     ...(agent ? { agent } : {}),
@@ -307,12 +328,13 @@ function normalizeTask(candidate: Record<string, unknown>, managed: boolean): Re
     skills,
     skillMode,
     preloadSkills,
-    timeoutMs: timeoutSeconds * 1_000,
-    ...(idleTimeoutSeconds === undefined ? {} : { idleTimeoutMs: idleTimeoutSeconds * 1_000 }),
-    mailboxTtlMs: mailboxTtlSeconds * 1_000,
+    timeoutMs,
+    ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
+    mailboxTtlMs,
     notification,
     ...(budget ? { budget } : {}),
     routing,
+    ...(workspace ? { workspace } : {}),
   };
 }
 

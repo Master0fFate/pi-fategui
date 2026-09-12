@@ -29,13 +29,14 @@ test('Settings owns workspace policy while Run Agents reviews and retains work',
     const strict = settings.getByRole('checkbox', { name: 'Strict workspace mode' });
     await expect(preferred).toBeChecked();
     await expect(strict).not.toBeChecked();
+    await expect(settings.getByRole('heading', { name: 'Agents' })).toBeVisible();
+    await expect(settings.getByText(/one unified agent system/u)).toBeVisible();
+    await expect(settings.getByRole('combobox', { name: 'Agent orchestration mode' })).toHaveCount(0);
     await settings.getByText('Strict mode', { exact: true }).click();
-    await settings.getByRole('combobox', { name: 'Agent orchestration mode' }).click();
-    await page.getByRole('option', { name: /Agent Teams V2/u }).click();
     await settings.getByRole('button', { name: 'Save changes' }).click();
     await expect(settings.getByRole('status')).toContainText('Settings saved');
     await expect.poll(() => page.evaluate(() => window.piDesktop.getSettings())).toMatchObject({ agentWorkspace: { preferredMode: 'worktree', strict: true } });
-    await settings.getByRole('region', { name: 'Subagent workspace policy' }).scrollIntoViewIfNeeded();
+    await settings.getByRole('region', { name: 'Agent workspace policy' }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: 'test-results/agent-workspace-settings.png' });
     await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
     await expect.poll(() => settings.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);

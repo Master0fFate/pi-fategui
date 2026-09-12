@@ -376,7 +376,7 @@ jobs:
           (cd artifacts && sha256sum -c SHA256SUMS)
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: verified-prerelease-installers
+          name: verified-release-installers
           path: artifacts/
           compression-level: 0
           if-no-files-found: error
@@ -425,29 +425,49 @@ jobs:
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
           notes=".github/release-notes/$tag.md"
+          release_title="$(node scripts/release-artifacts.mjs metadata --field display-version)"
+          expected_prerelease="$(node scripts/release-artifacts.mjs metadata --field is-prerelease)"
           release_type=(--prerelease=false)
-          expected_prerelease=false
-          if [[ "$tag" == *-* ]]; then
-            release_type=(--prerelease)
-            expected_prerelease=true
-          fi
+          if [ "$expected_prerelease" = true ]; then release_type=(--prerelease); fi
 
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Refusing to mutate pre-existing release $tag; remove or resolve it explicitly." >&2
             exit 1
           fi
-          gh release create "$tag" --draft --verify-tag --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
-          gh release edit "$tag" --draft --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+
+          published_tag=''
+          if [ "$expected_prerelease" = false ]; then
+            latest_error="$RUNNER_TEMP/latest-release-error"
+            if published_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>"$latest_error")"; then
+              test -n "$published_tag"
+            elif grep -q 'HTTP 404' "$latest_error"; then
+              published_tag=''
+            else
+              cat "$latest_error" >&2
+              exit 1
+            fi
+          fi
+          latest_policy_args=()
+          if [ -n "$published_tag" ]; then latest_policy_args=(--published-tag "$published_tag"); fi
+          latest_flag="$(node scripts/release-artifacts.mjs latest-policy "${latest_policy_args[@]}")"
+          expected_latest=false
+          if [ "$latest_flag" = --latest ]; then expected_latest=true; fi
+
+          gh release create "$tag" --draft --verify-tag --title "$release_title" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release edit "$tag" --draft --title "$release_title" --notes-file "$notes" --latest=false "${release_type[@]}"
           gh release upload "$tag" artifacts/*
 
           find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$RUNNER_TEMP/local-assets"
           gh release view "$tag" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$RUNNER_TEMP/remote-assets"
           diff -u "$RUNNER_TEMP/local-assets" "$RUNNER_TEMP/remote-assets"
 
-          gh release edit "$tag" --draft=false --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release edit "$tag" --draft=false --title "$release_title" --notes-file "$notes" "$latest_flag" "${release_type[@]}"
           gh release view "$tag" --json tagName,name,isDraft,isPrerelease \
-            | jq -e --arg tag "$tag" --argjson prerelease "$expected_prerelease" \
-              '.tagName == $tag and .name == $tag and .isDraft == false and .isPrerelease == $prerelease'
+            | jq -e --arg tag "$tag" --arg title "$release_title" --argjson prerelease "$expected_prerelease" \
+              '.tagName == $tag and .name == $title and .isDraft == false and .isPrerelease == $prerelease'
+          gh release list --limit 100 --json tagName,isLatest \
+            | jq -e --arg tag "$tag" --argjson latest "$expected_latest" \
+              'any(.[]; .tagName == $tag and .isLatest == $latest)'
 
   promote-release:
     name: Promote verified release artifacts
@@ -508,26 +528,46 @@ jobs:
           set -euo pipefail
           tag="$PROMOTE_TAG"
           notes=".github/release-notes/$tag.md"
+          release_title="$(node scripts/release-artifacts.mjs metadata --field display-version)"
+          expected_prerelease="$(node scripts/release-artifacts.mjs metadata --field is-prerelease)"
           release_type=(--prerelease=false)
-          expected_prerelease=false
-          if [[ "$tag" == *-* ]]; then
-            release_type=(--prerelease)
-            expected_prerelease=true
-          fi
+          if [ "$expected_prerelease" = true ]; then release_type=(--prerelease); fi
 
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Refusing to mutate pre-existing release $tag; remove or resolve it explicitly." >&2
             exit 1
           fi
-          gh release create "$tag" --draft --verify-tag --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
-          gh release edit "$tag" --draft --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+
+          published_tag=''
+          if [ "$expected_prerelease" = false ]; then
+            latest_error="$RUNNER_TEMP/latest-release-error"
+            if published_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>"$latest_error")"; then
+              test -n "$published_tag"
+            elif grep -q 'HTTP 404' "$latest_error"; then
+              published_tag=''
+            else
+              cat "$latest_error" >&2
+              exit 1
+            fi
+          fi
+          latest_policy_args=()
+          if [ -n "$published_tag" ]; then latest_policy_args=(--published-tag "$published_tag"); fi
+          latest_flag="$(node scripts/release-artifacts.mjs latest-policy "${latest_policy_args[@]}")"
+          expected_latest=false
+          if [ "$latest_flag" = --latest ]; then expected_latest=true; fi
+
+          gh release create "$tag" --draft --verify-tag --title "$release_title" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release edit "$tag" --draft --title "$release_title" --notes-file "$notes" --latest=false "${release_type[@]}"
           gh release upload "$tag" artifacts/*
 
           find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort > "$RUNNER_TEMP/local-assets"
           gh release view "$tag" --json assets --jq '.assets[].name' | LC_ALL=C sort > "$RUNNER_TEMP/remote-assets"
           diff -u "$RUNNER_TEMP/local-assets" "$RUNNER_TEMP/remote-assets"
 
-          gh release edit "$tag" --draft=false --title "$tag" --notes-file "$notes" --latest=false "${release_type[@]}"
+          gh release edit "$tag" --draft=false --title "$release_title" --notes-file "$notes" "$latest_flag" "${release_type[@]}"
           gh release view "$tag" --json tagName,name,isDraft,isPrerelease \
-            | jq -e --arg tag "$tag" --argjson prerelease "$expected_prerelease" \
-              '.tagName == $tag and .name == $tag and .isDraft == false and .isPrerelease == $prerelease'
+            | jq -e --arg tag "$tag" --arg title "$release_title" --argjson prerelease "$expected_prerelease" \
+              '.tagName == $tag and .name == $title and .isDraft == false and .isPrerelease == $prerelease'
+          gh release list --limit 100 --json tagName,isLatest \
+            | jq -e --arg tag "$tag" --argjson latest "$expected_latest" \
+              'any(.[]; .tagName == $tag and .isLatest == $latest)'

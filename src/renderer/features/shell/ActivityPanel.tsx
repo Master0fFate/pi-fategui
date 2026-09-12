@@ -44,13 +44,13 @@ type SourceFilter = 'all' | FlightRecorderRow['source'];
 
 const SOURCE_FILTERS: readonly { value: Exclude<SourceFilter, 'all'>; label: string; title: string }[] = [
   { value: 'root', label: 'Root', title: 'Show only main-agent activity' },
-  { value: 'legacy', label: 'Legacy', title: 'Show only legacy subagent activity' },
+  { value: 'legacy', label: 'Historical', title: 'Show only historical standalone agent activity' },
   { value: 'team', label: 'Team', title: 'Show only Agent Team activity' },
 ];
 
 const SOURCE_LABEL: Record<FlightRecorderRow['source'], string> = {
   root: 'Root',
-  legacy: 'Legacy',
+  legacy: 'Historical',
   team: 'Team',
 };
 
@@ -231,22 +231,55 @@ export interface ActivityMerge {
 export function mergeActivity(retained: readonly FlightRecorderRow[], attestations: readonly MutationAttestation[]): ActivityMerge {
   // Greedy one-to-one join: for each attestation, the closest unused retained
   // write/edit tool row with the same actor, path, and operation inside the
-  // time window. Each row pairs with at most one ledger record and vice versa.
-  const candidates = retained
-    .filter((row) => row.kind === 'tool' && (row.title === 'write' || row.title === 'edit'))
-    .map((row) => ({ row, actorKey: retainedActorKey(row.source, row.target), used: false }));
+  // time window. Buckets retain input order, so equal-distance ties still pick
+  // the first retained row. A candidate object is shared by every path bucket
+  // it touches so a multi-path tool row can be consumed only once.
+  type Candidate = { row: FlightRecorderRow; used: boolean };
+  type PathIndex = Map<string, Candidate[]>;
+  type OperationIndex = Map<MutationAttestation['operation'], PathIndex>;
+  // Streaming renders commonly have no loaded ledger rows. Avoid all candidate
+  // indexing work until there is an attestation that could consume the index.
+  const candidateIndex = attestations.length === 0 ? null : new Map<string, OperationIndex>();
+  if (candidateIndex) {
+    for (const row of retained) {
+      if (row.kind !== 'tool' || (row.title !== 'write' && row.title !== 'edit')) continue;
+      const actorKey = retainedActorKey(row.source, row.target);
+      if (!actorKey) continue;
+      const candidate: Candidate = { row, used: false };
+      let operationIndex = candidateIndex.get(actorKey);
+      if (!operationIndex) {
+        operationIndex = new Map();
+        candidateIndex.set(actorKey, operationIndex);
+      }
+      let pathIndex = operationIndex.get(row.title);
+      if (!pathIndex) {
+        pathIndex = new Map();
+        operationIndex.set(row.title, pathIndex);
+      }
+      // Repeated provenance references did not make the old scan consider a row
+      // more than once, so index each matching path only once per candidate.
+      const indexedPaths = new Set<string>();
+      for (const reference of row.provenance?.affectedPaths ?? []) {
+        if (reference.operation !== row.title || indexedPaths.has(reference.path)) continue;
+        indexedPaths.add(reference.path);
+        const bucket = pathIndex.get(reference.path);
+        if (bucket) bucket.push(candidate);
+        else pathIndex.set(reference.path, [candidate]);
+      }
+    }
+  }
+
   const ledgerIdByRowId = new Map<string, string>();
   const matchedLedgerIds = new Set<string>();
   for (const attestation of attestations) {
-    const actorKey = attestationActorKey(attestation.actor);
-    let best: (typeof candidates)[number] | null = null;
+    const candidates = candidateIndex
+      ?.get(attestationActorKey(attestation.actor))
+      ?.get(attestation.operation)
+      ?.get(attestation.path) ?? [];
+    let best: Candidate | null = null;
     let bestDelta = Number.POSITIVE_INFINITY;
     for (const candidate of candidates) {
-      if (candidate.used || candidate.actorKey !== actorKey || candidate.row.title !== attestation.operation) continue;
-      const touchesPath = candidate.row.provenance?.affectedPaths.some(
-        (reference) => reference.operation === attestation.operation && reference.path === attestation.path,
-      );
-      if (!touchesPath) continue;
+      if (candidate.used) continue;
       const delta = Math.abs(candidate.row.timestamp - attestation.recordedAt);
       if (delta <= MATCH_WINDOW_MS && delta < bestDelta) {
         best = candidate;

@@ -1,7 +1,5 @@
 # Product
 
-<!-- impeccable:product-schema 1 -->
-
 ## Platform
 
 desktop (Electron)
@@ -27,7 +25,7 @@ The product runs as a native desktop window beside a developer’s editor and re
 ## Capabilities and Constraints
 
 - Product name: **Fate UI**.
-- Required stack: Electron, strict TypeScript, React, Vite, Tailwind CSS, Radix UI, Lucide, Zustand, TanStack Query where cached async state is useful, xterm.js, Monaco, react-virtuoso, electron-builder, Vitest, React Testing Library, and Playwright.
+- Required stack: Electron, strict TypeScript, React, Vite, Tailwind CSS, Radix UI, Lucide, Zustand, xterm.js, Monaco, react-virtuoso, electron-builder, Vitest, React Testing Library, and Playwright.
 - The Electron main process owns Pi, sessions, project selection, filesystem, Git, terminal processes, settings, credential references, dialogs, and menus.
 - The preload exposes named, Zod-validated commands and events only. The renderer has no Node, Electron, filesystem, shell, or child-process access.
 - The embedded Pi SDK is preferred. Unsupported SDK capabilities must have honest unavailable states rather than invented behavior.
@@ -41,7 +39,9 @@ The shipped Fate UI interface is the product reference for atmosphere and first-
 
 ## Evidence on Hand
 
-- Product and architecture specification: `TASK.md`.
+- Architecture and trust boundaries: `docs/architecture.md`.
+- Agent/workflow behavior: `docs/agent-orchestration.md`.
+- Current release and verification process: `docs/development.md`.
 - Current product screenshots: `screenshots/fate-ui-dark.png` (dark) and `screenshots/fate-ui-light.png` (light).
 - Official Pi SDK and RPC documentation: `https://pi.dev/docs/latest/sdk` and `https://pi.dev/docs/latest/rpc`.
 - No testimonials, customer claims, benchmark data, pricing, or third-party brand assets were supplied; do not fabricate them.

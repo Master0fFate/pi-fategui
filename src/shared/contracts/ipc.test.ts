@@ -13,10 +13,17 @@ describe('IPC contracts', () => {
     expect(() => windowStateSchema.parse({ maximized: true })).toThrow();
   });
 
-  it('validates normalized app information', () => {
+  it('validates normalized app information with backward-compatible display metadata', () => {
     expect(
-      appInfoSchema.parse({ name: 'Fate UI', version: '0.1.0', platform: 'win32', packaged: false }),
-    ).toEqual({ name: 'Fate UI', version: '0.1.0', platform: 'win32', packaged: false });
+      appInfoSchema.parse({
+        name: 'Fate UI', version: '1.0.0', releaseName: 'Modulo', displayVersion: 'V1.0.0 - Modulo', platform: 'win32', packaged: false,
+      }),
+    ).toEqual({
+      name: 'Fate UI', version: '1.0.0', releaseName: 'Modulo', displayVersion: 'V1.0.0 - Modulo', platform: 'win32', packaged: false,
+    });
+    expect(appInfoSchema.parse({ name: 'Fate UI', version: '1.0.1', platform: 'linux', packaged: true })).toEqual({
+      name: 'Fate UI', version: '1.0.1', platform: 'linux', packaged: true,
+    });
     expect(() =>
       appInfoSchema.parse({ name: 'Other', version: '', platform: 'browser', packaged: 'no' }),
     ).toThrow();
@@ -44,6 +51,9 @@ describe('IPC contracts', () => {
       installedVersion: '1.4.0',
       productionVersion: '1.4.0',
     })).toMatchObject({ status: 'current' });
+    expect(updateCheckResultSchema.parse({
+      status: 'release-not-ready', message: 'The verified installer is not published yet.', installedVersion: '1.0.0', productionVersion: '1.0.1',
+    })).toMatchObject({ status: 'release-not-ready' });
     expect(openUpdateDownloadResultSchema.parse({ opened: true })).toEqual({ opened: true });
     expect(() => updateCheckResultSchema.parse({ status: 'unknown', message: 'Nope' })).toThrow();
     expect(() => openUpdateDownloadResultSchema.parse({ opened: false })).toThrow();
@@ -87,6 +97,16 @@ describe('IPC contracts', () => {
     expect(appSettingsSchema.parse(base)).toMatchObject({ ...base, skinId: 'default', agentWorkspace: { preferredMode: 'worktree', strict: false } });
     expect(appSettingsSchema.parse({ ...base, agentWorkspace: { preferredMode: 'shared' } })).toMatchObject({ ...base, agentWorkspace: { preferredMode: 'shared', strict: false } });
     expect(() => appSettingsSchema.parse({ ...base, agentWorkspace: { preferredMode: 'shared', strict: 'no' } })).toThrow();
+  });
+
+  it('accepts legacy agent mode settings but always emits the unified mode', () => {
+    const base = {
+      appearance: 'system', defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true,
+      terminalShell: null, reduceMotion: false,
+    };
+    expect(appSettingsSchema.parse(base).agentTeamMode).toBe('v2');
+    expect(appSettingsSchema.parse({ ...base, agentTeamMode: 'legacy' }).agentTeamMode).toBe('v2');
+    expect(appSettingsSchema.parse({ ...base, agentTeamMode: 'v2' }).agentTeamMode).toBe('v2');
   });
 
   it('migrates old appearance settings and safely falls back from unknown skins', () => {
@@ -290,6 +310,18 @@ describe('IPC contracts', () => {
     expect(subagentWorkflowSchema.parse({ ...workflow, livenessReports: [workflowLiveness] }).livenessReports).toHaveLength(1);
     expect(piEventSchema.parse({ type: 'subagent.workflow.liveness', workflowId: 'workflow-1', report: workflowLiveness, timestamp: 3 }))
       .toMatchObject({ type: 'subagent.workflow.liveness', workflowId: 'workflow-1' });
+    const workflowTimingLiveness = {
+      ...workflowLiveness,
+      id: 'workflow-1:idle:b:3',
+      trigger: 'idle',
+      evidence: [{ signal: 'idle-duration', detail: 'Last observable Agent Team node update was at 2.', count: 1 }],
+      timing: { ...workflowLiveness.timing, lastObservableTeamUpdateAt: 2 },
+      node: { id: 'b', runId: 'team-node-b' },
+    };
+    expect(subagentWorkflowSchema.parse({ ...workflow, livenessReports: [workflowTimingLiveness] }).livenessReports?.[0])
+      .toMatchObject({ trigger: 'idle', timing: { lastObservableTeamUpdateAt: 2 }, node: { id: 'b', runId: 'team-node-b' } });
+    expect(subagentWorkflowSchema.parse({ ...workflow, livenessReports: [workflowLiveness] }).livenessReports?.[0])
+      .not.toHaveProperty('node');
 
     const manyRuns = Array.from({ length: 60 }, (_, index) => ({ ...run, id: `subagent-${index}`, parentToolCallId: `tool-${index}` }));
     expect(subagentToolDetailsSchema.parse({ kind: 'fate-subagent', version: 3, runIds: manyRuns.map((item) => item.id), runs: manyRuns }).runs).toHaveLength(60);

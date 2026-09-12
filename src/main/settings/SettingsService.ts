@@ -17,7 +17,7 @@ const defaults: AppSettings = {
   defaultModel: null,
   disabledModels: [],
   thinkingLevel: 'medium',
-  agentTeamMode: 'legacy',
+  agentTeamMode: 'v2',
   agentWorkspace: defaultAgentWorkspacePolicy,
   memoryLearning: { enabled: false, global: true, project: true },
   confirmRiskyCommands: true,

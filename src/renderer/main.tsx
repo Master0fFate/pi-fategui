@@ -16,6 +16,8 @@ import './styles/skins/dreamcore-terminal.css';
 import './styles/skins/packs.css';
 import './styles/skins/angelcore-surfaces.css';
 import './styles/skins/angelcore-browser.css';
+import './styles/composer-rails.css';
+import './styles/action-surfaces.css';
 import { applySkinDefinition, readStoredSkinDefinition } from './skin';
 import { applyTheme, readStoredTheme } from './theme';
 

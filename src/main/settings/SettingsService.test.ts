@@ -86,7 +86,31 @@ describe('SettingsService', () => {
     }), 'utf8');
     const logs = new AppLogService();
     const loaded = await createSettings(logs).load();
-    expect(loaded).toMatchObject({ appearance: 'system', thinkingLevel: 'high', agentWorkspace: { preferredMode: 'worktree', strict: false }, holyShitMode: false, sendMessageWithModifier: false, skinId: 'default', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null } });
+    expect(loaded).toMatchObject({ appearance: 'system', thinkingLevel: 'high', agentTeamMode: 'v2', agentWorkspace: { preferredMode: 'worktree', strict: false }, holyShitMode: false, sendMessageWithModifier: false, skinId: 'default', interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono', imageGeneration: { provider: 'auto', model: null, customProvider: null } });
+    expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(loaded);
+  });
+
+  it('canonicalizes legacy agent settings in memory and persists them on explicit save', async () => {
+    const baseline = await createSettings().load();
+    const stored = {
+      ...baseline,
+      agentTeamMode: 'legacy' as const,
+      thinkingLevel: 'xhigh' as const,
+      agentWorkspace: { preferredMode: 'shared' as const, strict: true },
+      musicPlayerEnabled: true,
+      compactSessions: true,
+    };
+    await mkdir(dataRoot, { recursive: true });
+    await writeFile(path.join(dataRoot, 'settings.json'), JSON.stringify(stored), 'utf8');
+
+    const service = createSettings();
+    const loaded = await service.load();
+
+    expect(loaded).toEqual({ ...stored, agentTeamMode: 'v2' });
+    expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(stored);
+
+    const saved = await service.set(loaded);
+    expect(saved).toEqual(loaded);
     expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(loaded);
   });
 
@@ -147,9 +171,11 @@ describe('SettingsService', () => {
 
     const [firstSaved, secondSaved] = await Promise.all([service.set(first), service.set(second)]);
 
-    expect(firstSaved).toEqual(first);
-    expect(secondSaved).toEqual(second);
-    expect(service.get()).toEqual(second);
-    expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(second);
+    const canonicalFirst = { ...first, agentTeamMode: 'v2' };
+    const canonicalSecond = { ...second, agentTeamMode: 'v2' };
+    expect(firstSaved).toEqual(canonicalFirst);
+    expect(secondSaved).toEqual(canonicalSecond);
+    expect(service.get()).toEqual(canonicalSecond);
+    expect(JSON.parse(await readFile(path.join(dataRoot, 'settings.json'), 'utf8'))).toEqual(canonicalSecond);
   });
 });

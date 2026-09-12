@@ -55,9 +55,10 @@ import { enumerateMicrophones, microphoneAccessError, requestMicrophoneDevices, 
 import { ProviderConnectDialog } from '../../components/ProviderConnectDialog';
 import { ProviderModelsDialog } from './ProviderModelsDialog';
 import { enabledModelIdentity, modelIdentity, visibleModels } from '../../../shared/modelVisibility';
+import { formatReleaseDisplayVersion } from '../../../shared/releaseMetadata';
 
 const fallback: AppSettings = {
-  appearance: 'dark', defaultModel: null, disabledModels: [], thinkingLevel: 'medium', agentTeamMode: 'legacy', agentWorkspace: defaultAgentWorkspacePolicy, confirmRiskyCommands: true,
+  appearance: 'dark', defaultModel: null, disabledModels: [], thinkingLevel: 'medium', agentTeamMode: 'v2', agentWorkspace: defaultAgentWorkspacePolicy, confirmRiskyCommands: true,
   terminalShell: null, reduceMotion: false, performanceMode: false, holyShitMode: false, musicPlayerEnabled: false, sendMessageWithModifier: false, compactMode: false, compactSessions: false, advancedPromptImprovement: false, crashTelemetryEnabled: false, skinId: 'default', themeId: 'midnight',
   interfaceFont: 'noto-sans', codeFont: 'jetbrains-mono',
   imageGeneration: { provider: 'auto', model: null, customProvider: null },
@@ -179,6 +180,16 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
     void window.piDesktop.getLearningStorage().then((storage) => { if (current) setLearningStorage(storage); }).catch(() => { if (current) setLearningStorage(null); });
     return () => { current = false; };
   }, [open, activeSection, learningProjectPath]);
+  const [releaseLabel, setReleaseLabel] = useState<string | null>(null);
+  useEffect(() => {
+    const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
+    if (typeof desktop?.getAppInfo !== 'function') return;
+    let current = true;
+    void desktop.getAppInfo().then((info) => {
+      if (current) setReleaseLabel(info.displayVersion ?? formatReleaseDisplayVersion(info.version, info.releaseName));
+    }).catch(() => undefined);
+    return () => { current = false; };
+  }, []);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -660,7 +671,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
                   </div>
                   <div className="settings-title settings-title--spaced"><div><h3>Ambient audio</h3><p>An optional player that stays separate from Pi and your project.</p></div></div>
                   <div className="settings-group">
-                    <label className="settings-toggle"><div><strong>Music player</strong><small>Shows the minimal lower-right dock. Requires yt-dlp on PATH and accepts user-supplied HTTPS links or playlists.</small></div><input type="checkbox" checked={settings.musicPlayerEnabled} onChange={(event) => setSettings({ ...settings, musicPlayerEnabled: event.target.checked })} /><span aria-hidden="true" /></label>
+                    <label className="settings-toggle"><div><strong>Music player</strong><small>Shows the minimal lower-right dock. Uses bundled yt-dlp and accepts user-supplied HTTPS links or playlists.</small></div><input type="checkbox" checked={settings.musicPlayerEnabled} onChange={(event) => setSettings({ ...settings, musicPlayerEnabled: event.target.checked })} /><span aria-hidden="true" /></label>
                   </div>
                 </div>
               )}
@@ -702,8 +713,8 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
 
               {activeSection === 'agent' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-agent" aria-labelledby="settings-tab-agent">
-                  <section className="workspace-preference" aria-label="Subagent workspace policy">
-                    <div className="settings-title"><div><h3>Subagent workspaces</h3><p>One preference for every team.</p></div><span className="workspace-preference-scope">Global</span></div>
+                  <section className="workspace-preference" aria-label="Agent workspace policy">
+                    <div className="settings-title"><div><h3>Agents</h3><p>Fate UI uses one unified agent system. Set the workspace preference for all newly created agents.</p></div><span className="workspace-preference-scope">Global</span></div>
                     <div className="workspace-preference-options" role="radiogroup" aria-label="Preferred workspace">
                       {([
                         { mode: 'shared', title: 'Shared checkout', description: 'Work directly in the parent’s files.', Icon: Folder },
@@ -723,7 +734,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
                     </label>
                     <div className="workspace-preference-footer">
                       <span>{workspacePolicy.strict ? 'Required' : 'Preferred'}: {workspacePolicy.preferredMode === 'worktree' ? 'isolated worktree' : 'shared checkout'}</span>
-                      <details className="workspace-preference-details"><summary>How it works</summary><p>Applies after saving to new agents. Strict mode also applies to resumed work; running work stays in place.</p><p>{settings.agentTeamMode === 'legacy' ? 'Agent Teams V2 only. Legacy subagents are not affected.' : 'No project restart is needed for workspace policy changes.'} Worktrees start from committed files, not uncommitted changes, and are not security sandboxes.</p></details>
+                      <details className="workspace-preference-details"><summary>How it works</summary><p>Applies after saving to all newly created agents. Strict mode also applies to resumed work; running work stays in place.</p><p>No project restart is needed for workspace policy changes. Worktrees start from committed files, not uncommitted changes, and are not security sandboxes.</p></details>
                     </div>
                   </section>
                   <div className="settings-title settings-title--spaced"><div><h3>Agent defaults</h3><p>Fallbacks for the first Pi session opened in a project. Later sessions inherit the active composer settings.</p></div></div>
@@ -771,7 +782,6 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
                   </div>
                   <div className="settings-group">
                     <div className="settings-select-row"><div><strong>Thinking level</strong><small>Initial reasoning effort when a project starts without an active session.</small></div><SelectControl compact={appearance.compactMode} label="Default thinking level" value={settings.thinkingLevel} className="settings-thinking-select" options={['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((level) => ({ value: level, label: level === 'xhigh' ? 'Extra high' : `${level[0]?.toUpperCase() ?? ''}${level.slice(1)}` }))} onValueChange={(value) => setSettings({ ...settings, thinkingLevel: value as AppSettings['thinkingLevel'] })} /></div>
-                    <div className="settings-select-row"><div><strong>Agent orchestration</strong><small>Agent Teams V2 enables recursive child/grandchild delegation with durable context and hard safety limits. Applies when the project is reopened.</small></div><SelectControl compact={appearance.compactMode} label="Agent orchestration mode" value={settings.agentTeamMode} options={[{ value: 'legacy', label: 'Legacy subagents', detail: 'Flat managed agents and deterministic workflows' }, { value: 'v2', label: 'Agent Teams V2 (beta)', detail: 'Recursive provider-neutral teams' }]} onValueChange={(value) => setSettings({ ...settings, agentTeamMode: value as AppSettings['agentTeamMode'] })} /></div>
                   </div>
 
                   <div className="settings-title settings-title--spaced"><div><h3>Image generation</h3><p>A dedicated image route, independent from the chat model and secured by Fate UI’s embedded SDK provider connection.</p></div></div>
@@ -942,6 +952,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
 
           <footer>
             <div className="settings-footer-status" aria-live="polite">
+              {releaseLabel ? <span className="settings-release-version" aria-label="Application version" title={releaseLabel}>{releaseLabel}</span> : null}
               <span>{status ?? (settingsLoaded ? 'Changes apply after saving.' : 'Loading settings…')}</span>
               {updateResult && (updateResult.status === 'available'
                 ? (updateInstalling && updateProgress

@@ -441,6 +441,14 @@ describe('SubagentCoordinator', () => {
       type: 'text',
       text: expect.stringMatching(/alternate\/glm[\s\S]*Capability contract/u),
     });
+    const contract = result.content[0]?.type === 'text' ? result.content[0].text : '';
+    expect(contract).toMatch(/One canonical agent system:[\s\S]*spawn_agent fields:[\s\S]*agent_workflow-only controls:/u);
+    expect(contract).toMatch(/16 live unreleased[\s\S]*3 active turns[\s\S]*512 nodes\/tasks\/receipts[\s\S]*256 message envelopes[\s\S]*32 KiB/u);
+    expect(contract).toMatch(/send_message[\s\S]*non-executable[\s\S]*followup_task[\s\S]*executable/u);
+    expect(contract).toMatch(/isolated worktree files never transfer or integrate automatically[\s\S]*result-unavailable[\s\S]*never replayed/u);
+    expect(contract).not.toMatch(/Agent Teams V2|legacy subagents|retarget|uncapped|subagent_start|subagent_manage|subagent_workflow/iu);
+    const spawnFields = (contract.split('\n').find((line) => line.startsWith('spawn_agent fields:')) ?? '').split('It creates')[0]!;
+    expect(spawnFields).not.toMatch(/timeoutSeconds|idleTimeoutSeconds|mailboxTtlSeconds|routing|budget|notifyParent/u);
     expect(result.details).toMatchObject({ kind: 'fate-subagent-catalog', version: 2 });
     expect(JSON.stringify(result.details)).not.toContain('Complete only the delegated task');
     expect(JSON.stringify(result.details)).not.toContain('example.test');

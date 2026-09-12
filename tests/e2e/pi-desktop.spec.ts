@@ -1154,7 +1154,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.evaluate(() => { document.documentElement.dataset.compactMode = 'true'; });
     const compactTaskHeight = (await ordinaryTasks.boundingBox())!.height;
     expect(compactTaskHeight).toBeLessThan(normalTaskHeight);
-    expect(compactTaskHeight).toBeLessThanOrEqual(26);
+    expect(compactTaskHeight).toBe(28);
     await ordinaryTasks.getByRole('button', { name: 'Expand task list' }).click();
     await expect(ordinaryTasks.getByRole('button', { name: /Change status/u })).toHaveCount(0);
     const taskStatus = ordinaryTasks.getByTitle('Status is updated by the agent');
@@ -1191,8 +1191,8 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
         expect(layout.contained).toBe(true);
       }
       const strip = page.getByRole('region', { name: 'GoalMax task strip' });
-      expect((await strip.boundingBox())!.height).toBeLessThanOrEqual(compact ? 26 : 34);
-      expect((await goalRail.boundingBox())!.height).toBeLessThanOrEqual(compact ? 24 : 32);
+      expect((await strip.boundingBox())!.height).toBe(compact ? 28 : 32);
+      expect((await goalRail.boundingBox())!.height).toBe(compact ? 28 : 32);
       const narrowRail = await goalRail.evaluate((element) => {
         const rail = element as HTMLElement;
         const previous = rail.style.width;
@@ -1584,7 +1584,10 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     expect(conversationScrollLayers!.scrollbarVisible).toBe('visible');
     expect(conversationScrollLayers!.scrollbarBottom).toBeLessThanOrEqual(conversationScrollLayers!.composerTop - 12);
     expect(conversationScrollLayers!.lastRowBottom).toBeGreaterThan(conversationScrollLayers!.composerTop);
-    await expect(page.getByRole('img', { name: 'Mermaid diagram' })).toBeVisible();
+    const diagram = page.getByRole('img', { name: 'Mermaid diagram' });
+    await expect(diagram).toBeVisible();
+    await expect(diagram.locator('svg text')).toContainText(['Project', 'Ready']);
+    await expect(diagram.locator('foreignObject, script')).toHaveCount(0);
     await page.getByRole('button', { name: 'Expand image: Project preview' }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.getByRole('dialog').getByRole('img', { name: 'Project preview' })).toBeVisible();

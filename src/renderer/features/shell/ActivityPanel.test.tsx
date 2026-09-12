@@ -10,7 +10,7 @@ import type { MutationAttestation } from '../../../shared/contracts/mutationAtte
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
-import { ActivityPanel, mergeActivity } from './ActivityPanel';
+import { ActivityPanel, mergeActivity, type ActivityRow } from './ActivityPanel';
 import { FLIGHT_RECORDER_LIMIT } from './flightDeck';
 import { Inspector } from './Inspector';
 
@@ -145,6 +145,114 @@ function mockQuery(result: { rows: MutationAttestation[]; truncated: boolean }) 
   return queryAttestations;
 }
 
+type RetainedRow = Parameters<typeof mergeActivity>[0][number];
+
+function retainedWrite(overrides: Partial<RetainedRow> & Pick<RetainedRow, 'id' | 'timestamp'>): RetainedRow {
+  return {
+    source: 'root', sourceRank: 0, sourceIndex: 0, kind: 'tool', title: 'edit', detail: 'completed',
+    target: { kind: 'tool', toolCallId: overrides.id },
+    provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'src/app.ts', operation: 'edit' }] },
+    ...overrides,
+  };
+}
+
+/** The pre-index implementation, retained here as an executable equivalence oracle and benchmark baseline. */
+function referenceMergeActivity(retained: readonly RetainedRow[], attestations: readonly MutationAttestation[]): ReturnType<typeof mergeActivity> {
+  const retainedKey = (row: RetainedRow): string | null => {
+    if (row.source === 'root') return 'root';
+    if (!row.target) return null;
+    if (row.source === 'legacy' && row.target.kind === 'agent') return `legacy:${row.target.runId}`;
+    if (row.source === 'team' && row.target.kind === 'team-node') return `team:${row.target.nodeId}`;
+    return null;
+  };
+  const ledgerKey = (record: MutationAttestation): string => {
+    if (record.actor.kind === 'root') return 'root';
+    if (record.actor.kind === 'legacy') return `legacy:${record.actor.runId}`;
+    return `team:${record.actor.nodeId}`;
+  };
+  const candidates = retained
+    .filter((row) => row.kind === 'tool' && (row.title === 'write' || row.title === 'edit'))
+    .map((row) => ({ row, actorKey: retainedKey(row), used: false }));
+  const ledgerIdByRowId = new Map<string, string>();
+  const matchedLedgerIds = new Set<string>();
+  for (const record of attestations) {
+    const actorKey = ledgerKey(record);
+    let best: (typeof candidates)[number] | null = null;
+    let bestDelta = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      if (candidate.used || candidate.actorKey !== actorKey || candidate.row.title !== record.operation) continue;
+      if (!candidate.row.provenance?.affectedPaths.some(
+        (reference) => reference.operation === record.operation && reference.path === record.path,
+      )) continue;
+      const delta = Math.abs(candidate.row.timestamp - record.recordedAt);
+      if (delta <= 10 * 60_000 && delta < bestDelta) {
+        best = candidate;
+        bestDelta = delta;
+      }
+    }
+    if (best) {
+      best.used = true;
+      matchedLedgerIds.add(record.id);
+      ledgerIdByRowId.set(best.row.id, record.id);
+    }
+  }
+
+  const actorText = (record: MutationAttestation): string => {
+    if (record.actor.kind === 'root') return 'Main agent';
+    if (record.actor.kind === 'legacy') return `Subagent ${record.actor.runId.slice(0, 8)}`;
+    const base = `Node ${record.actor.nodeId.slice(0, 8)}`;
+    return record.actor.taskId ? `${base} · task ${record.actor.taskId.slice(0, 8)}` : base;
+  };
+  const permissionText = (record: MutationAttestation): string => {
+    if (record.permissionLevel === 'read-only') return 'Read only';
+    if (record.permissionLevel === 'edit') return 'Edit files';
+    if (record.permissionLevel === 'full-access') return 'Full access';
+    return 'Unknown permission';
+  };
+  const hashText = (record: MutationAttestation): string => {
+    const post = record.postHash.slice(0, 8);
+    if (record.preState === 'hashed' && record.preHash) return `${record.preHash.slice(0, 8)} → ${post}`;
+    if (record.preState === 'oversize') return `oversize prior · ${post}`;
+    return `new file · ${post}`;
+  };
+  const detail = (record: MutationAttestation): string => `${actorText(record)} · ${permissionText(record)} · ${hashText(record)}`;
+  const attestationById = new Map(attestations.map((record) => [record.id, record]));
+  const rows: ActivityRow[] = retained.map((row): ActivityRow => {
+    const recordId = ledgerIdByRowId.get(row.id);
+    const record = recordId ? attestationById.get(recordId) : undefined;
+    if (record) {
+      const mergedDetail = detail(record);
+      return {
+        id: row.id, timestamp: row.timestamp, source: row.source, rank: 0, kind: 'write',
+        title: `${record.operation} ${record.path}`, detail: mergedDetail,
+        ...(row.target ? { target: row.target } : {}),
+        ledger: { operation: record.operation, path: record.path, detail: mergedDetail },
+      };
+    }
+    return {
+      id: row.id, timestamp: row.timestamp, source: row.source, rank: 0, kind: row.kind,
+      title: row.title, detail: row.detail, ...(row.target ? { target: row.target } : {}),
+    };
+  });
+  for (const record of attestations) {
+    if (matchedLedgerIds.has(record.id)) continue;
+    rows.push({
+      id: `ledger:${record.id}`, timestamp: record.recordedAt, source: record.actor.kind, rank: 1, kind: 'write',
+      title: `${record.operation} ${record.path}`, detail: detail(record),
+      ledger: { operation: record.operation, path: record.path, detail: '' },
+    });
+  }
+  rows.sort((left, right) => left.timestamp - right.timestamp || left.rank - right.rank || left.id.localeCompare(right.id));
+  return { rows, matchedLedgerIds };
+}
+
+function expectEquivalent(retained: readonly RetainedRow[], attestations: readonly MutationAttestation[]) {
+  const expected = referenceMergeActivity(retained, attestations);
+  const actual = mergeActivity(retained, attestations);
+  expect(actual.rows).toEqual(expected.rows);
+  expect([...actual.matchedLedgerIds]).toEqual([...expected.matchedLedgerIds]);
+}
+
 describe('mergeActivity', () => {
   it('joins a ledger record with its retained write/edit tool row into one row', () => {
     const retained: Parameters<typeof mergeActivity>[0] = [{
@@ -182,6 +290,122 @@ describe('mergeActivity', () => {
     const { matchedLedgerIds } = mergeActivity(retained, [attestation({ recordedAt: 10 + 11 * 60_000 })]);
     expect(matchedLedgerIds.size).toBe(0);
   });
+
+  it('is exactly equivalent to the scan join for adversarial keys, ties, duplicate paths and IDs', () => {
+    const retained: RetainedRow[] = [
+      retainedWrite({ id: 'tie-first', timestamp: 90, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'tie', operation: 'edit' }] } }),
+      retainedWrite({ id: 'tie-second', timestamp: 110, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'tie', operation: 'edit' }] } }),
+      retainedWrite({ id: 'multi', timestamp: 200, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'a', operation: 'edit' }, { path: 'b', operation: 'edit' }] } }),
+      retainedWrite({ id: 'b-fallback', timestamp: 203, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'b', operation: 'edit' }] } }),
+      retainedWrite({ id: 'duplicates', timestamp: 300, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'dup', operation: 'edit' }, { path: 'dup', operation: 'edit' }] } }),
+      retainedWrite({ id: 'same-id', timestamp: 400, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'id-a', operation: 'edit' }] } }),
+      retainedWrite({ id: 'same-id', timestamp: 410, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'id-b', operation: 'edit' }] } }),
+      retainedWrite({ id: 'wrong-operation-reference', timestamp: 500, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'wrong-op', operation: 'write' }] } }),
+      retainedWrite({ id: 'legacy', timestamp: 600, source: 'legacy', target: { kind: 'agent', runId: 'legacy-1' }, provenance: { actor: { kind: 'legacy', runId: 'legacy-1', parentToolCallId: 'parent-tool-1' }, affectedPaths: [{ path: 'legacy', operation: 'edit' }] } }),
+      retainedWrite({ id: 'team', timestamp: 700, source: 'team', target: { kind: 'team-node', teamId: 'team-1', nodeId: 'node-1' }, provenance: { actor: { kind: 'team', teamId: 'team-1', nodeId: 'node-1' }, affectedPaths: [{ path: 'team', operation: 'edit' }] } }),
+      { id: 'no-target', timestamp: 800, source: 'legacy', sourceRank: 1, sourceIndex: 10, kind: 'tool', title: 'edit', detail: 'completed', provenance: { actor: { kind: 'legacy', runId: 'legacy-1', parentToolCallId: 'parent-tool-1' }, affectedPaths: [{ path: 'legacy', operation: 'edit' }] } },
+      { id: 'message', timestamp: 42, source: 'root', sourceRank: 0, sourceIndex: 99, kind: 'message', title: 'message', detail: 'untouched' },
+    ];
+    const records = [
+      attestation({ id: 'tie-record', path: 'tie', recordedAt: 100 }),
+      attestation({ id: 'multi-a', path: 'a', recordedAt: 200 }),
+      attestation({ id: 'multi-b', path: 'b', recordedAt: 201 }),
+      attestation({ id: 'dup-record', path: 'dup', recordedAt: 300 }),
+      attestation({ id: 'duplicate-ledger-id', path: 'id-a', recordedAt: 400 }),
+      attestation({ id: 'duplicate-ledger-id', path: 'id-b', recordedAt: 410, postHash: 'd'.repeat(64) }),
+      attestation({ id: 'wrong-operation-record', path: 'wrong-op', recordedAt: 500 }),
+      attestation({ id: 'legacy-record', actor: { kind: 'legacy', runId: 'legacy-1', parentToolCallId: 'parent-tool-1' }, path: 'legacy', recordedAt: 600 }),
+      attestation({ id: 'team-record', actor: { kind: 'team', teamId: 'team-1', nodeId: 'node-1', taskId: 'task-1' }, path: 'team', recordedAt: 700 }),
+      attestation({ id: 'outside-window', path: 'tie', recordedAt: 700_101 }),
+    ];
+
+    expectEquivalent(retained, records);
+    expect(mergeActivity(retained, records).rows.find((row) => row.id === 'tie-first')?.title).toBe('edit tie');
+    expect(mergeActivity(retained, records).rows.find((row) => row.id === 'b-fallback')?.title).toBe('edit b');
+  });
+
+  it('stays equivalent across deterministic mixed-key streams', () => {
+    for (let seed = 0; seed < 20; seed += 1) {
+      const retained = Array.from({ length: 40 }, (_value, index) => {
+        const operation = (index + seed) % 3 === 0 ? 'write' as const : 'edit' as const;
+        const source = index % 4 === 0 ? 'legacy' as const : 'root' as const;
+        return retainedWrite({
+          id: index % 13 === 0 ? `duplicate-${seed}` : `row-${seed}-${index}`,
+          timestamp: seed * 10_000 + index * 17,
+          source,
+          title: operation,
+          target: source === 'legacy' ? { kind: 'agent', runId: `run-${index % 2}` } : { kind: 'tool', toolCallId: `tool-${index}` },
+          provenance: {
+            actor: source === 'legacy' ? { kind: 'legacy', runId: `run-${index % 2}`, parentToolCallId: `parent-${index % 2}` } : { kind: 'root' },
+            affectedPaths: [
+              { path: `src/${(index * 7 + seed) % 11}.ts`, operation },
+              { path: `src/${(index * 3 + seed) % 11}.ts`, operation },
+            ],
+          },
+        });
+      });
+      const records = Array.from({ length: 60 }, (_value, index) => {
+        const operation = (index + seed) % 3 === 0 ? 'write' as const : 'edit' as const;
+        const legacy = index % 4 === 0;
+        return attestation({
+          id: index % 17 === 0 ? `duplicate-record-${seed}` : `record-${seed}-${index}`,
+          recordedAt: seed * 10_000 + index * 13,
+          actor: legacy ? { kind: 'legacy', runId: `run-${index % 2}`, parentToolCallId: `parent-${index % 2}` } : { kind: 'root' },
+          operation,
+          path: `src/${(index * 5 + seed) % 11}.ts`,
+        });
+      });
+      expectEquivalent(retained, records);
+    }
+  });
+
+  it('preserves retained output exactly when the ledger is empty', () => {
+    const retained: RetainedRow[] = [
+      retainedWrite({ id: 'later-write', timestamp: 30, provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'src/a.ts', operation: 'edit' }, { path: 'src/b.ts', operation: 'edit' }] } }),
+      { id: 'earlier-message', timestamp: 10, source: 'root', sourceRank: 0, sourceIndex: 1, kind: 'message', title: 'message', detail: 'unchanged' },
+      retainedWrite({ id: 'middle-write', timestamp: 20, title: 'write', provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: 'src/c.ts', operation: 'write' }] } }),
+    ];
+
+    expectEquivalent(retained, []);
+    expect(mergeActivity(retained, []).rows.map((row) => row.id)).toEqual(['earlier-message', 'middle-write', 'later-write']);
+  });
+
+  it.runIf(process.env.ACTIVITY_MERGE_BENCH === '1')('benchmarks scan baseline versus indexed merge reproducibly', () => {
+    const makeCase = (hot: boolean) => {
+      const retained = Array.from({ length: 300 }, (_value, index) => retainedWrite({
+        id: `bench-row-${index}`,
+        timestamp: index * 10,
+        provenance: { actor: { kind: 'root' }, affectedPaths: [{ path: hot ? 'src/hot.ts' : `src/candidate-${index}.ts`, operation: 'edit' }] },
+      }));
+      const records = Array.from({ length: 500 }, (_value, index) => attestation({
+        id: `bench-record-${index}`,
+        recordedAt: index * 10 + 1,
+        path: hot ? 'src/hot.ts' : `src/ledger-${index}.ts`,
+      }));
+      return { retained, records };
+    };
+    const measure = (run: () => unknown): number => {
+      const samples: number[] = [];
+      for (let sample = 0; sample < 9; sample += 1) {
+        const started = performance.now();
+        for (let iteration = 0; iteration < 20; iteration += 1) run();
+        samples.push((performance.now() - started) / 20);
+      }
+      samples.sort((left, right) => left - right);
+      return samples[Math.floor(samples.length / 2)]!;
+    };
+
+    const emptyLedger = { retained: makeCase(false).retained, records: [] as MutationAttestation[] };
+    for (const [name, fixture] of [['empty-ledger', emptyLedger], ['disjoint', makeCase(false)], ['hot-same-key', makeCase(true)]] as const) {
+      expectEquivalent(fixture.retained, fixture.records);
+      // Warm both implementations before measuring median per-call samples.
+      referenceMergeActivity(fixture.retained, fixture.records);
+      mergeActivity(fixture.retained, fixture.records);
+      const baselineMs = measure(() => referenceMergeActivity(fixture.retained, fixture.records));
+      const indexedMs = measure(() => mergeActivity(fixture.retained, fixture.records));
+      console.info(`[Activity merge benchmark] ${name}: baseline=${baselineMs.toFixed(3)}ms indexed=${indexedMs.toFixed(3)}ms speedup=${(baselineMs / indexedMs).toFixed(2)}x`);
+    }
+  });
 });
 
 describe('Activity inspector panel', () => {
@@ -203,7 +427,7 @@ describe('Activity inspector panel', () => {
     expect(screen.getByText(/Live rows are session memory and are not durable/i)).toBeInTheDocument();
     // Source badges distinguish the three execution origins across merged rows.
     expect(screen.getAllByText('Root').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('Legacy').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Historical').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Team').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -276,12 +500,12 @@ describe('Activity inspector panel', () => {
     expect(screen.getByRole('button', { name: 'Open Root tool: edit' })).toBeInTheDocument();
     expect(screen.queryByText(/Agent message/i)).not.toBeInTheDocument();
 
-    // + Legacy source: nothing matches, and the no-match notice is honest.
-    await user.click(within(bar).getByRole('button', { name: 'Legacy' }));
+    // + Historical source: nothing matches, and the no-match notice is honest.
+    await user.click(within(bar).getByRole('button', { name: 'Historical' }));
     expect(screen.getByText('No rows match these filters.')).toBeInTheDocument();
 
     // Pressing the pressed source toggle again releases it.
-    await user.click(within(bar).getByRole('button', { name: 'Legacy' }));
+    await user.click(within(bar).getByRole('button', { name: 'Historical' }));
     expect(screen.getByRole('button', { name: 'Open Root tool: edit' })).toBeInTheDocument();
 
     // Releasing Writes restores the full list.

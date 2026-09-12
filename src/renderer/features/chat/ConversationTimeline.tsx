@@ -282,7 +282,7 @@ const TimelineRow = memo(function TimelineRow({ id, waitPollCount }: { id: strin
   return <div className={`timeline-notice${entry.phase === 'failed' ? ' timeline-notice--error' : ''}`} role={entry.phase === 'failed' ? 'alert' : undefined}><Icon size={15} /><span>{text}{entry.error?.actionable && <small>{entry.error.actionable}</small>}</span></div>;
 });
 
-export function ConversationTimeline() {
+export const ConversationTimeline = memo(function ConversationTimeline() {
   const order = useRuntimeStore((state) => state.timelineOrder);
   const visibleOrder = useRuntimeStore((state) => state.visibleTimelineOrder);
   const timelineVersion = useRuntimeStore((state) => state.timelineVersion);
@@ -609,4 +609,4 @@ export function ConversationTimeline() {
       </div>
     </ConversationImageViewerProvider>
   );
-}
+});

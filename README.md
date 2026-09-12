@@ -1,144 +1,177 @@
 <div align="center">
 
+<img src="build/icon.png" alt="Fate UI" width="76" height="76">
+
 # Fate UI
 
-### A local-first desktop workspace for Pi Agent
+### Your coding agent. A workspace you control.
 
-Run the real Pi coding agent in a focused graphical workspace for durable conversations, transparent agent activity, project files, Git, terminals, and explicit trust controls.
+**V1.0.0 - Modulo**
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-6f63ff.svg)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-252a38.svg)](#get-started-in-60-seconds)
-[![Electron](https://img.shields.io/badge/Electron-43-47848f.svg)](https://www.electronjs.org/)
+A local-first desktop workspace for the real [Pi coding agent](https://github.com/earendil-works/pi).<br>
+Keep conversations, agents, browser context, files, Git, and terminals in one place.
 
-[Latest beta](https://github.com/Master0fFate/pi-fategui/releases) · [Get started](#get-started-in-60-seconds) · [Capabilities](#capabilities) · [Stay safe](#stay-safe) · [Docs](docs/README.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
+[![Platforms](https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-Desktop-333a46?style=flat-square)](#download)
+[![License](https://img.shields.io/badge/License-Apache--2.0-6f63ff?style=flat-square)](LICENSE)
+[![Build and package](https://github.com/Master0fFate/pi-fategui/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/Master0fFate/pi-fategui/actions/workflows/cross-platform.yml)
+
+[**Download**](https://github.com/Master0fFate/pi-fategui/releases) · [**Get started**](#get-started-in-60-seconds) · [**Documentation**](docs/README.md) · [**What’s in V1**](.github/release-notes/v1.0.0.md) · [**Contribute**](CONTRIBUTING.md)
 
 </div>
 
-<table width="100%">
-  <tr>
-    <th width="50%" align="center">Dark · Midnight</th>
-    <th width="50%" align="center">Light · Daylight</th>
-  </tr>
-  <tr>
-    <td align="center"><img src="screenshots/fate-ui-dark.png" alt="Fate UI in dark mode" width="100%"></td>
-    <td align="center"><img src="screenshots/fate-ui-light.png" alt="Fate UI in light mode" width="100%"></td>
-  </tr>
-  <tr>
-    <th colspan="2" align="center">Angelcore</th>
-  </tr>
-  <tr>
-    <td colspan="2" align="center"><img src="screenshots/fate-ui-angelcore.png" alt="Fate UI with the Angelcore skin and Monochrome palette: terminal-style controls, conversation, command input, and Git diff" width="100%"></td>
-  </tr>
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="screenshots/fate-ui-light.png">
+  <img src="screenshots/fate-ui-dark.png" alt="Fate UI: a coding conversation beside project navigation and a Git diff" width="100%">
+</picture>
+
+<p align="center"><sub>Actual Electron interface. Screenshots use a local demonstration project and illustrative agent messages.</sub></p>
+
+## Built for the whole coding session
+
+An agent should not turn your workspace into a black box. Fate UI brings the conversation and the evidence together: see the tools running, inspect the changes, follow delegated work, and decide what happens next.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### Delegate with clear ownership
+
+Run individual agents or dependency-based workflows through one execution engine. Choose each agent’s model, reasoning effort, tools, and skills. Use shared checkouts or isolated Git worktrees, with explicit review before integration.
+
+[Agents and workflows →](docs/agent-orchestration.md)
+
+</td>
+<td width="50%" valign="top">
+
+### Give the agent useful context
+
+Browse inside the workspace, select page elements, and attach browser annotations to the conversation. Add files, images, and saved-session references without losing your place.
+
+[Browser and session context →](docs/features.md)
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Review the work, not just the answer
+
+Inspect file changes with Monaco diffs, browse Git history, and use the activity timeline to investigate tool actions. A separate manual terminal stays available for your own commands.
+
+[Files, Git, and activity →](docs/features.md)
+
+</td>
+<td valign="top">
+
+### Keep longer tasks accountable
+
+GoalMax pairs an objective with completion criteria, progress evidence, and verification. Durable tasks and editable queues make the next steps visible; recovered drafts are not silently resent.
+
+[Goals and durable work →](docs/goalmax.md)
+
+</td>
+</tr>
 </table>
 
-<p align="center"><sub>Angelcore skin + Monochrome palette. Actual Electron capture with deterministic demo content.</sub></p>
+**Make it your workspace.** Use the Default interface or Angelcore’s compact terminal-style controls. Choose independent palettes and fonts, import skin packs, and add locally processed dithered backgrounds. Optional local voice transcription, image generation, ambient audio, and reviewed Memory Learning are built in.
 
-## What Fate UI is
+<details>
+<summary><strong>See Angelcore</strong> — monochrome, compact, and deliberately quiet</summary>
+<br>
+<img src="screenshots/fate-ui-angelcore.png" alt="Fate UI with the Angelcore skin: monospaced text, bracketed actions, and a focused coding workspace" width="100%">
 
-Fate UI is a local-first **Electron desktop** workspace for the real Pi coding agent. It embeds `@earendil-works/pi-coding-agent` in the main process — it does not scrape Pi's terminal UI, and production never substitutes mocked agent responses. Repositories, sessions, Git, terminals, settings, and credentials stay on your machine.
+[Skins](docs/skins.md) · [Themes](docs/themes.md) · [Memory Learning](docs/project-learning.md)
+</details>
 
-Fate UI is an independent community project and is **not** an official Pi distribution.
+## Download
 
-## SDK-only runtime
+Get installers and `SHA256SUMS` from [GitHub Releases](https://github.com/Master0fFate/pi-fategui/releases).
 
-Fate UI embeds `@earendil-works/pi-coding-agent` in its Electron main process. It does **not** start, shell out to, or require the `pi` terminal program. Installing Fate UI is enough to run the agent runtime.
-
-| Data | Owner and location |
-| --- | --- |
-| Provider credentials and model configuration | Fate UI: `~/.pi/fateGUI/` |
-| Pi sessions, settings, MCP configuration, skills, and extensions | Shared Pi resources: `~/.pi/agent/` and trusted project resources |
-
-On the first Fate UI run only, existing Pi `auth.json` and `models.json` are copied into the Fate UI provider store. Later Pi Terminal changes do not silently alter Fate UI credentials or models.
+| Platform | Architecture | Installer |
+| :-- | :-- | :-- |
+| Windows | x64 | `.exe` |
+| macOS | Apple Silicon · Intel | `.dmg` or `.pkg` |
+| Linux | x64 | `.AppImage` or `.deb` |
 
 > [!IMPORTANT]
-> Fate UI is beta software (`0.x` releases). Expect rough edges, and **back up important work before relying on it.** Public beta installers are currently unsigned — verify downloads against `SHA256SUMS` before installation.
+> **Installers are currently unsigned; macOS builds are not notarized.** Windows SmartScreen and macOS Gatekeeper may warn or block launch. Download from this repository’s Releases page and verify the artifact against its `SHA256SUMS`. Checksums detect mismatched downloads; they do not replace publisher code signing.
 
 ## Get started in 60 seconds
 
-### 1. Install
+### 1. Install Fate UI
 
-Download installers and `SHA256SUMS` from the [GitHub Releases page](https://github.com/Master0fFate/pi-fategui/releases). Builds cover Windows x64, macOS Apple Silicon and Intel, and Linux x64.
-
-**Windows** — run `Fate-UI-<version>-Windows-x64.exe` and keep **Add Fate UI to PATH** selected for the `fate` command. Open a **new** terminal afterward.
-
-**macOS** — pick the `arm64` (Apple Silicon) or `x64` (Intel) build. Run `Fate-UI-<version>-macOS-<arch>.pkg` to install under `/Applications` and add `fate` under `/usr/local/bin`, or open the `.dmg` and copy the app to Applications.
-
-**Linux** — install the Debian package or run the portable AppImage:
+- **Windows:** run the installer. Keep **Add Fate UI to PATH** selected for the `fate` command, then open a new terminal.
+- **macOS:** choose your architecture. The `.pkg` installs the app and the `fate` launcher; the `.dmg` lets you copy the app to Applications.
+- **Linux:** install the `.deb`, or make the AppImage executable and launch it.
 
 ```bash
-sudo apt install ./Fate-UI-<version>-Linux-x64.deb      # or:
-chmod +x Fate-UI-<version>-Linux-x64.AppImage && ./Fate-UI-<version>-Linux-x64.AppImage
+# Debian / Ubuntu
+sudo apt install ./Fate-UI-1.0.0-Linux-x64.deb
+
+# Portable AppImage
+chmod +x Fate-UI-1.0.0-Linux-x64.AppImage
+./Fate-UI-1.0.0-Linux-x64.AppImage
 ```
 
-Building an installer from source is covered in [Development and release](docs/development.md).
+### 2. Connect your provider
 
-### 2. Connect an AI provider
+Choose **Connect your AI**, or use `/login` in an open project. Sign in using a supported provider’s OAuth flow or API key, then select a model.
 
-Fate UI uses its own provider credentials and model configuration under `~/.pi/fateGUI/`. On its first run only, it copies existing `~/.pi/agent/auth.json` and `models.json` when present. It does not copy or alter Pi sessions, settings, MCP configuration, skills, or extensions. Raw API keys are never exposed to renderer state.
+You can also add providers from the live **models.dev** catalog. Fate UI keeps provider credentials in the main process; raw keys are not exposed to renderer state.
 
-1. Open Fate UI and select **Connect your AI**. You can also use `/login` after opening a project.
-2. Choose a provider, then complete its OAuth or API-key flow.
-3. The available model list refreshes automatically. Select a model, open a trusted project, and start prompting.
+**No separate Pi terminal installation is required.** Fate UI embeds the Pi SDK directly.
 
-#### Add any provider from models.dev
+### 3. Open a project and start working
 
-The same live picker is available in two places: **/login → Add provider from models.dev** (including the first-run *Connect your AI* dialog) and Settings → **Agent → Providers → Add provider**. It is built on the open [models.dev](https://models.dev) catalog (~190 providers). Pick one, paste its API key (optional), and Fate UI writes the full provider block — models, pricing, reasoning effort maps, tool and structured-output flags — into `~/.pi/fateGUI/models.json` and the key into the local credential store. No secret ever lands in models.json; it only references the provider's environment variable. Added providers appear in /login immediately, where you can also sign in or sign out later with the standard flow.
-
-Managed provider behavior:
-
-- The model list refreshes from models.dev once per Fate GUI start; offline starts keep the last cached list.
-- The Add Provider picker always fetches fresh catalog data and never uses the cache.
-- Provider logos load live from models.dev; they are never cached and simply stay hidden offline.
-- A managed row shows a **key needed** badge until a credential exists, and ✕ removes the provider again.
-
-Fate UI bundles and runs the Pi SDK directly. You do not need a separate `pi` installation or a running Pi terminal process. Fate UI keeps compatibility with Pi's shared session, settings, MCP, skill, and extension layout through the SDK; this is resource compatibility, not a terminal dependency. Existing provider credentials are imported once on first run; supported environment credentials remain available through the SDK. Runtime diagnostics load without credentials, but prompting is unavailable until Pi reports an authenticated model.
-
-### 3. Launch, trust, and prompt
+Use **Open project**, or launch from your terminal:
 
 ```bash
 cd /path/to/project
-fate                       # or: fate /path/to/project
+fate
+# Or: fate /path/to/project
 ```
 
-Fate UI opens the canonical directory and shows its trust prompt — choose **Trust**, **Open without Pi**, or **Cancel**. Fate UI is **single-instance by default**: a later `fate /path/to/project` launch forwards that folder to the already-running app (opening or focusing it) and exits instead of starting a second process. For multiple synced views of one session, use **File → New Window** (`Ctrl/Cmd+Shift+N`); it reuses the same live runtime. To start a fully isolated second process with its own persistent Chromium profile slot, add `--new-instance` (or set `FATE_NEW_INSTANCE=1`). Pi sessions stay shared; Fate UI provider auth and model configuration stay isolated. See [Sessions and processes](docs/sessions-and-processes.md). Then type your first prompt.
+Review the project trust decision, choose the agent’s permission level, and send a prompt. Inspect tool activity and Git changes as the work progresses.
 
-## Capabilities
+```text
+Inspect this repository and propose a focused plan.
+Implement the change, run the relevant checks, and show me what changed.
+Preserve existing behavior outside the requested scope.
+```
 
-- **The real Pi runtime.** Streamed text, reasoning, tools, sessions, models, skills, and prompts all come from the embedded Pi SDK — no scraping.
-- **Flight Deck observability.** **Activity Pulse** tracks live runtime, queue, context, and changes. The **Activity** timeline joins a live, bounded history of root, legacy, and Agent Team activity (**not a durable audit log**) with the project's direct-write ledger rows. **Review Runway** pairs working-tree diffs with review status and **related direct-file activity**. See [Features](docs/features.md).
-- **Agent orchestration.** Recursive Agent Teams V2 with a global workspace preference, optional strict enforcement, and explicit worktree review/integration—or isolated legacy sessions. Configure workspace policy in Settings → Agent and let the AI create its teams. Each child's model, tools, skills, and permissions remain configurable. See [Agent orchestration](docs/agent-orchestration.md).
-- **Memory Learning (opt-in).** Reviewed local memory for how you like to work and what this repository needs. Enable it in Settings, then turn GLOBAL, PROJECT, or both on. See [Memory Learning](docs/project-learning.md).
-- **First-class Git and files.** Status, history, commits, Monaco diffs, and project-confined file browsing without leaving the app.
-- **A manual terminal and an embedded browser** alongside agent activity.
-- **Session references and direct session messages.** Attach saved sessions as read-only context, or message a saved session without switching away from your current one.
-- **Native media.** Local voice transcription, ambient audio, and image generation. See [Features](docs/features.md).
-- **Skins, themes, and dithered backgrounds.** Keep the Default workbench or choose the built-in, terminal-style **Angelcore** skin. **Settings → Skins** supports folder-based skin pack imports/exports, independent color palettes, and locally processed image backgrounds. See [Skins](docs/skins.md) and [Themes](docs/themes.md).
+Later `fate` launches reuse the running workspace. **File → New Window** opens another synced view; `--new-instance` creates a separate process/profile when you need one. [Sessions and processes →](docs/sessions-and-processes.md)
 
-## Stay safe
+## Local-first, with explicit boundaries
 
-- **Beta.** Fate UI is `0.x` beta software. Back up important work before relying on it.
-- **Unsigned installers.** Public beta installers are unsigned; Windows SmartScreen or macOS Gatekeeper may warn. Verify every download against `SHA256SUMS` before installation.
-- **Permission model.** Fate UI starts Pi in project-confined **Edit files** mode. **Read only** removes mutation tools. **Full access** is intentionally unsandboxed, requires explicit confirmation, and lets Pi run shell commands and reach host paths with your account's permissions. Opening another project resets the active permission level.
-- **Explicit trust.** Every project gets a **Trust / Open without Pi / Cancel** choice. The manual terminal stays visibly separate from Pi-generated tool activity.
-- **Credentials stay local.** Fate UI imports Pi credentials only on its first run, then keeps its provider store separate. Raw API keys are never displayed in renderer state.
+Projects, session history, settings, and credentials are stored locally. **Prompts and selected context are sent to the AI provider you configure.** Browser pages, provider discovery, optional downloads, and other network-enabled features also use the network; local-first does not mean offline-only.
 
-Full trust, boundary, and hardening detail lives in [Architecture and security](docs/architecture.md) and [SECURITY.md](SECURITY.md).
+| Boundary | What it means |
+| :-- | :-- |
+| Project trust | Choose **Trust**, **Open without Pi**, or **Cancel** when opening a project. |
+| Read only | Project-modification and shell tools are unavailable. |
+| Edit files | Agent file operations remain project-confined. |
+| Full access | Explicitly unsandboxed access with your account’s permissions. Use deliberately. |
+| Agent worktrees | Isolated Git checkouts, **not security sandboxes**. Integration is a separate action. |
+| Local credentials | Fate’s provider store is separate from Pi Terminal’s; existing credentials are copied only on first run. |
 
-## Documentation
+Keep important work backed up and review changes before merging or deploying. Activity links and local hash records aid investigation; they are not tamper-proof proof of authorship. [Architecture and security →](docs/architecture.md)
 
-| If you want to… | Read |
-| --- | --- |
-| Understand the whole doc set | [Docs index](docs/README.md) |
-| Get oriented and open your first project | [Get started](#get-started-in-60-seconds) · [Sessions and processes](docs/sessions-and-processes.md) |
-| See what agents are doing | [Features (Flight Deck)](docs/features.md) |
-| Choose, create, or import a skin; customize colors | [Skins](docs/skins.md) · [Example skin pack](examples/skins/ashen-terminal) · [Themes](docs/themes.md) |
-| Drive Agent Teams or subagents | [Agent orchestration](docs/agent-orchestration.md) |
-| Review trust, permissions, and isolation | [Architecture and security](docs/architecture.md) · [SECURITY.md](SECURITY.md) |
-| Build, package, or release | [Development and release](docs/development.md) |
-| Contribute | [Contributing](CONTRIBUTING.md) |
+Fate UI is an independent community project, not an official Pi distribution.
 
-## Contributing and license
+## Explore the documentation
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), keep changes narrow, and preserve the main/renderer security boundary.
+| You want to… | Start here |
+| :-- | :-- |
+| Understand the workspace | [Features](docs/features.md) |
+| Delegate and review agent work | [Agent orchestration](docs/agent-orchestration.md) |
+| Run goals and manage queued work | [GoalMax](docs/goalmax.md) · [Sessions](docs/sessions-and-processes.md) |
+| Customize the interface | [Skins](docs/skins.md) · [Themes](docs/themes.md) |
+| Review and save useful project knowledge | [Memory Learning](docs/project-learning.md) |
+| Build or stage a release | [Development and release](docs/development.md) |
+| Report a security issue | [Security policy](SECURITY.md) |
 
-Fate UI is licensed under the [Apache License 2.0](LICENSE). Distributed modifications must retain applicable copyright, license, trademark, and attribution notices, include the project's [NOTICE](NOTICE), and identify changed files as required by Apache-2.0. The license does **not** grant permission to use project names, logos, or marks in a way that implies an unmodified official build or endorsement — see [TRADEMARKS.md](TRADEMARKS.md). Third-party terms, including the MIT-licensed Pi coding agent, are reproduced in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+## Build with us
+
+Found a bug or have a focused feature idea? [Open an issue](https://github.com/Master0fFate/pi-fategui/issues). For code contributions, start with [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/Master0fFate/pi-fategui/security/advisories/new).
+
+Fate UI is licensed under [Apache-2.0](LICENSE). Distribution requirements and third-party attribution are documented in [NOTICE](NOTICE), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and [FONT_LICENSES.md](FONT_LICENSES.md). The license does not grant trademark rights; see [TRADEMARKS.md](TRADEMARKS.md).

@@ -113,6 +113,48 @@ describe('subagent session inspector', () => {
     Reflect.deleteProperty(window, 'piDesktop');
   });
 
+  it.each(['spawn_agent', 'agent_workflow'])('opens the existing team preview from %s without changing operation status', async (name) => {
+    const user = userEvent.setup();
+    useRuntimeStore.getState().hydrateRuntime({
+      ...state, agentTeams: [{ ...team, nodes: team.nodes.map((node) => ({ ...node, status: 'active' })) }],
+      tools: [{ ...state.tools![0]!, name, subagentRunIds: ['team-reviewer'] }],
+    });
+    render(<><ToolCard toolCallId="delegate-1" /><SubagentSessionsPanel /></>);
+    expect(screen.getByRole('article', { name: `${name} tool succeeded` })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'View subagent session' }));
+    expect(useUiStore.getState().selectedAgent).toEqual({ kind: 'team-node', teamId: team.id, nodeId: 'team-reviewer' });
+    expect(screen.getByText('Review complete.')).toBeVisible();
+    expect(screen.queryByText(/session unavailable/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { label: 'unknown', ids: ['missing'], teams: [team] },
+    ...['__proto__', 'constructor', 'prototype'].map((id) => ({ label: `unknown ${id}`, ids: [id], teams: [team] })),
+    { label: 'malformed', ids: [' team-reviewer'], teams: [team] },
+    { label: 'multiple', ids: ['team-root', 'team-reviewer'], teams: [team] },
+    { label: 'empty startup', ids: [], teams: [] },
+    { label: 'legacy collision', ids: [run.id], teams: [{ ...team, nodes: [{ ...team.nodes[1]!, id: run.id }] }] },
+    { label: 'team collision', ids: ['team-reviewer'], teams: [team, { ...team, id: 'team-2' }] },
+  ])('opens the agent list for $label workflow identities', async ({ ids, teams }) => {
+    const user = userEvent.setup();
+    useRuntimeStore.getState().hydrateRuntime({
+      ...state, agentTeams: teams,
+      tools: [{ ...state.tools![0]!, name: 'agent_workflow', subagentRunIds: ids }],
+    });
+    useUiStore.setState({ selectedAgent: { kind: 'subagent', runId: run.id }, inspectorCollapsed: true });
+    render(<ToolCard toolCallId="delegate-1" />);
+    await user.click(screen.getByRole('button', { name: /^View .*session/u }));
+    expect(useUiStore.getState()).toMatchObject({ selectedAgent: null, inspectorCollapsed: false, inspectorTab: 'sessions' });
+  });
+
+  it('does not interpret arbitrary tool output as an agent reference', () => {
+    useRuntimeStore.getState().hydrateRuntime({
+      ...state, tools: [{ ...state.tools![0]!, name: 'read', subagentRunIds: undefined, output: '{"nodeId":"team-reviewer","runIds":["team-reviewer"]}' }],
+    });
+    render(<ToolCard toolCallId="delegate-1" />);
+    expect(screen.queryByRole('button', { name: /^View .*session/u })).not.toBeInTheDocument();
+  });
+
   it('keeps team creation and workspace policy out of the run inspector', () => {
     useRuntimeStore.getState().hydrateRuntime({ ...state, agentTeams: [{ ...team, workspaceDefaults: { mode: 'shared' } }] });
     render(<SubagentSessionsPanel />);
@@ -292,6 +334,69 @@ describe('subagent session inspector', () => {
     expect(within(workflows).getByText('Workflow liveness checkpoint · adaptive-limit')).toBeInTheDocument();
   });
 
+  it('counts Team-backed workflow nodes once and opens their retained Team preview', async () => {
+    const user = userEvent.setup();
+    useRuntimeStore.getState().hydrateRuntime({
+      ...state,
+      subagents: [run],
+      agentTeams: [team],
+      subagentWorkflows: [{
+        id: 'workflow-mixed', parentSessionId: 'parent-1', parentToolCallId: 'delegate-1', status: 'running',
+        maxConcurrency: 2, notification: 'next-turn',
+        usage: { input: 20, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.002, contextTokens: 25, turns: 1 },
+        nodes: [
+          { id: 'team-step', runId: 'team-reviewer', handle: 'workflow-reviewer', displayName: 'Workflow Reviewer', task: 'Review through the unified runtime', status: 'completed', dependsOn: [], startedAt: 2, endedAt: 4 },
+          { id: 'pending-step', runId: 'not-retained-team-node', handle: 'pending-step', displayName: 'Pending Worker', task: 'Wait for the review', status: 'pending', dependsOn: ['team-step'] },
+          { id: 'legacy-step', runId: run.id, handle: run.handle, displayName: run.displayName, task: run.task, status: 'completed', dependsOn: [], startedAt: run.startedAt, endedAt: run.endedAt },
+        ],
+        createdAt: 1, updatedAt: 4,
+      }],
+    });
+    render(<SubagentSessionsPanel />);
+
+    expect(document.querySelector('.agent-tree-overview')).toHaveTextContent('3 agents · 1 active');
+    const workflow = screen.getByRole('region', { name: 'Workflow workflow-mixed' });
+    expect(within(workflow).getByText('@pending-step').closest('article')).toHaveClass('subagent-session-row--placeholder');
+    expect(within(workflow).getByRole('button', { name: 'Open Architecture Scout (@architecture-scout-1) child session: Completed' })).toBeInTheDocument();
+
+    const workflowAgent = within(workflow).getByRole('button', { name: 'Open Workflow Reviewer workflow agent: Completed' });
+    await user.click(workflowAgent);
+
+    expect(useUiStore.getState().selectedAgent).toEqual({ kind: 'team-node', teamId: team.id, nodeId: 'team-reviewer' });
+    expect(workflowAgent).toHaveAttribute('aria-current', 'true');
+    const preview = screen.getByRole('region', { name: 'Reviewer chat preview' });
+    expect(within(preview).getByText('Review the change and report concrete risks.')).toBeInTheDocument();
+    expect(within(preview).getByText('Review complete.')).toBeInTheDocument();
+  });
+
+  it('uses live Team turns when a completed workflow child is active for follow-up', () => {
+    const followupTeam: AgentTeam = {
+      ...team,
+      activeTurns: 1,
+      nodes: team.nodes.map((node) => node.id === 'team-reviewer' ? { ...node, status: 'active' as const, currentTaskId: 'team-followup' } : node),
+      tasks: [...team.tasks, {
+        id: 'team-followup', teamId: team.id, assigneeNodeId: 'team-reviewer', requesterNodeId: 'team-root',
+        inputEnvelopeId: 'team-followup-envelope', summary: 'Check one follow-up detail', status: 'running', createdAt: 5, startedAt: 5,
+      }],
+    };
+    useRuntimeStore.getState().hydrateRuntime({
+      ...state,
+      subagents: [],
+      agentTeams: [followupTeam],
+      subagentWorkflows: [{
+        id: 'workflow-followup', parentSessionId: 'parent-1', parentToolCallId: 'delegate-1', status: 'completed',
+        maxConcurrency: 1, notification: 'next-turn',
+        usage: { input: 20, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.002, contextTokens: 25, turns: 1 },
+        nodes: [{ id: 'completed-step', runId: 'team-reviewer', handle: 'workflow-reviewer', displayName: 'Workflow Reviewer', task: 'Review through the unified runtime', status: 'completed', dependsOn: [], startedAt: 2, endedAt: 4 }],
+        createdAt: 1, updatedAt: 4,
+      }],
+    });
+
+    render(<SubagentSessionsPanel />);
+
+    expect(document.querySelector('.agent-tree-overview')).toHaveTextContent('1 agent · 1 active');
+  });
+
   it('consumes a retained tool jump after focus without clearing a newer nonce', async () => {
     const view = render(<ToolCard toolCallId="delegate-1" />);
     act(() => useUiStore.getState().requestFlightDeckJump('/project', 'parent-1', { kind: 'tool', toolCallId: 'delegate-1' }));
@@ -353,19 +458,61 @@ describe('subagent session inspector', () => {
     expect(screen.getByLabelText('Reviewer Agent Team node ready')).toBeInTheDocument();
   });
 
-  it('uses a compact themed confirmation when deleting Agent Team history', async () => {
+  it('portals team-history confirmation out of the lifecycle toolbar', async () => {
     const user = userEvent.setup();
     useRuntimeStore.getState().hydrateRuntime({ ...state, subagents: [], agentTeams: [{ ...team, status: 'closed' }] });
     render(<SubagentSessionsPanel />);
 
-    await user.click(screen.getByRole('button', { name: 'Delete team history for Review team' }));
+    const trigger = screen.getByRole('button', { name: 'Delete team history for Review team' });
+    await user.click(trigger);
 
     const confirmation = screen.getByRole('alertdialog', { name: 'Delete Review team history?' });
-    expect(within(confirmation).getByRole('button', { name: 'Delete' })).toBeInTheDocument();
-    expect(within(confirmation).queryByRole('button', { name: 'Delete history' })).not.toBeInTheDocument();
+    expect(within(confirmation).getByRole('button', { name: 'Delete history' })).toBeInTheDocument();
+    expect(within(confirmation).getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    expect(document.querySelector('.agent-team-lifecycle-actions [role="alertdialog"]')).toBeNull();
+    expect(trigger.querySelector('svg')).not.toBeNull();
   });
 
-  it('opens an Agent Team V2 child and shows its retained conversation', async () => {
+  it('keeps failed deletion recoverable and prevents duplicate confirmations', async () => {
+    const user = userEvent.setup();
+    let rejectDelete!: (reason: Error) => void;
+    const controlAgentTeam = vi.fn(() => new Promise<RuntimeState>((_resolve, reject) => { rejectDelete = reject; }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { ...window.piDesktop, controlAgentTeam } });
+    useRuntimeStore.getState().hydrateRuntime({ ...state, subagents: [], agentTeams: [{ ...team, status: 'closed' }] });
+    render(<SubagentSessionsPanel />);
+    await user.click(screen.getByRole('button', { name: 'Delete team history for Review team' }));
+    const confirmation = screen.getByRole('alertdialog');
+    const confirm = within(confirmation).getByRole('button', { name: 'Delete history' });
+
+    act(() => { confirm.click(); confirm.click(); });
+    expect(controlAgentTeam).toHaveBeenCalledOnce();
+    expect(within(confirmation).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    await act(async () => rejectDelete(new Error('Clean up the retained worktree first.')));
+
+    expect(within(confirmation).getByRole('status')).toHaveTextContent('Clean up the retained worktree first.');
+    expect(confirm).toBeEnabled();
+    await user.click(within(confirmation).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+  });
+
+  it('shows result transport failures without relabeling successful execution as failed', async () => {
+    const user = userEvent.setup();
+    const resultTransportError = 'Result transport failed during delivery: parent context is full.';
+    useRuntimeStore.getState().hydrateRuntime({
+      ...state,
+      subagents: [],
+      agentTeams: [{ ...team, tasks: team.tasks.map((task) => ({ ...task, resultTransportError })) }],
+    });
+    render(<SubagentSessionsPanel />);
+
+    await user.click(screen.getByRole('button', { name: 'Reviewer Agent Team node ready' }));
+
+    const preview = screen.getByRole('region', { name: 'Reviewer chat preview' });
+    expect(within(preview).getByRole('alert')).toHaveTextContent(resultTransportError);
+    expect(within(preview).getByText('Review complete.')).toBeInTheDocument();
+  });
+
+  it('opens an agent child and shows its retained conversation', async () => {
     const user = userEvent.setup();
     useRuntimeStore.getState().hydrateRuntime({ ...state, subagents: [], agentTeams: [team] });
     render(<SubagentSessionsPanel />);

@@ -275,6 +275,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const draftHistory = useRef<DraftHistory>({ key: null, undo: [], redo: [] });
   const historyMutation = useRef(false);
   const promptOptimizationCancelled = useRef(false);
+  const promptOptimizationEpoch = useRef(0);
   const pendingDraftSelection = useRef<{ key: string | null; text: string; start: number; end: number; scrollTop: number; focus?: boolean } | null>(null);
   const forkNoticeRef = useRef(forkNotice);
   const caretPositionRef = useRef(caretPosition);
@@ -961,6 +962,22 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     if (typeof activeOption?.scrollIntoView === 'function') activeOption.scrollIntoView({ block: 'nearest' });
   }, [activeFileIndex, resourceMenuOpen]);
 
+  const flushPromptOptimizationForSend = async () => {
+    if (!optimizingPromptRef.current) return;
+    const alreadyCancelling = promptOptimizationCancelled.current;
+    promptOptimizationEpoch.current += 1;
+    promptOptimizationCancelled.current = true;
+    optimizingPromptRef.current = false;
+    if (mounted.current) setOptimizingPrompt(false);
+    if (alreadyCancelling) return;
+    if (!('piDesktop' in window) || typeof window.piDesktop.abort !== 'function') return;
+    try {
+      await window.piDesktop.abort();
+    } catch {
+      // Send still proceeds. Main also cancels leftover improvement on prompt().
+    }
+  };
+
   const submit = async (behavior: PromptInput['behavior']) => {
     const runtimeNow = useRuntimeStore.getState().runtime;
     const originDraftKey = sessionDraftKey(runtimeNow.project?.path ?? null, runtimeNow.sessionId, runtimeNow.sessions);
@@ -976,12 +993,14 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       || (submittedSessionReferences.length > 0 ? 'Review the attached session reference.' : '')
       || (submittedBrowserAnnotationIds.length > 0 ? 'Address the attached browser annotations.' : '');
     if (/^\/login(?:\s+.*)?$/iu.test(text)) {
+      if (optimizingPromptRef.current) await flushPromptOptimizationForSend();
       void openProviderLogin();
       updateDraft('');
       return;
     }
     const logout = /^\/logout\s+([^\s/]+)\s*$/iu.exec(text);
     if (logout && 'piDesktop' in window) {
+      if (optimizingPromptRef.current) await flushPromptOptimizationForSend();
       updateDraft('');
       void window.piDesktop.logoutProvider(logout[1]!).then((state) => useRuntimeStore.getState().setRuntime(state)).catch((error: unknown) => {
         if (mounted.current) setComposerError(error instanceof Error ? error.message : 'The provider could not be signed out.');
@@ -989,6 +1008,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       return;
     }
     if (/^\/logout\s*$/iu.test(text)) {
+      if (optimizingPromptRef.current) await flushPromptOptimizationForSend();
       setProviderLoginOpen(true);
       updateDraft('');
       return;
@@ -1029,6 +1049,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       }
     };
     try {
+      if (optimizingPromptRef.current) await flushPromptOptimizationForSend();
       const goalCommand = parseGoalMaxCommand(text);
       if (goalCommand) {
         if (submittedImages.length > 0 || submittedBrowserAnnotationIds.length > 0 || submittedSessionReferences.length > 0) throw new Error('Remove image, browser annotation, and session attachments before using GoalMax commands.');
@@ -1211,6 +1232,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     setComposerError(null);
     const origin = useRuntimeStore.getState().runtime;
     try {
+      if (optimizingPromptRef.current) await flushPromptOptimizationForSend();
       let state;
       if (target.kind === 'team-node') {
         if (typeof window.piDesktop.controlAgentTeam !== 'function') throw new Error('Restart Fate UI to message Agent Team sessions.');
@@ -1950,29 +1972,31 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       setComposerError('Restart Fate UI to activate prompt improvement.');
       return;
     }
+    const epoch = ++promptOptimizationEpoch.current;
     optimizingPromptRef.current = true;
     promptOptimizationCancelled.current = false;
     setOptimizingPrompt(true);
     setComposerError(null);
     try {
       const result = await window.piDesktop.optimizePrompt(originalDraft, { advanced: advancedPromptImprovement });
-      if (!mounted.current || promptOptimizationCancelled.current) return;
+      if (!mounted.current || promptOptimizationCancelled.current || epoch !== promptOptimizationEpoch.current) return;
       const current = useRuntimeStore.getState().runtime;
       const selectionIsOrigin = current.sessionId === origin.sessionId && current.project?.path === origin.project?.path;
       if (!selectionIsOrigin || draftRef.current !== originalDraft) return;
       updateDraft(result.text);
       requestAnimationFrame(() => {
-        if (!mounted.current) return;
+        if (!mounted.current || epoch !== promptOptimizationEpoch.current) return;
         textarea.current?.focus({ preventScroll: true });
         textarea.current?.setSelectionRange(0, result.text.length);
       });
       showToast({ kind: 'success', title: 'Prompt improved', message: 'Review the selected prompt, then send it when ready.' });
     } catch (error) {
-      if (promptOptimizationCancelled.current) return;
+      if (promptOptimizationCancelled.current || epoch !== promptOptimizationEpoch.current) return;
       if (mounted.current && activeDraftKey.current === sessionDraftKey(origin.project?.path ?? null, origin.sessionId, origin.sessions)) {
         setComposerError(error instanceof Error ? error.message : 'Prompt improvement failed. Your draft was not changed.');
       }
     } finally {
+      if (epoch !== promptOptimizationEpoch.current) return;
       optimizingPromptRef.current = false;
       promptOptimizationCancelled.current = false;
       if (mounted.current) setOptimizingPrompt(false);
@@ -2178,18 +2202,18 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
           </div>
         </div>
       )}
+      <div className="composer-rails">
       {goalUpdates.length > 0 && (
         <details className="goalmax-saved-instructions">
-          <summary>Saved goal instructions · {goalUpdates.length}</summary>
+          <summary className="composer-rail-header"><span className="composer-rail-mark"><Symbol text="[s]"><CornerUpLeft size={13} aria-hidden="true" /></Symbol></span><span className="composer-rail-copy">Saved goal instructions · {goalUpdates.length}</span><ChevronDown size={12} aria-hidden="true" /></summary>
           <section className="queued-messages goalmax-steering-messages" aria-label="Saved goal instructions">
           {goalUpdates.map((item) => {
             const preview = item.text.split('\n', 1)[0]?.trim() || item.text;
             const busy = goalUpdateBusyId === item.id;
             return (
               <div className="queued-message" key={item.id} data-behavior="steer" data-goal-update="true">
-                <CornerUpLeft size={13} aria-hidden="true" />
+                <span className="composer-rail-mark"><Symbol text="[>]"><CornerUpLeft size={13} aria-hidden="true" /></Symbol></span>
                 <AppTooltip content={item.text}><span className="queued-message-preview icon-label">{preview}</span></AppTooltip>
-                <span className="queued-message-status">Saved instruction</span>
                 <div className="queued-message-actions">
                   <AppTooltip content="Edit goal update" wrapTrigger>
                     <button className="queued-message-edit" type="button" aria-label={`Edit goal update: ${preview}`} disabled={Boolean(goalUpdateBusyId)} onClick={() => void mutateGoalUpdate(item.id, 'edit')}><ActionContent text="edit"><Pencil size={13} aria-hidden="true" /></ActionContent></button>
@@ -2214,7 +2238,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
             const recovered = recoveredQueueIds.has(item.id);
             return (
               <div className="queued-message" key={item.id} data-behavior={item.behavior} data-held={held || undefined}>
-                <Symbol text="[q]"><CornerUpLeft size={13} aria-hidden="true" /></Symbol>
+                <span className="composer-rail-mark"><Symbol text={item.behavior === 'steer' ? '[>]' : '[q]'}><CornerUpLeft size={13} aria-hidden="true" /></Symbol></span>
                 <AppTooltip content={item.text}><span className="queued-message-preview icon-label">{item.text}</span></AppTooltip>
                 <div className="queued-message-actions">
                   {item.images?.length ? <span className="queued-message-attachments">{item.images.length} image{item.images.length === 1 ? '' : 's'}</span> : null}
@@ -2250,6 +2274,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       )}
       <GoalMaxRail />
       <GoalMaxTaskStrip />
+      </div>
       <form
         ref={composer}
         className="composer"
@@ -2359,7 +2384,9 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                 ? `agent-option-${activeAgentIndex}`
                 : slashMenuOpen && commandSuggestions.length > 0 ? `slash-option-${activeCommandIndex}` : undefined}
             value={editorDraft}
+            readOnly={optimizingPrompt}
             onChange={(event) => {
+              if (optimizingPromptRef.current) return;
               if (liveAgentTarget && !event.target.value.trim()) setLiveAgentTarget(null);
               updateDraft(event.target.value);
               caretPositionRef.current = event.target.selectionStart;
@@ -2380,10 +2407,16 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
               syncInputFades();
             }}
             onKeyDown={onKeyDown}
-            onPaste={pasteImages}
+            onPaste={(event) => {
+              if (optimizingPromptRef.current) {
+                event.preventDefault();
+                return;
+              }
+              pasteImages(event);
+            }}
             placeholder={connected ? runtime.streaming ? 'Ask for follow-up changes…' : 'Ask Pi about your project…' : runtime.status === 'auth-required' ? 'Type /login to connect a provider…' : 'Open and trust a project to begin…'}
             rows={2}
-            disabled={(!connected && runtime.status !== 'auth-required') || optimizingPrompt}
+            disabled={!connected && runtime.status !== 'auth-required'}
           />
         </div>
         <div className="composer-toolbar">

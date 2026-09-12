@@ -8,6 +8,11 @@ import {
   digestForAsset,
   parseSemanticVersion,
   parseSha256Sums,
+  platformAssetName,
+  publishedReleaseHasAssets,
+  releaseApiUrl,
+  releaseChecksumsUrl,
+  releaseDownloadUrl,
   RELEASES_URL,
   UpdateService,
   resolveMacOSUpdateBundle,
@@ -23,40 +28,107 @@ const parsed = (value: string) => {
 
 const response = (body: string, ok = true) => ({ ok, text: vi.fn(async () => body) });
 
-function service(local: string | Error, remote: string | Error, options: { timeoutMs?: number; openExternal?: (url: string) => Promise<void> } = {}) {
+function publishedRelease(version: string, assetName: string, overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    tag_name: `v${version}`,
+    draft: false,
+    prerelease: parseSemanticVersion(version)?.prerelease !== null,
+    assets: [
+      { name: assetName, state: 'uploaded', size: 10 },
+      { name: 'SHA256SUMS', state: 'uploaded', size: 10 },
+    ],
+    ...overrides,
+  });
+}
+
+interface CheckServiceOptions {
+  timeoutMs?: number;
+  openExternal?: (url: string) => Promise<void>;
+  releaseMetadata?: string | Error;
+  checksumText?: string;
+}
+
+function service(local: string | Error, remote: string | Error, options: CheckServiceOptions = {}) {
+  const parsedRemote = typeof remote === 'string' ? parseSemanticVersion(remote) : null;
+  const version = parsedRemote?.normalized ?? '1.0.0';
+  const assetName = platformAssetName(version, 'win32', 'x64');
   return new UpdateService('/installed/PRODVER', {
     readVersionFile: vi.fn(async () => {
       if (local instanceof Error) throw local;
       return local;
     }),
-    fetchVersion: async (_url, init) => {
+    fetchVersion: async (url, init) => {
+      if (url === releaseApiUrl(version)) {
+        if (options.releaseMetadata instanceof Error) throw options.releaseMetadata;
+        return response(options.releaseMetadata ?? publishedRelease(version, assetName));
+      }
+      if (url === releaseChecksumsUrl(version)) {
+        return response(options.checksumText ?? `${'a'.repeat(64)}  ${assetName}\n`);
+      }
       if (remote instanceof Error) throw remote;
       if (remote === 'TIMEOUT') {
         return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
       }
       return response(remote);
     },
+    platform: 'win32',
+    arch: 'x64',
     ...(options.openExternal ? { openExternal: options.openExternal } : {}),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });
 }
 
 describe('semantic version handling', () => {
-  it('trims and validates standard releases and prereleases', () => {
+  it('normalizes optional V prefixes and display release names without confusing prereleases', () => {
     expect(parseSemanticVersion('  1.4.0\r\n')?.normalized).toBe('1.4.0');
-    expect(parseSemanticVersion('0.4.1-beta2')?.normalized).toBe('0.4.1-beta2');
+    expect(parseSemanticVersion('V1.0.0 - Modulo')).toMatchObject({ normalized: '1.0.0', releaseName: 'Modulo', prerelease: null });
+    expect(parseSemanticVersion('v1.0.1')?.normalized).toBe('1.0.1');
+    expect(parseSemanticVersion('0.4.1-beta2')).toMatchObject({ normalized: '0.4.1-beta2', releaseName: null, prerelease: ['beta2'] });
     expect(parseSemanticVersion('1.2.3-beta.10+build.7')?.normalized).toBe('1.2.3-beta.10+build.7');
-    for (const invalid of ['', '1.4', '1.4.0.0', '01.4.0', '1.04.0', 'v1.4.0', '1.4.0-beta.01', 'not-a-version', `1.0.0-${'x'.repeat(101)}`]) {
+    expect(parseSemanticVersion('V1.0.0 - ../Modulo?! 🎉')?.normalized).toBe('1.0.0');
+    for (const invalid of ['', '1.4', '1.4.0.0', '01.4.0', '1.04.0', '1.4.0-beta.01', 'not-a-version', `1.0.0-${'x'.repeat(101)}`]) {
       expect(parseSemanticVersion(invalid)).toBeNull();
     }
   });
 
-  it('compares numeric components and SemVer prerelease identifiers correctly', () => {
+  it('compares numeric components and SemVer prerelease identifiers while ignoring release names', () => {
     expect(compareSemanticVersions(parsed('1.10.0'), parsed('1.9.0'))).toBe(1);
     expect(compareSemanticVersions(parsed('2.0.0'), parsed('10.0.0'))).toBe(-1);
     expect(compareSemanticVersions(parsed('1.0.0-beta.10'), parsed('1.0.0-beta.9'))).toBe(1);
-    expect(compareSemanticVersions(parsed('1.0.0-beta'), parsed('1.0.0'))).toBe(-1);
+    expect(compareSemanticVersions(parsed('1.0.0-beta4'), parsed('1.0.0'))).toBe(-1);
+    expect(compareSemanticVersions(parsed('V1.0.0 - Modulo'), parsed('v1.0.0 - Something Else'))).toBe(0);
     expect(compareSemanticVersions(parsed('1.0.0+local'), parsed('1.0.0+remote'))).toBe(0);
+  });
+
+  it('builds every update path from normalized SemVer only', () => {
+    expect(platformAssetName('V1.0.0 - Modulo', 'win32', 'x64')).toBe('Fate-UI-1.0.0-Windows-x64.exe');
+    expect(platformAssetName('V1.0.0 - Modulo', 'darwin', 'arm64')).toBe('Fate-UI-1.0.0-macOS-arm64.dmg');
+    expect(platformAssetName('V1.0.0 - Modulo', 'linux', 'x64')).toBe('Fate-UI-1.0.0-Linux-x64.AppImage');
+    expect(releaseDownloadUrl('V1.0.0 - Modulo', 'win32', 'x64')).toBe(
+      'https://github.com/Master0fFate/pi-fategui/releases/download/v1.0.0/Fate-UI-1.0.0-Windows-x64.exe',
+    );
+    expect(releaseChecksumsUrl('V1.0.0 - Modulo')).toBe(
+      'https://github.com/Master0fFate/pi-fategui/releases/download/v1.0.0/SHA256SUMS',
+    );
+    expect(releaseApiUrl('V1.0.0 - Modulo')).toBe(
+      'https://api.github.com/repos/Master0fFate/pi-fategui/releases/tags/v1.0.0',
+    );
+    expect(releaseDownloadUrl('V1.0.0 - ../../evil?!', 'win32', 'x64')).toBe(
+      'https://github.com/Master0fFate/pi-fategui/releases/download/v1.0.0/Fate-UI-1.0.0-Windows-x64.exe',
+    );
+    for (const maliciousVersion of ['1.0.0/../../evil', '1.0.0%2Fevil']) {
+      expect(() => releaseDownloadUrl(maliciousVersion, 'win32', 'x64')).toThrow(/invalid/u);
+      expect(() => releaseChecksumsUrl(maliciousVersion)).toThrow(/invalid/u);
+    }
+  });
+
+  it('requires a published release with uploaded installer and checksum assets', () => {
+    const assetName = 'Fate-UI-1.0.0-Windows-x64.exe';
+    expect(publishedReleaseHasAssets(publishedRelease('1.0.0', assetName), '1.0.0', assetName, false)).toBe(true);
+    expect(publishedReleaseHasAssets(publishedRelease('1.0.0', assetName, { draft: true }), '1.0.0', assetName, false)).toBe(false);
+    expect(publishedReleaseHasAssets(publishedRelease('1.0.0', assetName, { prerelease: true }), '1.0.0', assetName, false)).toBe(false);
+    expect(publishedReleaseHasAssets(publishedRelease('1.0.1', assetName), '1.0.0', assetName, false)).toBe(false);
+    expect(publishedReleaseHasAssets('{}', '1.0.0', assetName, false)).toBe(false);
   });
 });
 
@@ -88,19 +160,42 @@ describe('UpdateService', () => {
     });
   });
 
-  it('reports current, available, and development versions explicitly', async () => {
-    await expect(service(' 1.4.0\n', '1.4.0\n').check()).resolves.toEqual({
+  it('reports current, available, and development versions using normalized machine versions', async () => {
+    await expect(service('V1.0.0 - Local Name', 'v1.0.0 - Modulo').check()).resolves.toEqual({
       status: 'current',
-      message: 'FateGUI is up to date. Installed version: 1.4.0',
-      installedVersion: '1.4.0',
-      productionVersion: '1.4.0',
+      message: 'FateGUI is up to date. Installed version: 1.0.0',
+      installedVersion: '1.0.0',
+      productionVersion: '1.0.0',
     });
-    await expect(service('1.9.0', '1.10.0').check()).resolves.toMatchObject({
-      status: 'available', message: updateMessages.available, installedVersion: '1.9.0', productionVersion: '1.10.0',
+    await expect(service('1.0.0', 'V1.0.1').check()).resolves.toMatchObject({
+      status: 'available', message: updateMessages.available, installedVersion: '1.0.0', productionVersion: '1.0.1',
     });
-    await expect(service('2.0.0', '1.10.0').check()).resolves.toMatchObject({
-      status: 'development', message: updateMessages.development, installedVersion: '2.0.0', productionVersion: '1.10.0',
+    await expect(service('0.9.9-beta4', 'V1.0.0 - Modulo').check()).resolves.toMatchObject({
+      status: 'available', installedVersion: '0.9.9-beta4', productionVersion: '1.0.0',
     });
+    await expect(service('2.0.0', 'V1.0.0 - Modulo').check()).resolves.toMatchObject({
+      status: 'development', message: updateMessages.development, installedVersion: '2.0.0', productionVersion: '1.0.0',
+    });
+  });
+
+  it('does not advertise a newer PRODVER until its published installer and checksum are ready', async () => {
+    const assetName = 'Fate-UI-1.0.1-Windows-x64.exe';
+    const expected = {
+      status: 'release-not-ready',
+      message: updateMessages.releaseNotReady,
+      installedVersion: '1.0.0',
+      productionVersion: '1.0.1',
+    } as const;
+    await expect(service('1.0.0', '1.0.1', { releaseMetadata: new Error('404') }).check()).resolves.toEqual(expected);
+    await expect(service('1.0.0', '1.0.1', {
+      releaseMetadata: publishedRelease('1.0.1', assetName, { draft: true }),
+    }).check()).resolves.toEqual(expected);
+    await expect(service('1.0.0', '1.0.1', {
+      releaseMetadata: publishedRelease('1.0.1', 'other.exe'),
+    }).check()).resolves.toEqual(expected);
+    await expect(service('1.0.0', '1.0.1', {
+      checksumText: `${'a'.repeat(64)}  other.exe\n`,
+    }).check()).resolves.toEqual(expected);
   });
 
   it('opens only the official releases page', async () => {
@@ -120,6 +215,16 @@ function checksumsResponse(assetName: string, bytes: Uint8Array, extra = '') {
     ok: true,
     text: async () => `${sha256Hex(bytes)}  ${assetName}\n${extra}`,
   };
+}
+
+function fetchForPublishedRelease(
+  version: string,
+  assetName: string,
+  checksumResponse: { ok: boolean; text: () => Promise<string> },
+) {
+  return vi.fn(async (url: string) => url === releaseApiUrl(version)
+    ? response(publishedRelease(version, assetName))
+    : checksumResponse);
 }
 
 describe('SHA256SUMS parsing', () => {
@@ -143,7 +248,7 @@ describe('UpdateService download and install', () => {
     const chunks = [Uint8Array.from([1, 2, 3]), Uint8Array.from([4, 5])];
     const bytes = Uint8Array.from([1, 2, 3, 4, 5]);
     const asset = 'Fate-UI-0.8.10-beta14-Windows-x64.exe';
-    const fetchVersion = vi.fn(async () => checksumsResponse(asset, bytes));
+    const fetchVersion = fetchForPublishedRelease('0.8.10-beta14', asset, checksumsResponse(asset, bytes));
     const fetchAsset = vi.fn(async () => ({ ok: true, status: 200, total: 5, body: (async function* () { for (const c of chunks) yield c; })() }));
     const launchInstaller = vi.fn(async () => undefined);
     const reportProgress = vi.fn();
@@ -154,6 +259,10 @@ describe('UpdateService download and install', () => {
 
     await updates.downloadAndInstall('0.8.10-beta14');
 
+    expect(fetchVersion).toHaveBeenCalledWith(
+      'https://api.github.com/repos/Master0fFate/pi-fategui/releases/tags/v0.8.10-beta14',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(fetchVersion).toHaveBeenCalledWith(
       'https://github.com/Master0fFate/pi-fategui/releases/download/v0.8.10-beta14/SHA256SUMS',
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -177,24 +286,61 @@ describe('UpdateService download and install', () => {
     const removeFile = vi.fn(async () => undefined);
     const fetchCalls = fetchAsset.mock.calls as unknown as Array<[string, unknown]>;
     const mac = new UpdateService('/p', {
-      fetchVersion: async () => checksumsResponse('Fate-UI-1.0.0-macOS-arm64.dmg', empty),
+      fetchVersion: fetchForPublishedRelease('1.0.0', 'Fate-UI-1.0.0-macOS-arm64.dmg', checksumsResponse('Fate-UI-1.0.0-macOS-arm64.dmg', empty)),
       fetchAsset, launchInstaller, removeFile, downloadDir: tmp, platform: 'darwin', arch: 'arm64',
     });
-    await mac.downloadAndInstall('1.0.0');
-    expect(fetchCalls[fetchCalls.length - 1]![0]).toContain('Fate-UI-1.0.0-macOS-arm64.dmg');
+    await mac.downloadAndInstall('V1.0.0 - Modulo');
+    expect(fetchCalls[fetchCalls.length - 1]![0]).toBe('https://github.com/Master0fFate/pi-fategui/releases/download/v1.0.0/Fate-UI-1.0.0-macOS-arm64.dmg');
     const linux = new UpdateService('/p', {
-      fetchVersion: async () => checksumsResponse('Fate-UI-1.0.0-Linux-x64.AppImage', empty),
+      fetchVersion: fetchForPublishedRelease('1.0.0', 'Fate-UI-1.0.0-Linux-x64.AppImage', checksumsResponse('Fate-UI-1.0.0-Linux-x64.AppImage', empty)),
       fetchAsset, launchInstaller, removeFile, downloadDir: tmp, platform: 'linux', arch: 'x64',
     });
     await linux.downloadAndInstall('1.0.0');
-    expect(fetchCalls[fetchCalls.length - 1]![0]).toContain('Fate-UI-1.0.0-Linux-x64.AppImage');
+    expect(fetchCalls[fetchCalls.length - 1]![0]).toBe('https://github.com/Master0fFate/pi-fategui/releases/download/v1.0.0/Fate-UI-1.0.0-Linux-x64.AppImage');
+    expect(launchInstaller).toHaveBeenCalledWith(expect.stringMatching(/Fate-UI-1\.0\.0-macOS-arm64\.dmg$/u), '1.0.0');
+    expect(launchInstaller).toHaveBeenCalledWith(expect.stringMatching(/Fate-UI-1\.0\.0-Linux-x64\.AppImage$/u), '1.0.0');
+  });
+
+  it('keeps arbitrary display suffixes out of every download URL and filesystem path', async () => {
+    const assetName = 'Fate-UI-1.0.0-Windows-x64.exe';
+    const empty = new Uint8Array();
+    const fetchVersion = fetchForPublishedRelease('1.0.0', assetName, checksumsResponse(assetName, empty));
+    const fetchAsset = vi.fn(async () => ({ ok: true, status: 200, total: 0, body: (async function* () { /* empty */ })() }));
+    const launchInstaller = vi.fn(async () => undefined);
+    const removeFile = vi.fn(async () => undefined);
+    const updates = new UpdateService('/p', {
+      fetchVersion, fetchAsset, launchInstaller, removeFile, downloadDir: '/tmp', platform: 'win32', arch: 'x64',
+    });
+
+    await updates.downloadAndInstall('V1.0.0 - ../../evil?! 🎉');
+    expect(fetchAsset).toHaveBeenCalledWith(
+      'https://github.com/Master0fFate/pi-fategui/releases/download/v1.0.0/Fate-UI-1.0.0-Windows-x64.exe',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(removeFile).toHaveBeenCalledWith(expect.stringMatching(/Fate-UI-1\.0\.0-Windows-x64\.exe$/u));
+    expect(launchInstaller).toHaveBeenCalledWith(expect.stringMatching(/Fate-UI-1\.0\.0-Windows-x64\.exe$/u), '1.0.0');
+  });
+
+  it('refuses a direct download when the GitHub release is not publication-ready', async () => {
+    const fetchAsset = vi.fn();
+    const launchInstaller = vi.fn();
+    const removeFile = vi.fn();
+    const updates = new UpdateService('/p', {
+      fetchVersion: vi.fn(async () => response('{}')),
+      fetchAsset, launchInstaller, removeFile, downloadDir: '/tmp', platform: 'win32', arch: 'x64',
+    });
+
+    await expect(updates.downloadAndInstall('1.0.0')).rejects.toThrow(updateMessages.releaseNotReady);
+    expect(fetchAsset).not.toHaveBeenCalled();
+    expect(removeFile).not.toHaveBeenCalled();
+    expect(launchInstaller).not.toHaveBeenCalled();
   });
 
   it('throws when the asset download fails to start', async () => {
     const tmp = await mkdtemp(path.join(tmpdir(), 'fate-update-'));
     const fetchAsset = vi.fn(async () => ({ ok: false, status: 404, total: 0, body: (async function* () { /* empty */ })() }));
     const updates = new UpdateService('/p', {
-      fetchVersion: async () => checksumsResponse('Fate-UI-1.0.0-Windows-x64.exe', new Uint8Array()),
+      fetchVersion: fetchForPublishedRelease('1.0.0', 'Fate-UI-1.0.0-Windows-x64.exe', checksumsResponse('Fate-UI-1.0.0-Windows-x64.exe', new Uint8Array())),
       fetchAsset, launchInstaller: vi.fn(async () => undefined), removeFile: vi.fn(async () => undefined), downloadDir: tmp, platform: 'win32', arch: 'x64',
     });
     await expect(updates.downloadAndInstall('1.0.0')).rejects.toThrow(/could not start/i);
@@ -206,7 +352,7 @@ describe('UpdateService download and install', () => {
     const removeFile = vi.fn(async () => undefined);
     const fetchAsset = vi.fn(async () => ({ ok: true, status: 200, total: 1, body: (async function* () { yield Uint8Array.from([1]); })() }));
     const updates = new UpdateService('/p', {
-      fetchVersion: async () => ({ ok: true, text: async () => `${'a'.repeat(64)}  other-file.exe\n` }),
+      fetchVersion: fetchForPublishedRelease('1.0.0', 'Fate-UI-1.0.0-Windows-x64.exe', { ok: true, text: async () => `${'a'.repeat(64)}  other-file.exe\n` }),
       fetchAsset, launchInstaller, removeFile, downloadDir: tmp, platform: 'win32', arch: 'x64',
     });
     await expect(updates.downloadAndInstall('1.0.0')).rejects.toThrow(updateVerifyMessages.digestMissing);
@@ -219,7 +365,7 @@ describe('UpdateService download and install', () => {
     const launchInstaller = vi.fn(async () => undefined);
     const fetchAsset = vi.fn(async () => ({ ok: true, status: 200, total: 0, body: (async function* () { /* empty */ })() }));
     const updates = new UpdateService('/p', {
-      fetchVersion: async () => ({ ok: false, text: async () => '' }),
+      fetchVersion: fetchForPublishedRelease('1.0.0', 'Fate-UI-1.0.0-Windows-x64.exe', { ok: false, text: async () => '' }),
       fetchAsset, launchInstaller, removeFile: vi.fn(async () => undefined), downloadDir: tmp, platform: 'win32', arch: 'x64',
     });
     await expect(updates.downloadAndInstall('1.0.0')).rejects.toThrow(updateVerifyMessages.checksumsUnavailable);
@@ -234,7 +380,7 @@ describe('UpdateService download and install', () => {
     const removeFile = vi.fn(async () => undefined);
     const fetchAsset = vi.fn(async () => ({ ok: true, status: 200, total: 3, body: (async function* () { yield bytes; })() }));
     const updates = new UpdateService('/p', {
-      fetchVersion: async () => ({ ok: true, text: async () => `${'0'.repeat(64)}  Fate-UI-1.0.0-Windows-x64.exe\n` }),
+      fetchVersion: fetchForPublishedRelease('1.0.0', 'Fate-UI-1.0.0-Windows-x64.exe', { ok: true, text: async () => `${'0'.repeat(64)}  Fate-UI-1.0.0-Windows-x64.exe\n` }),
       fetchAsset, launchInstaller, removeFile, downloadDir: tmp, platform: 'win32', arch: 'x64',
     });
     await expect(updates.downloadAndInstall('1.0.0')).rejects.toThrow(updateVerifyMessages.mismatch);

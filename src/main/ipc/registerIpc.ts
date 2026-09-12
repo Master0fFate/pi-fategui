@@ -1,5 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, webContents } from 'electron';
 import { registerLearningIpc } from '../learning/registerLearningIpc';
+import { appReleaseDisplayVersion, releaseMetadata } from '../releaseMetadata';
 import type { LearningService } from '../learning/LearningService';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import packageManifest from '../../../package.json';
@@ -29,7 +30,6 @@ import {
   gitOperationResultSchema,
   gitRevertPathInputSchema,
   gitRevertPathResultSchema,
-  recoveryNoticeResultSchema,
   sessionExportResultSchema,
   gitStatusSchema,
   gitWorktreeInputSchema,
@@ -235,7 +235,7 @@ export interface IpcServices {
   speech: Pick<SpeechService, 'setEventSink' | 'setStreamSink' | 'getStatus' | 'download' | 'cancelDownload' | 'remove' | 'transcribe' | 'cancel' | 'streamStart' | 'streamFeed' | 'streamStop' | 'streamCancel'>;
   hotkey: GlobalHotkeyService;
   updates: Pick<UpdateService, 'check' | 'openDownload' | 'downloadAndInstall'>;
-  recovery?: Pick<RecoverySnapshotService, 'remember' | 'consume' | 'peek' | 'markClean'>;
+  recovery?: Pick<RecoverySnapshotService, 'remember' | 'peek' | 'markClean'>;
   browser: Pick<BrowserHost, 'ensure' | 'current' | 'setAppOverlay' | 'respondToConfirmation' | 'reset'>;
   automations: Pick<AutomationRepository, 'list' | 'create' | 'update' | 'remove' | 'recordLaunch'>;
   /** Read-only per-project attestation ledger; resolves only the current trusted project. */
@@ -577,9 +577,12 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
 
   handle(ipcChannels.systemGetInfo, (_event, input): AppInfo => {
     getAppInfoInputSchema.parse(input);
+    const version = app.getVersion();
     return appInfoSchema.parse({
       name: 'Fate UI',
-      version: app.getVersion(),
+      version,
+      releaseName: releaseMetadata.releaseName,
+      displayVersion: appReleaseDisplayVersion(version),
       platform: process.platform,
       packaged: app.isPackaged,
     });
@@ -1204,11 +1207,6 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
     const parsed = gitRevertPathInputSchema.parse(input);
     return gitRevertPathResultSchema.parse({ path: parsed.path, status: await git.revertPath(parsed.path) });
   }));
-  handle(ipcChannels.recoveryConsume, async (_event, input) => {
-    emptyInputSchema.parse(input);
-    await applyPendingRecovery(runtime, recovery);
-    return recoveryNoticeResultSchema.parse(recovery ? recovery.consume() : null);
-  });
   handle(ipcChannels.sessionExport, async (event, input) => {
     emptyInputSchema.parse(input);
     const state = runtime.getState();

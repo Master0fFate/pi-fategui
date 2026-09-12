@@ -3,7 +3,8 @@ import type { PermissionLevel, PiEvent, ProjectState, PromptAcceptance, PromptIn
 import type { AgentTeam, AgentTeamControlInput } from '../../src/shared/contracts/multiAgent';
 import type { TaskCreateInput, TaskDeleteInput, TaskEvent, TaskList, TaskReorderInput, TaskUpdateInput } from '../../src/shared/contracts/tasks';
 
-const model = { provider: 'test', id: 'deterministic', name: 'Deterministic Test Model', reasoning: true, contextWindow: 100_000, supportsImages: true };
+const releaseShowcase = process.env.FATE_UI_SHOWCASE === '1';
+const model = { provider: 'test', id: 'deterministic', name: releaseShowcase ? 'Example model' : 'Deterministic Test Model', reasoning: true, contextWindow: 100_000, supportsImages: true };
 const e2eSessionCount = Math.max(2, Math.min(500, Number.parseInt(process.env.PI_DESKTOP_E2E_SESSION_COUNT ?? '2', 10) || 2));
 const emptyUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
 const tokenHistory = Array.from({ length: 24 }, (_value, index) => {
@@ -141,16 +142,16 @@ export class FakePiRuntimeService {
         { name: 'skill:vibesecurity', description: 'Defensive, evidence-first security review', source: 'skill' },
         { name: 'review', description: 'Review changes', source: 'prompt' },
       ],
-      objective: 'Review the deliberately long session objective without allowing it to collide with the Objective label in the narrow inspector.',
+      objective: releaseShowcase ? 'Review a focused search improvement' : 'Review the deliberately long session objective without allowing it to collide with the Objective label in the narrow inspector.',
       contextUsage: { tokens: 42_000, contextWindow: 100_000, percent: 42 },
       ...(this.project ? {
         tokenTelemetry,
         extensionUi: {
-          statuses: [
+          statuses: releaseShowcase ? [] : [
             { key: 'mcp', text: 'MCP: 2 servers ready' },
             { key: 'plugin', text: 'PLUGIN: output ready' },
           ],
-          widgets: [{ key: 'output', lines: ['Output channel connected'] }],
+          widgets: releaseShowcase ? [] : [{ key: 'output', lines: ['Output channel connected'] }],
           working: null,
           title: null,
         },
@@ -206,6 +207,42 @@ export class FakePiRuntimeService {
       const historyCount = Math.max(0, Math.min(20_000, Number.parseInt(profileRequest[1] ?? '600', 10)));
       const deltaCount = Math.max(1, Math.min(100_000, Number.parseInt(profileRequest[2] ?? '6000', 10)));
       this.runLiveProfile(runId, historyCount, deltaCount);
+      return { accepted: true, runId };
+    }
+    if (releaseShowcase && input.text === '__FATE_RELEASE_SHOWCASE__') {
+      const now = Date.now();
+      this.permissionLevel = 'edit';
+      Object.assign(this.sessions[0]!, { title: 'Search · case-insensitive queries', createdAt: new Date(now).toISOString(), modifiedAt: new Date(now).toISOString(), messageCount: 4 });
+      Object.assign(this.sessions[1]!, { title: 'Architecture notes', createdAt: new Date(now - 3_600_000).toISOString(), modifiedAt: new Date(now - 3_600_000).toISOString() });
+      this.emitState();
+      this.sink([
+        { type: 'message.completed', messageId: 'showcase-user', role: 'user', text: 'Make search ignore casing and surrounding whitespace. Keep the change focused and show me the diff.', timestamp: now },
+        { type: 'tool.started', toolCallId: 'showcase-read', name: 'read', input: '{"path":"src/search.ts"}', timestamp: now + 1 },
+        { type: 'tool.completed', toolCallId: 'showcase-read', name: 'read', output: 'Reviewed the search implementation and its public input/output contract.', error: false, timestamp: now + 2 },
+        { type: 'message.completed', messageId: 'showcase-assistant', role: 'assistant', text: '## A focused change, ready to review\n\nThe search function normalizes the query once before filtering.\n\n- Matches ignore letter casing and surrounding whitespace.\n- An empty query keeps the full list.\n- Input items remain unchanged.\n\nThe Git diff is open alongside this conversation. Review the change before committing it.', timestamp: now + 3 },
+      ]);
+      await this.createTask({ title: 'Inspect the search implementation', status: 'done' });
+      await this.createTask({ title: 'Review the diff before committing', status: 'in-progress' });
+      return { accepted: true, runId };
+    }
+    if (input.text === '__FATE_COMPOSER_RAILS__') {
+      const goal = this.goals.get(this.activeSession);
+      if (!goal) throw new Error('Create the UI fixture goal before seeding composer rails.');
+      const now = Date.now();
+      const next = { ...goal, revision: goal.revision + 1, steering: [{ id: 'e2e-saved-instruction', text: 'Keep the recovery path documented.', behavior: 'steer' as const, timestamp: now, revision: goal.revision + 1 }], updatedAt: now };
+      this.goals.set(this.activeSession, next);
+      this.emitGoal(next);
+      this.queuedMessages = ['followUp', 'steer'].map((behavior, index) => ({
+        id: `00000000-0000-4000-8000-${String(++this.queueSequence).padStart(12, '0')}`,
+        behavior: behavior as 'followUp' | 'steer', text: index === 0 ? 'Review the implementation after this turn.' : 'Keep this steering instruction visible.', createdAt: now,
+      }));
+      const team = agentTeamFixture();
+      this.agentTeams = [{ ...team, status: 'closed', activeTurns: 0, writerNodeId: null, closedAt: now,
+        nodes: team.nodes.map((node) => node.depth === 0 ? node : { ...node, status: 'released', releasedAt: now, ...(node.workspace ? { workspace: { ...node.workspace, state: 'removed' as const } } : {}) }),
+        tasks: team.tasks.map((task) => ({ ...task, status: 'completed', endedAt: now })),
+      }];
+      await this.createTask({ title: 'Check compact composer controls', detail: 'The detail remains readable when the task list expands.' });
+      this.emitState();
       return { accepted: true, runId };
     }
     if (input.text === '__FATE_AGENT_FIXTURE__') {

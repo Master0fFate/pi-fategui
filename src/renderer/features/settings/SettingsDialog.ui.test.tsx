@@ -109,6 +109,20 @@ afterEach(() => {
 });
 
 describe('SettingsDialog feedback', () => {
+  it('shows the named release without changing its numeric update identity', async () => {
+    const bridge = installBridge(vi.fn(async (value) => value));
+    Object.assign(bridge, { getAppInfo: vi.fn(async () => ({ name: 'Fate UI', version: '1.0.0', releaseName: 'Modulo', displayVersion: 'V1.0.0 - Modulo', platform: 'win32' })) });
+    render(<SettingsDialog />);
+    expect(await screen.findByLabelText('Application version')).toHaveTextContent('V1.0.0 - Modulo');
+    expect(bridge.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it('displays numeric-only release metadata from an older host', async () => {
+    const bridge = installBridge(vi.fn(async (value) => value));
+    Object.assign(bridge, { getAppInfo: vi.fn(async () => ({ name: 'Fate UI', version: '1.0.1', platform: 'win32' })) });
+    render(<SettingsDialog />);
+    expect(await screen.findByLabelText('Application version')).toHaveTextContent('V1.0.1');
+  });
   it('defaults Memory Learning off and saves independent GLOBAL and PROJECT layers', async () => {
     const bridge = installBridge(vi.fn(async (value: AppSettings) => value));
     const user = userEvent.setup();
@@ -245,25 +259,30 @@ describe('SettingsDialog feedback', () => {
     expect(compactSessions).not.toBeChecked();
   });
 
-  it('offers a global isolated-worktree preference before any team exists', async () => {
+  it('offers one unified Agents surface with a global workspace preference before any agent exists', async () => {
     installBridge(vi.fn(async (value) => value));
     const user = userEvent.setup();
     render(<SettingsDialog />);
     await user.click(await screen.findByRole('tab', { name: /Agent/ }));
+    expect(screen.getByRole('heading', { name: 'Agents' })).toBeVisible();
+    expect(screen.getByText(/one unified agent system/u)).toBeVisible();
+    expect(screen.queryByRole('combobox', { name: 'Agent orchestration mode' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Legacy subagents|Agent Teams V2/u)).not.toBeInTheDocument();
     expect(screen.getByRole('radio', { name: 'Isolated worktree' })).toBeChecked();
     expect(screen.getByRole('radio', { name: 'Shared checkout' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Strict workspace mode' })).not.toBeChecked();
     expect(screen.getByText('Preferred: isolated worktree')).toBeVisible();
     expect(screen.getByText(/agent can choose the other mode/u)).toBeVisible();
-    expect(screen.getByText(/Legacy subagents are not affected/u)).not.toBeVisible();
     await user.click(screen.getByText('How it works'));
-    expect(screen.getByText(/Legacy subagents are not affected/u)).toBeVisible();
+    expect(screen.getByText(/Applies after saving to all newly created agents/u)).toBeVisible();
+    expect(screen.getByText(/Strict mode also applies to resumed work/u)).toBeVisible();
+    expect(screen.getByText(/No project restart is needed/u)).toBeVisible();
     expect(useRuntimeStore.getState().runtime.agentTeams ?? []).toHaveLength(0);
   });
 
   it('saves strict shared policy while the root is working without touching teams', async () => {
     const save = vi.fn(async (value: AppSettings) => value);
-    const bridge = installBridge(save, { ...settings, agentTeamMode: 'v2' });
+    const bridge = installBridge(save, settings);
     const controlTeam = vi.fn();
     Object.assign(bridge, { controlAgentTeam: controlTeam });
     useRuntimeStore.setState((state) => ({ runtime: { ...state.runtime, streaming: true } }));
@@ -278,12 +297,14 @@ describe('SettingsDialog feedback', () => {
     await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ agentWorkspace: { preferredMode: 'shared', strict: true } })));
     expect(controlTeam).not.toHaveBeenCalled();
     await user.click(screen.getByText('How it works'));
-    expect(screen.getByText(/No project restart is needed for workspace policy changes/u)).toBeVisible();
+    expect(screen.getByText(/Applies after saving to all newly created agents/u)).toBeVisible();
+    expect(screen.getByText(/Strict mode also applies to resumed work/u)).toBeVisible();
+    expect(screen.getByText(/No project restart is needed/u)).toBeVisible();
   });
 
   it('loads saved strict policy and can relax enforcement independently of the preferred mode', async () => {
     const save = vi.fn(async (value: AppSettings) => value);
-    installBridge(save, { ...settings, agentTeamMode: 'v2', agentWorkspace: { preferredMode: 'worktree', strict: true } });
+    installBridge(save, { ...settings, agentWorkspace: { preferredMode: 'worktree', strict: true } });
     const user = userEvent.setup();
     render(<SettingsDialog />);
     await user.click(await screen.findByRole('tab', { name: /Agent/ }));

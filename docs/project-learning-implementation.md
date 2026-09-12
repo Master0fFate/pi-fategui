@@ -1,12 +1,12 @@
-# Memory Learning implementation record
+# Memory Learning internals
 
 ## Grounding and decisions
 
-Implemented against commit `32d9dd2b4e2ac720b7ccce63c77140b6a6486146`, application `0.9.8-beta5`, Pi SDK / Pi AI `0.85.1`, Node `22.22.2`, pnpm `11.17.0`, on Windows x64. No dependency upgrades or new dependencies. Existing uncommitted workspace-preference UI changes were preserved. No subagents or real provider credentials were used.
+The implementation originated at commit `32d9dd2b4e2ac720b7ccce63c77140b6a6486146` with Pi SDK / Pi AI `0.85.1`. This document describes its boundaries and internal integration; current release verification is defined in [Development and release](development.md).
 
-The handoff's project-only rule conflicts with the later request for a **GLOBAL / PROJECT** selector, then with the request to treat GLOBAL as a user coding/collaboration profile and PROJECT as reusable repository memory. Those later requests take precedence: the master switch defaults off; Settings has independent GLOBAL and PROJECT layer toggles; GLOBAL holds one reviewed user-profile; PROJECT holds a briefing plus notes/procedures; Automatic mode can attach both cores together; stores are never copied or merged. This is reviewed preference memory, not a psychological diagnosis or model training.
+The master switch defaults off. Settings has independent **GLOBAL / PROJECT** layer toggles: GLOBAL holds one reviewed user profile, while PROJECT holds a briefing and reusable notes/procedures. Automatic mode can attach both cores; their stores are not copied or merged. This is reviewed context memory, not a psychological diagnosis or model training.
 
-Repository guidance and installed SDK types were checked before editing. Baseline `pnpm typecheck` and focused runtime, multi-project and Settings tests passed. `BUILD_NOTES.md` contains historical SDK 0.83.0 verification notes; the installed manifest/types are 0.85.1 and were used instead. Packaged SDK examples were unavailable through the application archive; local installed types and the repository's existing integrations supplied the executable contract.
+The integration uses the supported public SDK interfaces and preserves the application's existing runtime, queue, and provider boundaries. See [Pi SDK compatibility](sdk-compatibility.md) for the current upstream check.
 
 ## Integration map
 
@@ -46,9 +46,9 @@ Contracts/persistence, manual note approval/reuse, evidence/model drafting, revi
 - Failed delivery can leave a prepared manifest; the UI explicitly labels interrupted delivery uncertain. No automatic resend occurs. A delayed billing record can be dropped after deletion or a revision conflict instead of recreating data.
 - Optional Markdown/native skill export is not implemented. Managed procedures already work through the learning context adapter, and no skill file or command is installed/executed.
 
-## Verification
+## Implementation verification record
 
-Final `pnpm verify` passed: `pnpm typecheck`, **175 test files / 1,843 passing tests**, production main/preload/renderer builds and **10 Electron E2E tests**, including the new learning flow. Two tests were skipped: an existing test and the new file-symlink test because this Windows account lacks symlink creation privilege. The directory-junction and file-replacement-race checks ran and passed. `git diff --check` also passed.
+The original implementation's `pnpm verify` run passed: `pnpm typecheck`, **175 test files / 1,843 passing tests**, production main/preload/renderer builds and **10 Electron E2E tests**, including the new learning flow. Two tests were skipped: an existing test and the new file-symlink test because this Windows account lacks symlink creation privilege. The directory-junction and file-replacement-race checks ran and passed. `git diff --check` also passed.
 
 Tests cover restart persistence; stale/cross-window transactions; independent writer locks and explicit dead-writer recovery; corrupt/oversized/newer/wrong-identity stores; interrupted replacement; safe file targets; exact source branches and unchanged session bytes; redaction; provider output authority rejection; no_lesson; no-provider manual drafts; deletion during generation; revision history; evidence removal; explicit conflicts; manual/automatic selection; byte/whole-procedure budgets; Unicode/false matches; root runtime immediate/queued boundaries; optional failure; signed-history preservation; continuation/fork non-replay; and Settings toggle/scope behavior.
 

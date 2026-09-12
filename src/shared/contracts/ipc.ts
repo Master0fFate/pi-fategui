@@ -225,7 +225,6 @@ export const ipcChannels = {
   gitCommitDetails: 'git:commit-details',
   gitOperation: 'git:operation',
   gitRevertPath: 'git:revert-path',
-  recoveryConsume: 'recovery:consume',
   sessionExport: 'session:export',
 } as const;
 
@@ -239,6 +238,8 @@ export const windowStateSchema = z.object({ maximized: z.boolean(), minimized: z
 export const appInfoSchema = z.object({
   name: z.literal('Fate UI'),
   version: z.string().min(1),
+  releaseName: z.string().min(1).max(80).optional(),
+  displayVersion: z.string().min(1).max(200).optional(),
   platform: z.enum(['win32', 'darwin', 'linux']),
   packaged: z.boolean(),
 });
@@ -521,7 +522,6 @@ export const recoveryNoticeSchema = z.object({
   lastToolName: z.string().min(1).max(200).nullable(),
   writtenAt: z.number().finite(),
 }).strict();
-export const recoveryNoticeResultSchema = recoveryNoticeSchema.nullable();
 
 export const runtimeImageSchema = z.object({
   data: z.string().min(1).max(20_000_000),
@@ -681,10 +681,10 @@ export const subagentLivenessReportSchema = z.object({
 }).strict();
 export const subagentWorkflowLivenessReportSchema = z.object({
   id: z.string().min(1).max(160),
-  trigger: z.enum(['adaptive-limit', 'resource-limit']),
+  trigger: z.enum(['idle', 'runtime-limit', 'adaptive-limit', 'resource-limit']),
   reason: z.string().min(1).max(2_000),
   evidence: z.array(z.object({
-    signal: z.enum(['turn-threshold', 'cost-threshold', 'input-token-threshold', 'output-token-threshold', 'total-token-threshold']),
+    signal: z.enum(['idle-duration', 'runtime-duration', 'turn-threshold', 'cost-threshold', 'input-token-threshold', 'output-token-threshold', 'total-token-threshold']),
     detail: z.string().min(1).max(1_000),
     count: z.number().int().nonnegative().optional(),
   }).strict()).min(1).max(12),
@@ -701,10 +701,15 @@ export const subagentWorkflowLivenessReportSchema = z.object({
     detectedAt: z.number().finite(),
     startedAt: z.number().finite(),
     updatedAt: z.number().finite(),
+    lastObservableTeamUpdateAt: z.number().finite().optional(),
   }).strict(),
   workflow: z.object({
     id: z.string().min(1).max(100),
   }).strict(),
+  node: z.object({
+    id: z.string().min(1).max(80),
+    runId: z.string().min(1).max(100),
+  }).strict().optional(),
   checkpointSummary: z.string().min(1).max(4_000),
   recommendedOptions: z.array(z.enum(['continue', 'steer', 'request-checkpoint', 'cancel'])).min(1).max(4),
 }).strict();
@@ -1255,7 +1260,7 @@ export const speechHotkeyStatusSchema = z.object({
 }).strict();
 
 export const updateCheckResultSchema = z.object({
-  status: z.enum(['local-unreadable', 'local-invalid', 'remote-unavailable', 'remote-invalid', 'current', 'available', 'development']),
+  status: z.enum(['local-unreadable', 'local-invalid', 'remote-unavailable', 'remote-invalid', 'release-not-ready', 'current', 'available', 'development']),
   message: z.string().min(1).max(300),
   installedVersion: z.string().min(1).max(100).optional(),
   productionVersion: z.string().min(1).max(100).optional(),
@@ -1282,7 +1287,7 @@ export const appSettingsSchema = z.object({
   /** Hidden `provider/id` keys. Disabled models stay loaded but leave the picker. */
   disabledModels: z.array(z.string().min(1).max(700)).max(5_000).default([]),
   thinkingLevel: thinkingLevelSchema,
-  agentTeamMode: z.enum(['legacy', 'v2']).default('legacy'),
+  agentTeamMode: z.enum(['legacy', 'v2']).default('v2').transform((): 'legacy' | 'v2' => 'v2'),
   agentWorkspace: agentWorkspacePolicySchema,
   memoryLearning: memoryLearningSettingsSchema,
   confirmRiskyCommands: z.boolean(),
@@ -1445,7 +1450,6 @@ export type GitCommitDetails = z.infer<typeof gitCommitDetailsSchema>;
 export type GitOperation = z.infer<typeof gitOperationSchema>;
 export type GitOperationResult = z.infer<typeof gitOperationResultSchema>;
 export type GitRevertPathResult = z.infer<typeof gitRevertPathResultSchema>;
-export type RecoveryNotice = z.infer<typeof recoveryNoticeSchema>;
 export type TerminalEvent = z.infer<typeof terminalEventSchema>;
 export type ImageGenerationSettings = z.infer<typeof imageGenerationSettingsSchema>;
 export type AppSettings = z.infer<typeof appSettingsSchema>;
@@ -1583,7 +1587,6 @@ export interface PiDesktopApi extends LearningApi {
   getGitCommitDetails: (hash: string) => Promise<GitCommitDetails>;
   runGitOperation: (operation: GitOperation) => Promise<GitOperationResult>;
   revertGitPath: (path: string) => Promise<z.infer<typeof gitRevertPathResultSchema>>;
-  consumeRecovery: () => Promise<z.infer<typeof recoveryNoticeResultSchema>>;
   exportSession: () => Promise<z.infer<typeof sessionExportResultSchema>>;
   createTerminal: (cols: number, rows: number) => Promise<z.infer<typeof terminalCreateResultSchema>>;
   writeTerminal: (id: string, data: string) => Promise<void>;

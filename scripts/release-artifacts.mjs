@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readReleaseMetadata, shouldMarkReleaseLatest } from './release-metadata.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 
@@ -14,15 +14,6 @@ function option(args, name, fallback) {
   return value;
 }
 
-async function packageVersion() {
-  const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  if (typeof manifest.version !== 'string' || !manifest.version) throw new Error('package.json has no valid version.');
-  const productionVersion = await readFile(path.join(root, 'PRODVER'), 'utf8');
-  if (productionVersion !== manifest.version) {
-    throw new Error(`PRODVER (${JSON.stringify(productionVersion)}) does not exactly match package version ${manifest.version}.`);
-  }
-  return manifest.version;
-}
 
 function platformArtifacts(version, platform, arch) {
   if (platform === 'win32') return [`Fate-UI-${version}-Windows-${arch}.exe`];
@@ -76,7 +67,7 @@ async function stage(args) {
   const output = path.resolve(root, option(args, '--output', 'artifacts'));
   const platform = option(args, '--platform', process.platform);
   const arch = option(args, '--arch', process.arch);
-  const version = await packageVersion();
+  const { version } = await readReleaseMetadata(root);
   const expected = platformArtifacts(version, platform, arch);
   if (source === output) throw new Error('Release staging source and output directories must be different.');
 
@@ -97,7 +88,7 @@ async function stage(args) {
 
 async function checksums(args) {
   const source = path.resolve(root, option(args, '--source', 'artifacts'));
-  const version = await packageVersion();
+  const { version } = await readReleaseMetadata(root);
   const fileNames = await assertReleaseArtifactSet(source, version);
   const lines = [];
   for (const fileName of fileNames) {
@@ -109,10 +100,29 @@ async function checksums(args) {
 
 async function validateTag(args) {
   const tag = option(args, '--tag');
-  if (!tag || !/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(tag)) throw new Error(`Release tag is not strict SemVer: ${tag ?? '(missing)'}`);
-  const version = await packageVersion();
-  if (tag.slice(1) !== version) throw new Error(`Release tag ${tag} does not match package version ${version}.`);
-  process.stdout.write(`Release tag ${tag} matches package version ${version}.\n`);
+  const metadata = await readReleaseMetadata(root);
+  if (!tag || tag !== metadata.tag) throw new Error(`Release tag ${tag ?? '(missing)'} does not match package version ${metadata.version}.`);
+  process.stdout.write(`Release tag ${tag} matches package version ${metadata.version}; title ${metadata.displayVersion}.\n`);
+}
+
+async function latestPolicy(args) {
+  const publishedTag = option(args, '--published-tag');
+  const { version } = await readReleaseMetadata(root);
+  process.stdout.write(`${shouldMarkReleaseLatest(version, publishedTag) ? '--latest' : '--latest=false'}\n`);
+}
+
+async function printMetadata(args) {
+  const field = option(args, '--field');
+  const metadata = await readReleaseMetadata(root);
+  const fields = {
+    version: metadata.version,
+    'release-name': metadata.releaseName ?? '',
+    'display-version': metadata.displayVersion,
+    tag: metadata.tag,
+    'is-prerelease': String(metadata.isPrerelease),
+  };
+  if (!field || !(field in fields)) throw new Error(`Unknown metadata field: ${field ?? '(missing)'}.`);
+  process.stdout.write(`${fields[field]}\n`);
 }
 
 const [command, ...args] = process.argv.slice(2);
@@ -120,7 +130,9 @@ try {
   if (command === 'stage') await stage(args);
   else if (command === 'checksums') await checksums(args);
   else if (command === 'validate-tag') await validateTag(args);
-  else throw new Error('Usage: node scripts/release-artifacts.mjs <stage|checksums|validate-tag> [options]');
+  else if (command === 'latest-policy') await latestPolicy(args);
+  else if (command === 'metadata') await printMetadata(args);
+  else throw new Error('Usage: node scripts/release-artifacts.mjs <stage|checksums|validate-tag|latest-policy|metadata> [options]');
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;

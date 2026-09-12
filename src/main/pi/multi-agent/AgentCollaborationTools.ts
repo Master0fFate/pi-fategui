@@ -108,13 +108,15 @@ export function createAgentCollaborationTools(
   return [
     defineTool({
       name: 'spawn_agent', label: 'Spawn agent', promptSnippet: 'Create one direct child agent',
-      description: 'Create a direct child in the current Agent Team V2 tree and start its initial task. Omit workspace to use the live global preference; an explicit mode overrides only when global strict mode is off. Worktrees are not security sandboxes. Depth, total nodes, active turns, authority, context, and per-checkout writer leases are enforced atomically.',
+      description: 'Create a direct child in the current agent tree and start its initial task. Omit workspace to use the live global preference; an explicit mode overrides only when global strict mode is off. Worktrees are not security sandboxes. Depth, total nodes, active turns, authority, context, and per-checkout writer leases are enforced atomically.',
       promptGuidelines: ['Delegate one bounded outcome.', 'Omit workspace to use the global preference. When policy is soft, shared children inherit the caller checkout and isolated worktrees require parent review; strict policy rejects an incompatible explicit mode.', 'Worktrees start from committed files; uncommitted parent changes stay behind. Choose shared explicitly if the task needs those files and strict policy permits it.', 'Capacity errors are explicit; wait for existing work and retry.'],
       parameters: spawnParameters, executionMode: 'sequential',
       execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
         const receipt = await coordinator.spawn(caller(ctx.sessionManager.getSessionId(), params.teamId), params, toolCallId, modelRuntime, signal);
         const workspaceDetails = receipt.workspace ? ` workspace=${receipt.workspace.mode} path=${receipt.workspace.path}${receipt.workspace.branch ? ` branch=${receipt.workspace.branch}` : ''}` : '';
-        return text(`Spawned @${receipt.handle} at ${receipt.path} (${receipt.status}).${workspaceDetails}`, receipt);
+        return text(`Spawned @${receipt.handle} at ${receipt.path} (${receipt.status}).${workspaceDetails}`, {
+          ...receipt, kind: 'fate-agent-team-spawn', version: 1,
+        });
       },
     }),
     defineTool({
@@ -195,7 +197,7 @@ export function createAgentCollaborationTools(
       },
     }),
     defineTool({
-      name: 'list_agents', label: 'List agents', promptSnippet: 'Inspect the bounded Agent Team V2 tree',
+      name: 'list_agents', label: 'List agents', promptSnippet: 'Inspect the bounded agent tree',
       description: 'List a stable bounded projection of this root-scoped team, optionally below a canonical path prefix.',
       parameters: Type.Object({ teamId, pathPrefix: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })) }, { additionalProperties: false }), executionMode: 'parallel',
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {

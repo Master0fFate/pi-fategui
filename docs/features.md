@@ -7,7 +7,7 @@ What Fate UI adds beyond the terminal Pi agent: transparent observability, first
 The Flight Deck is Fate UI's observability surface. It shows real Pi runtime state, not inferred or mocked activity.
 
 - **Activity Pulse** — the live current-execution summary: runtime status, queue depth, context usage, changed files, and what is running right now (a tool, a writer node, a blocked agent).
-- **Activity** — one merged chronology in the Run destination. It joins **live, bounded** session events (root, legacy, and Agent Team activity; 256-row window, **not durable**) with the current project's **direct-write ledger** rows. When a ledger record matches a retained `write`/`edit` tool row (same actor, path, operation, and a bounded time window), the two render as one row tagged `ledger`; ledger rows with no retained tool row still appear after a restart. A single row of toggles narrows the list — **Writes** (write/edit rows only) plus one of **Root / Legacy / Team** — and no toggle selected shows everything.
+- **Activity** — one merged chronology in the Run destination. It joins **live, bounded** session events (root, historical standalone, and Agent Team activity; 256-row window, **not durable**) with the current project's **direct-write ledger** rows. When a ledger record matches a retained `write`/`edit` tool row (same actor, path, operation, and a bounded time window), the two render as one row tagged `ledger`; ledger rows with no retained tool row still appear after a restart. A single row of toggles narrows the list — **Writes** (write/edit rows only) plus one of **Root / Historical / Team** — and no toggle selected shows everything.
 - **Review Runway** — pairs working-tree diffs with review status (reviewed/unreviewed, navigate, mark, explain, test, revise).
 
 ### Honest about file attribution
@@ -24,7 +24,7 @@ So read these links as "related activity to investigate," never as proof of who 
 
 ### Direct-write ledger rows (limited)
 
-Activity's ledger rows list only successful direct `write`/`edit` tool calls for the current project: each row records the project-relative path, the actor (main agent, legacy subagent, or team node), the permission level at write time, and a prior→post SHA-256 transition (or `new file` / `oversize prior` when no prior hash was captured). The list is virtualized and bounded to the most recent 1,000 rows shown.
+Activity's ledger rows list only successful direct `write`/`edit` tool calls for the current project: each row records the project-relative path, the actor (main agent, historical standalone agent, or team node), the permission level at write time, and a prior→post SHA-256 transition (or `new file` / `oversize prior` when no prior hash was captured). The list is virtualized and bounded to the most recent 1,000 rows shown.
 
 It is deliberately narrow. It does **not** cover shell commands, formatters, scripts, external editor edits, manual terminal mutations, the current working-tree diff, or commit history. It records that a controlled write completed and produced the recorded written-content hash — not authorship, not causality, and not a durable audit log.
 

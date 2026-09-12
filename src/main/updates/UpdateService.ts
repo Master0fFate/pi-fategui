@@ -7,6 +7,7 @@ import type { UpdateCheckResult } from '../../shared/contracts/ipc';
 export const REMOTE_VERSION_URL = 'https://raw.githubusercontent.com/Master0fFate/pi-fategui/main/PRODVER';
 export const RELEASES_URL = 'https://github.com/Master0fFate/pi-fategui/releases';
 export const RELEASE_DOWNLOAD_BASE = 'https://github.com/Master0fFate/pi-fategui/releases/download';
+export const RELEASE_API_BASE = 'https://api.github.com/repos/Master0fFate/pi-fategui/releases/tags';
 export const UPDATE_CHECK_TIMEOUT_MS = 10_000;
 export const UPDATE_DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 
@@ -30,18 +31,24 @@ export type ReportUpdateProgress = (progress: UpdateDownloadProgress) => void;
 
 /** Resolve the GitHub release asset filename for a platform/arch. */
 export function platformAssetName(version: string, platform: string = process.platform, arch: string = process.arch): string {
-  if (platform === 'win32') return `Fate-UI-${version}-Windows-${arch}.exe`;
-  if (platform === 'darwin') return `Fate-UI-${version}-macOS-${arch}.dmg`;
-  if (platform === 'linux') return `Fate-UI-${version}-Linux-${arch}.AppImage`;
+  const normalized = requireNormalizedReleaseVersion(version);
+  if (platform === 'win32') return `Fate-UI-${normalized}-Windows-${arch}.exe`;
+  if (platform === 'darwin') return `Fate-UI-${normalized}-macOS-${arch}.dmg`;
+  if (platform === 'linux') return `Fate-UI-${normalized}-Linux-${arch}.AppImage`;
   throw new Error(`Updates are unavailable for platform ${platform}.`);
 }
 
 export function releaseDownloadUrl(version: string, platform: string = process.platform, arch: string = process.arch): string {
-  return `${RELEASE_DOWNLOAD_BASE}/v${version}/${platformAssetName(version, platform, arch)}`;
+  const normalized = requireNormalizedReleaseVersion(version);
+  return `${RELEASE_DOWNLOAD_BASE}/v${normalized}/${platformAssetName(normalized, platform, arch)}`;
 }
 
 export function releaseChecksumsUrl(version: string): string {
-  return `${RELEASE_DOWNLOAD_BASE}/v${version}/SHA256SUMS`;
+  return `${RELEASE_DOWNLOAD_BASE}/v${requireNormalizedReleaseVersion(version)}/SHA256SUMS`;
+}
+
+export function releaseApiUrl(version: string): string {
+  return `${RELEASE_API_BASE}/v${requireNormalizedReleaseVersion(version)}`;
 }
 
 const sha256HexPattern = /^[0-9a-f]{64}$/iu;
@@ -160,15 +167,17 @@ export const updateMessages = {
   localInvalid: 'The local version information is invalid. Please reinstall FateGUI.',
   remoteUnavailable: 'Unable to check for updates. Please check your internet connection and try again.',
   remoteInvalid: 'The update server returned invalid version information.',
+  releaseNotReady: 'A newer version is listed, but its verified installer is not published yet. Try again later.',
   current: 'FateGUI is up to date.',
   available: 'Update available. Click to download.',
   development: 'You are running a newer or development version of FateGUI.',
 } as const;
 
-interface SemanticVersion {
+export interface SemanticVersion {
   core: readonly [bigint, bigint, bigint];
   prerelease: readonly string[] | null;
   normalized: string;
+  releaseName: string | null;
 }
 
 interface VersionResponse {
@@ -182,17 +191,58 @@ type OpenExternal = (url: string) => Promise<void>;
 
 const semanticVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const numericIdentifierPattern = /^(?:0|[1-9]\d*)$/u;
+const displaySuffixSeparatorPattern = /\s+-\s+/u;
 
 export function parseSemanticVersion(value: string): SemanticVersion | null {
-  const normalized = value.trim();
-  if (normalized.length === 0 || normalized.length > 100) return null;
+  const input = value.trim();
+  if (input.length === 0 || input.length > 100) return null;
+  const separator = displaySuffixSeparatorPattern.exec(input);
+  const versionWithPrefix = separator ? input.slice(0, separator.index) : input;
+  const releaseName = separator ? input.slice(separator.index + separator[0].length) : null;
+  if (releaseName !== null && releaseName.length === 0) return null;
+  const normalized = /^[vV]/u.test(versionWithPrefix) ? versionWithPrefix.slice(1) : versionWithPrefix;
   const match = semanticVersionPattern.exec(normalized);
   if (!match) return null;
   return {
     core: [BigInt(match[1]!), BigInt(match[2]!), BigInt(match[3]!)],
     prerelease: match[4]?.split('.') ?? null,
     normalized,
+    releaseName,
   };
+}
+
+function requireNormalizedReleaseVersion(value: string): string {
+  const parsed = parseSemanticVersion(value);
+  if (!parsed) throw new Error('The available update version is invalid.');
+  return parsed.normalized;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+export function publishedReleaseHasAssets(
+  text: string,
+  version: string,
+  expectedAssetName: string,
+  expectedPrerelease: boolean,
+): boolean {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (!isRecord(value)
+    || value.tag_name !== `v${version}`
+    || value.draft !== false
+    || value.prerelease !== expectedPrerelease
+    || !Array.isArray(value.assets)) return false;
+  const uploadedAssets = new Set(value.assets.flatMap((asset) => {
+    if (!isRecord(asset) || typeof asset.name !== 'string' || asset.state !== 'uploaded' || typeof asset.size !== 'number' || asset.size <= 0) return [];
+    return [asset.name];
+  }));
+  return uploadedAssets.has(expectedAssetName) && uploadedAssets.has('SHA256SUMS');
 }
 
 function comparePrerelease(left: readonly string[] | null, right: readonly string[] | null): number {
@@ -300,6 +350,15 @@ export class UpdateService {
     if (!remoteVersion) return { status: 'remote-invalid', message: updateMessages.remoteInvalid };
     const comparison = compareSemanticVersions(localVersion, remoteVersion);
     if (comparison < 0) {
+      const assetName = platformAssetName(remoteVersion.normalized, this.platform, this.arch);
+      if (!await this.isPublishedReleaseReady(remoteVersion, assetName)) {
+        return {
+          status: 'release-not-ready',
+          message: updateMessages.releaseNotReady,
+          installedVersion: localVersion.normalized,
+          productionVersion: remoteVersion.normalized,
+        };
+      }
       return {
         status: 'available',
         message: updateMessages.available,
@@ -339,12 +398,12 @@ export class UpdateService {
     const assetName = platformAssetName(parsed.normalized, this.platform, this.arch);
     const url = releaseDownloadUrl(parsed.normalized, this.platform, this.arch);
     const targetPath = path.join(this.downloadDir, assetName);
-    await this.removeFile(targetPath);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.downloadTimeoutMs);
     timeout.unref?.();
     try {
-      const expectedDigest = await this.readExpectedDigest(parsed.normalized, assetName, controller.signal);
+      const expectedDigest = await this.readPublishedDigest(parsed, assetName, controller.signal);
+      await this.removeFile(targetPath);
       const download = await this.fetchAsset(url, { signal: controller.signal });
       if (!download.ok || !download.body) throw new Error(`The update download could not start (HTTP ${download.status}).`);
       const actualDigest = await this.streamDownload(download, targetPath, parsed.normalized);
@@ -359,6 +418,39 @@ export class UpdateService {
       clearTimeout(timeout);
     }
     await this.launchInstaller(targetPath, parsed.normalized);
+  }
+
+  private async isPublishedReleaseReady(version: SemanticVersion, assetName: string): Promise<boolean> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    timeout.unref?.();
+    try {
+      await this.readPublishedDigest(version, assetName, controller.signal);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async readPublishedDigest(version: SemanticVersion, assetName: string, signal: AbortSignal): Promise<string> {
+    let metadataText: string;
+    try {
+      const response = await this.fetchVersion(releaseApiUrl(version.normalized), {
+        signal,
+        headers: { 'cache-control': 'no-cache', 'user-agent': 'Fate-UI-update-check' },
+      });
+      if (!response.ok) throw new Error(updateMessages.releaseNotReady);
+      metadataText = await response.text();
+    } catch (error) {
+      if ((error as { name?: string })?.name === 'AbortError') throw error;
+      throw new Error(updateMessages.releaseNotReady);
+    }
+    if (!publishedReleaseHasAssets(metadataText, version.normalized, assetName, version.prerelease !== null)) {
+      throw new Error(updateMessages.releaseNotReady);
+    }
+    return this.readExpectedDigest(version.normalized, assetName, signal);
   }
 
   private async readExpectedDigest(version: string, assetName: string, signal: AbortSignal): Promise<string> {

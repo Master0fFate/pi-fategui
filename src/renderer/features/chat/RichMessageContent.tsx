@@ -72,6 +72,7 @@ async function renderMermaid(id: string, source: string, isCurrent: () => boolea
       suppressErrorRendering: true,
       theme: 'base',
       fontFamily: themeValue('--font-interface') || 'Noto Sans, ui-sans-serif, system-ui, sans-serif',
+      htmlLabels: false,
       flowchart: { htmlLabels: false },
       themeVariables: {
         background: themeValue('--theme-raised'),

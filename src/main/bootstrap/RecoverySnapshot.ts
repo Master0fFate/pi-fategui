@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { recoveryNoticeSchema, type PermissionLevel, type RecoveryNotice, type RuntimeState } from '../../shared/contracts/ipc';
+import { recoveryNoticeSchema, type PermissionLevel, type RuntimeState } from '../../shared/contracts/ipc';
 
 export const RECOVERY_SNAPSHOT_VERSION = 1 as const;
 const WRITE_INTERVAL_MS = 750;
@@ -13,7 +13,6 @@ export const recoverySnapshotSchema = recoveryNoticeSchema.extend({
 }).strict();
 
 export type RecoverySnapshot = z.infer<typeof recoverySnapshotSchema>;
-export type { RecoveryNotice };
 
 export function snapshotFromRuntime(state: Pick<RuntimeState, 'project' | 'sessionId' | 'permissionLevel' | 'streaming' | 'activeSessionRunning' | 'queue' | 'eventCursor' | 'tools'>, now = Date.now()): RecoverySnapshot {
   const runningTool = [...(state.tools ?? [])].reverse().find((tool) => tool.status === 'running');
@@ -31,20 +30,6 @@ export function snapshotFromRuntime(state: Pick<RuntimeState, 'project' | 'sessi
     lastToolName: runningTool?.name ?? null,
     writtenAt: now,
   };
-}
-
-export function noticeFromSnapshot(snapshot: RecoverySnapshot): RecoveryNotice {
-  const { version: _version, dirty: _dirty, ...notice } = snapshot;
-  return notice;
-}
-
-export function recoveryBannerText(notice: RecoveryNotice): string {
-  const parts = ['The last Fate UI process stopped without a clean shutdown.'];
-  if (notice.streaming || notice.activeSessionRunning) parts.push('A response or tool was still running.');
-  if (notice.queueSteering + notice.queueFollowUp > 0) parts.push('Queued prompts were not sent.');
-  if (notice.lastToolName) parts.push(`Last running tool: ${notice.lastToolName}.`);
-  parts.push('The session was restored. Check the last tool result before you continue.');
-  return parts.join(' ');
 }
 
 export function recoveryFilePath(dataRoot: string, slot = 1): string {
@@ -74,7 +59,6 @@ const diskStore: RecoverySnapshotStore = {
 
 export class RecoverySnapshotService {
   private pending: RecoverySnapshot | null = null;
-  private notice: RecoveryNotice | null = null;
   private writeTimer: ReturnType<typeof setTimeout> | null = null;
   private lastWrite = 0;
   private flushing: Promise<void> = Promise.resolve();
@@ -98,7 +82,6 @@ export class RecoverySnapshotService {
         return null;
       }
       this.pending = parsed;
-      this.notice = noticeFromSnapshot(parsed);
       return parsed;
     } catch {
       this.pending = null;
@@ -131,16 +114,6 @@ export class RecoverySnapshotService {
     this.pending = null;
     await this.flushing;
     await this.store.remove(this.filePath).catch(() => undefined);
-  }
-
-  /**
-   * Return the one-shot notice. The dirty file stays until markClean so a
-   * later project open can still restore the remembered session.
-   */
-  consume(): RecoveryNotice | null {
-    const notice = this.notice;
-    this.notice = null;
-    return notice;
   }
 
   private async persist(snapshot: RecoverySnapshot | null): Promise<void> {

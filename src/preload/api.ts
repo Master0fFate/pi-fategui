@@ -28,7 +28,6 @@ import {
   gitOperationResultSchema,
   gitRevertPathInputSchema,
   gitRevertPathResultSchema,
-  recoveryNoticeResultSchema,
   sessionExportResultSchema,
   gitStatusSchema,
   gitWorktreeInputSchema,
@@ -681,10 +680,6 @@ export const piDesktopApi: PiDesktopApi = Object.freeze({
   async revertGitPath(path: string) {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.gitRevertPath, gitRevertPathInputSchema.parse({ path }));
     return gitRevertPathResultSchema.parse(result);
-  },
-  async consumeRecovery() {
-    const result: unknown = await ipcRenderer.invoke(ipcChannels.recoveryConsume, emptyInputSchema.parse({}));
-    return recoveryNoticeResultSchema.parse(result);
   },
   async exportSession() {
     const result: unknown = await ipcRenderer.invoke(ipcChannels.sessionExport, emptyInputSchema.parse({}));

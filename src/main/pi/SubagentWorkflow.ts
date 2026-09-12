@@ -35,10 +35,17 @@ export interface SubagentWorkflowNode {
   endedAt?: number;
 }
 
+export interface SubagentWorkflowExecutionBinding {
+  kind: 'agent-team';
+  teamId: string;
+  rootNodeId: string;
+}
+
 export interface SubagentWorkflow {
   id: string;
   parentSessionId: string;
   parentToolCallId: string;
+  execution?: SubagentWorkflowExecutionBinding;
   status: SubagentWorkflowStatus;
   maxConcurrency: number;
   notification: SubagentNotification;
@@ -67,6 +74,7 @@ interface WorkflowHost {
     signal: AbortSignal,
   ) => Promise<{ runId: string; completion: Promise<SubagentRun> }>;
   cancelRuns: (parentSessionId: string, runIds: string[], reason: string) => Promise<void>;
+  executionConcurrency?: (workflow: SubagentWorkflow) => number;
   usedHandles: (parentSessionId: string) => string[];
   runIdentity: (parentSessionId: string, runId: string) => { handle: string; displayName: string } | undefined;
   persist: (workflow: SubagentWorkflow) => void;
@@ -80,11 +88,13 @@ interface ActiveWorkflow {
   controller: AbortController;
   promise: Promise<SubagentWorkflow>;
   removeParentAbort?: () => void;
+  suppressNotification?: boolean;
 }
 
 function cloneWorkflow(workflow: SubagentWorkflow): SubagentWorkflow {
   return {
     ...workflow,
+    ...(workflow.execution ? { execution: { ...workflow.execution } } : {}),
     usage: { ...workflow.usage },
     ...(workflow.budget ? { budget: { ...workflow.budget } } : {}),
     ...(workflow.livenessReports ? { livenessReports: workflow.livenessReports.map((report) => structuredClone(report)) } : {}),
@@ -101,6 +111,7 @@ function cloneWorkflow(workflow: SubagentWorkflow): SubagentWorkflow {
           fallbackModels: node.request.routing.fallbackModels.map((model) => ({ ...model })),
         },
         ...(node.request.budget ? { budget: { ...node.request.budget } } : {}),
+        ...(node.request.workspace ? { workspace: { ...node.request.workspace } } : {}),
       },
     })),
   };
@@ -177,6 +188,10 @@ export class SubagentWorkflowEngine {
     return this.active.size > 0;
   }
 
+  notificationsSuppressed(parentSessionId: string, workflowId: string): boolean {
+    return this.active.get(this.key(parentSessionId, workflowId))?.suppressNotification === true;
+  }
+
   parentIds(): string[] {
     return [...this.workflowsByParent.keys()];
   }
@@ -192,6 +207,7 @@ export class SubagentWorkflowEngine {
     request: WorkflowStartRequest,
     modelRuntime: ModelRuntime,
     parentSignal?: AbortSignal,
+    execution?: SubagentWorkflowExecutionBinding,
   ): SubagentWorkflow {
     const id = deterministicWorkflowId(parentSessionId, parentToolCallId);
     if (this.active.has(this.key(parentSessionId, id))) throw new Error(`Subagent workflow ${id} is already running.`);
@@ -213,6 +229,7 @@ export class SubagentWorkflowEngine {
       id,
       parentSessionId,
       parentToolCallId,
+      ...(execution ? { execution: { ...execution } } : {}),
       status: 'running',
       maxConcurrency: request.maxConcurrency,
       notification: request.notification,
@@ -243,9 +260,10 @@ export class SubagentWorkflowEngine {
     return cloneWorkflow(workflow);
   }
 
-  async resume(parentSessionId: string, workflowId: string, modelRuntime: ModelRuntime): Promise<SubagentWorkflow> {
+  async resume(parentSessionId: string, workflowId: string, modelRuntime: ModelRuntime, execution?: SubagentWorkflowExecutionBinding): Promise<SubagentWorkflow> {
     const workflow = this.requireWorkflow(parentSessionId, workflowId);
     if (workflow.status !== 'paused') throw new Error(`Subagent workflow ${workflowId} is not paused.`);
+    if (execution) workflow.execution = { ...execution };
     workflow.status = 'running';
     delete workflow.error;
     delete workflow.endedAt;
@@ -262,9 +280,10 @@ export class SubagentWorkflowEngine {
     return cloneWorkflow(workflow);
   }
 
-  async cancel(parentSessionId: string, workflowId: string, reason = 'Workflow cancelled by the parent orchestrator.'): Promise<SubagentWorkflow> {
+  async cancel(parentSessionId: string, workflowId: string, reason = 'Workflow cancelled by the parent orchestrator.', suppressNotification = false): Promise<SubagentWorkflow> {
     const workflow = this.requireWorkflow(parentSessionId, workflowId);
     const active = this.active.get(this.key(parentSessionId, workflowId));
+    if (active && suppressNotification) active.suppressNotification = true;
     active?.controller.abort(reason);
     const cancelledAt = Date.now();
     for (const node of workflow.nodes) {
@@ -289,7 +308,7 @@ export class SubagentWorkflowEngine {
 
   async cancelParent(parentSessionId: string): Promise<void> {
     const workflows = this.getWorkflows(parentSessionId).filter((workflow) => workflow.status === 'running');
-    await Promise.allSettled(workflows.map((workflow) => this.cancel(parentSessionId, workflow.id, 'Workflow cancelled with its parent Pi session.')));
+    await Promise.all(workflows.map((workflow) => this.cancel(parentSessionId, workflow.id, 'Workflow cancelled with its parent Pi session.', true)));
   }
 
   releaseParent(parentSessionId: string): void {
@@ -299,9 +318,14 @@ export class SubagentWorkflowEngine {
 
   restore(parentSessionId: string, candidates: readonly SubagentWorkflow[]): void {
     if (this.hasActive(parentSessionId)) return;
-    const latest = new Map<string, SubagentWorkflow>();
+    const persistedLatest = new Map<string, SubagentWorkflow>();
     for (const candidate of candidates) {
       if (!candidate || candidate.parentSessionId !== parentSessionId || !candidate.id || !Array.isArray(candidate.nodes) || candidate.nodes.length === 0) continue;
+      const previous = persistedLatest.get(candidate.id);
+      if (!previous || candidate.updatedAt >= previous.updatedAt) persistedLatest.set(candidate.id, candidate);
+    }
+    const latest = new Map<string, SubagentWorkflow>();
+    for (const candidate of persistedLatest.values()) {
       const normalized = normalizeWorkflowStart({
         action: 'start',
         nodes: candidate.nodes.flatMap((node) => node?.request ? [{
@@ -317,12 +341,13 @@ export class SubagentWorkflowEngine {
           skills: node.request.skills,
           skillMode: node.request.skillMode,
           preloadSkills: node.request.preloadSkills,
-          timeoutSeconds: node.request.timeoutMs / 1_000,
-          ...(node.request.idleTimeoutMs ? { idleTimeoutSeconds: node.request.idleTimeoutMs / 1_000 } : {}),
+          ...(node.request.timeoutMs > 0 ? { timeoutSeconds: node.request.timeoutMs / 1_000 } : {}),
+          ...(node.request.idleTimeoutMs !== undefined ? { idleTimeoutSeconds: node.request.idleTimeoutMs / 1_000 } : {}),
           mailboxTtlSeconds: node.request.mailboxTtlMs / 1_000,
           notifyParent: node.request.notification,
           ...(node.request.budget ? { budget: node.request.budget } : {}),
           routing: node.request.routing,
+          ...(node.request.workspace ? { workspace: node.request.workspace } : {}),
           dependsOn: node.request.dependsOn,
           includeDependencyResults: node.request.includeDependencyResults,
           dependencyFailure: node.request.dependencyFailure,
@@ -365,8 +390,7 @@ export class SubagentWorkflowEngine {
         restored.updatedAt = Date.now();
         for (const node of restored.nodes) if (node.status === 'running' || node.status === 'pending') node.status = 'interrupted';
       }
-      const previous = latest.get(restored.id);
-      if (!previous || restored.updatedAt >= previous.updatedAt) latest.set(restored.id, restored);
+      latest.set(restored.id, restored);
     }
     if (!latest.size) return;
     this.workflowsByParent.set(parentSessionId, new Map([...latest.values()].map((workflow) => [workflow.id, workflow])));
@@ -503,8 +527,9 @@ export class SubagentWorkflowEngine {
         if (signal.aborted) throw Object.assign(new Error(String(signal.reason || 'Workflow cancelled.')), { name: 'AbortError' });
 
         let launched = false;
+        const executionConcurrency = Math.max(1, Math.min(workflow.maxConcurrency, this.host.executionConcurrency?.(workflow) ?? workflow.maxConcurrency));
         for (const node of workflow.nodes) {
-          if (node.status !== 'pending' || running.size >= workflow.maxConcurrency) continue;
+          if (node.status !== 'pending' || running.size >= executionConcurrency) continue;
           const dependencies = node.dependsOn.map((id) => nodesById.get(id)!);
           if (!dependencies.every((dependency) => terminalNode(dependency.status))) continue;
           const failedDependency = dependencies.find((dependency) => dependency.status !== 'completed');
@@ -541,6 +566,7 @@ export class SubagentWorkflowEngine {
           }
           const task = completion
             .then((run) => {
+              node.runId = run.id;
               if (run.result === undefined) delete node.result;
               else node.result = run.result;
               if (run.error === undefined) delete node.error;
@@ -599,7 +625,7 @@ export class SubagentWorkflowEngine {
   }
 
   private async notify(workflow: SubagentWorkflow): Promise<void> {
-    if (workflow.notification === 'never') return;
+    if (workflow.notification === 'never' || this.notificationsSuppressed(workflow.parentSessionId, workflow.id)) return;
     const runIds = workflow.nodes.flatMap((node) => node.runId ? [node.runId] : []);
     await this.host.notify(
       workflow.parentSessionId,

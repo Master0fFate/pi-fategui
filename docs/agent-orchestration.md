@@ -1,27 +1,52 @@
 # Agent orchestration
 
-Choose one orchestration surface under **Settings → Agent**, then reopen the project. A model sees only the selected surface.
+Fate UI exposes one canonical agent lifecycle; there is no selectable Legacy/Agent Teams protocol mode. A root can create children, and children can create grandchildren within the same provider-neutral Team executor. The **Agents** inspector shows the tree, task state, profile/model, usage, messages, and writer ownership. It also lets you message, follow up with, interrupt, or close agents. Conversations and events persist under `~/.pi/fateGUI/agent-teams/`; after restart, in-flight work is marked interrupted and remains visible through the same lifecycle.
 
-## Agent Teams V2 (beta)
+`agent_workflow` schedules dependency graphs through that same Team executor rather than a separate child-session engine. A paused saved workflow never resumes implicitly: explicitly resume it to admit its remaining work through the current executor. Saved standalone records from the former engine remain historical and read-only, except that their display names can still be renamed. Their persisted source identities and archive data are preserved.
 
-Agent Teams V2 is the recursive, provider-neutral option. A root can create children and children can create grandchildren. The **Agents** inspector shows the tree, task state, profile/model, usage, messages, and writer ownership. It also lets you message, follow up with, interrupt, or close agents. Conversations and events persist under `~/.pi/fateGUI/agent-teams/`; after restart, in-flight work is marked interrupted and retained context can be resumed with a follow-up.
+A small dependency workflow looks like this:
 
-Teams limit depth to 2, non-root nodes to 16, and concurrent non-root turns to 3 per team. Writer leases are **per checkout**: shared-checkout writers serialize, while agents in separate worktrees can write concurrently. Descendant permissions and ordinary tools can only narrow the direct caller's authority.
+```json
+{
+  "action": "start",
+  "maxConcurrency": 2,
+  "nodes": [
+    {
+      "id": "inspect",
+      "task": "Inspect the affected code and return file and symbol references.",
+      "permission": "read-only",
+      "timeoutSeconds": 120
+    },
+    {
+      "id": "implement",
+      "task": "Implement and test the scoped change.",
+      "dependsOn": ["inspect"],
+      "includeDependencyResults": true,
+      "permission": "edit",
+      "mailboxTtlSeconds": 300
+    }
+  ]
+}
+```
+
+`includeDependencyResults` transfers bounded result **text** as untrusted evidence; it does not copy files or integrate an isolated worktree. Files written in a shared checkout are already shared, while worktree changes require explicit review and integration as described below. Positive runtime and idle thresholds are advisory inspector checkpoints, not termination clocks. A positive workflow mailbox TTL keeps a successfully settled Team node available for `followup_task`; Team owns expiry and resets the idle deadline after an accepted follow-up. Zero disables retention and releases capacity after safe settlement.
+
+Teams limit depth to 2, concurrent non-root turns to 3, and **live, unreleased** non-root nodes to 16 per team. The 16-node limit is live Team capacity, not a limit of 16 logical DAG steps; settled nodes can be released before later workflow steps are admitted. Writer leases are **per checkout**: shared-checkout writers serialize, while agents in separate worktrees can write concurrently. Descendant permissions and ordinary tools can only narrow the direct caller's authority.
 
 ### Global workspace preference
 
-Set the workspace policy once in **Settings → Agent → Subagent workspaces**. It applies across projects and AI-created teams; there is no manual team setup in **Run → Agents**.
+Set the workspace policy once in **Settings → Agent → Agents**. It applies across projects and newly created agents; there is no manual team setup in **Run → Agents**.
 
 - **Prefer isolated worktrees** starts on. New agents use separate Git checkouts by default. Turn it off to prefer sharing the direct parent's checkout.
 - **Strict mode** starts off. With it off, the parent can explicitly choose the other mode for a particular task. With it on, Fate refuses incompatible launches and resumed turns in the backend; an agent cannot change this policy through a team tool.
 
 Saving applies the policy immediately to future admissions, including in existing and background teams. Running turns finish in their current checkout: a settings change never moves files or discards work. A retained agent in the wrong mode cannot start another turn while strict enforcement applies; relax the setting or spawn a compatible replacement. Review, integration, and cleanup of retained workspaces remain available.
 
-Worktrees still require a Git repository with a commit and sufficient parent permissions. An unavailable worktree is an error, not a silent downgrade; with Strict mode off, the agent can retry with an explicit shared checkout. This policy applies to **Agent Teams V2**, not legacy subagents. Switching orchestration protocols still requires reopening the project; changing workspace policy does not.
+Worktrees still require a Git repository with a commit and sufficient parent permissions. An unavailable worktree is an error, not a silent downgrade; with Strict mode off, the agent can retry with an explicit shared checkout. The policy applies to all newly created agents using the canonical executor. Changing workspace policy does not require reopening the project.
 
 Automatic GoalMax verifiers and diagnostic agents explicitly share the current project when the policy is flexible, so they inspect delivered files rather than an older commit. With strict isolation selected, these reviews require a clean, committed project before launching an isolated verifier; they fail clearly instead of silently reviewing stale files.
 
-The parent and children can call `get_agent_workspace_policy` to read the live preference and strict flag. `configure_agent_workspace` is no longer exposed. Saved beta4 team defaults remain readable as historical data but no longer determine new workspace choices.
+The parent and children can call `get_agent_workspace_policy` to read the live preference and strict flag. `configure_agent_workspace` is no longer exposed. Older saved team defaults remain readable as historical data but no longer determine new workspace choices.
 
 A parent can specify a workspace for each `spawn_agent` call, subject to that policy:
 
@@ -55,9 +80,9 @@ On resume, Fate validates checkout ownership, canonical parent paths, Git regist
 
 **A Git worktree is not a security sandbox.** Project-confined edit tools stay in the assigned checkout; Full access can still reach other host paths, processes, databases, and services. Git object storage is shared. Leases coordinate this Fate UI runtime, not unrelated shells or other application processes.
 
-## Legacy subagents
+## Historical standalone records
 
-Legacy mode keeps `subagent`, `subagent_start`, `subagent_manage`, `subagent_workflow`, and `subagent_catalog`. Each child uses an isolated Pi SDK session with its own model, thinking level, profile, permissions, tools, skills, and limits. It cannot launch child agents. Historical snapshots stay readable as direct root children. Per-child Git worktrees are available in Agent Teams V2, not legacy mode.
+Saved standalone agent records from earlier versions stay visible as historical direct-root entries. They are read-only except for display-name rename, and they do not become live Team nodes merely by being viewed. Their persisted identifiers and source markers remain unchanged for archive compatibility.
 
 ## Reusable agent profiles
 
@@ -65,4 +90,4 @@ Reusable Markdown profiles load from `~/.pi/agent/agents/*.md` and, in trusted p
 
 ## Permissions and authority
 
-What an agent can do is governed by the active [permission level](architecture.md#permission-model): **Read only**, **Edit files** (default, project-confined), or **Full access** (unsandboxed, explicit confirmation). In Agent Teams, descendant authority can only narrow the caller's — it never exceeds it.
+What an agent can do is governed by the active [permission level](architecture.md#permission-model): **Read only**, **Edit files** (default, project-confined), or **Full access** (unsandboxed, explicit confirmation). In agent teams, descendant authority can only narrow the caller's — it never exceeds it.

@@ -1,10 +1,32 @@
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { describe, expect, it } from 'vitest';
-import { PiEventNormalizer, safeText, safeToolInput } from './PiEventNormalizer';
+import { PiEventNormalizer, safeText, safeToolInput, subagentRunIds } from './PiEventNormalizer';
 
 const event = (value: unknown) => value as AgentSessionEvent;
 
 describe('PiEventNormalizer', () => {
+  it('normalizes only tagged child references, including empty workflow startup', () => {
+    expect(subagentRunIds({ details: { kind: 'fate-agent-team-spawn', version: 1, nodeId: 'node-1' } })).toEqual(['node-1']);
+    expect(subagentRunIds({ details: { kind: 'fate-subagent-workflow', version: 1, runIds: [] } })).toEqual([]);
+    expect(subagentRunIds({ details: { kind: 'fate-subagent-workflow', version: 1, runIds: ['node-1', 'node-1'] } })).toEqual(['node-1']);
+    for (const details of [
+      { nodeId: 'node-1', teamId: 'team-1' },
+      { runIds: ['node-1'] },
+      { kind: 'fate-agent-team-spawn', version: 2, nodeId: 'node-1' },
+      ...['', ' node-1', 'node-1\n', 'node\u0000id', 'x'.repeat(101), 123].map((nodeId) => ({ kind: 'fate-agent-team-spawn', version: 1, nodeId })),
+      { kind: 'fate-subagent-workflow', version: 1, runIds: ['valid', ' invalid'] },
+      { kind: 'fate-subagent', version: 3, runIds: ['valid', '\t'] },
+    ]) expect(subagentRunIds({ details })).toBeUndefined();
+  });
+
+  it('carries canonical spawn references through live update and completion events', () => {
+    const normalizer = new PiEventNormalizer(() => 'run-1');
+    const result = { content: [{ type: 'text', text: 'Spawned worker' }], details: { kind: 'fate-agent-team-spawn', version: 1, nodeId: 'node-1' } };
+    expect(normalizer.normalize(event({ type: 'tool_execution_update', toolCallId: 'spawn', toolName: 'spawn_agent', partialResult: result }))[0])
+      .toMatchObject({ type: 'tool.updated', subagentRunIds: ['node-1'] });
+    expect(normalizer.normalize(event({ type: 'tool_execution_end', toolCallId: 'spawn', toolName: 'spawn_agent', result, isError: false }))[0])
+      .toMatchObject({ type: 'tool.completed', subagentRunIds: ['node-1'], error: false });
+  });
   it('normalizes assistant text and reasoning without exposing SDK events', () => {
     const normalizer = new PiEventNormalizer(() => 'run-1');
     const message = { role: 'assistant', content: [], timestamp: 1 };

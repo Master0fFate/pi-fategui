@@ -209,7 +209,6 @@ export function App() {
   const [themeCatalog, setThemeCatalog] = useState(() => fallbackThemes);
   const [hydrationAttempt, setHydrationAttempt] = useState(0);
   const [hydrationError, setHydrationError] = useState<string | null>(null);
-  const [recoveryBanner, setRecoveryBanner] = useState<string | null>(null);
   const sessionReplacementBusy = useRef(false);
 
   useEffect(() => { if (paletteOpen) setPaletteActivated(true); }, [paletteOpen]);
@@ -410,21 +409,7 @@ export function App() {
       }
     });
 
-    const recover = Promise.resolve(
-      typeof window.piDesktop.consumeRecovery === 'function' ? window.piDesktop.consumeRecovery() : null,
-    ).catch(() => null);
-    void recover.then((notice) => {
-      if (!cancelled && notice) {
-        const bits = ['The last Fate UI process stopped without a clean shutdown.'];
-        if (notice.streaming || notice.activeSessionRunning) bits.push('A response or tool was still running.');
-        if (notice.queueSteering + notice.queueFollowUp > 0) bits.push('Queued prompts were not sent.');
-        if (notice.lastToolName) bits.push(`Last running tool: ${notice.lastToolName}.`);
-        bits.push('The session was restored. Check the last tool result before you continue.');
-        setRecoveryBanner(bits.join(' '));
-      }
-      if (cancelled) return Promise.resolve(null);
-      return window.piDesktop.getRuntimeState();
-    }).then((runtime) => {
+    void window.piDesktop.getRuntimeState().then((runtime) => {
       if (cancelled || !runtime) return;
       if (bufferOverflowed) {
         // Do not install a snapshot paired with an incomplete event tail. A new
@@ -612,7 +597,6 @@ export function App() {
   return (
     <>
       {hydrationError && <div className="hydration-error-banner" role="alert"><span>{hydrationError}</span><button type="button" onClick={() => setHydrationAttempt((value) => value + 1)}>Retry</button></div>}
-      {recoveryBanner && <div className="hydration-error-banner recovery-banner" role="status"><span>{recoveryBanner}</span><button type="button" onClick={() => setRecoveryBanner(null)}>Dismiss</button></div>}
       <BrowserInitializer />
       <WorkspaceInitializer />
       <AppShell />

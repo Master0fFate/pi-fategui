@@ -23,13 +23,14 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { type DragEvent as ReactDragEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type DragEvent as ReactDragEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { useShallow } from 'zustand/react/shallow';
 import type { SessionBranch, SessionSummary } from '../../../shared/contracts/ipc';
 import { serializeSessionReference, SESSION_REFERENCE_TRANSFER_TYPE } from '../../../shared/sessionReferences';
 import { AppTooltip } from '../../components/AppTooltip';
 import { IconButton } from '../../components/IconButton';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { useSkinComponents } from '../../skins/SkinProvider';
 import { SelectControl } from '../../components/SelectControl';
 import { formatRelativeTime } from '../../lib/relativeTime';
@@ -48,6 +49,18 @@ interface SidebarProps {
 }
 
 const MAX_CACHED_PROJECT_SESSIONS = 250;
+
+function navigateFolderMenu(event: KeyboardEvent<HTMLDivElement>): void {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+  const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')];
+  if (!items.length) return;
+  event.preventDefault();
+  const current = items.indexOf(document.activeElement as HTMLButtonElement);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+    : current < 0 ? event.key === 'ArrowUp' ? items.length - 1 : 0
+      : (current + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
+  items[next]?.focus();
+}
 
 const attentionLabels = {
   running: 'Session running',
@@ -115,7 +128,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [confirmingForkDeleteId, setConfirmingForkDeleteId] = useState<string | null>(null);
   const [forkActionBranchId, setForkActionBranchId] = useState<string | null>(null);
-  const [confirmingDeleteAllPath, setConfirmingDeleteAllPath] = useState<string | null>(null);
+  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState<KnownProject | null>(null);
+  const [deleteAllError, setDeleteAllError] = useState<string | null>(null);
+  const [openFolderMenuPath, setOpenFolderMenuPath] = useState<string | null>(null);
+  const folderMenuTrigger = useRef<HTMLButtonElement | null>(null);
+  const folderDialogOpening = useRef(false);
   const [navigatingBranchId, setNavigatingBranchId] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState('');
   const [sessions, setSessions] = useState<SessionSummary[]>(runtime.sessions ?? []);
@@ -421,10 +438,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     if (!('piDesktop' in window) || typeof window.piDesktop.deleteProjectSessions !== 'function' || replacementBusy || actionBusyRef.current) return;
     actionBusyRef.current = true;
     setActionBusy(true);
+    setDeleteAllError(null);
     void window.piDesktop.deleteProjectSessions(project.path)
       .then(async (result) => {
         if (!mounted.current) return;
-        setConfirmingDeleteAllPath(null);
+        setConfirmingDeleteAll(null);
         refreshPreviews([project.path]);
         if (isActiveProject(project.path)) {
           // The IPC result only carries counts; pull the authoritative state
@@ -441,7 +459,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         showToast({ kind: 'success', title: 'Sessions deleted', message: `Deleted ${result.deleted} session${result.deleted === 1 ? '' : 's'} from ${project.name}.${skippedMessage}` });
       })
       .catch((error: unknown) => {
-        if (mounted.current) showToast({ kind: 'error', title: 'Could not delete sessions', message: sidebarErrorMessage(error, 'The folder sessions could not be deleted.') });
+        if (mounted.current) {
+          const message = sidebarErrorMessage(error, 'The folder sessions could not be deleted.');
+          setDeleteAllError(message);
+          showToast({ kind: 'error', title: 'Could not delete sessions', message });
+        }
       })
       .finally(() => {
         actionBusyRef.current = false;
@@ -1171,26 +1193,24 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           <AppTooltip content="New session" wrapTrigger>
             <button className="folder-new-session" type="button" aria-label={`New session in ${project.name}`} disabled={replacementBusy} onClick={() => createSessionInFolder(project)}><Symbol text="+"><Plus size={13} /></Symbol></button>
           </AppTooltip>
-          <Popover.Root>
+          <Popover.Root open={openFolderMenuPath === project.path} onOpenChange={(open) => setOpenFolderMenuPath(open ? project.path : null)}>
             <AppTooltip content="Folder actions">
               <Popover.Trigger asChild>
-                <button className="folder-menu-trigger" type="button" aria-label={`Actions for ${project.name}`}><Symbol text="..."><MoreHorizontal size={14} /></Symbol></button>
+                <button className="folder-menu-trigger" type="button" aria-label={`Actions for ${project.name}`} onClick={(event) => { folderMenuTrigger.current = event.currentTarget; }}><ActionContent text="..."><MoreHorizontal size={14} /></ActionContent></button>
               </Popover.Trigger>
             </AppTooltip>
             <Popover.Portal>
-              <Popover.Content className="folder-action-menu" role="menu" aria-label={`Actions for ${project.name}`} align="start" sideOffset={6}>
-                <button type="button" role="menuitem" className="folder-action-item" disabled={replacementBusy} onClick={() => openFolder(project)}>Open this folder</button>
-                <button type="button" role="menuitem" className="folder-action-item" disabled={replacementBusy} onClick={() => revealFolder(project.path)}>Reveal in file manager</button>
-                {confirmingDeleteAllPath === project.path ? (
-                  <div className="folder-action-confirm" role="group" aria-label={`Confirm deleting sessions from ${project.name}`}>
-                    <span>Delete all folder sessions?</span>
-                    <button type="button" className="folder-action-item folder-action-item--danger" disabled={replacementBusy} onClick={() => deleteAllSessions(project)}>Delete all</button>
-                    <button type="button" className="folder-action-item" disabled={replacementBusy} onClick={() => setConfirmingDeleteAllPath(null)}>Cancel</button>
-                  </div>
-                ) : (
-                  <button type="button" role="menuitem" className="folder-action-item folder-action-item--danger" disabled={replacementBusy} onClick={() => setConfirmingDeleteAllPath(project.path)}>Delete all sessions</button>
-                )}
-                <button type="button" role="menuitem" className="folder-action-item folder-action-item--danger" disabled={isActive || replacementBusy} onClick={() => forgetFolder(project)}>Forget folder</button>
+              <Popover.Content className="folder-action-menu" role="menu" aria-label={`Actions for ${project.name}`} align="end" sideOffset={6} collisionPadding={8} onKeyDown={navigateFolderMenu} onCloseAutoFocus={(event) => {
+                if (folderDialogOpening.current) { event.preventDefault(); folderDialogOpening.current = false; }
+              }}>
+                <Popover.Close asChild><button type="button" role="menuitem" aria-label="Open this folder" className="folder-action-item" disabled={replacementBusy} onClick={() => openFolder(project)}><ActionContent text="open folder">Open this folder</ActionContent></button></Popover.Close>
+                <Popover.Close asChild><button type="button" role="menuitem" aria-label="Reveal in file manager" className="folder-action-item" disabled={replacementBusy} onClick={() => revealFolder(project.path)}><ActionContent text="reveal folder">Reveal in file manager</ActionContent></button></Popover.Close>
+                <Popover.Close asChild><button type="button" role="menuitem" aria-label="Delete all sessions" className="folder-action-item folder-action-item--danger" disabled={replacementBusy} onClick={() => {
+                  folderDialogOpening.current = true;
+                  setDeleteAllError(null);
+                  setConfirmingDeleteAll(project);
+                }}><ActionContent text="delete sessions">Delete all sessions</ActionContent></button></Popover.Close>
+                <Popover.Close asChild><button type="button" role="menuitem" aria-label="Forget folder" className="folder-action-item folder-action-item--danger" disabled={isActive || replacementBusy} onClick={() => forgetFolder(project)}><ActionContent text="forget folder">Forget folder</ActionContent></button></Popover.Close>
               </Popover.Content>
             </Popover.Portal>
           </Popover.Root>
@@ -1276,7 +1296,17 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   };
 
   return (
-    <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''} ${expandedVisible ? 'sidebar--expanded-visible' : ''}`} aria-label="Primary navigation">
+    <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''} ${expandedVisible ? 'sidebar--expanded-visible' : ''}`} aria-label="Primary navigation" tabIndex={-1} data-dialog-return-focus>
+      {confirmingDeleteAll ? <ConfirmDialog
+        title={`Delete sessions from ${confirmingDeleteAll.name}?`}
+        message="Saved conversations in this folder will be removed. Active sessions and repository files are kept."
+        confirmLabel="Delete sessions"
+        busy={actionBusy}
+        error={deleteAllError}
+        returnFocusTo={folderMenuTrigger.current}
+        onCancel={() => setConfirmingDeleteAll(null)}
+        onConfirm={() => deleteAllSessions(confirmingDeleteAll)}
+      /> : null}
       <div className="window-drag-region" />
       <div className={`brand-row ${collapsed || !renderExpanded ? 'brand-row--compact' : ''}`}>
         {renderExpanded && <div className="brand-mark sidebar-expanded-only" aria-hidden="true">ƒ</div>}

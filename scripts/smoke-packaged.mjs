@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { listPackage } from '@electron/asar';
+import { extractFile, listPackage } from '@electron/asar';
 
 const root = path.resolve(import.meta.dirname, '..');
 const release = path.join(root, 'release');
@@ -42,7 +42,8 @@ if (!executable) throw new Error(`No packaged Pi Desktop executable found under 
 const resources = process.platform === 'darwin'
   ? path.resolve(executable, '../../Resources')
   : path.join(path.dirname(executable), 'resources');
-const expectedVersion = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+const expectedManifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+const expectedVersion = expectedManifest.version;
 const installedVersionFile = path.join(resources, 'PRODVER');
 if (!existsSync(installedVersionFile)) throw new Error(`Packaged PRODVER was not found at ${installedVersionFile}`);
 const installedVersion = readFileSync(installedVersionFile, 'utf8');
@@ -58,6 +59,10 @@ const asarPath = path.join(resources, 'app.asar');
 const packagedFiles = listPackage(asarPath).map((entry) => entry.replaceAll('\\', '/'));
 if (!packagedFiles.some((entry) => entry.endsWith('/node_modules/@earendil-works/pi-coding-agent/package.json'))) {
   throw new Error('The packaged application does not contain the embedded Pi coding-agent runtime.');
+}
+const packagedManifest = JSON.parse(extractFile(asarPath, 'package.json').toString('utf8'));
+if (packagedManifest.version !== expectedVersion || packagedManifest.releaseName !== expectedManifest.releaseName) {
+  throw new Error(`Packaged release metadata does not match source metadata (${expectedVersion}, ${expectedManifest.releaseName}).`);
 }
 
 if (process.platform !== 'win32') accessSync(executable, constants.X_OK);

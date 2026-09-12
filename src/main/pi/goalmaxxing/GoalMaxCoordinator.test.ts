@@ -10,7 +10,7 @@ function fixture(taskService: TaskService | null = null) {
   const events: GoalMaxEvent[] = [];
   const runtime: GoalMaxRuntimeSnapshot = {
     projectPath: '/project', sessionId: 'session-1', projectTrusted: true, permissionLevel: 'edit',
-    idle: true, streaming: false, queuedUserMessages: 0, tokensUsed: 100, activeChildren: 0, children: [],
+    idle: true, streaming: false, queuedUserMessages: 0, tokensUsed: 100, activeChildren: 0, activeWorkflows: 0, children: [],
   };
   const host: GoalMaxCoordinatorHost = {
     runtime: vi.fn((sessionId) => !sessionId || sessionId === runtime.sessionId ? { ...runtime } : null),
@@ -237,6 +237,58 @@ describe('GoalMax coordinator', () => {
     expect(result.details).toMatchObject({ status: 'active', blockedReason: null, failure: null });
   });
 
+  it('defers continuation, verification, and direct completion while a workflow owns work before its first child exists', async () => {
+    const { coordinator, host, runtime } = fixture();
+    await coordinator.create({ objective: 'Wait for the complete workflow graph', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await addCompletionEvidence(coordinator);
+    vi.mocked(host.continueGoal).mockClear();
+    runtime.activeWorkflows = 1;
+    coordinator.syncChildren('session-1', []);
+    await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.executionState).toBe('running-children'));
+
+    coordinator.reconcileRuntime('session-1');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(host.continueGoal).not.toHaveBeenCalled();
+
+    const completion = await coordinator.requestCompletion('session-1', { summary: 'The root has finished its part.' });
+    expect(completion.text).toContain('Wait for 1 active agent workflow to settle');
+    expect(completion.details.status).toBe('active');
+
+    await coordinator.control({ action: 'verify' });
+    expect(host.verifyGoal).not.toHaveBeenCalled();
+    expect((await coordinator.statusForModel('session-1')).details.status).toBe('verifying');
+
+    runtime.activeWorkflows = 0;
+    coordinator.syncChildren('session-1', []);
+    await vi.waitFor(() => expect(host.verifyGoal).toHaveBeenCalledOnce());
+    await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.status).toBe('completed'));
+    await coordinator.dispose();
+  });
+
+  it('invalidates a delayed verifier result when workflow ownership begins and resumes after settlement', async () => {
+    const { coordinator, host, runtime } = fixture();
+    await coordinator.create({ objective: 'Do not outrun newly admitted workflow work', verificationLevel: 'strict', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await addCompletionEvidence(coordinator);
+    let resolveVerifier!: (result: { verdict: 'pass'; report: string; nodeId: string }) => void;
+    vi.mocked(host.verifyGoal).mockImplementationOnce(() => new Promise((resolve) => { resolveVerifier = resolve; }));
+
+    const verification = coordinator.control({ action: 'verify' });
+    await vi.waitFor(() => expect(host.verifyGoal).toHaveBeenCalledOnce());
+    runtime.activeWorkflows = 1;
+    coordinator.syncChildren('session-1', []);
+    await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.executionState).toBe('running-children'));
+    resolveVerifier({ verdict: 'pass', report: 'VERDICT: pass', nodeId: 'delayed-verifier' });
+    await verification;
+
+    expect((await coordinator.statusForModel('session-1')).details).toMatchObject({ status: 'active', executionState: 'running-children' });
+    expect((await coordinator.statusForModel('session-1')).details.timeline.some((event) => event.type === 'goal.completed')).toBe(false);
+    vi.mocked(host.continueGoal).mockClear();
+    runtime.activeWorkflows = 0;
+    coordinator.syncChildren('session-1', []);
+    await vi.waitFor(() => expect(host.continueGoal).toHaveBeenCalledOnce());
+    await coordinator.dispose();
+  });
+
   it('refuses completion while ordinary user messages are queued', async () => {
     const { coordinator, runtime } = fixture();
     await coordinator.create({ objective: 'Honor follow-up work', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
@@ -263,6 +315,49 @@ describe('GoalMax coordinator', () => {
     const result = await coordinator.requestCompletion('session-1', { summary: 'Do not skip the arriving message.' });
     expect(result.details.status).toBe('active');
     expect(result.text).toContain(boundary === 'queue' ? 'waiting for delivery' : 'New user work');
+    expect((await repository.load('/project', 'session-1'))?.status).toBe('active');
+    await coordinator.dispose();
+  });
+
+  it('rejects the final completion commit when a workflow starts during its durable save', async () => {
+    const { coordinator, repository, runtime } = fixture();
+    await coordinator.create({ objective: 'Fence workflow admission at final commit', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await addCompletionEvidence(coordinator);
+    const save = repository.save.bind(repository);
+    vi.spyOn(repository, 'save').mockImplementation(async (state, expectedRevision) => {
+      await save(state, expectedRevision);
+      if (state.status === 'completed') runtime.activeWorkflows = 1;
+    });
+
+    const result = await coordinator.requestCompletion('session-1', { summary: 'Do not finish ahead of newly admitted work.' });
+
+    expect(result.text).toContain('workflow still owns executable work');
+    expect(result.details).toMatchObject({ status: 'active', executionState: 'running-children' });
+    expect((await repository.load('/project', 'session-1'))?.status).toBe('active');
+    runtime.activeWorkflows = 0;
+    coordinator.syncChildren('session-1', []);
+    await vi.waitFor(async () => expect((await coordinator.statusForModel('session-1')).details.executionState).toBe('running-root'));
+    await coordinator.dispose();
+  });
+
+  it('rejects a completion when Stop inhibition appears during the final durable save', async () => {
+    const { coordinator, repository } = fixture();
+    await coordinator.create({ objective: 'Honor a concurrent failed Stop persistence boundary', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await addCompletionEvidence(coordinator);
+    const save = repository.save.bind(repository);
+    const internals = coordinator as unknown as {
+      inhibitAfterControlPersistenceFailure: (sessionId: string, action: 'pause', error: unknown) => void;
+    };
+    vi.spyOn(repository, 'save').mockImplementation(async (state, expectedRevision) => {
+      await save(state, expectedRevision);
+      if (state.status === 'completed') internals.inhibitAfterControlPersistenceFailure('session-1', 'pause', new Error('late Stop persistence failure'));
+    });
+
+    const result = await coordinator.requestCompletion('session-1', { summary: 'This completion must lose to Stop.' });
+
+    expect(result.text).toContain('execution remains inhibited until an explicit resume succeeds');
+    expect(result.details).toMatchObject({ status: 'blocked', failure: { code: 'GOALMAX_CONTROL_PERSISTENCE_FAILED' } });
+    expect(result.details.timeline.some((event) => event.type === 'goal.completed')).toBe(false);
     expect((await repository.load('/project', 'session-1'))?.status).toBe('active');
     await coordinator.dispose();
   });
@@ -367,6 +462,38 @@ describe('GoalMax coordinator', () => {
     expect(restored?.evidence.at(-1)).toMatchObject({ kind: 'git-diff', current: true });
     await vi.waitFor(() => expect(host.continueGoal).toHaveBeenCalledOnce());
     await restoredCoordinator.dispose();
+  });
+
+  it.each(['pause', 'cancel'] as const)('keeps automatic execution fail-closed after a failed %s persistence write until resume succeeds', async (action) => {
+    const { coordinator, host, runtime, repository } = fixture();
+    await coordinator.create({ objective: 'Remain stopped when interruption persistence fails', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });
+    await addCompletionEvidence(coordinator);
+    vi.mocked(host.continueGoal).mockClear();
+    vi.spyOn(repository, 'save').mockRejectedValueOnce(new Error(`${action} persistence failed`));
+
+    await expect(coordinator.control({ action, reason: 'Stop now' })).rejects.toThrow(`${action} persistence failed`);
+    expect((await coordinator.statusForModel('session-1')).details).toMatchObject({
+      status: 'blocked',
+      executionState: 'idle',
+      failure: { code: 'GOALMAX_CONTROL_PERSISTENCE_FAILED', retryable: true },
+    });
+    expect(coordinator.hasRunnableGoal('session-1')).toBe(false);
+    const blockedCompletion = await coordinator.requestCompletion('session-1', { summary: 'A queued completion must not bypass Stop.' });
+    expect(blockedCompletion.text).toContain('execution is inhibited after a failed Stop persistence write');
+    expect(blockedCompletion.details.status).toBe('blocked');
+    expect(blockedCompletion.details.timeline.some((event) => event.type === 'goal.completed')).toBe(false);
+    runtime.idle = true;
+    runtime.streaming = false;
+    coordinator.observeSessionEvent('session-1', { type: 'agent_settled' } as never);
+    coordinator.reconcileRuntime('session-1');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(host.continueGoal).not.toHaveBeenCalled();
+
+    await coordinator.control({ action: 'resume' });
+    await vi.waitFor(() => expect(host.continueGoal).toHaveBeenCalledOnce());
+    expect((await coordinator.statusForModel('session-1')).details.status).toBe('active');
+    expect(coordinator.hasRunnableGoal('session-1')).toBe(true);
+    await coordinator.dispose();
   });
 
   it('pauses future continuations without aborting the active root turn', async () => {

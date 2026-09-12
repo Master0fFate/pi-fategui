@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   RecoverySnapshotService,
-  noticeFromSnapshot,
-  recoveryBannerText,
   recoveryFilePath,
   snapshotFromRuntime,
   type RecoverySnapshot,
@@ -102,15 +100,14 @@ describe('RecoverySnapshot', () => {
     vi.useRealTimers();
   });
 
-  it('returns the notice once and then forgets it', async () => {
+  it('keeps a loaded dirty snapshot until a clean shutdown', async () => {
     const store = memoryStore(`${JSON.stringify(snapshot())}\n`);
     const service = new RecoverySnapshotService('/recovery.json', store);
     await service.load();
-    const first = service.consume();
-    expect(first).toEqual(noticeFromSnapshot(snapshot()));
-    expect(service.consume()).toBeNull();
+    expect(service.peek()?.sessionId).toBe('sess-1');
     expect(store.files.has('/recovery.json')).toBe(true);
     await service.markClean();
+    expect(service.peek()).toBeNull();
     expect(store.files.has('/recovery.json')).toBe(false);
   });
 
@@ -118,7 +115,4 @@ describe('RecoverySnapshot', () => {
     expect(recoveryFilePath('/data', 2)).toMatch(/recovery-slot-2\.json$/);
   });
 
-  it('describes an interrupted run without claiming lost work is gone', () => {
-    expect(recoveryBannerText(noticeFromSnapshot(snapshot()))).toMatch(/stopped without a clean shutdown.*still running.*Queued prompts.*Last running tool: edit/);
-  });
 });

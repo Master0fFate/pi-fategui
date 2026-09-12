@@ -112,7 +112,8 @@ export const agentTeamNodeSchema = z.object({
   thinkingLevel: thinking,
   status: agentTeamNodeStatusSchema,
   currentTaskId: id.optional(),
-  childIds: z.array(id).max(AGENT_TEAM_MAX_NODES),
+  // Historical topology retains released children; live admission remains capped by maxNodes.
+  childIds: z.array(id).max(AGENT_TEAM_MAX_HISTORY_NODES),
   unreadMessages: z.number().int().nonnegative().max(AGENT_TEAM_MAX_MESSAGES),
   writer: z.boolean(),
   usage,
@@ -121,6 +122,9 @@ export const agentTeamNodeSchema = z.object({
   lastError: z.string().max(4_000).optional(),
   closedAt: z.number().finite().optional(),
   releasedAt: z.number().finite().optional(),
+  /** Internal workflow mailbox retention policy and its persisted absolute deadline. */
+  idleReleaseMs: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  idleReleaseAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   workspace: workspaceMetadataSchema.optional(),
 }).strict();
 
@@ -132,6 +136,10 @@ export const agentTeamTaskSchema = z.object({
   inputEnvelopeId: id,
   resultEnvelopeId: id.optional(),
   directReply: z.boolean().optional(),
+  /** Internal execution policy. Legacy snapshots omit it and therefore deliver by default. */
+  deliverFinalAnswer: z.boolean().optional(),
+  /** Bounded transport failure evidence; task status remains the authoritative execution outcome. */
+  resultTransportError: z.string().max(2_000).optional(),
   summary: z.string().min(1).max(2_000),
   status: agentTeamTaskStatusSchema,
   createdAt: z.number().finite(),

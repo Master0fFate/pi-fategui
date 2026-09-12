@@ -469,8 +469,6 @@ button:disabled { cursor: not-allowed; }
 .folder-action-item:disabled { opacity: .45; cursor: not-allowed; }
 .folder-action-item--danger { color: var(--theme-danger); }
 .folder-action-item--danger:hover:not(:disabled) { background: var(--theme-danger-soft, rgba(227,93,106,.16)); }
-.folder-action-confirm { display: grid; gap: 3px; padding: 5px 3px 3px; border-top: 1px solid var(--theme-border); color: var(--theme-muted); font-size: 10px; }
-.folder-action-confirm > span { padding: 2px 5px 4px; }
 
 .session-delete-button:hover { color: var(--theme-danger) !important; }
 .session-delete-confirm { display: flex; width: 100%; align-items: center; gap: 4px; padding: 6px 7px; color: var(--theme-text-soft); font-size: 10px; }
@@ -589,7 +587,6 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .hydration-error-banner { position: fixed; z-index: 100; top: 10px; left: 50%; display: flex; align-items: center; gap: 12px; max-width: min(620px, calc(100vw - 32px)); padding: 9px 12px; border: 1px solid var(--theme-border-strong); border-radius: 8px; color: var(--theme-danger); background: var(--theme-raised); transform: translateX(-50%); font-size: 11px; }
 .hydration-error-banner span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hydration-error-banner button { flex: none; color: var(--theme-text); background: transparent; cursor: pointer; }
-.recovery-banner { top: 52px; color: var(--theme-text); }
 .app-toast {
   position: fixed; z-index: 110; top: 50px; right: 16px; display: grid; width: min(320px, calc(100vw - 32px)); min-height: 54px;
   grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 9px; padding: 11px 10px 11px 12px; border-radius: 10px;
@@ -1072,7 +1069,6 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .queued-message button.queued-message-behavior[data-active="true"]:hover:not(:disabled) { background: var(--theme-accent-soft); }
 .queued-message[data-held="true"] { border-color: color-mix(in srgb, var(--theme-accent) 38%, var(--theme-border)); }
 .goalmax-steering-messages .queued-message { border-color: color-mix(in srgb, var(--theme-accent) 30%, var(--theme-border)); background: color-mix(in srgb, var(--theme-raised) 95%, var(--theme-accent) 5%); }
-.goalmax-steering-messages .queued-message-status { width: 70px; color: var(--theme-accent); }
 .queued-message button.queued-message-edit, .queued-message-cancel { width: 28px; }
 .queued-message button.queued-message-edit:hover:not(:disabled) { color: var(--theme-text); }
 .goalmax-rail {
@@ -1266,7 +1262,7 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .agent-tree-branch-heading--delegation { grid-template-columns: 25px minmax(0, 1fr) auto; }
 .agent-tree-branch-toggle { display: grid; width: 100%; min-width: 0; grid-template-columns: 25px minmax(0, 1fr) 15px; align-items: center; gap: 7px; padding: 2px 4px 2px 0; border-radius: 7px; color: inherit; background: transparent; cursor: pointer; text-align: left; }
 .agent-team-lifecycle-actions { position: relative; display: inline-flex; align-items: center; gap: 1px; opacity: .42; transition: opacity var(--motion-fast) ease; }
-.agent-tree-branch-heading:hover .agent-team-lifecycle-actions, .agent-team-lifecycle-actions:focus-within, .agent-team-lifecycle-actions:has(.inline-confirm) { opacity: 1; }
+.agent-tree-branch-heading:hover .agent-team-lifecycle-actions, .agent-team-lifecycle-actions:focus-within { opacity: 1; }
 .inline-confirm {
   position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; display: grid; width: min(330px, calc(100vw - 32px));
   grid-template-columns: 18px minmax(0, 1fr); gap: 3px 8px; padding: 10px;
@@ -1283,7 +1279,7 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .inline-confirm-actions .inline-confirm-danger { border-color: color-mix(in srgb, var(--theme-danger) 54%, var(--theme-border)); color: var(--theme-danger); background: var(--theme-raised); }
 .inline-confirm-actions .inline-confirm-danger:hover:not(:disabled) { border-color: var(--theme-danger); color: var(--theme-danger); background: color-mix(in srgb, var(--theme-danger) 4%, var(--theme-raised)); }
 .inline-confirm-actions button:disabled { cursor: wait; opacity: .5; }
-.agent-team-lifecycle-actions > button { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 6px; color: var(--theme-muted); }
+.agent-team-lifecycle-actions > button { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 6px; color: var(--theme-muted); }
 .agent-team-lifecycle-actions > button:hover, .agent-team-lifecycle-actions > button:focus-visible { color: var(--theme-text); background: var(--theme-raised); }
 .agent-team-lifecycle-actions > button:disabled { opacity: .45; }
 .agent-tree-branch-toggle:hover, .agent-tree-branch-toggle:focus-visible { background: color-mix(in srgb, var(--theme-raised) 58%, transparent); }
@@ -2292,6 +2288,7 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 .settings-toast button:hover { color: var(--theme-text); background: var(--theme-border); }
 .settings-dialog > footer { display: flex; min-height: 62px; align-items: center; justify-content: space-between; flex: 0 0 auto; gap: 16px; padding: 8px 18px 8px 22px; border-top: 1px solid var(--theme-border); color: var(--theme-muted); background: var(--theme-panel); font-size: 10px; }
 .settings-footer-status { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; line-height: 1.35; }
+.settings-release-version { max-width: 100%; overflow: hidden; color: var(--theme-text-soft); font-family: var(--font-code); text-overflow: ellipsis; white-space: nowrap; }
 .settings-footer-actions { display: flex; flex: none; align-items: center; gap: 6px; }
 .update-check-link, .update-download-link { min-height: 32px; padding: 5px 7px; border-radius: 6px; color: var(--theme-muted); background: transparent; cursor: pointer; font-size: 10px; text-underline-offset: 3px; }
 .update-check-link:hover:not(:disabled), .update-download-link:hover { color: var(--theme-text); text-decoration: underline; }

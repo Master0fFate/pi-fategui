@@ -556,6 +556,9 @@ export class SubagentCoordinator {
       const ids = [...this.contexts.values()]
         .filter((context) => context.parentSessionId === parentSessionId && context.phase !== 'closing')
         .map((context) => context.runId);
+      if (!ids.length && this.getRuns(parentSessionId).length) {
+        throw new Error('Archived subagent runs have no live session contexts to cancel; legacy execution cannot be reactivated.');
+      }
       await this.cancelParent(parentSessionId);
       return ids.flatMap((id) => {
         const run = this.getRun(parentSessionId, id);
@@ -574,6 +577,9 @@ export class SubagentCoordinator {
       });
       this.persistRun(updated);
       return [updated];
+    }
+    if (!this.contexts.has(run.id)) {
+      throw new Error(`Archived subagent @${subagentHandle(run)} has no live session context. Only rename is available; legacy execution cannot be reactivated.`);
     }
     if (input.action === 'steer') {
       const context = this.requireContext(parentSessionId, run.id);

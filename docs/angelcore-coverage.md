@@ -1,10 +1,10 @@
 # Angelcore coverage and verification
 
-This pass extends the skin beyond the main chat. Screenshots below are actual Electron renders with deterministic test data, not generated mockups.
+Angelcore covers the workspace and its supporting controls. Screenshots below are actual Electron renders with deterministic test data, not generated mockups.
 
 ## Checks run
 
-`pnpm verify` passed on Windows: TypeScript, production builds, **1,917 unit tests** (two existing skips), and **15 Electron E2E tests**. The dedicated journey is `tests/e2e/angelcore-complete.spec.ts`.
+The automated journeys are `tests/e2e/angelcore-complete.spec.ts` and `tests/e2e/control-cohesion.spec.ts`, run as part of `pnpm verify`. The latter verifies uniform composer rails, portal-based confirmations, folder menus, and keyboard/focus behavior in both Default and Angelcore. Current verification counts belong to the release evidence, not a frozen screenshot gallery.
 
 The journey checks populated states, not only empty panels. It verifies:
 
@@ -42,6 +42,6 @@ The browser screenshot intentionally shows the app-owned chrome. Native Chromium
 
 The address parser now keeps HTTP(S) links ending in `.html` or `.svg` as network URLs, while retaining bare local filenames. A separate, pre-existing limitation remains: Back through local-file history can revisit an expired local-page capability. This pass does not weaken that security policy.
 
-These results do not constitute native macOS/Linux verification of this branch. Those platforms still need the normal CI matrix before release. No new prerelease was published as part of this pass.
+Local Windows screenshots do not establish native macOS/Linux verification. Release readiness also requires the native CI matrix described in [Development and release](development.md).
 
 For the pack format and allowed appearance settings, see [Skins](skins.md).

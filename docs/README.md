@@ -9,7 +9,9 @@ This directory holds the focused guides referenced by the [project README](../RE
 - **Choose a skin or author a theme** — [Skins](skins.md) and [Themes](themes.md).
 - **Build a dense operate UI** — [Fate Compact](../design/COMPACT.md) (Settings density system; candidate for a full-app transition).
 - **Remember project and personal coding notes** — [Memory Learning](project-learning.md).
-- **Drive multi-agent work** — [Agent orchestration](agent-orchestration.md) (Agent Teams V2 and legacy subagents).
+- **Drive multi-agent work** — [Agent orchestration](agent-orchestration.md) (one executor for direct agents and dependency-based workflows).
+- **Manage longer objectives** — [GoalMax and durable work](goalmax.md).
+- **Understand the embedded runtime** — [Pi SDK compatibility](sdk-compatibility.md).
 - **Review trust, permissions, and isolation** — [Architecture and security](architecture.md) and [SECURITY.md](../SECURITY.md).
 - **Build, package, or cut a release** — [Development and release](development.md).
 
@@ -23,4 +25,4 @@ This directory holds the focused guides referenced by the [project README](../RE
 
 ## Conventions
 
-Fate UI is beta (`0.x`) software. Back up important work before relying on it, and verify installer downloads against `SHA256SUMS`. These facts and the permission model are summarized in the README's [Stay safe](../README.md#stay-safe) section and detailed in [Architecture and security](architecture.md).
+Fate UI uses numeric `major.minor.patch` versions with an optional display name: **V1.0.0 - Modulo**. Update ordering and artifact names use the version, not the name. Installers remain unsigned; verify downloads against `SHA256SUMS` and review platform trust warnings. Keep important work backed up. See the README's [trust boundaries](../README.md#local-first-with-explicit-boundaries) and [Architecture and security](architecture.md).

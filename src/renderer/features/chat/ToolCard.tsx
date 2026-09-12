@@ -55,6 +55,8 @@ export const ToolCard = memo(function ToolCard({ toolCallId, compact = false, wa
   const presentedStatusLabel = waitPollCount > 1 ? `${waitPollCount} wait polls · ${statusLabel}` : statusLabel;
   const summary = tool.input.replace(/\s+/g, ' ').trim() || 'No input';
   const ariaStatus = isSubagentTool && presentedStatus === 'succeeded' ? 'completed' : presentedStatus;
+  const childIds = [...new Set(tool.subagentRunIds ?? [])];
+  const hasChildLink = childIds.length > 0 || tool.name === 'agent_workflow';
 
   return (
     <article ref={cardRef} tabIndex={-1} data-flight-focus={focused || undefined} className={`tool-card tool-card--${presentedStatus}${tool.images?.length ? ' tool-card--with-images' : ''}${compact ? ' tool-card--compact' : ''}`} aria-label={`${tool.name} tool ${ariaStatus}`}>
@@ -64,19 +66,34 @@ export const ToolCard = memo(function ToolCard({ toolCallId, compact = false, wa
         <span className="tool-meta icon-label">{isSubagentTool ? presentedStatusLabel : tool.status === 'running' ? 'Running' : elapsed(tool.startedAt, tool.endedAt ?? tool.updatedAt)}</span>
         <Symbol text={expanded ? '-' : '+'}>{expanded ? <ChevronDown className="tool-disclosure-icon" size={13} /> : <ChevronRight className="tool-disclosure-icon" size={13} />}</Symbol>
       </button>
-      {tool.subagentRunIds?.length ? (
+      {hasChildLink ? (
         <button
           className="tool-subagent-link"
           type="button"
-          aria-label={tool.subagentRunIds.length === 1 ? 'View subagent session' : `View ${tool.subagentRunIds.length} subagent sessions`}
+          aria-label={childIds.length === 1 ? 'View subagent session' : childIds.length > 1 ? `View ${childIds.length} subagent sessions` : 'View agent sessions'}
           onClick={() => {
             const ui = useUiStore.getState();
-            if (tool.subagentRunIds?.length === 1) ui.openSubagent(tool.subagentRunIds[0]!);
-            else ui.openSubagentList();
+            const referenceId = childIds.length === 1 ? childIds[0] : undefined;
+            if (!referenceId || referenceId.length > 100 || referenceId.trim() !== referenceId || /[\u0000-\u001f\u007f]/u.test(referenceId)) {
+              ui.openSubagentList();
+              return;
+            }
+            const runtime = useRuntimeStore.getState();
+            const matchingTeams = Object.values(runtime.agentTeamsById)
+              .filter((team) => team.nodes.some((node) => node.id === referenceId));
+            const historical = Object.hasOwn(runtime.subagentsById, referenceId)
+              && runtime.subagentsById[referenceId]?.id === referenceId;
+            if (matchingTeams.length === 1 && !historical) {
+              ui.openAgentTeamNode(matchingTeams[0]!.id, referenceId);
+            } else if (historical && matchingTeams.length === 0) {
+              ui.openSubagent(referenceId);
+            } else {
+              ui.openSubagentList();
+            }
           }}
         >
           <ArrowUpRight size={12} aria-hidden="true" />
-          <span className="icon-label">{tool.subagentRunIds.length === 1 ? 'View child session' : `View ${tool.subagentRunIds.length} child sessions`}</span>
+          <span className="icon-label">{childIds.length === 1 ? 'View child session' : childIds.length > 1 ? `View ${childIds.length} child sessions` : 'View agent sessions'}</span>
         </button>
       ) : null}
       {tool.images?.length ? <div className="tool-images"><MessageImages images={tool.images} /></div> : null}

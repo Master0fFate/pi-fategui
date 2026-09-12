@@ -22,6 +22,9 @@ export interface AgentNodeRuntime {
   toolProvenanceByCall: Map<string, ToolProvenance>;
   lease?: TurnLease;
   turn?: Promise<void>;
+  /** Identity fence for the executable turn currently owning `turn` and `lease`. */
+  turnId?: string;
+  turnTaskId?: string;
   controlQueue: Promise<void>;
   retentionTimer?: ReturnType<typeof setTimeout>;
   modelRuntime: ModelRuntime;
@@ -43,6 +46,15 @@ export interface AgentTeamRuntime {
   operationReceipts: Map<string, unknown>;
   waitEdges: Map<string, Set<string>>;
   sequence: number;
+}
+
+export interface SpawnAgentOptions {
+  allowDelegation?: boolean;
+  bypassGoalPolicy?: boolean;
+  /** Persist the result without notifying the requester when false. Defaults to true. */
+  deliverFinalAnswer?: boolean;
+  /** Release this reusable node after this much successful idle time. Internal workflow use only. */
+  idleReleaseMs?: number;
 }
 
 export interface SpawnAgentRequest {
