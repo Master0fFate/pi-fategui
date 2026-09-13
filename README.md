@@ -6,8 +6,6 @@
 
 ### Your coding agent. A workspace you control.
 
-**V1.0.0 - Modulo**
-
 A local-first desktop workspace for the real [Pi coding agent](https://github.com/earendil-works/pi).<br>
 Keep conversations, agents, browser context, files, Git, and terminals in one place.
 
@@ -15,7 +13,7 @@ Keep conversations, agents, browser context, files, Git, and terminals in one pl
 [![License](https://img.shields.io/badge/License-Apache--2.0-6f63ff?style=flat-square)](LICENSE)
 [![Build and package](https://github.com/Master0fFate/pi-fategui/actions/workflows/cross-platform.yml/badge.svg)](https://github.com/Master0fFate/pi-fategui/actions/workflows/cross-platform.yml)
 
-[**Download**](https://github.com/Master0fFate/pi-fategui/releases) · [**Get started**](#get-started-in-60-seconds) · [**Documentation**](docs/README.md) · [**What’s in V1**](.github/release-notes/v1.0.0.md) · [**Contribute**](CONTRIBUTING.md)
+[**Download**](https://github.com/Master0fFate/pi-fategui/releases) · [**Get started**](#get-started-in-60-seconds) · [**Skins**](#skins-and-themes) · [**Documentation**](docs/README.md) · [**Contribute**](CONTRIBUTING.md)
 
 </div>
 
@@ -71,17 +69,62 @@ GoalMax pairs an objective with completion criteria, progress evidence, and veri
 
 </td>
 </tr>
+<tr>
+<td valign="top">
+
+### Restyle the workspace
+
+**Default** or **Angelcore**. Independent palettes and fonts. Import a skin pack, or drop in an image that Fate dithers locally behind the conversation.
+
+[Skins and themes →](#skins-and-themes)
+
+</td>
+<td valign="top">
+
+### Voice, images, and memory
+
+Optional local voice transcription, image generation, and ambient audio. Reviewed Memory Learning stores global preferences and project notes you actually accept.
+
+[Memory Learning →](docs/project-learning.md)
+
+</td>
+</tr>
 </table>
 
-**Make it your workspace.** Use the Default interface or Angelcore’s compact terminal-style controls. Choose independent palettes and fonts, import skin packs, and add locally processed dithered backgrounds. Optional local voice transcription, image generation, ambient audio, and reviewed Memory Learning are built in.
+## Skins and themes
 
-<details>
-<summary><strong>See Angelcore</strong> — monochrome, compact, and deliberately quiet</summary>
-<br>
-<img src="screenshots/fate-ui-angelcore.png" alt="Fate UI with the Angelcore skin: monospaced text, bracketed actions, and a focused coding workspace" width="100%">
+<img src="screenshots/fate-ui-angelcore.png" alt="Fate UI with the Angelcore skin, Monochrome palette, and a locally dithered conversation background" width="100%">
 
-[Skins](docs/skins.md) · [Themes](docs/themes.md) · [Memory Learning](docs/project-learning.md)
-</details>
+<p align="center"><sub>Angelcore, Monochrome, and a personal dithered background. Same conversation and Git diff, different chrome.</sub></p>
+
+You can change how Fate UI looks without changing how it works. Skins restyle the chrome. Colors, fonts, and a background stay independent, so Angelcore can sit on Monochrome, Default can keep a Pi theme, and an imported pack does not rewrite models, permissions, or the session.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### Skins
+
+**Default** is the established workbench. **Angelcore** is the compact terminal-style surface: text actions, a command composer, labeled transcript entries, and a numeric context gauge. Both remain the same GUI underneath — browser, Monaco, trust prompts, and the manual terminal.
+
+Import a pack from **Settings → Skins**. Packs can restyle owned surfaces, bundle fonts, and ship a still background. They cannot add scripts, remote assets, or new privileges.
+
+[Skins →](docs/skins.md)
+
+</td>
+<td valign="top">
+
+### Color, type, and background
+
+Pick a built-in palette, a custom `themes.json`, or a Pi theme from a trusted project. Interface font and code font are separate.
+
+Drop in a PNG, JPEG, or WebP. Fate converts it on this machine to a still, palette-tinted dither behind the conversation. The original image is not uploaded or kept.
+
+[Themes →](docs/themes.md)
+
+</td>
+</tr>
+</table>
 
 ## Download
 
