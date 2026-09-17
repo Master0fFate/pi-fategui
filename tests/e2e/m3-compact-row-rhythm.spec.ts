@@ -46,15 +46,50 @@ test('M3 compact current session has centered title and metadata', async () => {
     expect(geometry.title.lineHeight).toBe('16px');
     expect(geometry.metadata.lineHeight).toBe('14px');
     expect(geometry.title.center).toBe(geometry.row.center);
-    expect(Math.abs(geometry.title.inkCenter - geometry.row.center)).toBeLessThanOrEqual(0.5);
-    expect(geometry.title.baseline).toBe(geometry.metadata.baseline);
     for (const text of [geometry.title, geometry.metadata]) {
+      expect(Math.abs(text.inkCenter - geometry.row.center)).toBeLessThanOrEqual(0.5);
+      expect(text.center).toBe(geometry.row.center);
+      expect(Number.isInteger(text.top)).toBe(true);
       expect(text.top).toBeGreaterThanOrEqual(geometry.button.top);
       expect(text.bottom).toBeLessThanOrEqual(geometry.button.bottom);
       expect(text.whiteSpace).toBe('nowrap');
     }
     expect(geometry.metadata.left - geometry.title.right).toBe(6);
     expect(geometry.action.center).toBe(geometry.row.center);
+    // Measure actual Electron raster ink too, not just canvas font metrics or
+    // equal baselines. Ignore faint antialias fringes (15 RGB levels/channel).
+    const raster = await row.screenshot({ animations: 'disabled', scale: 'css' });
+    const ink = await page.evaluate(async ({ image, geometry }) => {
+      const img = new Image(); img.src = image; await img.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width; canvas.height = img.height;
+      const context = canvas.getContext('2d')!; context.drawImage(img, 0, 0);
+      const { data } = context.getImageData(0, 0, img.width, img.height);
+      return [geometry.title, geometry.metadata].map(text => {
+        const left = Math.ceil(text.left - geometry.row.left);
+        const right = Math.floor(text.right - geometry.row.left);
+        // Sample the flat row fill above the text, away from its border.
+        const background = (3 * img.width + left) * 4;
+        const rows: number[] = [];
+        for (let y = 4; y < img.height - 4; y++) {
+          for (let x = left; x < right; x++) {
+            const pixel = (y * img.width + x) * 4;
+            const contrast = data[pixel]! + data[pixel + 1]! + data[pixel + 2]!
+              - data[background]! - data[background + 1]! - data[background + 2]!;
+            if (contrast > 45) { rows.push(y); break; }
+          }
+        }
+        const top = Math.min(...rows) + geometry.row.top;
+        const bottom = Math.max(...rows) + 1 + geometry.row.top;
+        return { top, bottom, center: (top + bottom) / 2 };
+      });
+    }, { image: `data:image/png;base64,${raster.toString('base64')}`, geometry });
+    console.log('Electron raster ink (title, metadata):', ink);
+    for (const text of ink) {
+      expect(Number.isFinite(text.center)).toBe(true);
+      expect(Math.abs(text.center - geometry.row.center)).toBeLessThanOrEqual(0.5);
+      expect(Math.abs((text.top - geometry.row.top) - (geometry.row.bottom - text.bottom))).toBeLessThanOrEqual(1);
+    }
     await mkdir('screenshots/m3-expressive', { recursive: true });
     await page.locator('.sidebar').screenshot({ path: 'screenshots/m3-expressive/compact-session-row-rhythm.png', animations: 'disabled' });
     const actions = row.getByRole('button', { name: 'Actions for First session', exact: true });
