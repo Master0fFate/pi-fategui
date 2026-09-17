@@ -184,6 +184,10 @@
 /* Compact keeps the same silhouette, without sacrificing its operational fit. */
 :root[data-skin="m3-expressive"][data-compact-mode="true"] { --m3-control-radius: 10px; --m3-action-size: 30px; --m3-agent-icon-size: 24px; --m3-agent-header-half: 18px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar { padding: 8px; }
+/* Compact expanded branding prioritizes the product name, not an orphan glyph
+   or a second project row. Genuine collapsed sidebars keep their icon-only UI. */
+:root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar:not(.sidebar--collapsed) .brand-copy strong { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar:not(.sidebar--collapsed) :is(.brand-mark, .brand-copy > span) { display: none; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar-search { height: 34px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar-tab-toolbar { grid-template-columns: minmax(0, 1fr) 32px 32px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .session-toolbar { margin-top: 4px; }
