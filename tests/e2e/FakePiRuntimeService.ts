@@ -166,7 +166,7 @@ export class FakePiRuntimeService {
       agentTeams: this.activeSession === 'e2e-session-1' ? this.agentTeams : [],
       branches: this.activeSession === 'e2e-session-1' && this.conversationBranchesEnabled ? [
         { id: 'e2e-path-current', parentId: 'e2e-path-root', depth: 8, label: 'current', preview: 'Keep the verified implementation', kind: 'message', active: this.activeConversationBranchId === 'e2e-path-current' },
-        { id: 'e2e-path-alternate', parentId: 'e2e-path-root', depth: 11, label: 'custom', preview: 'Explore the alternate implementation', kind: 'custom', active: this.activeConversationBranchId === 'e2e-path-alternate' },
+        { id: 'e2e-path-alternate', parentId: 'e2e-path-root', depth: 11, label: process.env.PI_DESKTOP_E2E_NAMED_FORK ? 'Explore a deliberately long alternate implementation label' : 'custom', preview: 'Explore the alternate implementation', kind: 'custom', active: this.activeConversationBranchId === 'e2e-path-alternate' },
       ] : [],
       forkPoints: [], sessionCapabilities: { fork: true, navigate: true, clone: true, import: true, compact: true }, sessionOperation: false, error: null,
     };

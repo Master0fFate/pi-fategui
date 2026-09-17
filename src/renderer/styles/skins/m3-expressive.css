@@ -57,6 +57,11 @@
 :root[data-skin="m3-expressive"] .session-row--preview { padding-inline: 14px; }
 :root[data-skin="m3-expressive"] .session-row:not(.session-row--preview):not(.session-row--compact) { min-height: 50px; }
 :root[data-skin="m3-expressive"] .session-open:not(.session-open--compact) { padding: 7px 14px; }
+/* Fork rows receive density on their list, not .session-row--compact. Override
+   the normal 50px session floor only here, independently of compact UI mode. */
+:root[data-skin="m3-expressive"] .session-path-list--compact { margin-left: 12px; padding-left: 5px; }
+:root[data-skin="m3-expressive"] .session-path-list--compact .session-row.session-row--path { min-height: 26px; border-radius: 10px; background: transparent; box-shadow: none; }
+:root[data-skin="m3-expressive"] .session-path-list--compact .session-path-open { padding: 4px 26px 4px 6px; border-radius: 10px; }
 :root[data-skin="m3-expressive"] .session-row-actions { bottom: 1px; border-radius: 12px; }
 :root[data-skin="m3-expressive"] .session-row-actions button { height: 24px; }
 :root[data-skin="m3-expressive"] .session-row:has(.session-row-actions):is(:hover, :focus-within) .session-open small { visibility: hidden; }
