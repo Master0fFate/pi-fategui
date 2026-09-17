@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
 
-const controls = ['.sidebar-toolbar-action > button', '.session-controls .icon-button', '.composer .send-button', '.composer-toolbar button:is(.composer-icon-action, .composer-tools-toggle, .permission-toggle, .voice-button)', '.music-controls button', '.music-dock-toggle', '.browser-toolbar button', '.browser-tab-close', '.browser-new-tab'];
+const controls = ['.sidebar-toolbar-action > button', '.icon-button', '.composer .send-button', '.composer-toolbar button:is(.composer-icon-action, .composer-tools-toggle, .permission-toggle, .voice-button)', '.music-controls button', '.music-dock-toggle', '.browser-toolbar button', '.browser-tab-close', '.browser-new-tab'];
 async function checkCenters(page: Page, selectors: string[]) {
   for (const selector of selectors) {
     const buttons = page.locator(`${selector}:visible`);
@@ -30,7 +30,7 @@ for (const compact of [false, true]) {
     const userData = path.join(directory, 'profile');
     const dataRoot = path.join(userData, 'fateGUI');
     await mkdir(project); await mkdir(dataRoot, { recursive: true });
-    await writeFile(path.join(dataRoot, 'settings.json'), JSON.stringify(appSettingsSchema.parse({ defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true, terminalShell: null, skinId: 'm3-expressive', themeId: 'midnight', appearance: 'dark', compactMode: compact, compactSessions: compact, skinAppearanceOverrides: { 'm3-expressive': { compactMode: compact, compactSessions: compact } }, reduceMotion: true })));
+    await writeFile(path.join(dataRoot, 'settings.json'), JSON.stringify(appSettingsSchema.parse({ defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true, terminalShell: null, skinId: 'm3-expressive', themeId: 'midnight', appearance: 'dark', compactMode: compact, compactSessions: compact, skinAppearanceOverrides: { 'm3-expressive': { compactMode: compact, compactSessions: compact } }, reduceMotion: true, musicPlayerEnabled: true })));
     const app = await electron.launch({ args: [path.resolve('.test-dist/main/index.js')], env: { ...process.env, PI_DESKTOP_E2E_PROJECT: project, PI_DESKTOP_E2E_USER_DATA: userData, FATE_GUI_DATA_DIR: dataRoot, PI_OFFLINE: '1' } });
     try {
       const page = await app.firstWindow();

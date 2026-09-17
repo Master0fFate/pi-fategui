@@ -51,12 +51,13 @@
 :root[data-skin="m3-expressive"] .sidebar-toolbar-action > button { width: 40px; height: 40px; border-radius: 50%; }
 /* Icon-only controls share a layout contract: UA button padding must not
    displace or squeeze SVGs when compact mode reduces the circular surface. */
-:root[data-skin="m3-expressive"] :is(.sidebar-toolbar-action > button, .session-controls .icon-button, .composer .send-button, .composer-toolbar button:is(.composer-icon-action, .composer-tools-toggle, .permission-toggle, .voice-button), .music-controls button, .music-dock-toggle, .browser-toolbar button, .browser-tab-close, .browser-new-tab) {
-  display: grid; place-items: center; box-sizing: border-box; padding: 0; line-height: normal;
+:root[data-skin="m3-expressive"] :is(.sidebar-toolbar-action > button, .icon-button, .composer .send-button, .composer-toolbar button:is(.composer-icon-action, .composer-tools-toggle, .permission-toggle, .voice-button), .music-controls button, .music-dock-toggle, .browser-toolbar button, .browser-tab-close, .browser-new-tab) {
+  display: grid; place-items: center; box-sizing: border-box; padding: 0; line-height: 0;
 }
-:root[data-skin="m3-expressive"] :is(.sidebar-toolbar-action > button, .session-controls .icon-button, .composer .send-button, .composer-toolbar button:is(.composer-icon-action, .composer-tools-toggle, .permission-toggle, .voice-button), .music-controls button, .music-dock-toggle, .browser-toolbar button, .browser-tab-close, .browser-new-tab) > svg {
+:root[data-skin="m3-expressive"] :is(.sidebar-toolbar-action > button, .icon-button, .composer .send-button, .composer-toolbar button:is(.composer-icon-action, .composer-tools-toggle, .permission-toggle, .voice-button), .music-controls button, .music-dock-toggle, .browser-toolbar button, .browser-tab-close, .browser-new-tab) > svg {
   display: block; flex: none; margin: 0;
 }
+:root[data-skin="m3-expressive"] .music-controls .music-play svg { transform: none; }
 :root[data-skin="m3-expressive"] .sidebar-toolbar-action--primary > button { color: var(--theme-on-accent); background: var(--theme-accent); }
 :root[data-skin="m3-expressive"] :is(.session-row, .session-open, .folder-open, .folder-preview-row) { border-radius: 14px; }
 :root[data-skin="m3-expressive"] :is(.folder-name, .folder-open strong, .session-open strong) { font-size: 12px; }
