@@ -19,7 +19,7 @@ import type { PiRuntimeService } from '../../src/main/pi/PiRuntimeService';
 import type { ProjectActivation, ProjectService } from '../../src/main/projects/ProjectService';
 import { secureWebPreferences } from '../../src/main/security/windowOptions';
 import { createTrustedRendererPolicy } from '../../src/main/security/trustedRenderer';
-import type { SettingsService } from '../../src/main/settings/SettingsService';
+import { SettingsService } from '../../src/main/settings/SettingsService';
 import { SkinPackService } from '../../src/main/settings/SkinPackService';
 import { skinPackThemeId } from '../../src/shared/skins';
 import { removePackFontPreferences } from '../../src/shared/skinAppearance';
@@ -69,7 +69,7 @@ try {
 }
 const learning = new LearningService(new LearningRepository(path.join(app.getPath('userData'), 'learning-data')), () => settingsValue.memoryLearning);
 runtime.setLearningService(learning);
-const e2ePiTheme = { ...builtInThemes[4]!, id: 'pi-e2e-theme-0123456789ab', name: 'Pi · E2E Theme' };
+const e2ePiTheme = { ...builtInThemes.find((theme) => theme.id === 'graphite')!, id: 'pi-e2e-theme-0123456789ab', name: 'Pi · E2E Theme' };
 const skinPacks = new SkinPackService(path.dirname(settingsPath));
 const settings = {
   skinPacks,
@@ -91,7 +91,11 @@ const settings = {
     writeFileSync(settingsPath, `${JSON.stringify(settingsValue, null, 2)}\n`, 'utf8');
     return settingsValue;
   },
-  loadThemes: async () => [...builtInThemes, e2ePiTheme, ...(await skinPacks.list()).skins.flatMap((skin) => skin.palette ? [skin.palette] : [])],
+  // Use the production Fate JSON/pack merge and validation. Only Pi discovery is
+  // deterministic here; this does not claim an installed external Pi theme.
+  loadThemes: async () => new SettingsService(logs, path.dirname(settingsPath), {
+    discover: async () => ({ themes: [e2ePiTheme], diagnostics: [] }),
+  }).loadThemes(),
 } as unknown as SettingsService;
 const logs = { list: () => [], write: () => undefined } as unknown as AppLogService;
 const automations = new AutomationRepository(logs, path.join(process.env.PI_DESKTOP_E2E_USER_DATA ?? app.getPath('userData'), 'automations'));

@@ -23,6 +23,16 @@ Both skin and palette use ID `m3-expressive`, in separate registries. Default an
 
 No new dependency, font download, arbitrary CSS import, script execution, or privileged renderer API was introduced. Existing focus treatment, reduced-motion settings, and OS reduced-motion handling remain in effect; this skin adds no animations.
 
+## Theme compliance
+
+The skin CSS contains no fixed palette colors or font-family overrides: surfaces, text, selection, outlines, and shadows derive from `--theme-*` tokens. Interface/code fonts and motion/density preferences retain the existing appearance resolver and per-skin overrides.
+
+The Electron journey now checks **Midnight**, **Daylight**, **Monochrome**, a copper custom Fate palette loaded from a real fixture `themes.json` through the production `SettingsService`, and the existing deterministic Pi-theme fixture. For each, computed panel/canvas/primary/on-accent/text colors must match that palette while M3 identity, geometry, interface font, density, and the live draft remain unchanged. Saving the custom palette then cancelling a different preview restores the custom palette, not the companion M3 palette. The journey restores the M3 palette before final compact screenshots and restart.
+
+Pi discovery is deterministic in this harness, not an externally installed Pi theme. The production shared palette contract and `SettingsService`/`PiThemeService` unit tests cover mapped Pi loading and the explicit project-trust boundary. Every built-in palette, including M3 Expressive, is also checked against the complete `themeDefinitionSchema`.
+
+Theme-compliance follow-up verification: typecheck and E2E build passed; four focused unit files / 29 tests passed; the expanded M3 journey passed, and existing skin/pack Electron journeys passed with the production theme loader enabled in the harness. This follow-up changes tests/harness only, not the accepted skin design.
+
 ## Verification and screenshots
 
 `tests/e2e/m3-expressive.spec.ts` launches real Electron with the existing deterministic test runtime. It exercises selection, palette independence, preview cancellation, saved restart, normal/compact layouts, pane resizing, task/model/tool/resource/browser surfaces, agent fixtures, music geometry, and importing/removing an actual personal background. It checks zero outer pane margins/radii, contiguous pane/resize-track geometry and matching panel backgrounds at normal/compact/collapsed widths, no document overflow, composer/header containment, complete secondary-tab labels, safe session insets, centered root/group/node agent icons and balanced group-header spacing, readable search placeholders, unchanged platform chrome shape, symmetric dock insets, and inspector scroll clearance. Screenshots are not DOM-styled mockups.

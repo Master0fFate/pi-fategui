@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { builtInThemes } from '../shared/themes';
+import { builtInThemes, themeDefinitionSchema } from '../shared/themes';
 import { applyTheme, persistAppliedTheme, readStoredTheme, THEME_STORAGE_KEY } from './theme';
 
 afterEach(() => {
@@ -12,6 +12,7 @@ afterEach(() => {
 describe('theme boot persistence', () => {
   it('gives every built-in theme distinct current and last-active session colors', () => {
     for (const theme of builtInThemes) {
+      expect(themeDefinitionSchema.parse(theme)).toEqual(theme);
       expect(theme.colors.currentSession).toMatch(/^#[0-9a-f]{6}$/iu);
       expect(theme.colors.lastActiveSession).toMatch(/^#[0-9a-f]{6}$/iu);
       expect(theme.colors.currentSession).not.toBe(theme.colors.lastActiveSession);

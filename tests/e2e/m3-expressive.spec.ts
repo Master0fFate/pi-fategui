@@ -3,8 +3,33 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
+import { builtInThemes, themeDefinitionSchema, type ThemeDefinition } from '../../src/shared/themes';
 
 const exec = promisify(execFile);
+const midnight = builtInThemes.find((theme) => theme.id === 'midnight')!;
+const customPalette = themeDefinitionSchema.parse({
+  ...midnight, id: 'm3-compliance-copper', name: 'M3 compliance Copper',
+  colors: { ...midnight.colors, canvas: '#100e0c', panel: '#241b18', raised: '#382823', accent: '#edb58f', onAccent: '#342014', text: '#f5eadd', textSoft: '#d8c9bc', muted: '#b3a292', accentSoft: '#4b342b', currentSession: '#593d31' },
+});
+const piPaletteFixture = { ...builtInThemes.find((theme) => theme.id === 'graphite')!, id: 'pi-e2e-theme-0123456789ab', name: 'Pi · E2E Theme' };
+
+async function paletteCompliance(page: Page, theme: ThemeDefinition) {
+  const rgb = (hex: string) => `rgb(${[1, 3, 5].map((start) => Number.parseInt(hex.slice(start, start + 2), 16)).join(', ')})`;
+  await expect.poll(() => page.evaluate(() => {
+    const root = document.documentElement;
+    const style = (selector: string, pseudo?: string) => getComputedStyle(document.querySelector(selector)!, pseudo);
+    const primary = '.inspector-primary-trigger[aria-current="page"]';
+    return {
+      skin: root.dataset.skin, theme: root.dataset.theme, tone: root.dataset.themeTone,
+      panel: style('.sidebar').backgroundColor, canvas: style('.workspace', '::before').backgroundColor,
+      primary: style(primary).backgroundColor, onPrimary: style(primary).color,
+      send: style('.send-button').backgroundColor, onSend: style('.send-button').color,
+      text: style('.composer textarea').color,
+      font: root.dataset.interfaceFont, codeFont: root.dataset.codeFont, compact: root.dataset.compactMode, reduceMotion: root.dataset.reduceMotion,
+      composerRadius: style('.composer').borderRadius,
+    };
+  })).toEqual({ skin: 'm3-expressive', theme: theme.id, tone: theme.tone, panel: rgb(theme.colors.panel), canvas: rgb(theme.colors.canvas), primary: rgb(theme.colors.accent), onPrimary: rgb(theme.colors.onAccent), send: rgb(theme.colors.accent), onSend: rgb(theme.colors.onAccent), text: rgb(theme.colors.text), font: 'inter', codeFont: 'jetbrains-mono', compact: 'false', reduceMotion: 'false', composerRadius: '36px' });
+}
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -128,6 +153,7 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
   await exec('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-m', 'Fixture'], { cwd: project });
   await writeFile(path.join(project, 'src/example.ts'), 'export const value = 2;\n');
   await mkdir(dataRoot, { recursive: true });
+  await writeFile(path.join(dataRoot, 'themes.json'), JSON.stringify({ themes: [customPalette] }));
   await writeFile(path.join(dataRoot, 'settings.json'), JSON.stringify(appSettingsSchema.parse({ appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, musicPlayerEnabled: true })));
   await mkdir('screenshots/m3-expressive', { recursive: true });
   const launch = () => electron.launch({ args: [path.resolve('.test-dist/main/index.js')], env: { ...process.env, PI_DESKTOP_E2E_PROJECT: project, PI_DESKTOP_E2E_SECOND_PROJECT: secondProject, PI_DESKTOP_E2E_SESSION_COUNT: '8', PI_DESKTOP_E2E_USER_DATA: userData, FATE_GUI_DATA_DIR: dataRoot, PI_OFFLINE: '1' } });
@@ -218,14 +244,37 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await page.getByRole('button', { name: 'Open music player' }).click();
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await settings.getByRole('tab', { name: /Skins/u }).click();
+    for (const theme of [midnight, builtInThemes.find((entry) => entry.id === 'daylight')!, builtInThemes.find((entry) => entry.id === 'monochrome')!, customPalette, piPaletteFixture]) {
+      await palette.click();
+      await page.getByRole('option', { name: new RegExp(`^${theme.name}`, 'u') }).click();
+      await paletteCompliance(page, theme);
+      await geometry(page, chromeRadius);
+      await expect(page.getByLabel('Message Pi')).toHaveValue('Draft retained across appearance changes');
+      if (theme.id === 'daylight') await page.screenshot({ path: 'screenshots/m3-expressive/light-preview.png', animations: 'disabled' });
+    }
+    await settings.getByRole('button', { name: 'Close settings' }).click();
+    await paletteCompliance(page, builtInThemes.find((theme) => theme.id === 'm3-expressive')!);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: /Skins/u }).click();
+    await palette.click();
+    await page.getByRole('option', { name: /M3 compliance Copper/u }).click();
+    await settings.getByRole('button', { name: 'Save changes' }).click();
+    await expect(settings.getByRole('button', { name: 'Save changes' })).toHaveAttribute('aria-busy', 'false');
+    await settings.getByRole('button', { name: 'Close settings' }).click();
+    await paletteCompliance(page, customPalette);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: /Skins/u }).click();
     await palette.click();
     await page.getByRole('option', { name: /Daylight/u }).click();
-    await expect(page.locator('html')).toHaveAttribute('data-skin', 'm3-expressive');
-    await expect(page.locator('.composer')).toHaveCSS('border-radius', '36px');
-    await page.screenshot({ path: 'screenshots/m3-expressive/light-preview.png', animations: 'disabled' });
     await settings.getByRole('button', { name: 'Close settings' }).click();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'm3-expressive');
+    await paletteCompliance(page, customPalette);
+    await expect(page.getByLabel('Message Pi')).toHaveValue('Draft retained across appearance changes');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: /Skins/u }).click();
+    await palette.click();
+    await page.getByRole('option', { name: /^M3 Expressive/u }).click();
+    await settings.getByRole('button', { name: 'Save changes' }).click();
+    await expect(settings.getByRole('button', { name: 'Save changes' })).toHaveAttribute('aria-busy', 'false');
     await settings.getByRole('tab', { name: /Compaction/u }).click();
     await settings.getByRole('checkbox', { name: /^Compact mode/u }).check();
     await expect(page.locator('html')).toHaveAttribute('data-compact-mode', 'true');
