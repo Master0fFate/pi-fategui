@@ -33,7 +33,8 @@
 :root[data-skin="m3-expressive"] :is(.primary-button, .new-session) { border-radius: 24px; box-shadow: none; }
 :root[data-skin="m3-expressive"] .icon-button { border-radius: 50%; }
 :root[data-skin="m3-expressive"] .session-controls { gap: 8px; }
-:root[data-skin="m3-expressive"] .session-controls .icon-button { width: 40px; height: 40px; flex-basis: 40px; border-radius: 18px; background: var(--theme-raised); color: var(--theme-text-soft); }
+:root[data-skin="m3-expressive"] .session-controls .icon-button { display: grid; place-items: center; width: 40px; height: 40px; flex-basis: 40px; padding: 0; line-height: 0; border-radius: 18px; background: var(--theme-raised); color: var(--theme-text-soft); }
+:root[data-skin="m3-expressive"] .session-controls .icon-button > svg { display: block; flex: none; width: 20px; height: 20px; }
 :root[data-skin="m3-expressive"] .session-controls .icon-button:is(:hover, [aria-pressed="true"]) { color: var(--theme-text); background: var(--theme-raised-hover); }
 :root[data-skin="m3-expressive"] .brand-row { margin-bottom: 12px; }
 :root[data-skin="m3-expressive"] .brand-copy strong { font-size: 16px; }
@@ -131,7 +132,35 @@
 :root[data-skin="m3-expressive"] .music-dock[data-open="false"] { bottom: 4px; }
 :root[data-skin="m3-expressive"] .music-dock[data-open="true"] .music-dock-toggle { position: absolute; top: 19px; right: 14px; background: var(--theme-raised-hover); }
 :root[data-skin="m3-expressive"] :is(.browser-toolbar, .browser-tab-strip) { background: var(--theme-panel); }
-:root[data-skin="m3-expressive"] :is(.browser-address, .browser-address-form, .browser-tab) { border-radius: 12px; }
+/* Browser-owned chrome only; the embedded page retains its own styles. */
+:root[data-skin="m3-expressive"] .browser-workspace { --browser-chrome: var(--theme-panel); }
+:root[data-skin="m3-expressive"] .browser-tab-strip { flex-basis: 50px; align-items: center; gap: 6px; padding: 8px; border: 0; background: var(--browser-chrome); }
+:root[data-skin="m3-expressive"] .browser-tab { flex: 0 0 168px; min-width: 110px; max-width: 200px; height: 34px; border-radius: 18px; background: var(--theme-raised); color: var(--theme-muted); box-shadow: none; }
+:root[data-skin="m3-expressive"] .browser-tab:not(.browser-tab--active):hover { background: var(--theme-raised-hover); color: var(--theme-text); }
+:root[data-skin="m3-expressive"] .browser-tab--active { background: var(--theme-accent); color: var(--theme-on-accent); }
+:root[data-skin="m3-expressive"] .browser-tab > [role="tab"] { padding: 0 34px 0 12px; font-size: 11px; }
+:root[data-skin="m3-expressive"] .browser-tab > [role="tab"] > svg { flex: none; }
+:root[data-skin="m3-expressive"] .browser-tab-close { right: 5px; width: 24px; height: 24px; padding: 0; line-height: 0; border-radius: 50%; color: inherit; }
+:root[data-skin="m3-expressive"] .browser-tab-close:hover { background: color-mix(in srgb, currentColor 14%, transparent); color: inherit; }
+:root[data-skin="m3-expressive"] .browser-new-tab { position: sticky; right: 0; width: 32px; height: 32px; margin: 0; padding: 0; line-height: 0; border-radius: 50%; color: var(--theme-text-soft); background: var(--theme-raised); }
+:root[data-skin="m3-expressive"] .browser-new-tab:hover { background: var(--theme-raised-hover); }
+:root[data-skin="m3-expressive"] .browser-toolbar { flex-basis: 50px; gap: 6px; padding: 4px 8px 10px; border: 0; }
+:root[data-skin="m3-expressive"] :is(.browser-history-controls, .browser-tool-group) { gap: 3px; }
+:root[data-skin="m3-expressive"] .browser-toolbar button { flex: none; width: 32px; min-width: 32px; height: 32px; padding: 0; line-height: 0; border-radius: 12px; background: var(--theme-raised); }
+:root[data-skin="m3-expressive"] .browser-tool-toggle[aria-pressed="true"] { color: var(--theme-on-accent); background: var(--theme-accent); }
+:root[data-skin="m3-expressive"] :is(.browser-toolbar button, .browser-tab-close, .browser-new-tab) > svg { display: block; flex: none; }
+:root[data-skin="m3-expressive"] .browser-address { height: 36px; padding-inline: 12px; border-radius: 24px; background: var(--theme-canvas); }
+:root[data-skin="m3-expressive"] .browser-address > svg { flex: none; }
+:root[data-skin="m3-expressive"] .browser-address:focus-within { border-color: var(--theme-accent); box-shadow: none; }
+:root[data-skin="m3-expressive"][data-compact-mode="true"] .browser-tab-strip { flex-basis: 42px; padding: 6px; }
+:root[data-skin="m3-expressive"][data-compact-mode="true"] .browser-tab { flex-basis: 148px; height: 30px; }
+:root[data-skin="m3-expressive"][data-compact-mode="true"] .browser-toolbar { flex-basis: 44px; padding: 2px 6px 8px; gap: 4px; }
+:root[data-skin="m3-expressive"][data-compact-mode="true"] :is(.browser-toolbar button, .browser-new-tab) { width: 28px; min-width: 28px; height: 28px; }
+:root[data-skin="m3-expressive"][data-compact-mode="true"] .browser-address { height: 32px; }
+@container browser-workspace (max-width: 420px) {
+  :root[data-skin="m3-expressive"] .browser-toolbar { gap: 4px; padding-inline: 6px; }
+  :root[data-skin="m3-expressive"] .browser-address { min-width: 72px; }
+}
 /* Compact keeps the same silhouette, without sacrificing its operational fit. */
 :root[data-skin="m3-expressive"][data-compact-mode="true"] { --m3-control-radius: 10px; --m3-action-size: 30px; --m3-agent-icon-size: 24px; --m3-agent-header-half: 18px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar { padding: 8px; }
@@ -147,6 +176,7 @@
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .workspace-header strong { font-size: 13px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .extension-status-rail { top: 64px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .session-controls .icon-button { width: 30px; height: 30px; flex-basis: 30px; border-radius: 12px; }
+:root[data-skin="m3-expressive"][data-compact-mode="true"] .session-controls .icon-button > svg { width: 18px; height: 18px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .composer { padding: 12px; border-radius: 28px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .composer .send-button { width: 36px; height: 36px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .inspector-primary-nav { height: 36px; margin-inline: 6px; }
@@ -161,6 +191,7 @@
   :root[data-skin="m3-expressive"] .activity-pulse { max-width: 100%; }
   :root[data-skin="m3-expressive"] .session-controls { gap: 4px; }
   :root[data-skin="m3-expressive"] .session-controls .icon-button { width: 30px; height: 30px; flex-basis: 30px; border-radius: 12px; }
+  :root[data-skin="m3-expressive"] .session-controls .icon-button > svg { width: 18px; height: 18px; }
   :root[data-skin="m3-expressive"] .welcome--conversation .composer-wrap { width: calc(100% - 24px); bottom: 14px; }
   :root[data-skin="m3-expressive"] .composer { padding: 12px; }
   :root[data-skin="m3-expressive"] .composer .send-button { width: 36px; height: 36px; }

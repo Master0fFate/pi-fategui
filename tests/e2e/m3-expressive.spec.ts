@@ -120,6 +120,29 @@ async function agentIconGeometry(page: Page) {
 
 async function stableSidebarSearch(page: Page, name: string) {
   await page.evaluate(() => document.fonts.ready);
+  await expect.poll(() => page.locator('.session-controls').evaluate((group) => {
+    const controls = group.getBoundingClientRect();
+    // The drag layer already excludes the platform window-control safe area.
+    const header = document.querySelector('.workspace-header-drag')!.getBoundingClientRect();
+    const identity = document.querySelector('.workspace-header-identity')!.getBoundingClientRect();
+    const buttons = [...group.querySelectorAll('button')];
+    return {
+      count: buttons.length,
+      groupCentered: Math.abs(controls.y + controls.height / 2 - header.y - header.height / 2) < 0.5,
+      contained: controls.left >= identity.right && controls.right <= header.right && controls.top >= header.top && controls.bottom <= header.bottom,
+      iconsCentered: buttons.every((button) => {
+        const box = button.getBoundingClientRect();
+        const icon = button.querySelector('svg')!.getBoundingClientRect();
+        const style = getComputedStyle(button);
+        const expectedIconSize = box.width === 40 ? 20 : 18;
+        return box.width === box.height && [30, 40].includes(box.width) && icon.width === expectedIconSize && icon.height === expectedIconSize
+          && Math.abs(icon.x + icon.width / 2 - box.x - box.width / 2) < 0.5
+          && Math.abs(icon.y + icon.height / 2 - box.y - box.height / 2) < 0.5
+          && style.padding === '0px' && style.lineHeight === '0px';
+      }),
+    };
+  })).toEqual({ count: 5, groupCentered: true, contained: true, iconsCentered: true });
+  await page.locator('.workspace-header').screenshot({ path: `screenshots/m3-expressive/header-${name.replace('search-', '')}.png`, animations: 'disabled' });
   const boxes: Array<{ x: number; y: number; width: number; height: number }> = [];
   for (const tab of ['Sessions', 'Automations', 'Resources', 'Sessions', 'Resources', 'Automations', 'Sessions']) {
     await page.getByRole('tab', { name: tab, exact: true }).click();
