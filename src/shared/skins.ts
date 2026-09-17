@@ -87,7 +87,7 @@ export const skinExportResultSchema = z.object({ path: z.string().max(4096) }).s
 export const builtInSkins: readonly SkinDefinition[] = [
   { id: 'default', base: 'default', origin: 'built-in', name: 'Default', description: 'The focused, continuous Fate UI workbench.' },
   { id: 'dreamcore', base: 'dreamcore', origin: 'built-in', name: 'Angelcore', description: 'Terminal-style controls, command input, and an open transcript.', appearance: { interfaceFont: 'jetbrains-mono' }, styles: { normal: { sidebar: { padding: 14 }, settings: { padding: 18 }, music: { padding: 12 }, tooltips: { padding: 8 } }, compact: { sidebar: { padding: 8 }, settings: { padding: 12 }, music: { padding: 8 } } } },
-  { id: 'm3-expressive', base: 'm3-expressive', origin: 'built-in', name: 'M3 Expressive', description: 'A continuous tonal workspace, expressive shapes, and focused controls.', appearance: { interfaceFont: 'inter' } },
+  { id: 'm3-expressive', base: 'm3-expressive', origin: 'built-in', name: 'M3 Expressive', description: 'A continuous tonal workspace, expressive shapes, and focused controls.', appearance: { interfaceFont: 'roboto-flex' } },
 ];
 export function builtInSkinName(id: BuiltInSkinId): string { return builtInSkins.find((skin) => skin.id === id)!.name; }
 export function resolveSkinId(value: unknown): SkinId { return skinIdSchema.parse(value); }

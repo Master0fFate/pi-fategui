@@ -2,6 +2,10 @@
 
 Fate UI includes third-party software. This file records license notices that must accompany the distribution. Other bundled packages retain their own license files and package metadata.
 
+## Bundled fonts
+
+Fate UI bundles local Fontsource assets, including Roboto Flex (`@fontsource-variable/roboto-flex` 5.3.0) for the M3 Expressive skin and JetBrains Mono for Angelcore and code. These fonts are distributed under SIL OFL 1.1. Copyright notices and the complete license are included in [FONT_LICENSES.md](FONT_LICENSES.md), which accompanies packaged distributions. No Google brand font or remote font service is required.
+
 ## Pi coding agent
 
 Fate UI includes and interoperates with `@earendil-works/pi-coding-agent`, from the [Pi repository](https://github.com/earendil-works/pi). Pi is distributed under the following MIT License:

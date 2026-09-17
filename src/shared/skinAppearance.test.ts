@@ -7,11 +7,11 @@ const baseline = () => appSettingsSchema.parse({ appearance: 'dark', defaultMode
 describe('effective skin appearance', () => {
   it('round-trips M3 font and density overrides without changing palette or other skins', () => {
     const settings = { ...baseline(), skinId: 'm3-expressive' as const, themeId: 'daylight' };
-    expect(resolveSkinAppearance(settings, builtInSkins)).toMatchObject({ interfaceFont: 'inter', themeId: 'daylight' });
+    expect(resolveSkinAppearance(settings, builtInSkins)).toMatchObject({ interfaceFont: 'roboto-flex', themeId: 'daylight' });
     const saved = appSettingsSchema.parse(overrideSkinAppearance(settings, { interfaceFont: 'noto-sans', compactMode: true, reduceMotion: true }));
     expect(resolveSkinAppearance(saved, builtInSkins)).toMatchObject({ interfaceFont: 'noto-sans', compactMode: true, reduceMotion: true, themeId: 'daylight', codeFont: settings.codeFont });
     expect(resolveSkinAppearance({ ...saved, skinId: 'dreamcore' }, builtInSkins)).toMatchObject({ interfaceFont: 'jetbrains-mono', compactMode: false });
-    expect(resolveSkinAppearance(resetSkinAppearance(saved), builtInSkins).interfaceFont).toBe('inter');
+    expect(resolveSkinAppearance(resetSkinAppearance(saved), builtInSkins).interfaceFont).toBe('roboto-flex');
   });
   it('shows Angelcore defaults without losing base preferences and honors explicit per-skin overrides', () => {
     const settings = baseline();
@@ -21,6 +21,11 @@ describe('effective skin appearance', () => {
     expect(resolveSkinAppearance(overridden, builtInSkins)).toMatchObject({ interfaceFont: 'inter', compactMode: true });
     expect(resolveSkinAppearance({ ...overridden, skinId: 'default' }, builtInSkins).interfaceFont).toBe('poppins');
     expect(resolveSkinAppearance(resetSkinAppearance(overridden), builtInSkins).interfaceFont).toBe('jetbrains-mono');
+  });
+  it('accepts Roboto Flex as a v2 pack appearance default without an embedded font', () => {
+    const pack = skinPackManifestSchema.parse({ schemaVersion: 2, id: 'flex-pack', name: 'Flex Pack', version: '1.0.0', description: 'Bundled font reference.', base: 'default', appearance: { interfaceFont: 'roboto-flex' } });
+    expect(pack.appearance?.interfaceFont).toBe('roboto-flex');
+    expect(pack.fonts).toBeUndefined();
   });
   it('inherits component-base defaults and falls back when an imported font disappears', () => {
     const pack: SkinDefinition = { id: 'pack:font-pack', name: 'Font pack', description: 'Fixture', base: 'dreamcore', origin: 'pack', appearance: { codeFont: 'skin-font:font-pack:mono' } };

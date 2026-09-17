@@ -2,6 +2,7 @@
 
 Fate UI bundles the following unmodified fonts through Fontsource 5.3.0. All are distributed under the SIL Open Font License 1.1 reproduced below.
 
+- Roboto Flex — Copyright 2017 The Roboto Flex Project Authors (https://github.com/googlefonts/roboto-flex)
 - Inter — Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
 - JetBrains Mono — Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
 - Montserrat — Copyright 2011 The Montserrat Project Authors (https://github.com/JulietaUla/Montserrat)

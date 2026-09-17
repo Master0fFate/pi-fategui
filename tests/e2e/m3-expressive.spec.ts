@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
 import { builtInThemes, themeDefinitionSchema, type ThemeDefinition } from '../../src/shared/themes';
+import { expectLoadedFontFace } from './fontAssertions';
 
 const exec = promisify(execFile);
 const midnight = builtInThemes.find((theme) => theme.id === 'midnight')!;
@@ -28,7 +29,7 @@ async function paletteCompliance(page: Page, theme: ThemeDefinition) {
       font: root.dataset.interfaceFont, codeFont: root.dataset.codeFont, compact: root.dataset.compactMode, reduceMotion: root.dataset.reduceMotion,
       composerRadius: style('.composer').borderRadius,
     };
-  })).toEqual({ skin: 'm3-expressive', theme: theme.id, tone: theme.tone, panel: rgb(theme.colors.panel), canvas: rgb(theme.colors.canvas), primary: rgb(theme.colors.accent), onPrimary: rgb(theme.colors.onAccent), send: rgb(theme.colors.accent), onSend: rgb(theme.colors.onAccent), text: rgb(theme.colors.text), font: 'inter', codeFont: 'jetbrains-mono', compact: 'false', reduceMotion: 'false', composerRadius: '36px' });
+  })).toEqual({ skin: 'm3-expressive', theme: theme.id, tone: theme.tone, panel: rgb(theme.colors.panel), canvas: rgb(theme.colors.canvas), primary: rgb(theme.colors.accent), onPrimary: rgb(theme.colors.onAccent), send: rgb(theme.colors.accent), onSend: rgb(theme.colors.onAccent), text: rgb(theme.colors.text), font: 'roboto-flex', codeFont: 'jetbrains-mono', compact: 'false', reduceMotion: 'false', composerRadius: '36px' });
 }
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -161,6 +162,10 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
   try {
     app = await launch();
     const page = await app.firstWindow();
+    const remoteFontRequests: string[] = [];
+    page.on('request', (request) => {
+      if (request.resourceType() === 'font' && /^https?:/u.test(request.url())) remoteFontRequests.push(request.url());
+    });
     await expect(page.getByLabel('Window controls')).toHaveAttribute('data-bridge-status', 'ready');
     const chromeRadius = await page.locator('.window-control').first().evaluate((element) => getComputedStyle(element).borderRadius);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1600, 900));
@@ -187,6 +192,7 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await page.getByRole('option', { name: /M3 Expressive/u }).click();
     await expect(palette).toHaveText(originalTheme);
     await expect(page.locator('html')).toHaveAttribute('data-skin', 'm3-expressive');
+    await expectLoadedFontFace(page, 'Roboto Flex Variable');
     await settings.getByRole('button', { name: 'Close settings' }).click();
     await expect(page.locator('html')).toHaveAttribute('data-skin', 'default');
     await expect(page.getByLabel('Message Pi')).toHaveValue('Draft retained across appearance changes');
@@ -196,6 +202,19 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await page.getByRole('option', { name: /M3 Expressive/u }).click();
     await palette.click();
     await page.getByRole('option', { name: /M3 Expressive/u }).click();
+    const interfaceFont = settings.getByRole('combobox', { name: 'Interface font' });
+    await expect(interfaceFont).toContainText('Roboto Flex');
+    await expectLoadedFontFace(page, 'Roboto Flex Variable');
+    await expect(page.locator('.composer textarea')).toHaveCSS('font-optical-sizing', 'auto');
+    await expectLoadedFontFace(page, 'JetBrains Mono Variable');
+    await interfaceFont.click();
+    await page.getByRole('option', { name: /^Inter/u }).click();
+    await expectLoadedFontFace(page, 'Inter Variable');
+    await expect(page.locator('html')).toHaveAttribute('data-interface-font', 'inter');
+    await expect(page.locator('html')).toHaveAttribute('data-code-font', 'jetbrains-mono');
+    await settings.getByRole('button', { name: 'Reset to skin appearance defaults' }).click();
+    await expect(interfaceFont).toContainText('Roboto Flex');
+    await expectLoadedFontFace(page, 'Roboto Flex Variable');
     await settings.getByRole('button', { name: 'Save changes' }).click();
     await page.screenshot({ path: 'screenshots/m3-expressive/settings.png' });
     await settings.getByRole('button', { name: 'Close settings' }).click();
@@ -323,6 +342,9 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await expect(restarted.locator('html')).toHaveAttribute('data-skin', 'm3-expressive');
     await expect(restarted.locator('html')).toHaveAttribute('data-theme', 'm3-expressive');
     await expect(restarted.locator('html')).toHaveAttribute('data-compact-mode', 'true');
+    await expect(restarted.locator('html')).toHaveAttribute('data-interface-font', 'roboto-flex');
+    await expectLoadedFontFace(restarted, 'Roboto Flex Variable');
+    expect(remoteFontRequests).toEqual([]);
   } finally {
     await app?.close();
     await rm(directory, { recursive: true, force: true });

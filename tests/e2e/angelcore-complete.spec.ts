@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
+import { expectLoadedFontFace } from './fontAssertions';
 
 const exec = promisify(execFile);
 async function fixture() {
@@ -264,6 +265,8 @@ test('v2 pack fonts, embedded image, density styles and user font overrides surv
   test.setTimeout(120_000);
   const data = await fixture();
   const pack = path.join(data.directory, 'font-pack'); await mkdir(pack);
+  const builtinPack = path.join(data.directory, 'builtin-font-pack'); await mkdir(builtinPack);
+  await writeFile(path.join(builtinPack, 'skin.json'), JSON.stringify({ schemaVersion: 2, id: 'builtin-flex', name: 'Builtin Flex', description: 'A built-in font reference without embedded font files.', version: '1.0.0', base: 'default', appearance: { interfaceFont: 'roboto-flex' } }));
   await cp(path.resolve('node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2'), path.join(pack, 'mono.woff2'));
   const image = await readFile(path.resolve('examples/skins/ashen-terminal/background.png'));
   await writeFile(path.join(pack, 'skin.json'), JSON.stringify({ schemaVersion: 2, id: 'font-studio', name: 'Font Studio', description: 'An embedded-asset fixture', version: '2.0.0', base: 'dreamcore', fonts: [{ id: 'mono', name: 'Studio Mono', file: 'mono.woff2', monospace: true }], appearance: { interfaceFont: 'local:mono', codeFont: 'local:mono', compactMode: true, compactSessions: true }, styles: { normal: { music: { controlRadius: 4 }, tooltips: { surfaceRadius: 4 }, browser: { controlRadius: 6, fontSize: 14 } }, compact: { music: { controlRadius: 1 }, browser: { controlRadius: 2 } }, compactSessions: { sidebar: { controlRadius: 3, rowHeight: 28 } } }, background: { data: image.toString('base64'), opacity: 0.1 } }));
@@ -273,11 +276,18 @@ test('v2 pack fonts, embedded image, density styles and user font overrides surv
     await app.evaluate(({ dialog }, selected) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] }); }, pack);
     let dialog = await settings(page);
     await expect(dialog.getByRole('combobox', { name: 'Interface font' })).toContainText('JetBrains Mono');
+    await expectLoadedFontFace(page, 'JetBrains Mono Variable');
+    await app.evaluate(({ dialog }, selected) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] }); }, builtinPack);
+    await dialog.getByRole('button', { name: 'Import skin folder' }).click();
+    await dialog.getByRole('button', { name: 'Preview Builtin Flex' }).click();
+    await expect(dialog.getByRole('combobox', { name: 'Interface font' })).toContainText('Roboto Flex');
+    await expectLoadedFontFace(page, 'Roboto Flex Variable');
+    await app.evaluate(({ dialog }, selected) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selected] }); }, pack);
     await dialog.getByRole('button', { name: 'Import skin folder' }).click();
     await dialog.getByRole('button', { name: 'Preview Font Studio' }).click();
     await expect(dialog.getByRole('combobox', { name: 'Interface font' })).toContainText('Studio Mono');
     await expect(dialog.getByRole('combobox', { name: 'Code and terminal font' })).toContainText('Studio Mono');
-    await expect.poll(() => page.evaluate(() => [...document.fonts].some((font) => font.family.includes('FateSkin_skin_font_font_studio_mono') && font.status === 'loaded'))).toBe(true);
+    await expectLoadedFontFace(page, 'FateSkin_skin_font_font_studio_mono');
     await expect(page.locator('.workspace-backdrop')).toHaveAttribute('data-source', 'skin-pack');
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.compactMode)).toBe('true');
     await expect.poll(() => page.evaluate(() => document.documentElement.style.getPropertyValue('--skin-music-control-radius'))).toBe('1px');
@@ -289,6 +299,12 @@ test('v2 pack fonts, embedded image, density styles and user font overrides surv
     await expect(dialog.getByRole('combobox', { name: 'Interface font' })).toContainText('Poppins');
     await expect.poll(() => page.locator('.composer textarea').evaluate((element) => getComputedStyle(element).fontFamily)).toContain('Poppins');
     expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--font-code'))).toContain('FateSkin_skin_font_font_studio_mono');
+    await dialog.getByRole('combobox', { name: 'Interface font' }).click();
+    await page.getByRole('option', { name: /^Studio Mono/u }).click();
+    await expectLoadedFontFace(page, 'FateSkin_skin_font_font_studio_mono');
+    await expect(dialog.getByRole('combobox', { name: 'Interface font' })).toContainText('Studio Mono');
+    await dialog.getByRole('combobox', { name: 'Interface font' }).click();
+    await page.getByRole('option', { name: /^Poppins/u }).click();
     await dialog.getByRole('button', { name: 'Save changes' }).click();
     await expect(dialog.getByRole('status')).toContainText('Settings saved');
     await dialog.screenshot({ path: 'test-results/skin-fonts-v2.png', animations: 'disabled' });
@@ -301,9 +317,12 @@ test('v2 pack fonts, embedded image, density styles and user font overrides surv
     dialog = await settings(restored);
     await expect(dialog.getByRole('combobox', { name: 'Interface font' })).toContainText('Poppins');
     await expect(dialog.getByRole('combobox', { name: 'Code and terminal font' })).toContainText('Studio Mono');
+    await expectLoadedFontFace(restored, 'FateSkin_skin_font_font_studio_mono');
+    await expectLoadedFontFace(restored, 'Poppins');
     await expect.poll(() => dialog.evaluate((element) => getComputedStyle(element).fontFamily)).toContain('Poppins');
     await dialog.getByRole('button', { name: 'Reset to skin appearance defaults' }).click();
     await expect(dialog.getByRole('combobox', { name: 'Interface font' })).toContainText('Studio Mono');
+    await expectLoadedFontFace(restored, 'FateSkin_skin_font_font_studio_mono');
     await dialog.getByRole('button', { name: 'Save changes' }).click();
     await dialog.getByRole('button', { name: 'Close settings' }).click();
     await restored.getByRole('button', { name: 'Collapse sidebar' }).hover();

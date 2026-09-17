@@ -23,7 +23,7 @@ Import, export, and removal act on disk immediately. Preview/Save/Cancel affect 
 
 ## Appearance defaults and your overrides
 
-Angelcore defaults its interface font to **JetBrains Mono**; M3 Expressive defaults to the bundled **Inter**. Neither changes your code font, palette, or density. The Interface font picker shows the effective font, not the unused base preference. Choosing another interface font really changes navigation, settings, conversation text, and the composer; Code & terminal remains a separate choice for literal code, tool output, diffs, and xterm.
+Angelcore defaults its interface font to **JetBrains Mono**; M3 Expressive defaults to the bundled **Roboto Flex**. Neither changes your code font, palette, or density. The Interface font picker shows the effective font, not the unused base preference. Choosing another interface font really changes navigation, settings, conversation text, and the composer; Code & terminal remains a separate choice for literal code, tool output, diffs, and xterm.
 
 Appearance resolution is: saved base preferences → component-base defaults → pack defaults → your overrides for that skin. Font, density, and motion overrides are stored per skin in `skinAppearanceOverrides`. Switching skins does not destroy another skin's choices. **Reset to skin appearance defaults** clears the current skin's overrides; Save and Cancel still apply. Integrations reading raw settings should use `resolveSkinAppearance` from `src/shared/skinAppearance.ts` to obtain the effective values.
 
@@ -101,7 +101,7 @@ Version 1 packs continue to work. Use `"schemaVersion": 2` for the following opt
 
 A pack can contain two WOFF/WOFF2 files, up to **256 KB each**, with a maximum declared expanded size of **8 MB**. Keep filenames to lowercase letters, digits, and hyphens followed by `.woff` or `.woff2`; IDs use the same characters without the extension. Include the fonts' redistribution licenses in `LICENSE`. Variable fonts can cover multiple weights in one file.
 
-All installed pack fonts appear in Interface font; those marked `monospace` also appear in Code & terminal. Internally they are namespaced as `skin-font:<pack-id>:<font-id>`. Defaults refer to a bundled font with `local:<font-id>` or use a built-in font ID. Fonts load locally through the browser's font parser, are cached for reuse, and fall back with a visible warning if loading fails. Removing a pack removes references to its fonts without changing operational settings.
+All installed pack fonts appear in Interface font; those marked `monospace` also appear in Code & terminal. Internally they are namespaced as `skin-font:<pack-id>:<font-id>`. Defaults refer to a pack-bundled font with `local:<font-id>` or use a built-in font ID. For example, `"appearance": { "interfaceFont": "roboto-flex" }` uses the app's offline Roboto Flex without embedding a font file. Angelcore's `jetbrains-mono` is also bundled. Creators supplying their own fonts still declare `fonts` plus `local:` references as above; the same size, type, namespace, and licensing rules apply. Fonts load locally through the browser's font parser, are cached for reuse, and fall back with a visible warning if loading fails. Removing a pack removes references to its fonts without changing operational settings.
 
 The only supported `appearance` keys are `interfaceFont`, `codeFont`, `compactMode`, `compactSessions`, `reduceMotion`, `performanceMode`, and `holyShitMode`. Unknown keys are rejected.
 

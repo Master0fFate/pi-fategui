@@ -4,7 +4,7 @@
 
 In **Settings → Skins**, select **M3 Expressive** under **Skin**. For the reference's navy/indigo and lavender colors, separately select **M3 Expressive** under **Palette**. Save changes to keep them; closing without saving restores the previous selection. Neither selector changes the other.
 
-Inter is the skin's bundled interface-font default. Code font, density, motion preferences, and your per-skin font overrides remain independent. Pane widths remain user-resizable and are not reset when changing skin. Personal dithered backgrounds remain optional, visible only inside the conversation inset.
+Roboto Flex is the skin's bundled interface-font default. Code font, density, motion preferences, and your per-skin font overrides remain independent. Pane widths remain user-resizable and are not reset when changing skin. Personal dithered backgrounds remain optional, visible only inside the conversation inset.
 
 ## Design decisions
 
@@ -17,11 +17,19 @@ Inter is the skin's bundled interface-font default. Code font, density, motion p
 - The conversation fill sits below the existing dither layer; the content above remains transparent. There is no skin-specific image or external resource request.
 - Native window buttons are not Material controls. Their platform order, shape, drag exclusions, and reserved areas are unchanged. The native window remains opaque and resizable. This is the user's explicitly accepted **joined-pane fallback**, not native transparency or a CSS transparency claim. Electron 43.6.0 documents that transparent windows are not reliably resizable and Windows system-menu/double-click maximize is unavailable; `transparent` is a construction option, not a runtime appearance toggle. Introducing those constraints globally would affect other skins. No native window options were changed.
 
+## Bundled typography
+
+Material's baseline default remains Roboto; **Roboto Flex** is its variable expressive option, not a Google brand-font requirement. Fate bundles unmodified `@fontsource-variable/roboto-flex` 5.3.0 locally under SIL OFL 1.1. The normal `opsz.css` entry retains variable weight (100–1000) and optical sizing (8–144); Chromium's automatic optical sizing follows the actual text size. No stylistic axis animation or new layout treatment is introduced.
+
+The fallback stack is Roboto Flex → locally available Roboto → the already bundled Noto families/system sans. No CDN or remote font request is used. The picker exposes **Roboto Flex** for every skin; M3 uses it as a default only, so a saved per-skin font override still wins. Code font is separate. Angelcore retains its already bundled JetBrains Mono. Copyright attribution and the full OFL accompany releases in [`FONT_LICENSES.md`](../FONT_LICENSES.md).
+
+Version-2 pack creators can refer to `roboto-flex` as a built-in appearance default, or supply their own declared WOFF/WOFF2 with `local:` references. No new font-import UI or relaxed security limits are needed; see [skin pack fonts](skins.md#bundled-fonts-and-defaults). Electron tests verify actual loaded `FontFace` entries—not just CSS stacks—for Roboto Flex, Angelcore's JetBrains Mono, and a namespaced imported font, including picker selection, default reset, and restart.
+
 ## Boundaries
 
 Both skin and palette use ID `m3-expressive`, in separate registries. Default and Angelcore keep their existing styles and component implementations. Version 1/2 pack manifests still allow only `default` and `dreamcore` component bases; M3 does not expand executable or declarative pack capabilities. Three built-ins do not consume any of the sixteen pack slots. Appearance override validation and prepaint storage recognize the new built-in.
 
-No new dependency, font download, arbitrary CSS import, script execution, or privileged renderer API was introduced. Existing focus treatment, reduced-motion settings, and OS reduced-motion handling remain in effect; this skin adds no animations.
+The only added production dependency is the locally bundled Roboto Flex font package. No runtime font download, arbitrary CSS import, script execution, or privileged renderer API was introduced. Existing focus treatment, reduced-motion settings, and OS reduced-motion handling remain in effect; this skin adds no animations.
 
 ## Theme compliance
 
@@ -50,8 +58,8 @@ Gallery under [`screenshots/m3-expressive/`](../screenshots/m3-expressive/):
 
 Verified in the isolated implementation checkout on Windows:
 
-- `pnpm verify`: passed typecheck, 194 unit files (2,049 passed / 3 skipped), production and E2E builds, and all 18 Electron journeys.
-- After the final joined-shell fallback (retaining agent icon slots and compact search), `pnpm typecheck`, `pnpm build:e2e` (including the renderer build), and `pnpm exec playwright test tests/e2e/m3-expressive.spec.ts`: passed (1 journey).
+- `pnpm verify` after Roboto Flex integration: passed typecheck, 194 unit files (2,051 passed / 3 skipped), production and E2E builds, and all 18 Electron journeys.
+- Font-focused checks also passed: 3 unit files / 10 tests and the M3/Angelcore Electron journeys, including a real built-in-font pack import and custom WOFF2 picker/restart flow. The M3 journey confirms actual loaded Roboto Flex and JetBrains Mono faces, automatic optical sizing, Inter override/default reset, and zero HTTP(S) font requests. Gallery images were refreshed after the bundled Roboto Flex face loaded.
 - `git diff --check`: passed. The build emits the existing large-chunk advisory.
 
 Native screenshots are captured on Windows only. Parameterized WindowChrome unit tests cover Windows/macOS/Linux branch behavior; they are not native macOS/Linux visual verification.
@@ -63,7 +71,8 @@ Read alongside the supplied user reference, not in place of it:
 - [Building with M3 Expressive](https://m3.material.io/building-with-m3-expressive): expressive emphasis and sparing use of hero moments.
 - [Shape corner-radius scale](https://m3.material.io/styles/shape/corner-radius-scale): expanded expressive shape scale and optical nesting.
 - [Color roles](https://m3.material.io/styles/color/roles): tonal surface hierarchy and paired content colors.
-- [Typography tokens](https://m3.material.io/styles/typography/type-scale-tokens): deliberate emphasized labels, plain readable body text.
+- [Material typography](https://m3.material.io/styles/typography) and [typography tokens](https://m3.material.io/styles/typography/type-scale-tokens): baseline Roboto and variable Roboto Flex, deliberate emphasized labels, plain readable body text.
+- [Roboto Flex metadata](https://raw.githubusercontent.com/google/fonts/main/ofl/robotoflex/METADATA.pb), [OFL license](https://raw.githubusercontent.com/google/fonts/main/ofl/robotoflex/OFL.txt), and [Fontsource installation](https://fontsource.org/fonts/roboto-flex/install): family identity, axes, attribution, and offline distribution.
 - [Button groups](https://m3.material.io/components/button-groups/overview): shaped, connected selection groups. Existing Fate navigation semantics are retained.
 - [State layers](https://m3.material.io/foundations/interaction/states/state-layers): selected and transient interaction states are distinct.
 - [Expressive motion](https://m3.material.io/m3-expressive-motion-theming): expressive motion is not an obligation to bounce an operational workbench.
