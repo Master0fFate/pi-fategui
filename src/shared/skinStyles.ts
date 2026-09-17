@@ -24,4 +24,4 @@ export const skinAppearanceManifestSchema = z.object({
   ...visualFlags,
 }).strict();
 export type SkinAppearance = z.infer<typeof skinAppearanceSchema>;
-export const skinAppearanceOverridesSchema = z.record(z.string().regex(/^(default|dreamcore|pack:[a-z][a-z0-9-]{1,31})$/u), skinAppearanceSchema).refine((value) => Object.keys(value).length <= 18, 'At most 18 skin preferences can be retained.');
+export const skinAppearanceOverridesSchema = z.record(z.string().regex(/^(default|dreamcore|m3-expressive|pack:[a-z][a-z0-9-]{1,31})$/u), skinAppearanceSchema).refine((value) => Object.keys(value).length <= 19, 'At most 19 skin preferences can be retained.');

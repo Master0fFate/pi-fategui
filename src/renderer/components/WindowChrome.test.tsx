@@ -9,7 +9,7 @@ afterEach(() => {
 });
 
 describe('WindowChrome', () => {
-  it('routes every title-bar action through the live desktop bridge', async () => {
+  it.each(['win32', 'darwin', 'linux'] as const)('routes %s title-bar actions through the bridge in platform order', async (platform) => {
     let state: WindowState = { maximized: false, minimized: false };
     const controlWindow = vi.fn(async (action: WindowControlAction) => {
       if (action === 'toggle-maximize') state = { maximized: !state.maximized, minimized: false };
@@ -19,7 +19,7 @@ describe('WindowChrome', () => {
     Object.defineProperty(window, 'piDesktop', {
       configurable: true,
       value: {
-        getAppInfo: vi.fn(async () => ({ name: 'Fate UI', version: 'test', platform: 'win32', packaged: false })),
+        getAppInfo: vi.fn(async () => ({ name: 'Fate UI', version: 'test', platform, packaged: false })),
         getWindowState: vi.fn(async () => state),
         controlWindow,
         onWindowState: vi.fn(() => () => undefined),
@@ -29,6 +29,10 @@ describe('WindowChrome', () => {
     render(<WindowChrome />);
 
     await waitFor(() => expect(screen.getByLabelText('Window controls')).toHaveAttribute('data-bridge-status', 'ready'));
+    expect(screen.getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual(platform === 'darwin'
+      ? ['Close window', 'Minimize window', 'Maximize window']
+      : ['Minimize window', 'Maximize window', 'Close window']);
+    expect(screen.getByLabelText('Window controls')).toHaveClass(`window-controls--${platform}`);
     await user.click(screen.getByRole('button', { name: 'Maximize window' }));
     expect(screen.getByRole('button', { name: 'Restore window' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Minimize window' }));

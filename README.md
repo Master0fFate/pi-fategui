@@ -74,7 +74,7 @@ GoalMax pairs an objective with completion criteria, progress evidence, and veri
 
 ### Restyle the workspace
 
-**Default** or **Angelcore**. Independent palettes and fonts. Import a skin pack, or drop in an image that Fate dithers locally behind the conversation.
+**Default**, **Angelcore**, or **M3 Expressive**. Independent palettes and fonts. Import a skin pack, or drop in an image that Fate dithers locally behind the conversation.
 
 [Skins and themes →](#skins-and-themes)
 
@@ -105,7 +105,7 @@ You can change how Fate UI looks without changing how it works. Skins restyle th
 
 ### Skins
 
-**Default** is the established workbench. **Angelcore** is the compact terminal-style surface: text actions, a command composer, labeled transcript entries, and a numeric context gauge. Both remain the same GUI underneath — browser, Monaco, trust prompts, and the manual terminal.
+**Default** is the established workbench. **Angelcore** is the compact terminal-style surface: text actions, a command composer, labeled transcript entries, and a numeric context gauge. **M3 Expressive** uses a continuous tonal shell, shaped navigation, and a floating composer; its matching dark palette is selected independently. All three remain the same GUI underneath — browser, Monaco, trust prompts, and the manual terminal. See [M3 Expressive design and screenshots](docs/m3-expressive.md).
 
 Import a pack from **Settings → Skins**. Packs can restyle owned surfaces, bundle fonts, and ship a still background. They cannot add scripts, remote assets, or new privileges.
 

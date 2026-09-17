@@ -5,6 +5,14 @@ import { overrideSkinAppearance, removePackFontPreferences, resetSkinAppearance,
 
 const baseline = () => appSettingsSchema.parse({ appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, interfaceFont: 'poppins', skinId: 'dreamcore' });
 describe('effective skin appearance', () => {
+  it('round-trips M3 font and density overrides without changing palette or other skins', () => {
+    const settings = { ...baseline(), skinId: 'm3-expressive' as const, themeId: 'daylight' };
+    expect(resolveSkinAppearance(settings, builtInSkins)).toMatchObject({ interfaceFont: 'inter', themeId: 'daylight' });
+    const saved = appSettingsSchema.parse(overrideSkinAppearance(settings, { interfaceFont: 'noto-sans', compactMode: true, reduceMotion: true }));
+    expect(resolveSkinAppearance(saved, builtInSkins)).toMatchObject({ interfaceFont: 'noto-sans', compactMode: true, reduceMotion: true, themeId: 'daylight', codeFont: settings.codeFont });
+    expect(resolveSkinAppearance({ ...saved, skinId: 'dreamcore' }, builtInSkins)).toMatchObject({ interfaceFont: 'jetbrains-mono', compactMode: false });
+    expect(resolveSkinAppearance(resetSkinAppearance(saved), builtInSkins).interfaceFont).toBe('inter');
+  });
   it('shows Angelcore defaults without losing base preferences and honors explicit per-skin overrides', () => {
     const settings = baseline();
     expect(resolveSkinAppearance(settings, builtInSkins).interfaceFont).toBe('jetbrains-mono');

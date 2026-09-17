@@ -3,7 +3,7 @@ import { link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 
 import os from 'node:os';
 import path from 'node:path';
 import { SkinPackService, validatePackFont } from './SkinPackService';
-import { MAX_SKIN_MANIFEST_BYTES } from '../../shared/skins';
+import { builtInSkins, MAX_SKIN_PACKS, MAX_SKIN_MANIFEST_BYTES } from '../../shared/skins';
 
 vi.mock('electron', () => ({ nativeImage: {} }));
 let root: string;
@@ -19,6 +19,16 @@ async function source(extra: Record<string, unknown> = {}) {
 const service = () => new SkinPackService(path.join(root, 'data'));
 
 describe('skin pack filesystem boundary', () => {
+  it('keeps all built-ins first and all sixteen pack slots available', async () => {
+    const packs = service();
+    for (let index = 0; index < MAX_SKIN_PACKS; index += 1) {
+      await packs.importFolder(await source({ id: `pack-${index}`, name: `AAA pack ${index}` }));
+    }
+    const catalog = await packs.list();
+    expect(catalog.skins.slice(0, builtInSkins.length)).toEqual(builtInSkins);
+    expect(catalog.skins).toHaveLength(builtInSkins.length + MAX_SKIN_PACKS);
+    await expect(packs.importFolder(await source({ id: 'one-too-many' }))).rejects.toThrow('At most 16');
+  });
   it('imports v2 bundled fonts and normalizes embedded PNG data into a managed file', async () => {
     const png = await readFile(path.resolve('examples/skins/ashen-terminal/background.png'));
     const font = await readFile(path.resolve('node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2'));
@@ -53,7 +63,7 @@ describe('skin pack filesystem boundary', () => {
     expect(result.importedId).toBe('pack:test-pack');
     expect(result.catalog.storagePath).toBe(path.join(root, 'data', 'skins'));
     expect(result.catalog.skins.find((skin) => skin.id === result.importedId)).toMatchObject({ base: 'dreamcore', origin: 'pack', layout: { contentWidth: 840 } });
-    expect((await service().list()).skins).toHaveLength(3);
+    expect((await service().list()).skins).toHaveLength(builtInSkins.length + 1);
     const destination = path.join(root, 'export');
     await mkdir(destination);
     const exported = await packs.exportFolder(result.importedId, destination);
@@ -61,7 +71,7 @@ describe('skin pack filesystem boundary', () => {
     expect(await readFile(path.join(exported, 'README.md'), 'utf8')).toBe('Pack credits');
     await expect(packs.exportFolder(result.importedId, destination)).rejects.toThrow('already exists');
     await packs.remove(result.importedId);
-    expect((await packs.list()).skins).toHaveLength(2);
+    expect((await packs.list()).skins).toHaveLength(builtInSkins.length);
     expect(await readdir(packs.storagePath)).toEqual([]);
     expect(JSON.parse(await readFile(path.join(input, 'skin.json'), 'utf8'))).toEqual(manifest);
     expect(await readFile(path.join(exported, 'README.md'), 'utf8')).toBe('Pack credits');
@@ -137,7 +147,7 @@ describe('skin pack filesystem boundary', () => {
     await mkdir(folder);
     await writeFile(path.join(folder, 'skin.json'), JSON.stringify(manifest));
     const result = await packs.list();
-    expect(result.skins).toHaveLength(2);
+    expect(result.skins).toHaveLength(builtInSkins.length);
     expect(result.diagnostics[0]).toContain('folder name must match');
     await expect(packs.remove('pack:wrong-pack')).rejects.toThrow('not the requested');
     await expect(packs.remove('default')).rejects.toThrow();

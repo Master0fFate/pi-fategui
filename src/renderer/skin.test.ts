@@ -41,12 +41,13 @@ describe('skin application and boot persistence', () => {
     applySkin(pack.id);
     expect(document.documentElement.style.getPropertyValue('--skin-content-width')).toBe('920px');
   });
-  it('applies and restores a built-in skin independently', () => {
-    applySkin('dreamcore');
+  it.each(['default', 'dreamcore', 'm3-expressive'] as const)('applies and restores built-in %s independently before paint', (id) => {
+    applySkin(id);
 
-    expect(document.documentElement.dataset.skin).toBe('dreamcore');
-    expect(localStorage.getItem(SKIN_STORAGE_KEY)).toBe('dreamcore');
-    expect(readStoredSkin()).toBe('dreamcore');
+    expect(document.documentElement.dataset.skin).toBe(id);
+    expect(localStorage.getItem(SKIN_STORAGE_KEY)).toBe(id);
+    expect(readStoredSkin()).toBe(id);
+    expect(readStoredSkinDefinition()).toEqual(builtInSkins.find((skin) => skin.id === id));
   });
 
   it('falls back safely for an unknown stored or requested skin', () => {

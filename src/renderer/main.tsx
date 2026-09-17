@@ -15,6 +15,7 @@ import './styles/skins/dreamcore.css';
 import './styles/skins/dreamcore-terminal.css';
 import './styles/skins/packs.css';
 import './styles/skins/angelcore-surfaces.css';
+import './styles/skins/m3-expressive.css';
 import './styles/skins/angelcore-browser.css';
 import './styles/composer-rails.css';
 import './styles/action-surfaces.css';
