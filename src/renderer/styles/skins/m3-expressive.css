@@ -57,9 +57,9 @@
 :root[data-skin="m3-expressive"] .session-row--preview { padding-inline: 14px; }
 /* Compact previews share a baseline instead of centering fractional 1.5em boxes.
    The 18px button fits the 26px row; 16px/14px lines keep both fonts inside it. */
-:root[data-skin="m3-expressive"] .session-preview-open { height: 18px; padding-block: 1px; align-items: baseline; line-height: 16px; }
-:root[data-skin="m3-expressive"] .session-preview-title { font-size: 12px; line-height: 16px; }
-:root[data-skin="m3-expressive"] .session-preview-open small { font-size: 9px; line-height: 14px; white-space: nowrap; }
+:root[data-skin="m3-expressive"][data-compact-sessions="true"] .session-preview-open { height: 18px; padding-block: 1px; align-items: baseline; line-height: 16px; }
+:root[data-skin="m3-expressive"][data-compact-sessions="true"] .session-preview-title { font-size: 12px; line-height: 16px; }
+:root[data-skin="m3-expressive"][data-compact-sessions="true"] .session-preview-open small { font-size: 9px; line-height: 14px; white-space: nowrap; }
 :root[data-skin="m3-expressive"] .session-row:not(.session-row--preview):not(.session-row--compact) { min-height: 50px; }
 :root[data-skin="m3-expressive"] .session-open:not(.session-open--compact) { padding: 7px 14px; }
 /* Fork rows receive density on their list, not .session-row--compact. Override

@@ -24,6 +24,7 @@ test('M3 compact current session has centered title and metadata', async () => {
     await expect(row.locator('small')).toHaveText('0 messages · 1y ago');
     await expect(page.locator('html')).toHaveAttribute('data-skin', 'm3-expressive');
     await expect(page.locator('html')).toHaveAttribute('data-compact-mode', 'false');
+    await expect(page.locator('html')).toHaveAttribute('data-compact-sessions', 'true');
     const geometry = await row.evaluate(row => {
       const rect = (el: Element) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height, center: r.top + r.height / 2, left: r.left, right: r.right }; };
       const text = (selector: string) => {
@@ -64,7 +65,7 @@ test('M3 compact current session has centered title and metadata', async () => {
     await rename.click();
     const input = page.getByRole('textbox', { name: 'Rename First session', exact: true });
     await expect(input).toHaveValue('First session');
-    await input.press('Escape');
+    await page.getByRole('button', { name: 'Cancel rename', exact: true }).click();
     // The deterministic Electron fixture does not persist renames. Stress the
     // real rendered title node after verifying the actual rename action.
     await row.locator('.session-preview-title').evaluate(el => { el.textContent = 'A deliberately long session title to verify compact truncation preserves metadata'; });
@@ -77,5 +78,17 @@ test('M3 compact current session has centered title and metadata', async () => {
     })).toEqual({ truncates: true, metadataFits: true, height: 26 });
     await page.getByRole('button', { name: 'Second session 1 message · 1y ago', exact: true }).click();
     await expect(page.locator('.session-row--current')).toContainText('Second session');
+    // Probe the cascade on the same real preview row: outside Compact sessions,
+    // these shared preview classes must retain their original typography.
+    const noncompact = await page.locator('.session-row--current').evaluate(el => {
+      document.documentElement.dataset.compactSessions = 'false';
+      try {
+        const button = getComputedStyle(el.querySelector('.session-preview-open')!);
+        const title = getComputedStyle(el.querySelector('.session-preview-title')!);
+        const metadata = getComputedStyle(el.querySelector('small')!);
+        return { alignment: button.alignItems, titleSize: title.fontSize, titleLine: title.lineHeight, metadataLine: metadata.lineHeight };
+      } finally { document.documentElement.dataset.compactSessions = 'true'; }
+    });
+    expect(noncompact).toEqual({ alignment: 'center', titleSize: '11.5px', titleLine: '17.25px', metadataLine: '13.5px' });
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
 });
