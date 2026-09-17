@@ -648,7 +648,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
         <Dialog.Content className="settings-dialog" aria-describedby="settings-description">
           <header className="settings-header">
             <div><Dialog.Title>Settings</Dialog.Title><Dialog.Description id="settings-description">Appearance, agent, voice, and workspace preferences.</Dialog.Description></div>
-            <Dialog.Close aria-label="Close settings"><ActionContent text="close"><X size={17} /></ActionContent></Dialog.Close>
+            <Dialog.Close className="settings-close" aria-label="Close settings"><ActionContent text="close"><X size={17} /></ActionContent></Dialog.Close>
           </header>
 
           <div className="settings-layout">

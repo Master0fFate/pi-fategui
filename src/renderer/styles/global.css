@@ -2033,7 +2033,9 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 .music-dock[data-open="true"] .music-dock-toggle > svg { transform: rotate(180deg); }
 .music-dock audio { display: none; }
 
-.dialog-overlay { position: fixed; z-index: 90; inset: 0; background: color-mix(in srgb, var(--theme-shadow) 70%, transparent); backdrop-filter: blur(5px); transition: opacity 140ms ease-out; }
+/* Electron drag regions ignore DOM stacking: modal backdrops must explicitly
+   subtract the underlying header's native drag area, not only cover it visually. */
+.dialog-overlay { app-region: no-drag; -webkit-app-region: no-drag; position: fixed; z-index: 90; inset: 0; background: color-mix(in srgb, var(--theme-shadow) 70%, transparent); backdrop-filter: blur(5px); transition: opacity 140ms ease-out; }
 .command-palette, .settings-dialog, .automation-editor { position: fixed; z-index: 91; top: 12%; left: 50%; width: min(calc(100vw - 40px), 620px); transform: translateX(-50%); border: 1px solid var(--theme-border-strong); border-radius: 12px; background: var(--theme-panel); box-shadow: 0 24px 80px color-mix(in srgb, var(--theme-shadow) 50%, transparent); }
 .command-palette { overflow: hidden; transform-origin: top center; transition: opacity var(--motion-medium) ease-out, transform var(--motion-medium) var(--ease-emphasized); }
 @starting-style {
@@ -2106,6 +2108,7 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 @starting-style { .settings-dialog { opacity: 0; transform: translate(-50%, calc(-50% + 8px)) scale(.988); } }
 .settings-header { display: flex; align-items: center; justify-content: space-between; flex: 0 0 68px; padding: 0 20px 0 22px; border-bottom: 1px solid var(--theme-border); }
 .settings-dialog h2 { margin: 0; color: var(--theme-text); font-size: 16px; font-weight: 620; letter-spacing: -.015em; }
+.settings-header > .settings-close { position: relative; flex: none; pointer-events: auto; app-region: no-drag; -webkit-app-region: no-drag; }
 .settings-header p { margin: 4px 0 0; color: var(--theme-muted); font-size: 11px; }
 .settings-layout { display: grid; grid-template-columns: 196px minmax(0, 1fr); flex: 1; min-height: 0; }
 .settings-nav { display: flex; gap: 4px; padding: 14px 10px; flex-direction: column; border-right: 1px solid var(--theme-border); background: var(--theme-panel); }
