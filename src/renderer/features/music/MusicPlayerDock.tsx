@@ -84,7 +84,7 @@ export function MusicPlayerDock() {
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const panelRef = useRef<HTMLElement>(null);
-  useM3MusicDockLayout(panelRef, enabled, open, browserInset);
+  useM3MusicDockLayout(panelRef, enabled, browserInset);
   const playlistRef = useRef<HTMLElement>(null);
   const sourceRef = useRef<HTMLInputElement>(null);
   const localFileInputRef = useRef<HTMLInputElement>(null);

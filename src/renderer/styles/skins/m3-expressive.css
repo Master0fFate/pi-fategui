@@ -11,7 +11,7 @@
 :root[data-skin="m3-expressive"] :is(.sidebar, .workspace, .inspector) {
   margin: 0; border: 0; border-radius: 0; background: var(--theme-panel); box-shadow: none;
 }
-:root[data-skin="m3-expressive"] .sidebar { padding: 18px 14px 12px; }
+:root[data-skin="m3-expressive"] .sidebar { padding: 18px 14px 12px; container-type: inline-size; }
 :root[data-skin="m3-expressive"] .sidebar.sidebar--collapsed { padding-inline: 4px; }
 :root[data-skin="m3-expressive"] .app-shell > .resize-handle::after { background: transparent; }
 :root[data-skin="m3-expressive"] .app-shell > .resize-handle:is(:hover, :focus-visible)::after { background: var(--theme-accent); }
@@ -38,7 +38,10 @@
 :root[data-skin="m3-expressive"] .brand-row { margin-bottom: 12px; }
 :root[data-skin="m3-expressive"] .brand-copy strong { font-size: 16px; }
 :root[data-skin="m3-expressive"] .session-toolbar { margin: 4px 0 0; }
-:root[data-skin="m3-expressive"] .sidebar-tab-toolbar { gap: 7px; }
+:root[data-skin="m3-expressive"] :is(.sidebar-resource-panel, .sidebar-automation-panel) { padding: 4px 0; }
+:root[data-skin="m3-expressive"] .sidebar-tab-content { animation: none; }
+/* Keep the search origin and both action slots stable across all three tabs. */
+:root[data-skin="m3-expressive"] .sidebar-tab-toolbar { display: grid; width: 100cqw; grid-template-columns: minmax(0, 1fr) 40px 40px; gap: 7px; }
 :root[data-skin="m3-expressive"] .sidebar-search { height: 40px; border: 1px solid var(--theme-border); border-radius: 24px; background: var(--theme-raised); color: var(--theme-muted); padding-inline: 10px; gap: 5px; }
 :root[data-skin="m3-expressive"] .sidebar-search > svg { flex: none; }
 :root[data-skin="m3-expressive"] .sidebar-search input { font-size: 12px; }
@@ -105,18 +108,18 @@
 :root[data-skin="m3-expressive"] .subagent-empty { margin: 0 10px 12px; border-radius: 24px; background: var(--theme-raised); }
 :root[data-skin="m3-expressive"] .subagent-empty strong { font-size: 14px; }
 :root[data-skin="m3-expressive"] .subagent-empty p { font-size: 12px; line-height: 1.6; }
-:root[data-skin="m3-expressive"]:has(.music-dock[data-open="true"]) .subagent-empty { margin-bottom: 0; }
 :root[data-skin="m3-expressive"] :is(.settings-dialog, [role="dialog"], [role="alertdialog"], .model-popover, .provider-dialog-content) { border-radius: 24px; background: var(--theme-panel); }
 :root[data-skin="m3-expressive"] :is([role="menu"], .custom-select-content, .popover-content) { border-radius: 18px; background: var(--theme-raised); }
 :root[data-skin="m3-expressive"] :is(.settings-group, .context-dashboard > section, .goalmax-overview-facts, .agent-tree-branch) { box-shadow: none; }
 :root[data-skin="m3-expressive"] :is(.settings-nav-button, .custom-select-item, .palette-item, .file-row, .resource-type-row, .automation-open, .activity-chip) { border-radius: 10px; }
 :root[data-skin="m3-expressive"] :is(.settings-theme-select, .settings-font-select) { flex: 0 0 160px; max-width: 50%; }
 :root[data-skin="m3-expressive"] .music-dock { left: var(--m3-music-left, auto); right: calc(24px + var(--music-dock-inset, 0px)); bottom: var(--m3-music-bottom, 24px); width: var(--m3-music-width, min(320px, calc(100vw - 48px - var(--music-dock-inset, 0px)))); transition: none; }
-:root[data-skin="m3-expressive"] .inspector-tabs { padding-bottom: var(--m3-music-reserve, 0px); }
+/* Layout wrappers must not paint a rectangular backing or clip the left-hand playlist. */
+:root[data-skin="m3-expressive"] :is(.music-dock, .music-dock-stage) { background: transparent; border: 0; box-shadow: none; backdrop-filter: none; overflow: visible; }
 :root[data-skin="m3-expressive"] .subagent-chat-preview--empty { display: none; }
 :root[data-skin="m3-expressive"] .subagent-sessions:has(.subagent-chat-preview--empty) > .horizontal-resize-handle { display: none; }
 :root[data-skin="m3-expressive"] .subagent-chat-preview:not(.subagent-chat-preview--empty) { flex-shrink: 1; max-height: 55%; }
-:root[data-skin="m3-expressive"] :is(.music-player-panel, .music-queue-panel) { border: 1px solid var(--theme-border); border-radius: 24px; background: var(--theme-raised); box-shadow: none; }
+:root[data-skin="m3-expressive"] :is(.music-player-panel, .music-queue-panel) { border: 1px solid var(--theme-border); border-radius: 24px; background: var(--theme-raised); box-shadow: 0 8px 24px color-mix(in srgb, var(--theme-shadow) 22%, transparent); }
 :root[data-skin="m3-expressive"] .music-player-panel { padding: 14px; container-name: m3-music; container-type: inline-size; }
 :root[data-skin="m3-expressive"] .music-source { height: 40px; margin-right: 40px; padding: 0 10px; border: 1px solid var(--theme-border); border-radius: 24px; background: var(--theme-panel); }
 :root[data-skin="m3-expressive"] .music-source:focus-within { border-color: var(--theme-accent); }
@@ -133,6 +136,8 @@
 :root[data-skin="m3-expressive"][data-compact-mode="true"] { --m3-control-radius: 10px; --m3-action-size: 30px; --m3-agent-icon-size: 24px; --m3-agent-header-half: 18px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar { padding: 8px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar-search { height: 34px; }
+:root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar-tab-toolbar { grid-template-columns: minmax(0, 1fr) 32px 32px; }
+:root[data-skin="m3-expressive"][data-compact-mode="true"] .session-toolbar { margin-top: 4px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar-toolbar-action { flex: 0 0 32px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar-toolbar-action > button { flex: 0 0 32px; width: 32px; min-width: 32px; height: 32px; border-radius: 50%; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .sidebar-tab-toolbar { align-items: center; }

@@ -118,6 +118,85 @@ async function agentIconGeometry(page: Page) {
   })).toEqual({ centered: true, balanced: true });
 }
 
+async function stableSidebarSearch(page: Page, name: string) {
+  await page.evaluate(() => document.fonts.ready);
+  const boxes: Array<{ x: number; y: number; width: number; height: number }> = [];
+  for (const tab of ['Sessions', 'Automations', 'Resources', 'Sessions', 'Resources', 'Automations', 'Sessions']) {
+    await page.getByRole('tab', { name: tab, exact: true }).click();
+    const input = page.getByRole('searchbox', { name: `Search ${tab.toLowerCase()}` });
+    await expect(input).toBeVisible();
+    const box = await input.boundingBox();
+    boxes.push({ x: box!.x, y: box!.y, width: box!.width, height: box!.height });
+    await input.fill('A deliberately long search query that stays within its slot');
+    await expect(input).toHaveValue('A deliberately long search query that stays within its slot');
+    const filled = await input.boundingBox();
+    expect({ x: filled!.x, y: filled!.y, height: filled!.height }).toEqual({ x: box!.x, y: box!.y, height: box!.height });
+    await input.fill('');
+    if (boxes.length <= 3) await page.locator('.sidebar').screenshot({ path: `screenshots/m3-expressive/${name}-${tab.toLowerCase()}.png`, animations: 'disabled' });
+  }
+  for (const box of boxes) expect(box).toEqual(boxes[0]);
+}
+
+// Same deterministic PCM fixture as the existing complete music journey.
+function silentWave() {
+  const bytes = Buffer.alloc(44 + 8000 * 90 * 2);
+  bytes.write('RIFF'); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write('WAVEfmt ', 8); bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22); bytes.writeUInt32LE(8000, 24); bytes.writeUInt32LE(16000, 28); bytes.writeUInt16LE(2, 32); bytes.writeUInt16LE(16, 34); bytes.write('data', 36); bytes.writeUInt32LE(bytes.length - 44, 40);
+  return bytes;
+}
+
+async function floatingMusic(page: Page, name: string) {
+  await expect(page.locator('.music-dock')).toHaveAttribute('data-open', 'true');
+  for (const selector of ['.music-dock', '.music-dock-stage']) {
+    await expect(page.locator(selector)).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(page.locator(selector)).toHaveCSS('background-image', 'none');
+    await expect(page.locator(selector)).toHaveCSS('border-top-width', '0px');
+    await expect(page.locator(selector)).toHaveCSS('box-shadow', 'none');
+    await expect(page.locator(selector)).toHaveCSS('backdrop-filter', 'none');
+    await expect(page.locator(selector)).toHaveCSS('overflow', 'visible');
+  }
+  await page.getByRole('button', { name: 'Show playlist' }).click();
+  for (const selector of ['.music-player-panel', '.music-queue-panel']) {
+    await expect(page.locator(selector)).toHaveCSS('border-radius', '24px');
+    await expect(page.locator(selector)).not.toHaveCSS('box-shadow', 'none');
+  }
+  await expect(page.locator('.music-queue-list > li')).toHaveCount(2);
+  await page.locator('.music-queue-list > li').nth(1).getByRole('button').click();
+  await expect(page.locator('.music-track-copy strong')).toHaveText('Second quiet study');
+  await expect(page.getByRole('button', { name: 'Pause music' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Pause music' }).click();
+  await page.mouse.move(400, 100);
+  const player = await page.locator('.music-player-panel').boundingBox();
+  const queue = await page.locator('.music-queue-panel').boundingBox();
+  expect(queue!.x).toBeGreaterThanOrEqual(0);
+  expect(queue!.x + queue!.width).toBeLessThan(player!.x);
+  await page.screenshot({ path: `screenshots/m3-expressive/${name}.png`, animations: 'disabled' });
+  // Compare real rendered corner pixels against the same underlying conversation with
+  // the player closed. No test-only DOM styles: only normal controls change visibility.
+  const clip = { x: Math.ceil(player!.x), y: Math.ceil(player!.y), width: 32, height: 32 };
+  const opened = await page.screenshot({ clip, animations: 'disabled', path: `screenshots/m3-expressive/${name}-corner.png` });
+  await page.getByRole('button', { name: 'Close music player' }).click();
+  await expect(page.locator('.music-player-panel')).toBeHidden();
+  const closed = await page.screenshot({ clip, animations: 'disabled' });
+  const difference = await page.evaluate(async ({ opened, closed }) => {
+    const pixels = async (data: number[]) => {
+      const image = await createImageBitmap(new Blob([new Uint8Array(data)], { type: 'image/png' }));
+      const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+      const context = canvas.getContext('2d')!; context.drawImage(image, 0, 0); image.close();
+      return context.getImageData(0, 0, canvas.width, canvas.height).data;
+    };
+    const [a, b] = await Promise.all([pixels(opened), pixels(closed)]);
+    const delta = (x: number, y: number) => Math.max(...[0, 1, 2].map((channel) => Math.abs(a[(y * 32 + x) * 4 + channel]! - b[(y * 32 + x) * 4 + channel]!)));
+    return { corner: delta(1, 1), inside: delta(24, 24) };
+  }, { opened: [...opened], closed: [...closed] });
+  // A subtle rounded card shadow may tint the corner, but an opaque rectangular
+  // backing would replace it with the panel color just like the inside sample.
+  expect(difference.corner).toBeLessThanOrEqual(8);
+  expect(difference.inside).toBeGreaterThan(8);
+  expect(difference.corner).toBeLessThan(difference.inside * 0.6);
+  await page.getByRole('button', { name: 'Open music player' }).click();
+  await expect(page.locator('.music-player-panel')).toBeVisible();
+}
+
 async function dockGeometry(page: Page) {
   await expect.poll(() => page.evaluate(() => {
     const bounds = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
@@ -126,17 +205,16 @@ async function dockGeometry(page: Page) {
     const toggle = bounds('.music-dock-toggle');
     const source = bounds('.music-source');
     const content = bounds('.tab-content[data-state="active"]');
-    const emptyCard = document.querySelector('.subagent-empty');
     return {
-      emptyCardGap: !emptyCard || Math.abs(player.top - emptyCard.getBoundingClientRect().bottom - 12) < 2,
       equalSides: Math.abs((player.left - inspector.left) - (inspector.right - player.right)) < 1,
       equalBottom: Math.abs((player.left - inspector.left) - (inspector.bottom - player.bottom)) < 1,
-      noOverlap: content.bottom <= player.top - 10,
+      floatingOverlay: content.bottom > player.bottom,
+      noFooter: getComputedStyle(document.querySelector('.inspector-tabs')!).paddingBottom === '0px',
       toggleInside: toggle.top >= player.top && toggle.right <= player.right && source.right <= toggle.left,
       controlsFit: [...document.querySelectorAll('.music-controls button')].every((button) => button.getBoundingClientRect().right <= player.right - 8),
       sourceBorder: getComputedStyle(document.querySelector('.music-source')!).borderBottomWidth,
     };
-  })).toEqual({ emptyCardGap: true, equalSides: true, equalBottom: true, noOverlap: true, toggleInside: true, controlsFit: true, sourceBorder: '1px' });
+  })).toEqual({ equalSides: true, equalBottom: true, floatingOverlay: true, noFooter: true, toggleInside: true, controlsFit: true, sourceBorder: '1px' });
 }
 
 test('M3 Expressive independent preview, save, compact layout and restart', async () => {
@@ -218,13 +296,32 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await settings.getByRole('button', { name: 'Save changes' }).click();
     await page.screenshot({ path: 'screenshots/m3-expressive/settings.png' });
     await settings.getByRole('button', { name: 'Close settings' }).click();
+    await stableSidebarSearch(page, 'search-normal');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: /Skins/u }).click();
+    await interfaceFont.click();
+    await page.getByRole('option', { name: /^JetBrains Mono/u }).click();
+    await settings.getByRole('button', { name: 'Save changes' }).click();
+    await settings.getByRole('button', { name: 'Close settings' }).click();
+    await stableSidebarSearch(page, 'search-mono');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: /Skins/u }).click();
+    await settings.getByRole('button', { name: 'Reset to skin appearance defaults' }).click();
+    await settings.getByRole('button', { name: 'Save changes' }).click();
+    await settings.getByRole('button', { name: 'Close settings' }).click();
     await geometry(page, chromeRadius);
     await expect(page.locator('.composer')).toHaveCSS('border-radius', '36px');
     await page.locator('.inspector-primary-trigger').filter({ hasText: 'Run' }).click();
     await page.getByRole('tab', { name: /^Subagent sessions/u }).click();
+    const inspectorContentBeforeMusic = await page.locator('.tab-content[data-state="active"]').boundingBox();
     await page.getByRole('button', { name: 'Open music player' }).click();
     await page.mouse.move(700, 450);
+    await expect.poll(() => page.locator('.tab-content[data-state="active"]').boundingBox()).toEqual(inspectorContentBeforeMusic);
     await dockGeometry(page);
+    await page.locator('.music-dock input[type="file"]').setInputFiles([{ name: 'Quiet study.wav', mimeType: 'audio/wav', buffer: silentWave() }, { name: 'Second quiet study.wav', mimeType: 'audio/wav', buffer: silentWave() }]);
+    await page.getByRole('button', { name: 'Collapse inspector', exact: true }).click();
+    await floatingMusic(page, 'music-floating');
+    await page.getByRole('button', { name: 'Open inspector', exact: true }).click();
     await page.screenshot({ path: 'screenshots/m3-expressive/workspace-1600.png', animations: 'disabled' });
     await page.evaluate(async () => {
       await window.piDesktop.prompt({ text: '__FATE_AGENT_FIXTURE__', behavior: 'prompt' });
@@ -254,6 +351,9 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     const browser = page.getByRole('region', { name: 'Built-in browser', exact: true });
     await browser.getByRole('button', { name: 'New browser tab' }).click();
     await expect(browser.getByRole('tab')).toHaveCount(2);
+    await page.getByRole('button', { name: 'Open music player' }).click();
+    await floatingMusic(page, 'music-browser-shifted');
+    await page.getByRole('button', { name: 'Close music player' }).click();
     await page.screenshot({ path: 'screenshots/m3-expressive/resources-browser.png', animations: 'disabled' });
     await browser.getByRole('button', { name: 'Close browser', exact: true }).click();
     await page.getByRole('button', { name: 'Open inspector', exact: true }).click();
@@ -306,7 +406,24 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await expect(page.locator('.composer')).toHaveCSS('border-radius', '28px');
     await dockGeometry(page);
     await agentIconGeometry(page);
+    await stableSidebarSearch(page, 'search-compact');
     await page.screenshot({ path: 'screenshots/m3-expressive/compact-1100.png', animations: 'disabled' });
+    await page.getByRole('button', { name: 'Collapse inspector', exact: true }).click();
+    await floatingMusic(page, 'music-floating-compact');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: /Skins/u }).click();
+    await palette.click();
+    await page.getByRole('option', { name: /^Daylight/u }).click();
+    await settings.getByRole('button', { name: 'Save changes' }).click();
+    await settings.getByRole('button', { name: 'Close settings' }).click();
+    await floatingMusic(page, 'music-floating-light');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: /Skins/u }).click();
+    await palette.click();
+    await page.getByRole('option', { name: /^M3 Expressive/u }).press('Enter');
+    await settings.getByRole('button', { name: 'Save changes' }).click();
+    await settings.getByRole('button', { name: 'Close settings' }).click();
+    await page.getByRole('button', { name: 'Open inspector', exact: true }).click();
     const beforeBackground = await page.locator('.browser-thread-layout').screenshot({ animations: 'disabled' });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await settings.getByRole('tab', { name: /Skins/u }).click();
@@ -328,6 +445,19 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await geometry(page, chromeRadius);
     await dockGeometry(page);
     await agentIconGeometry(page);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: /Skins/u }).click();
+    await interfaceFont.click();
+    await page.getByRole('option', { name: /^JetBrains Mono/u }).click();
+    await settings.getByRole('button', { name: 'Save changes' }).click();
+    await settings.getByRole('button', { name: 'Close settings' }).click();
+    await stableSidebarSearch(page, 'search-compact-mono');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: /Skins/u }).click();
+    await interfaceFont.click();
+    await page.getByRole('option', { name: /^Roboto Flex/u }).press('Enter');
+    await settings.getByRole('button', { name: 'Save changes' }).click();
+    await settings.getByRole('button', { name: 'Close settings' }).click();
     await page.screenshot({ path: 'screenshots/m3-expressive/compact-980.png', animations: 'disabled' });
     await page.getByRole('button', { name: 'Close music player' }).click();
     await page.getByRole('button', { name: 'Collapse inspector', exact: true }).click();
