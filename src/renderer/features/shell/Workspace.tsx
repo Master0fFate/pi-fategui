@@ -48,10 +48,12 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
     const kind = state.timelineById[id]?.kind;
     return kind === 'reasoning' || kind === 'tool';
   }));
-  const [detailCommand, setDetailCommand] = useState<DetailExpansionCommand>({ sessionKey: null, revision: 0, expanded: false });
   const currentDetailSession = detailSessionKey(projectPath, sessionId);
+  const [detailCommand, setDetailCommand] = useState<DetailExpansionCommand>(() => ({ sessionKey: currentDetailSession, revision: 0, expanded: false }));
   useLayoutEffect(() => {
-    setDetailCommand({ sessionKey: currentDetailSession, revision: 0, expanded: false });
+    setDetailCommand((current) => current.sessionKey === currentDetailSession
+      ? current
+      : { sessionKey: currentDetailSession, revision: 0, expanded: false });
   }, [currentDetailSession]);
   const expansionCommand = detailCommand.sessionKey === currentDetailSession
     ? detailCommand
