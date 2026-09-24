@@ -37,6 +37,8 @@ export interface ChildSessionInput {
   model: ParentModel;
   thinkingLevel: ThinkingLevel;
   permissionLevel: PermissionLevel;
+  /** Evaluated at tool effects so lowering a live owner also revokes captured tools. */
+  getPermissionLevel?: () => PermissionLevel;
   role: SubagentRole;
   agentName: string;
   profileSystemPrompt: string;
@@ -130,7 +132,16 @@ export async function createSdkChildSession(input: ChildSessionInput): Promise<A
     throw new Error(`Selected Pi skills are unavailable in the isolated child resource set: ${unavailable.join(', ')}.`);
   }
 
-  const access: ProjectToolAccess = { fullAccess: input.permissionLevel === 'full-access' };
+  const currentPermission = (): PermissionLevel => {
+    const live = input.getPermissionLevel?.() ?? input.permissionLevel;
+    if (live === 'read-only' || input.permissionLevel === 'read-only') return 'read-only';
+    if (live === 'edit' || input.permissionLevel === 'edit') return 'edit';
+    return 'full-access';
+  };
+  const access: ProjectToolAccess = {
+    get fullAccess() { return currentPermission() === 'full-access'; },
+    get permissionLevel() { return currentPermission(); },
+  };
   const confinedTools = await createProjectConfinedTools(
     input.projectPath,
     access,

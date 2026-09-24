@@ -185,7 +185,7 @@ export class SkinPackService {
         diagnostics.push(`${entry.name}: ${error instanceof Error ? error.message : 'This pack could not load.'}`.slice(0, 500));
       }
     }
-    return skinCatalogSchema.parse({ skins: [...skins.slice(0, 2), ...skins.slice(2).sort((a, b) => a.name.localeCompare(b.name))], diagnostics, storagePath: this.storagePath });
+    return skinCatalogSchema.parse({ skins: [...skins.slice(0, builtInSkins.length), ...skins.slice(builtInSkins.length).sort((a, b) => a.name.localeCompare(b.name))], diagnostics, storagePath: this.storagePath });
   }
 
   list(): Promise<SkinCatalog> { return this.run(() => this.catalog()); }
@@ -213,7 +213,7 @@ export class SkinPackService {
   importFolder(source: string): Promise<{ catalog: SkinCatalog; importedId: string }> {
     return this.run(async () => {
       const current = await this.catalog();
-      if (current.skins.length - 2 + current.diagnostics.length >= MAX_SKIN_PACKS) throw new Error(`At most ${MAX_SKIN_PACKS} skin packs can be installed.`);
+      if (current.skins.length - builtInSkins.length + current.diagnostics.length >= MAX_SKIN_PACKS) throw new Error(`At most ${MAX_SKIN_PACKS} skin packs can be installed.`);
       const pack = await this.readPack(source);
       const image = pack.files.get('background.png');
       if (image) pack.files.set('background.png', this.prepareImage(image));

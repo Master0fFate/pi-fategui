@@ -16,7 +16,6 @@ describe('UI store', () => {
       inspectorTab: 'changes',
       inspectorLastViews: { work: 'changes', run: 'goal', system: 'context' },
       selectedAgent: null,
-      automationOpenRequest: null,
       flightDeckJump: null,
     });
   });
@@ -53,22 +52,6 @@ describe('UI store', () => {
     expect(useUiStore.getState().composerDraftRequest).toMatchObject({ text: '/review ', mode: 'insert', selectAll: false });
     useUiStore.getState().requestComposerDraft('Replace me', true);
     expect(useUiStore.getState().composerDraftRequest).toMatchObject({ text: 'Replace me', mode: 'replace', selectAll: true });
-  });
-
-  it('opens an exact automation through a transient sidebar request', () => {
-    useUiStore.setState({ sidebarCollapsed: true, sidebarTab: 'sessions' });
-    useUiStore.getState().openAutomation('C:/project', 'automation-1');
-    const request = useUiStore.getState().automationOpenRequest;
-
-    expect(useUiStore.getState()).toMatchObject({
-      sidebarCollapsed: false,
-      sidebarTab: 'automations',
-      automationOpenRequest: { projectPath: 'C:/project', automationId: 'automation-1' },
-    });
-    expect(JSON.parse(localStorage.getItem('pi-desktop-ui-v1') ?? '{}').state?.automationOpenRequest).toBeUndefined();
-
-    useUiStore.getState().clearAutomationOpenRequest(request!.nonce);
-    expect(useUiStore.getState().automationOpenRequest).toBeNull();
   });
 
   it('keeps transient notifications outside persisted pane state', () => {

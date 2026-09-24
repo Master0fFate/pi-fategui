@@ -8,7 +8,7 @@ export const skinSurfaceSelectors: Record<Exclude<SkinSurfaceName, 'global'>, st
   queue: '.queued-messages, .goalmax-steering-messages',
   tasks: '.goalmax-task-strip',
   goal: '.goalmax-flight-deck, .goalmax-rail, .goalmax-editor-dialog, .goalmax-confirm-dialog',
-  agents: '.subagent-sessions, .subagent-chat-preview, .agent-workspace-dialog',
+  agents: '.subagent-sessions, .subagent-chat-preview, .agent-workspace-dialog, .sidebar-agent-library, .agent-library-dialog',
   tools: '.tool-card, .tool-history, .subagent-tool',
   activity: '.activity-panel',
   notifications: '.app-toast, .settings-toast, .runtime-notice, .workspace-error, .project-reveal-error, .browser-error-strip, .subagent-error',

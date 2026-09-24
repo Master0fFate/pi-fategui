@@ -648,7 +648,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
         <Dialog.Content className="settings-dialog" aria-describedby="settings-description">
           <header className="settings-header">
             <div><Dialog.Title>Settings</Dialog.Title><Dialog.Description id="settings-description">Appearance, agent, voice, and workspace preferences.</Dialog.Description></div>
-            <Dialog.Close aria-label="Close settings"><ActionContent text="close"><X size={17} /></ActionContent></Dialog.Close>
+            <Dialog.Close className="settings-close" aria-label="Close settings"><ActionContent text="close"><X size={17} /></ActionContent></Dialog.Close>
           </header>
 
           <div className="settings-layout">
@@ -680,7 +680,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
                 <div className="settings-panel" role="tabpanel" id="settings-panel-skins" aria-labelledby="settings-tab-skins">
                   <div className="settings-title"><div><h3>Interface skin</h3><p>Change components and layout without changing your saved palette, density, or font choices.</p></div></div>
                   <div className="settings-group">
-                    <div className="settings-theme-row"><div><strong>Skin</strong><small>Default keeps the established workbench. Angelcore uses text controls, command input, and an open terminal-style transcript.</small></div><SelectControl compact={appearance.compactMode} label="Interface skin" value={settings.skinId} className="settings-theme-select" options={skinCatalog.skins.map((skin) => ({ value: skin.id, label: skin.name, detail: skin.origin === 'pack' ? `Installed pack · ${builtInSkinName(skin.base)} · ${skin.version}` : skin.description }))} onValueChange={(skinId) => setSettings({ ...settings, skinId: skinId as SkinId })} /></div>
+                    <div className="settings-theme-row"><div><strong>Skin</strong><small>Default keeps the established workbench. Angelcore uses terminal-style controls. M3 Expressive uses a continuous tonal shell, shaped navigation, and a floating composer.</small></div><SelectControl compact={appearance.compactMode} label="Interface skin" value={settings.skinId} className="settings-theme-select" options={skinCatalog.skins.map((skin) => ({ value: skin.id, label: skin.name, detail: skin.origin === 'pack' ? `Installed pack · ${builtInSkinName(skin.base)} · ${skin.version}` : skin.description }))} onValueChange={(skinId) => setSettings({ ...settings, skinId: skinId as SkinId })} /></div>
                   </div>
                   <SkinPackSettings catalog={skinCatalog} selectedId={settings.skinId} disabled={!settingsLoaded || saving} onSelect={(skinId) => setSettings((current) => ({ ...current, skinId }))} onCatalog={updateSkinCatalog} />
                   <div className="settings-title settings-title--spaced"><div><h3>Color theme</h3><p>Palettes remain independent and work with every skin. Pack palettes are optional choices.</p></div></div>

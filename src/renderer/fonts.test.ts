@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyFonts } from './fonts';
+import { applyFonts, interfaceFontOptions } from './fonts';
 
 beforeEach(() => {
   delete document.documentElement.dataset.interfaceFont;
@@ -13,6 +13,13 @@ afterEach(() => {
 });
 
 describe('applyFonts', () => {
+  it('offers Roboto Flex with local Roboto/Noto fallbacks while retaining the code font', () => {
+    expect(interfaceFontOptions).toContainEqual(expect.objectContaining({ value: 'roboto-flex', label: 'Roboto Flex' }));
+    applyFonts('roboto-flex', 'jetbrains-mono');
+    expect(document.documentElement.dataset.interfaceFont).toBe('roboto-flex');
+    expect(document.documentElement.style.getPropertyValue('--font-interface')).toMatch(/^"Roboto Flex Variable", "Roboto", "Noto Sans Variable"/u);
+    expect(document.documentElement.dataset.codeFont).toBe('jetbrains-mono');
+  });
   it('avoids repeat style writes and font-change events', () => {
     const styleWrite = vi.spyOn(CSSStyleDeclaration.prototype, 'setProperty');
     const listener = vi.fn();

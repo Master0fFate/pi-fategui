@@ -27,6 +27,11 @@ coverage/
 .parallax/
 .impeccable/
 /plans/
+/.codegraph/
+# Local research and internal review notes are not release documentation.
+/AGENTS-RESEARCH.md
+/docs/agents-d0-feasibility.md
+/docs/agents-g0-review.md
 /docs/performance-optimization-pass.md
 /.release-upload/
 .aislop/

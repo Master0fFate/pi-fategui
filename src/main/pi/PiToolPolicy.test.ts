@@ -1,9 +1,9 @@
 import { link, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFindToolDefinition, createLsToolDefinition, createReadToolDefinition, createWriteToolDefinition } from '@earendil-works/pi-coding-agent';
-import { activeToolsForPermission, createProjectConfinedTools, ProjectPathPolicy, requiredPermissionForTool, toolNamesForPermission } from './PiToolPolicy';
+import { activeToolsForPermission, createProjectConfinedTools, createSecureWriteFile, ProjectPathPolicy, requiredPermissionForTool, toolNamesForPermission, writeAllPositioned, type ProjectToolAccess } from './PiToolPolicy';
 import { TASK_TOOL_NAMES } from './tasks/TaskTools';
 
 const roots: string[] = [];
@@ -118,6 +118,49 @@ describe('ProjectPathPolicy', () => {
     const readTool = tools.find((tool) => tool.name === 'read') as ReturnType<typeof createReadToolDefinition>;
 
     await expect(readTool.execute('read-huge', { path: 'huge.txt' }, undefined, undefined, {} as never)).rejects.toThrow(/limited.*8 MiB/i);
+  });
+
+  it.each(['read-only', 'edit'] as const)('refuses a pending full-access write after authority narrows to %s during path resolution', async (narrowed) => {
+    const { project, outside } = await fixture();
+    let permission: 'read-only' | 'edit' | 'full-access' = 'full-access';
+    const access: ProjectToolAccess = {
+      get fullAccess() { return permission === 'full-access'; },
+      get permissionLevel() { return permission; },
+    };
+    const policy = await ProjectPathPolicy.create(project, access);
+    const target = path.join(outside, 'secret.txt');
+    vi.spyOn(policy, 'writable').mockImplementation(async () => { permission = narrowed; return target; });
+    const write = createSecureWriteFile({ policy, access, canonicalCwd: project });
+    await expect(write(target, 'unauthorized', 'write')).rejects.toThrow(/authority/);
+    expect(await readFile(target, 'utf8')).toBe('secret');
+  });
+
+  it('does not truncate an existing file when permission is revoked during handle validation', async () => {
+    const { project } = await fixture();
+    let permission: 'read-only' | 'edit' = 'edit';
+    const access: ProjectToolAccess = { fullAccess: false, get permissionLevel() { return permission; } };
+    const policy = await ProjectPathPolicy.create(project, access);
+    const existing = policy.existing.bind(policy);
+    vi.spyOn(policy, 'existing').mockImplementation(async (target) => {
+      const resolved = await existing(target);
+      permission = 'read-only';
+      return resolved;
+    });
+    const write = createSecureWriteFile({ policy, access, canonicalCwd: project });
+    await expect(write('inside.txt', 'unauthorized', 'edit')).rejects.toThrow(/authority/);
+    expect(await readFile(path.join(project, 'inside.txt'), 'utf8')).toBe('inside');
+  });
+
+  it('completes an admitted positioned write when authority changes between chunks', async () => {
+    let permitted = true;
+    const writes: number[] = [];
+    await expect(writeAllPositioned({ write: async (_buffer, _offset, _length, position) => {
+      writes.push(position);
+      permitted = false;
+      return { bytesWritten: 1 };
+    } }, Buffer.from('two'), () => { if (!permitted) throw new Error('revoked'); })).resolves.toBeUndefined();
+    expect(writes).toEqual([0, 1, 2]);
+    await expect(writeAllPositioned({ write: vi.fn() }, Buffer.from('new'), () => { if (!permitted) throw new Error('revoked'); })).rejects.toThrow('revoked');
   });
 
   it('returns raster images as vision attachments instead of binary text', async () => {

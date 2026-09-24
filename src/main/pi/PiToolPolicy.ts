@@ -64,6 +64,14 @@ function isContained(root: string, candidate: string): boolean {
 
 export interface ProjectToolAccess {
   fullAccess: boolean;
+  /** A live ceiling for managed sessions; omitted for existing foreground callers. */
+  readonly permissionLevel?: PermissionLevel;
+}
+
+function assertWritePermission(access: ProjectToolAccess): void {
+  if (access.permissionLevel === 'read-only') {
+    throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Live session authority no longer permits file changes.', retryable: false });
+  }
 }
 
 type ReadableRoots = readonly string[] | (() => readonly string[]);
@@ -168,7 +176,8 @@ export interface PositionedFileHandle {
  * all bytes: it advances the offset and position until the whole buffer is
  * flushed. Exposed so partial-write behavior can be unit-tested directly.
  */
-export async function writeAllPositioned(handle: PositionedFileHandle, buffer: Buffer): Promise<void> {
+export async function writeAllPositioned(handle: PositionedFileHandle, buffer: Buffer, assertAuthority?: () => void): Promise<void> {
+  assertAuthority?.();
   let written = 0;
   while (written < buffer.length) {
     const { bytesWritten } = await handle.write(buffer, written, buffer.length - written, written);
@@ -248,7 +257,7 @@ export function createSecureWriteFile(deps: SecureWriteDeps): (filePath: string,
 
   // Original controlled write with no attestation: O_WRONLY, no prior-state read.
   // Preserved exactly so write-only project files do not regress when no sink is wired.
-  const writeWithoutAttestation = async (target: string, content: string): Promise<void> => {
+  const writeWithoutAttestation = async (target: string, content: string, assertAuthority: () => void, admitWrite: () => void): Promise<void> => {
     let create = false;
     try {
       await fs.lstat(target);
@@ -258,6 +267,7 @@ export function createSecureWriteFile(deps: SecureWriteDeps): (filePath: string,
     }
     const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
     const flags = constants.O_WRONLY | noFollow | (create ? constants.O_CREAT | constants.O_EXCL : 0);
+    if (create) admitWrite(); else assertAuthority();
     const handle = await fs.open(target, flags, 0o600);
     try {
       const [stat, verifiedTarget] = await Promise.all([handle.stat(), policy.existing(target)]);
@@ -268,6 +278,9 @@ export function createSecureWriteFile(deps: SecureWriteDeps): (filePath: string,
           retryable: true,
         });
       }
+      // A file replacement is admitted once, before its first destructive IO.
+      // Revocation must not strand an already-truncated file without its new bytes.
+      admitWrite();
       await handle.truncate(0);
       await handle.writeFile(content, 'utf8');
     } finally {
@@ -292,8 +305,10 @@ export function createSecureWriteFile(deps: SecureWriteDeps): (filePath: string,
     enforceContainment: boolean;
     /** Original (non-attesting) write used when the attested write cannot proceed safely. */
     fallback: () => Promise<void>;
+    assertAuthority: () => void;
+    admitWrite: () => void;
   }): Promise<void> => {
-    const { target, content, operation, attestTarget, enforceContainment, fallback } = args;
+    const { target, content, operation, attestTarget, enforceContainment, fallback, assertAuthority, admitWrite } = args;
     let create = false;
     try {
       await fs.lstat(target);
@@ -305,6 +320,7 @@ export function createSecureWriteFile(deps: SecureWriteDeps): (filePath: string,
     const flags = constants.O_RDWR | noFollow | (create ? constants.O_CREAT | constants.O_EXCL : 0);
     let handle: Awaited<ReturnType<typeof fs.open>>;
     try {
+      if (create) admitWrite(); else assertAuthority();
       handle = await fs.open(target, flags, 0o600);
     } catch (error) {
       // A write-only file cannot be opened read-write. If the original write can
@@ -346,10 +362,11 @@ export function createSecureWriteFile(deps: SecureWriteDeps): (filePath: string,
             preState = 'hashed';
           }
         }
+        admitWrite();
         await handle.truncate(0);
         // Seek-safe positioned write loop: do not assume one handle.write writes
         // all bytes, and do not depend on the cursor advanced by readFile.
-        await writeAllPositioned(handle, Buffer.from(content, 'utf8'));
+        await writeAllPositioned(handle, Buffer.from(content, 'utf8'), assertAuthority);
         // Confirm the path still resolves to the inode we wrote; otherwise skip the row.
         const afterStat = await fs.stat(target).catch(() => null);
         if (afterStat && afterStat.dev === stat.dev && afterStat.ino === stat.ino) {
@@ -363,7 +380,17 @@ export function createSecureWriteFile(deps: SecureWriteDeps): (filePath: string,
   };
 
   return async (filePath: string, content: string, operation: 'write' | 'edit'): Promise<void> => {
+    const startingPermission = access.permissionLevel;
+    let admitted = false;
+    const assertAuthority = () => {
+      if (admitted) return;
+      assertWritePermission(access);
+      if (access.permissionLevel !== startingPermission) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Live session authority changed during the file operation.', retryable: false });
+    };
+    const admitWrite = () => { assertAuthority(); admitted = true; };
+    assertAuthority();
     const target = await policy.writable(filePath);
+    assertAuthority();
     if (access.fullAccess) {
       // No sink, or a target whose real path is outside the project: plain write, no attestation.
       if (!attestations) {
@@ -372,18 +399,19 @@ export function createSecureWriteFile(deps: SecureWriteDeps): (filePath: string,
       }
       const projectTarget = await resolveProjectTarget(target);
       if (!projectTarget) {
+        assertAuthority();
         await fs.writeFile(target, content);
         return;
       }
       // Same-handle attested write against the resolved inside-project path.
-      await writeWithAttestation({ target: projectTarget, content, operation, attestTarget: projectTarget, enforceContainment: false, fallback: () => fs.writeFile(projectTarget, content) });
+      await writeWithAttestation({ target: projectTarget, content, operation, attestTarget: projectTarget, enforceContainment: !access.fullAccess, assertAuthority, admitWrite, fallback: () => { assertAuthority(); return fs.writeFile(projectTarget, content); } });
       return;
     }
     if (!attestations) {
-      await writeWithoutAttestation(target, content);
+      await writeWithoutAttestation(target, content, assertAuthority, admitWrite);
       return;
     }
-    await writeWithAttestation({ target, content, operation, attestTarget: target, enforceContainment: true, fallback: () => writeWithoutAttestation(target, content) });
+    await writeWithAttestation({ target, content, operation, attestTarget: target, enforceContainment: true, assertAuthority, admitWrite, fallback: () => writeWithoutAttestation(target, content, assertAuthority, admitWrite) });
   };
 }
 
@@ -441,7 +469,14 @@ export async function createProjectConfinedTools(
     maxPreHashBytes,
   });
   const writeOperations = {
-    mkdir: async (directoryPath: string) => { await fs.mkdir(await policy.writable(directoryPath), { recursive: true }); },
+    mkdir: async (directoryPath: string) => {
+      const startingPermission = access.permissionLevel;
+      assertWritePermission(access);
+      const target = await policy.writable(directoryPath);
+      assertWritePermission(access);
+      if (access.permissionLevel !== startingPermission) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Live session authority changed during directory preparation.', retryable: false });
+      await fs.mkdir(target, { recursive: true });
+    },
     writeFile: (filePath: string, content: string) => secureWriteFile(filePath, content, 'write'),
   };
   const searchTools = options.searchTools ? [
@@ -486,8 +521,16 @@ export async function createProjectConfinedTools(
       },
     }),
   ] : [];
+  const bash = createBashToolDefinition(canonicalCwd);
+  const executeBash = bash.execute;
+  bash.execute = (...args) => {
+    if (access.permissionLevel !== undefined && access.permissionLevel !== 'full-access') {
+      throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Live session authority no longer permits shell execution.', retryable: false });
+    }
+    return executeBash(...args);
+  };
   return [
-    createBashToolDefinition(canonicalCwd),
+    bash,
     createReadToolDefinition(canonicalCwd, { operations: readOperations }),
     createWriteToolDefinition(canonicalCwd, { operations: writeOperations }),
     createEditToolDefinition(canonicalCwd, { operations: { ...readOperations, writeFile: (filePath: string, content: string) => secureWriteFile(filePath, content, 'edit') } }),

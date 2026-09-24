@@ -20,6 +20,7 @@ import { type ChangeEvent, type CSSProperties, type FormEvent, useCallback, useE
 import type { MusicQueue, MusicStream, MusicTrack } from '../../../shared/contracts/ipc';
 import { AppTooltip } from '../../components/AppTooltip';
 import { useSkinComponents } from '../../skins/SkinProvider';
+import { useM3MusicDockLayout } from '../../skins/useM3MusicDockLayout';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { MAX_LOCAL_AUDIO_TRACKS, MAX_MUSIC_QUEUE_TRACKS, appendMusicQueue, isSupportedLocalAudio, localAudioTitle, remoteMusicSourceError } from './musicSources';
@@ -83,6 +84,7 @@ export function MusicPlayerDock() {
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const panelRef = useRef<HTMLElement>(null);
+  useM3MusicDockLayout(panelRef, enabled, browserInset);
   const playlistRef = useRef<HTMLElement>(null);
   const sourceRef = useRef<HTMLInputElement>(null);
   const localFileInputRef = useRef<HTMLInputElement>(null);

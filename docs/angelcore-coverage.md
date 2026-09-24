@@ -4,7 +4,7 @@ Angelcore covers the workspace and its supporting controls. Screenshots below ar
 
 ## Checks run
 
-The automated journeys are `tests/e2e/angelcore-complete.spec.ts` and `tests/e2e/control-cohesion.spec.ts`, run as part of `pnpm verify`. The latter verifies uniform composer rails, portal-based confirmations, folder menus, and keyboard/focus behavior in both Default and Angelcore. Current verification counts belong to the release evidence, not a frozen screenshot gallery.
+The automated journeys are `tests/e2e/angelcore-complete.spec.ts`, `tests/e2e/control-cohesion.spec.ts`, and the Agents matrix in `tests/e2e/agents.spec.ts`. The latter two verify uniform composer rails, portal-based confirmations, folder menus, keyboard/focus behavior, and the complete Agents lifecycle in Default, dreamcore/Angelcore, and M3 Expressive. The final 2026-09-18 `pnpm test:e2e` run passed all 28 Electron journeys; current verification counts belong to the release evidence, not a frozen screenshot gallery.
 
 The journey checks populated states, not only empty panels. It verifies:
 

@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyOpenAIAggregatorCompatToModelsFile,
+  applyOpenAIAggregatorCompatToProvider,
   buildProviderConfig,
   buildThinkingLevelMap,
   effortValuesOf,
   mapApiKind,
   mergeLiveOpenAiModels,
+  OPENAI_COMPAT_DEFAULTS,
   parseLiveOpenAiModels,
   parseModelsDevCatalog,
   parseProviderEntry,
@@ -208,5 +211,70 @@ describe('parseLiveOpenAiModels and mergeLiveOpenAiModels', () => {
     expect(configModel(merged, 'kimi-k3').cost.input).toBe(2); // models.dev metadata kept
     expect(configModel(merged, 'glm-5.3-flash').name).toBe('CrofAI: Z.ai: GLM 5.3 Flash');
     expect(merged.models.some((model) => model.id === 'glm-4.7')).toBe(false);
+  });
+});
+
+describe('applyOpenAIAggregatorCompatToProvider', () => {
+  const model = { id: 'qwen3.8-flash', name: 'Qwen3.8-Flash', reasoning: true };
+
+  it('fills aggregator defaults so hand-edited hosts are not treated as api.openai.com', () => {
+    const patched = applyOpenAIAggregatorCompatToProvider({
+      name: 'B.AI',
+      baseUrl: 'https://api.b.ai/v1',
+      api: 'openai-completions',
+      models: [model],
+    }) as { models: Array<{ compat: Record<string, unknown> }> };
+    expect(patched.models[0]!.compat).toMatchObject({
+      ...OPENAI_COMPAT_DEFAULTS,
+      supportsDeveloperRole: false,
+      maxTokensField: 'max_tokens',
+    });
+  });
+
+  it('keeps explicit compat overrides such as Qwen thinkingFormat', () => {
+    const patched = applyOpenAIAggregatorCompatToProvider({
+      name: 'B.AI',
+      baseUrl: 'https://api.b.ai/v1',
+      api: 'openai-completions',
+      models: [{ ...model, compat: { thinkingFormat: 'qwen' } }],
+    }) as { models: Array<{ compat: Record<string, unknown> }> };
+    expect(patched.models[0]!.compat.thinkingFormat).toBe('qwen');
+    expect(patched.models[0]!.compat.supportsDeveloperRole).toBe(false);
+  });
+
+  it('leaves official OpenAI and non-OpenAI APIs untouched', () => {
+    const openai = { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', api: 'openai-completions', models: [model] };
+    const anthropic = { name: 'Claude', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages', models: [model] };
+    const builtin = { models: [model] };
+    expect(applyOpenAIAggregatorCompatToProvider(openai)).toBe(openai);
+    expect(applyOpenAIAggregatorCompatToProvider(anthropic)).toBe(anthropic);
+    expect(applyOpenAIAggregatorCompatToProvider(builtin)).toBe(builtin);
+  });
+
+  it('is a no-op when aggregator defaults are already present', () => {
+    const provider = {
+      name: '9Router',
+      baseUrl: 'http://127.0.0.1:20128/v1',
+      api: 'openai-completions',
+      models: [{ ...model, compat: { ...OPENAI_COMPAT_DEFAULTS } }],
+    };
+    expect(applyOpenAIAggregatorCompatToProvider(provider)).toBe(provider);
+  });
+});
+
+describe('applyOpenAIAggregatorCompatToModelsFile', () => {
+  it('patches only aggregator providers and reports whether the file changed', () => {
+    const file = {
+      providers: {
+        bai: { name: 'B.AI', baseUrl: 'https://api.b.ai/v1', api: 'openai-completions', models: [{ id: 'hy3' }] },
+        zai: { models: [{ id: 'glm-5.3-flash', compat: { thinkingFormat: 'zai' } }] },
+      },
+    };
+    const first = applyOpenAIAggregatorCompatToModelsFile(file);
+    expect(first.changed).toBe(true);
+    const bai = first.file.providers.bai as { models: Array<{ compat?: { supportsDeveloperRole?: boolean } }> };
+    expect(bai.models[0]!.compat?.supportsDeveloperRole).toBe(false);
+    expect(first.file.providers.zai).toBe(file.providers.zai);
+    expect(applyOpenAIAggregatorCompatToModelsFile(first.file).changed).toBe(false);
   });
 });

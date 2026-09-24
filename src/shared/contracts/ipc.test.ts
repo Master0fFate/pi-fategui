@@ -9,7 +9,8 @@ describe('IPC contracts', () => {
   });
 
   it('validates complete native window state', () => {
-    expect(windowStateSchema.parse({ maximized: true, minimized: false })).toEqual({ maximized: true, minimized: false });
+    expect(windowStateSchema.parse({ maximized: true, minimized: false, fullScreen: false })).toEqual({ maximized: true, minimized: false, fullScreen: false });
+    expect(() => windowStateSchema.parse({ maximized: true, minimized: false })).toThrow();
     expect(() => windowStateSchema.parse({ maximized: true })).toThrow();
   });
 

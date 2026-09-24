@@ -27,6 +27,7 @@ import type {
   SemanticPageSnapshot,
 } from '../../shared/contracts/browser';
 import { BrowserActionExecutor, type BrowserConfirmationHandler } from './BrowserActionExecutor';
+import { installFullscreenShortcut } from '../windowFullscreen';
 import { AnnotationService } from './AnnotationService';
 import { BrowserAnnotationOverlay } from './BrowserAnnotationOverlay';
 import { parseBrowserAddress } from './BrowserAddress';
@@ -67,6 +68,9 @@ interface BrowserTab {
   annotationOverlay: BrowserAnnotationOverlay;
   pointerOverlay: BrowserPointerOverlay;
   gate: BrowserActionGate;
+  // F11 keeps toggling the app window fullscreen even when a browser tab owns
+  // keyboard focus; the disposer runs in destroyTab.
+  removeFullscreenShortcut: () => void;
   humanNetworkOrigins: Set<string>;
   documentEpoch: number;
   pageRevision: number;
@@ -254,6 +258,7 @@ export class BrowserService {
     });
     view.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
     await this.configureSession(view.webContents.session);
+    const removeFullscreenShortcut = installFullscreenShortcut(view.webContents, this.owner);
     const cdp = new CdpClient(view.webContents);
     const gate = new BrowserActionGate(this.policy);
     const pointerOverlay = new BrowserPointerOverlay(cdp);
@@ -276,6 +281,7 @@ export class BrowserService {
       annotationOverlay: new BrowserAnnotationOverlay(cdp),
       pointerOverlay,
       gate,
+      removeFullscreenShortcut,
       humanNetworkOrigins: new Set<string>(),
       documentEpoch: 0,
       pageRevision: 0,
@@ -1360,6 +1366,7 @@ export class BrowserService {
     // "Cannot read properties of undefined (reading 'isDestroyed')" as an
     // uncaught main-process exception during fast session switches.
     const contents = tab.view.webContents;
+    await attemptDisposal('fullscreen shortcut cleanup', `tab ${tab.id}`, () => tab.removeFullscreenShortcut());
     await attemptDisposal('CDP detach', `tab ${tab.id}`, () => tab.cdp.dispose());
     if (this.owner && !this.owner.isDestroyed()) {
       await attemptDisposal('view detach', `tab ${tab.id}`, () => {

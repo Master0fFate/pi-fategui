@@ -11,13 +11,11 @@ import {
   Search,
   Sparkles,
   TerminalSquare,
-  Workflow,
   type LucideIcon,
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { AppTooltip } from '../../components/AppTooltip';
 import { useSkinComponents } from '../../skins/SkinProvider';
-import { useAutomationStore } from '../../stores/automationStore';
 import { useBrowserStore } from '../../stores/browserStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
@@ -44,7 +42,6 @@ export function SidebarResources({ onOpenProject, projectSelectionBusy }: Sideba
   const commands = useRuntimeStore((state) => state.runtime.commands);
   const skills = useRuntimeStore((state) => state.runtime.skills);
   const browser = useBrowserStore((state) => state.state);
-  const automationCount = useAutomationStore((state) => state.items.length);
   const gitChanges = useWorkspaceStore((state) => state.git?.changes.length ?? 0);
   const [query, setQuery] = useState('');
   const search = useResourceSearch(query, true);
@@ -69,10 +66,6 @@ export function SidebarResources({ onOpenProject, projectSelectionBusy }: Sideba
       surface: 'terminal', label: 'Manual terminal', detail: 'Project shell under your control',
       status: project?.trusted ? 'Ready' : 'Trust required', tone: project?.trusted ? 'success' : 'warning', icon: TerminalSquare,
       ...(project?.trusted ? {} : { disabledReason: 'Open and trust a project to use Terminal.' }),
-    },
-    {
-      surface: 'automations', label: 'Automations', detail: 'Saved project prompts',
-      status: `${automationCount}`, tone: automationCount > 0 ? 'success' : 'muted', icon: Workflow,
     },
   ];
 
@@ -187,19 +180,17 @@ function iconFor(item: ResourceSearchItem): LucideIcon {
   if (item.kind === 'file') return FileCode2;
   if (item.kind === 'browser-tab') return Globe2;
   if (item.kind === 'pi') return item.source === 'skill' ? Bot : Library;
-  if (item.kind === 'automation') return Workflow;
   if (item.kind === 'session') return Bot;
   if (item.surface === 'files') return Files;
   if (item.surface === 'browser') return Globe2;
   if (item.surface === 'pi-library') return Library;
   if (item.surface === 'terminal') return TerminalSquare;
-  return Workflow;
+  return Library;
 }
 
 function kindLabel(item: ResourceSearchItem): string {
   if (item.kind === 'browser-tab') return 'tab';
   if (item.kind === 'pi') return item.source === 'skill' ? 'skill' : item.source === 'extension' ? 'extension' : 'prompt';
-  if (item.kind === 'automation') return 'automation';
   if (item.kind === 'session') return 'session';
   if (item.kind === 'file') return 'file';
   return 'resource';

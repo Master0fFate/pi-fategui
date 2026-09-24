@@ -695,7 +695,7 @@ function AgentTeamBranch({ team, goalLinks }: { team: AgentTeam; goalLinks: Read
       <div className="agent-tree-branch-heading">
         <button className="agent-tree-branch-toggle" type="button" aria-expanded={expanded} aria-controls={childrenId} onClick={() => setExpanded((current) => !current)}>
           <span className="agent-tree-branch-mark"><GitBranch size={12} /></span>
-          <span className="agent-tree-branch-copy"><strong>{team.name}{team.selected ? ' · Current' : ''}</strong><small>{team.nodes.filter((node) => node.depth > 0 && node.status !== 'released').length}/{team.limits.maxNodes} nodes · {team.activeTurns}/{team.limits.maxActiveTurns} active{activeWriters > 1 ? ` · ${activeWriters} workspace writers` : team.writerNodeId ? ' · writer leased' : ''}</small></span>
+          <span className="agent-tree-branch-copy"><strong>{team.name}{team.selected ? ' · Current' : ''}</strong><small>{team.nodes.filter((node) => node.depth > 0 && node.status !== 'released').length} agents · {team.activeTurns} active{activeWriters > 1 ? ` · ${activeWriters} workspace writers` : team.writerNodeId ? ' · writer leased' : ''}</small></span>
           <ChevronRight className="agent-tree-branch-chevron" size={13} aria-hidden="true" />
         </button>
         <span className="agent-tree-branch-state">{team.status}</span>

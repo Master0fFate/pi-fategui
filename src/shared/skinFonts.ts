@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const MAX_SKIN_FONT_BYTES = 256 * 1024;
-export const builtInInterfaceFontSchema = z.enum(['noto-sans', 'system', 'inter', 'poppins', 'montserrat', 'jetbrains-mono']);
+export const builtInInterfaceFontSchema = z.enum(['noto-sans', 'system', 'inter', 'roboto-flex', 'poppins', 'montserrat', 'jetbrains-mono']);
 export const builtInCodeFontSchema = z.enum(['jetbrains-mono', 'noto-sans-mono', 'system-mono']);
 export type BuiltInInterfaceFont = z.infer<typeof builtInInterfaceFontSchema>;
 export type BuiltInCodeFont = z.infer<typeof builtInCodeFontSchema>;

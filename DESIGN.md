@@ -74,11 +74,13 @@ The shipped interface governs atmosphere and first-launch hierarchy; the maintai
 - Spacious first launch; compact, stable density during work.
 - Motion acknowledges state without delaying input or moving layout.
 
-**Fate Compact** is the operate-surface density system. Turn it on with **Settings → Compaction → Compact mode** (`data-compact-mode`). It restyles the whole workbench under either skin. Compact sessions is nested under that switch. Spec: [`design/COMPACT.md`](design/COMPACT.md).
+**Fate Compact** is the operate-surface density system. Turn it on with **Settings → Compaction → Compact mode** (`data-compact-mode`). It restyles the whole workbench under every skin. Compact sessions is nested under that switch. Spec: [`design/COMPACT.md`](design/COMPACT.md).
 
 ## Optional skins
 
 **Angelcore** is the first authorized optional skin. Its component presentation uses text actions, selected-row markers, command-style input, labeled transcript entries, and a textual context gauge. It remains a clickable GUI, rendered in the selected code font rather than a separate terminal runtime. Shared header geometry and single-pixel separators keep its pale edges deliberate. It adds no inferred religious or gothic subject matter, animated noise, blanket glow, or metaphorical control names. Useful text remains readable, semantic states retain labels, and the manual terminal stays visibly separate from Pi tools.
+
+**M3 Expressive** is a second optional structural skin: a continuous indigo-toned shell with square pane junctions, a rounded recessed conversation field, emphatic navigation capsules, and a floating outlined composer. It is a dense desktop adaptation of the supplied visual reference, not a mobile Material framework transplant. Its named companion palette remains optional and independent. See [`docs/m3-expressive.md`](docs/m3-expressive.md).
 
 Skins are structural; themes remain palettes. Angelcore derives all color from the selected `--theme-*` tokens and must work with dark, light, custom Fate, and trusted-project Pi themes. Selecting a skin keeps the palette independent and resolves appearance from base preferences, the skin's defaults, and per-skin user overrides. Font selectors show the effective choice; UI text uses the interface font, while literal code and the terminal use the code font. See [`docs/skins.md`](docs/skins.md).
 

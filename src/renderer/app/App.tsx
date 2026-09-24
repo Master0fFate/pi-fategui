@@ -15,6 +15,7 @@ import { fallbackThemes } from '../theme';
 import { attachBrowserAnnotationToSession } from '../features/chat/Composer';
 import { openBrowserLink } from '../features/browser/browserLink';
 import { RuntimeEventBuffer, streamPresentationDelay } from '../lib/RuntimeEventBuffer';
+import { canStopSession } from '../../shared/sessionStop';
 
 const MAX_HYDRATION_BUFFER_EVENTS = 1_000;
 const MAX_HYDRATION_BUFFER_BYTES = 32 * 1024 * 1024;
@@ -527,7 +528,7 @@ export function App() {
         }
       }
       else if (command === 'stop-generation') {
-        if (!runtime.streaming) {
+        if (!canStopSession(runtime)) {
           unavailable('Nothing to stop', 'Pi is not currently generating a response.');
           return;
         }
@@ -581,7 +582,7 @@ export function App() {
           void window.piDesktop.setBrowserMode('agent').then((state) => useBrowserStore.getState().hydrate(state)).catch(() => undefined);
           return;
         }
-        if (useRuntimeStore.getState().runtime.streaming) command = 'stop-generation';
+        if (canStopSession(useRuntimeStore.getState().runtime)) command = 'stop-generation';
       }
       if (command) { event.preventDefault(); run(command); }
     };

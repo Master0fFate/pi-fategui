@@ -8,9 +8,9 @@ const execFileAsync = promisify(execFile);
 const root = path.resolve(import.meta.dirname, '..');
 
 describe('release metadata verification', () => {
-  it('verifies the repository V1 metadata and exact public title', async () => {
+  it('verifies the repository release metadata and exact public title', async () => {
     const result = await execFileAsync(process.execPath, [path.join(root, 'scripts', 'verify-version.mjs')], { cwd: root });
-    expect(result.stdout).toBe('Version sources match exactly: 1.0.0; release title: V1.0.0 - Modulo\n');
+    expect(result.stdout).toBe('Version sources match exactly: 1.1.0; release title: V1.1.0 - Axiom\n');
   });
 
   it('keeps the codename out of package and production SemVer', () => {

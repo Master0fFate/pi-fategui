@@ -51,8 +51,9 @@ export async function buildSubagentCatalog(
   const section = params.section ?? 'all';
   const query = params.query?.trim().toLocaleLowerCase() ?? '';
   const limit = Math.max(1, Math.round(params.limit ?? 200));
+  const provider = params.provider?.trim();
   const matchingModels = visibleModels([...available], disabledModels)
-    .filter((model) => !params.provider || model.provider === params.provider)
+    .filter((model) => !provider || model.provider === provider)
     .filter((model) => !query || `${model.provider}/${model.id} ${model.name}`.toLocaleLowerCase().includes(query))
     .sort((left, right) => left.provider.localeCompare(right.provider) || left.name.localeCompare(right.name));
   const matchingProfiles = profiles

@@ -2,7 +2,7 @@
 
 Use **Settings → Skins** to select a component skin, choose colors and fonts, import/export packs, and configure a personal background.
 
-**Default** keeps the established workbench. **Angelcore** uses terminal-style text actions, selected-row markers, a command composer, labeled transcript entries, ASCII tool status, and a numeric context gauge. Both remain clickable GUIs with the same state, keyboard controls, browser, Monaco, trust controls, and manual terminal.
+**Default** keeps the established workbench. **Angelcore** uses terminal-style text actions, selected-row markers, a command composer, labeled transcript entries, ASCII tool status, and a numeric context gauge. **M3 Expressive** uses a continuous tonal shell with square pane junctions, shaped navigation, and an outlined floating composer. All three remain clickable GUIs with the same state, keyboard controls, browser, Monaco, trust controls, and manual terminal. Its matching **M3 Expressive** color theme is a separate selection; choose both for the reference appearance. See [M3 Expressive design and verification](m3-expressive.md).
 
 ## Import a pack
 
@@ -23,7 +23,7 @@ Import, export, and removal act on disk immediately. Preview/Save/Cancel affect 
 
 ## Appearance defaults and your overrides
 
-Angelcore defaults its interface font to **JetBrains Mono**. The Interface font picker shows the effective font, not the unused base preference. Choosing another interface font really changes navigation, settings, conversation text, and the composer; Code & terminal remains a separate choice for literal code, tool output, diffs, and xterm.
+Angelcore defaults its interface font to **JetBrains Mono**; M3 Expressive defaults to the bundled **Roboto Flex**. Neither changes your code font, palette, or density. The Interface font picker shows the effective font, not the unused base preference. Choosing another interface font really changes navigation, settings, conversation text, and the composer; Code & terminal remains a separate choice for literal code, tool output, diffs, and xterm.
 
 Appearance resolution is: saved base preferences → component-base defaults → pack defaults → your overrides for that skin. Font, density, and motion overrides are stored per skin in `skinAppearanceOverrides`. Switching skins does not destroy another skin's choices. **Reset to skin appearance defaults** clears the current skin's overrides; Save and Cancel still apply. Integrations reading raw settings should use `resolveSkinAppearance` from `src/shared/skinAppearance.ts` to obtain the effective values.
 
@@ -101,7 +101,7 @@ Version 1 packs continue to work. Use `"schemaVersion": 2` for the following opt
 
 A pack can contain two WOFF/WOFF2 files, up to **256 KB each**, with a maximum declared expanded size of **8 MB**. Keep filenames to lowercase letters, digits, and hyphens followed by `.woff` or `.woff2`; IDs use the same characters without the extension. Include the fonts' redistribution licenses in `LICENSE`. Variable fonts can cover multiple weights in one file.
 
-All installed pack fonts appear in Interface font; those marked `monospace` also appear in Code & terminal. Internally they are namespaced as `skin-font:<pack-id>:<font-id>`. Defaults refer to a bundled font with `local:<font-id>` or use a built-in font ID. Fonts load locally through the browser's font parser, are cached for reuse, and fall back with a visible warning if loading fails. Removing a pack removes references to its fonts without changing operational settings.
+All installed pack fonts appear in Interface font; those marked `monospace` also appear in Code & terminal. Internally they are namespaced as `skin-font:<pack-id>:<font-id>`. Defaults refer to a pack-bundled font with `local:<font-id>` or use a built-in font ID. For example, `"appearance": { "interfaceFont": "roboto-flex" }` uses the app's offline Roboto Flex without embedding a font file. Angelcore's `jetbrains-mono` is also bundled. Creators supplying their own fonts still declare `fonts` plus `local:` references as above; the same size, type, namespace, and licensing rules apply. Fonts load locally through the browser's font parser, are cached for reuse, and fall back with a visible warning if loading fails. Removing a pack removes references to its fonts without changing operational settings.
 
 The only supported `appearance` keys are `interfaceFont`, `codeFont`, `compactMode`, `compactSessions`, `reduceMotion`, `performanceMode`, and `holyShitMode`. Unknown keys are rejected.
 
@@ -127,7 +127,7 @@ The only supported `appearance` keys are `interfaceFont`, `codeFont`, `compactMo
 | `shell`, `sidebar` | Workspace chrome, navigation, project/session rows, compact sessions |
 | `conversation`, `composer`, `queue` | Transcript, input, tools menu, queued/held messages, goal steering |
 | `tasks`, `goal` | Ordinary tasks, GoalMax criteria, flight deck, goal editor and confirmation |
-| `agents` | Teams, child sessions, controls, transcripts, workspace review dialog |
+| `agents` | Agent library/editor, teams, child sessions, controls, transcripts, workspace review dialog |
 | `tools`, `activity`, `notifications` | Tool cards/output chrome, activity filters/timeline, toasts/notices/error banners |
 | `context`, `resources` | Context metrics, token charts, resource groups and rows |
 | `music` | Dock, transport, local/remote source input, populated playlist |
@@ -135,7 +135,7 @@ The only supported `appearance` keys are `interfaceFont`, `codeFont`, `compactMo
 | `modelPicker`, `tooltips` | Model/reasoning/provider pickers, options, app tooltips and native-title tooltips |
 | `files`, `changes` | File tree, preview chrome, review controls, Git rows |
 | `browser` | Tab strip, new/close tab buttons, address field, Back/Forward/Reload, local-file/annotation/device controls; not the Chromium page itself |
-| `learning`, `automations` | Memory library/review forms, automation list and editor |
+| `learning`, `automations` | Memory library/review forms; `automations` remains a legacy pack key with no current UI target |
 
 Allowed properties are `controlRadius` (0–12 px), `surfaceRadius` (0–16 px), `padding` (4–24 px), `rowHeight` (24–48 px minimum), `fontSize` (11–16 px base), `surface` (`canvas`, `panel`, `raised`), and `border` (`border`, `borderStrong`, `textSoft`). Colors always come from the selected palette. Controls and metadata retain their no-wrap/truncation rules; compact action labels may stay smaller than body text. Long messages, code, descriptions, and warnings remain readable rather than being forced onto one line.
 
@@ -159,7 +159,7 @@ Older app versions do not understand these v2 fields or per-skin overrides. Keep
 - `src/main/settings/SkinPackService.ts`: main-owned validation, copying, discovery, export, and removal.
 - `src/main/settings/registerSkinIpc.ts`: native folder pickers behind the existing trusted-main-frame IPC guard. Renderer requests cannot supply filesystem paths.
 - `src/renderer/skin.ts`: active identity, approved CSS variables, base selection, and bounded prepaint snapshot.
-- `src/renderer/skins/`: typed component slots with Default/Angelcore implementations.
+- `src/renderer/skins/`: typed component slots with Default/Angelcore/M3 Expressive implementations.
 - `src/renderer/skins/surfaces.ts`: the complete, typed surface-to-DOM inventory used by the renderer.
 - `src/renderer/skins/NativeTitleTooltips.tsx`: styled hover/focus hints for owned native titles, restored on cleanup.
 - `src/renderer/styles/skins/`: frame geometry, terminal components, whole-surface styling, and constrained pack overrides.

@@ -10,6 +10,7 @@ const interfaceFamilies: Record<BuiltInInterfaceFont, string> = {
   'noto-sans': notoSansFallback,
   system: `ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", ${notoSansFallback}`,
   inter: `"Inter Variable", ${notoSansFallback}`,
+  'roboto-flex': `"Roboto Flex Variable", "Roboto", ${notoSansFallback}`,
   poppins: `"Poppins", ${notoSansFallback}`,
   montserrat: `"Montserrat Variable", ${notoSansFallback}`,
   'jetbrains-mono': `"JetBrains Mono Variable", ${notoCodeFallback}`,
@@ -23,6 +24,8 @@ const codeFamilies: Record<BuiltInCodeFont, string> = {
 
 const optionalInterfaceFontLoaders: Partial<Record<BuiltInInterfaceFont, () => Promise<unknown>>> = {
   inter: () => import('@fontsource-variable/inter/wght.css'),
+  // Weight + optical-size axes, normal style; no remote font requests.
+  'roboto-flex': () => import('@fontsource-variable/roboto-flex/opsz.css'),
   montserrat: () => import('@fontsource-variable/montserrat/wght.css'),
   poppins: () => import('./styles/poppins.css'),
 };
@@ -45,6 +48,7 @@ export const interfaceFontOptions: ReadonlyArray<{ value: InterfaceFont; label: 
   { value: 'noto-sans', label: 'Noto Sans', detail: 'Global default · extended Unicode' },
   { value: 'system', label: 'System UI', detail: 'Native platform font · Noto fallback' },
   { value: 'inter', label: 'Inter', detail: 'Neutral and highly legible' },
+  { value: 'roboto-flex', label: 'Roboto Flex', detail: 'Material expressive option · variable optical sizing' },
   { value: 'poppins', label: 'Poppins', detail: 'Geometric and friendly' },
   { value: 'montserrat', label: 'Montserrat', detail: 'Structured and distinctive' },
   { value: 'jetbrains-mono', label: 'JetBrains Mono', detail: 'Technical monospace interface' },

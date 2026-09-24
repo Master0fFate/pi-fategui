@@ -3,13 +3,15 @@ import { AgentTeamScheduler } from './AgentTeamScheduler';
 import { DEFAULT_AGENT_TEAM_LIMITS } from './AgentTeamStore';
 
 describe('AgentTeamScheduler', () => {
-  it('enforces root-wide turn capacity', () => {
+  it('does not cap concurrent read-only turns', () => {
     const scheduler = new AgentTeamScheduler({ ...DEFAULT_AGENT_TEAM_LIMITS });
-    const leases = ['a', 'b', 'c'].map((id) => scheduler.acquire(id, 'read-only'));
-    expect(scheduler.activeTurns).toBe(3);
-    expect(() => scheduler.acquire('d', 'read-only')).toThrow(/capacity is full/);
-    leases[0]!.release();
-    expect(scheduler.acquire('d', 'read-only').nodeId).toBe('d');
+    const leases = ['a', 'b', 'c', 'd', 'e'].map((id) => scheduler.acquire(id, 'read-only'));
+    expect(scheduler.activeTurns).toBe(5);
+    const sixth = scheduler.acquire('f', 'read-only');
+    leases.forEach((lease) => lease.release());
+    expect(scheduler.activeTurns).toBe(1);
+    sixth.release();
+    expect(scheduler.activeTurns).toBe(0);
   });
 
   it('permits isolated writers concurrently but serializes a shared checkout', () => {

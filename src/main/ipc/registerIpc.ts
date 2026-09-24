@@ -1,5 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, webContents } from 'electron';
 import { registerLearningIpc } from '../learning/registerLearningIpc';
+import { registerAgentsIpc } from '../agents/registerAgentsIpc';
+import type { AgentsService } from '../agents/AgentsService';
 import { appReleaseDisplayVersion, releaseMetadata } from '../releaseMetadata';
 import type { LearningService } from '../learning/LearningService';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
@@ -68,7 +70,6 @@ import {
   queueMutationResultSchema,
   runtimeImageSchema,
   runtimeStateSchema,
-  automationSessionPreparationResultSchema,
   sessionEntryInputSchema,
   sessionIdInputSchema,
   sessionRenameInputSchema,
@@ -120,15 +121,6 @@ import {
 } from '../../shared/contracts/ipc';
 import { agentTeamControlInputSchema } from '../../shared/contracts/multiAgent';
 import {
-  automationCreateInputSchema,
-  automationDefinitionSchema,
-  automationDeleteResultSchema,
-  automationIdInputSchema,
-  automationLaunchRecordInputSchema,
-  automationListSchema,
-  automationUpdateInputSchema,
-} from '../../shared/contracts/automations';
-import {
   goalMaxClearResultSchema,
   goalMaxControlInputSchema,
   goalMaxCreateInputSchema,
@@ -174,7 +166,6 @@ import {
   type AttestationQueryRequest,
   type AttestationQueryResult,
 } from '../../shared/contracts/mutationAttestation';
-import type { AutomationRepository } from '../automations/AutomationRepository';
 import {
   browserAnnotationCreateInputSchema,
   browserAnnotationDismissInputSchema,
@@ -229,6 +220,7 @@ export interface IpcServices {
   git: GitService;
   settings: SettingsService;
   learning?: LearningService;
+  agents?: AgentsService;
   terminal: TerminalService;
   logs: AppLogService;
   music: Pick<MusicService, 'getStatus' | 'load' | 'resolveTrack' | 'clearQueue' | 'reset' | 'setDurationSink'>;
@@ -237,7 +229,6 @@ export interface IpcServices {
   updates: Pick<UpdateService, 'check' | 'openDownload' | 'downloadAndInstall'>;
   recovery?: Pick<RecoverySnapshotService, 'remember' | 'peek' | 'markClean'>;
   browser: Pick<BrowserHost, 'ensure' | 'current' | 'setAppOverlay' | 'respondToConfirmation' | 'reset'>;
-  automations: Pick<AutomationRepository, 'list' | 'create' | 'update' | 'remove' | 'recordLaunch'>;
   /** Read-only per-project attestation ledger; resolves only the current trusted project. */
   attestations: Pick<MutationAttestationLedger, 'query'>;
   /** Open another Fate UI window in this same process so it shares the live runtime. */
@@ -470,7 +461,7 @@ async function applyPendingRecovery(
   await recovery?.markClean();
 }
 
-export function registerIpc({ runtime, projects, files, git, settings, learning, terminal, logs, music, speech, hotkey, updates, recovery, browser, automations, attestations, newWindow, rendererPolicy }: IpcServices) {
+export function registerIpc({ runtime, projects, files, git, settings, learning, agents, terminal, logs, music, speech, hotkey, updates, recovery, browser, attestations, newWindow, rendererPolicy }: IpcServices) {
   runtime.setEventSink((events) => {
     try { recovery?.remember(runtime.getState(false)); } catch { /* Snapshot failures must never drop live events. */ }
     let batch: unknown;
@@ -569,6 +560,7 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
 
   const handle = (channel: string, handler: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown | Promise<unknown>) => register(channel, rendererPolicy, handler);
   registerLearningIpc(handle, runtime, learning, () => settings.getStoragePath());
+  registerAgentsIpc(handle, agents);
   const activationServices = { runtime, files, settings, terminal, logs, browser };
   const queueProjectActivation = createProjectActivationQueue();
   const openProjectPath = createProjectPathOpener(projects, activationServices, queueProjectActivation);
@@ -590,6 +582,7 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
   const windowState = (owner: BrowserWindow) => windowStateSchema.parse({
     maximized: !owner.isDestroyed() && owner.isMaximized(),
     minimized: !owner.isDestroyed() && owner.isMinimized(),
+    fullScreen: !owner.isDestroyed() && owner.isFullScreen(),
   });
   const ownerWindow = (event: Electron.IpcMainInvokeEvent) => {
     const owner = BrowserWindow.fromWebContents(event.sender);
@@ -609,6 +602,7 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
       if (owner.isMaximized()) owner.unmaximize();
       else owner.maximize();
     }
+    else if (action === 'toggle-fullscreen') owner.setFullScreen(!owner.isFullScreen());
     else owner.close();
     return windowState(owner);
   });
@@ -813,45 +807,6 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
     const response = browserConfirmationResponseSchema.parse(input);
     const ok = browser.respondToConfirmation(ownerWindow(event), response.id, response.approved);
     return browserOperationResultSchema.parse({ ok });
-  });
-  const activeAutomationProject = (trusted = false) => {
-    const project = runtime.getState(false).project;
-    if (!project) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a project before managing automations.', retryable: true });
-    if (trusted && !project.trusted) throw new PiDesktopError({ code: 'PROJECT_NOT_TRUSTED', message: 'Trust the active project before opening an automation session.', retryable: false });
-    return project.path;
-  };
-  handle(ipcChannels.automationsList, async (_event, input) => {
-    emptyInputSchema.parse(input);
-    return automationListSchema.parse(await automations.list(activeAutomationProject()));
-  });
-  handle(ipcChannels.automationsCreate, async (_event, input) => (
-    automationDefinitionSchema.parse(await automations.create(activeAutomationProject(), automationCreateInputSchema.parse(input)))
-  ));
-  handle(ipcChannels.automationsUpdate, async (_event, input) => (
-    automationDefinitionSchema.parse(await automations.update(activeAutomationProject(), automationUpdateInputSchema.parse(input)))
-  ));
-  handle(ipcChannels.automationsDelete, async (_event, input) => {
-    const { id } = automationIdInputSchema.parse(input);
-    await automations.remove(activeAutomationProject(), id);
-    return automationDeleteResultSchema.parse({ deleted: true });
-  });
-  handle(ipcChannels.automationsRecordLaunch, async (_event, input) => {
-    const { id, outcome } = automationLaunchRecordInputSchema.parse(input);
-    return automationDefinitionSchema.parse(await automations.recordLaunch(activeAutomationProject(), id, outcome));
-  });
-  handle(ipcChannels.automationsPrepareSession, async (_event, input) => {
-    const { id } = automationIdInputSchema.parse(input);
-    const projectPath = activeAutomationProject(true);
-    const automation = (await automations.list(projectPath)).find((candidate) => candidate.id === id);
-    if (!automation) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'That automation no longer exists in this project.', retryable: true });
-    try {
-      const state = await runtime.prepareAutomationSession(automation.name, automation.permissionLevel);
-      const launched = await automations.recordLaunch(projectPath, id, 'accepted').catch(() => automation);
-      return automationSessionPreparationResultSchema.parse({ state, automation: launched });
-    } catch (error) {
-      await automations.recordLaunch(projectPath, id, 'failed').catch(() => undefined);
-      throw error;
-    }
   });
   handle(ipcChannels.projectSelect, async (event, input) => {
     emptyInputSchema.parse(input);

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GoalMaxState } from '../../../shared/contracts/goalmaxxing';
 import type { BrowserAnnotation, PiDesktopApi, RuntimeState, SubagentRun } from '../../../shared/contracts/ipc';
+import type { AgentTeam } from '../../../shared/contracts/multiAgent';
 import { serializeSessionReference, SESSION_REFERENCE_TRANSFER_TYPE } from '../../../shared/sessionReferences';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -40,6 +41,29 @@ const childRun: SubagentRun = {
   notification: 'never', dependsOn: [], createdAt: 1, updatedAt: 2, messages: [], tools: [], omittedActivity: 0, transcriptTruncated: false,
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 };
+
+const childTeam = (overrides: Partial<AgentTeam> = {}, nodeStatus: AgentTeam['nodes'][number]['status'] = 'active', taskStatus: AgentTeam['tasks'][number]['status'] = 'running'): AgentTeam => ({
+  id: 'team-1', rootSessionId: 's1', projectPath: '/project', name: 'Current', protocolVersion: 2, status: 'active', selected: true, rootNodeId: 'team-root',
+  limits: { maxDepth: 2, maxNodes: 16, maxActiveTurns: 3, maxMessages: 256, maxMessageBytes: 32_768 },
+  activeTurns: 1, writerNodeId: null, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  nodes: [
+    {
+      id: 'team-root', teamId: 'team-1', parentNodeId: null, path: '/root', handle: 'root', displayName: 'Root', depth: 0,
+      role: 'root', agentName: 'direct', permissionLevel: 'full-access', enabledTools: ['read'], model: childRun.model,
+      thinkingLevel: 'medium', status: 'ready', childIds: ['team-explorer'], unreadMessages: 0, writer: false,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 }, createdAt: 1, updatedAt: 2,
+    },
+    {
+      id: 'team-explorer', teamId: 'team-1', parentNodeId: 'team-root', path: '/root/explorer', handle: 'explorer', displayName: 'Explorer', depth: 1,
+      role: 'explorer', agentName: 'direct', permissionLevel: 'read-only', enabledTools: ['read'], model: childRun.model,
+      thinkingLevel: 'medium', status: nodeStatus, childIds: [], unreadMessages: 0, writer: false,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 }, createdAt: 1, updatedAt: 2,
+    },
+  ],
+  tasks: [{ id: 'team-task', teamId: 'team-1', assigneeNodeId: 'team-explorer', requesterNodeId: 'team-root', inputEnvelopeId: 'team-envelope', summary: 'Explore', status: taskStatus, createdAt: 1, startedAt: 1 }],
+  envelopes: [], operationReceipts: [], timeline: [], createdAt: 1, updatedAt: 2,
+  ...overrides,
+});
 
 const activeGoalFixture = (status: GoalMaxState['status'] = 'active'): GoalMaxState => ({
   schemaVersion: 2, id: 'goal-1', sessionId: 's1', projectPath: '/project', revision: 1, objective: 'Implement GoalMax', originalBriefRef: null, originalBriefHash: null,
@@ -1463,6 +1487,66 @@ describe('conversation components', () => {
     expect(prompt).not.toHaveBeenCalled();
   });
 
+  it('stops owned child work with one click when the draft is empty', () => {
+    vi.useFakeTimers();
+    try {
+      const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+      const abort = vi.fn(async () => ({ aborted: true }));
+      Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, abort } as unknown as PiDesktopApi });
+      useRuntimeStore.setState({ runtime: ready({ streaming: false, subagents: [childRun] }), queue: { steering: 0, followUp: 0, items: [] } });
+      render(<Composer onOpenProject={vi.fn()} />);
+      const send = screen.getByRole('button', { name: 'Stop Pi' });
+
+      fireEvent.click(send);
+
+      expect(abort).toHaveBeenCalledOnce();
+      expect(prompt).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('stops an active team child with one click when the draft is empty', () => {
+    vi.useFakeTimers();
+    try {
+      const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+      const abort = vi.fn(async () => ({ aborted: true }));
+      Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, abort } as unknown as PiDesktopApi });
+      useRuntimeStore.setState({ runtime: ready({ streaming: false, agentTeams: [childTeam()] }), queue: { steering: 0, followUp: 0, items: [] } });
+      render(<Composer onOpenProject={vi.fn()} />);
+      const send = screen.getByRole('button', { name: 'Stop Pi' });
+
+      fireEvent.click(send);
+
+      expect(abort).toHaveBeenCalledOnce();
+      expect(prompt).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps send disabled when owned children are only retained idle', () => {
+    useRuntimeStore.setState({ runtime: ready({ streaming: false, agentTeams: [childTeam({ activeTurns: 0 }, 'ready', 'completed')] }), queue: { steering: 0, followUp: 0, items: [] } });
+    render(<Composer onOpenProject={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Stop Pi' })).not.toBeInTheDocument();
+  });
+
+  it('queues a drafted follow-up instead of stopping while a child is running', () => {
+    vi.useFakeTimers();
+    try {
+      const prompt = vi.fn(async () => ({ accepted: true, runId: 'run-1' }));
+      const abort = vi.fn(async () => ({ aborted: true }));
+      Object.defineProperty(window, 'piDesktop', { configurable: true, value: { prompt, abort } as unknown as PiDesktopApi });
+      useRuntimeStore.setState({ runtime: ready({ streaming: false, subagents: [childRun] }), queue: { steering: 0, followUp: 0, items: [] } });
+      render(<Composer onOpenProject={vi.fn()} />);
+      fireEvent.change(screen.getByLabelText('Message Pi'), { target: { value: 'Keep going' } });
+      const send = screen.getByRole('button', { name: 'Send message' });
+
+      fireEvent.click(send);
+
+      expect(prompt).toHaveBeenCalledWith({ text: 'Keep going', behavior: 'prompt' });
+      expect(abort).not.toHaveBeenCalled();
+      expect(screen.queryByRole('button', { name: 'Stop Pi' })).not.toBeInTheDocument();
+    } finally { vi.useRealTimers(); }
+  });
+
   it('shows uncertain recovered messages and restores drafts without sending', async () => {
     const queued = { id: '00000000-0000-4000-8000-000000000001', behavior: 'followUp' as const, text: 'Review before resending', createdAt: 1 };
     const prompt = vi.fn();
@@ -1615,6 +1699,20 @@ describe('conversation components', () => {
     expect(screen.getByLabelText('Message Pi')).toHaveValue('Original direction');
     expect(screen.getByLabelText('Message Pi')).toHaveFocus();
     expect(screen.getByText('Fork ready')).toBeInTheDocument();
+  });
+
+  it('removes disconnected models from the open picker without restoring the historical selection', async () => {
+    const current = ready().model!;
+    const alternate = { ...current, provider: 'other', id: 'fast', name: 'Fast Model' };
+    useRuntimeStore.setState({ runtime: ready({ models: [current, alternate] }) });
+    const user = userEvent.setup();
+    render(<Composer onOpenProject={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: 'Model and reasoning settings' }));
+    await user.click(screen.getByRole('combobox', { name: 'Model' }));
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    act(() => useRuntimeStore.setState({ runtime: ready({ model: current, models: [alternate] }) }));
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    expect(screen.getByRole('option', { name: /Fast Model/u })).toBeInTheDocument();
   });
 
   it('keeps model and reasoning selectors enabled while streaming and reports staged-next semantics honestly', async () => {

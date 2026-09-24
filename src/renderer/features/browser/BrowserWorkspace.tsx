@@ -35,12 +35,13 @@ export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
                 type="button"
                 role="tab"
                 aria-selected={active}
+                aria-busy={tab.loading}
                 title={tab.url}
                 disabled={Boolean(pending)}
                 onClick={() => void run('tab switch', () => window.piDesktop.activateBrowserTab(tab.id))}
               >
                 <TabContent active={active} label={tab.title || localFileName(tab.url) || (tab.url === 'about:blank' ? 'New tab' : tab.url)} labelClassName="browser-tab-label" icon={local ? <FileCode2 size={12} aria-hidden="true" /> : <Globe2 size={12} aria-hidden="true" />} />
-                {tab.loading && <LoaderCircle className="tool-spinner" size={11} aria-label="Loading tab" />}
+                {tab.loading && <LoaderCircle className="tool-spinner" size={11} aria-hidden="true" />}
               </button>
               <button
                 type="button"

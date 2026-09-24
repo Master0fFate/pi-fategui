@@ -5,7 +5,7 @@ import type { WindowControlAction, WindowState } from '../../shared/contracts/ip
 type Platform = 'win32' | 'darwin' | 'linux';
 type BridgeStatus = 'connecting' | 'ready' | 'error';
 
-const initialWindowState: WindowState = { maximized: false, minimized: false };
+const initialWindowState: WindowState = { maximized: false, minimized: false, fullScreen: false };
 
 export function WindowChrome() {
   const [platform, setPlatform] = useState<Platform>('win32');
@@ -52,6 +52,11 @@ export function WindowChrome() {
     }
   };
 
+  // Inside F11 fullscreen the square button leaves fullscreen first; browsers
+  // treat maximize and fullscreen as separate window states.
+  const maximizeAction: WindowControlAction = windowState.fullScreen ? 'toggle-fullscreen' : 'toggle-maximize';
+  const maximizeLabel = windowState.fullScreen ? 'Exit full screen' : windowState.maximized ? 'Restore window' : 'Maximize window';
+
   const status = bridgeStatus === 'error'
     ? <output className="window-control-error" role="status">Window controls disconnected — restart Fate UI.</output>
     : null;
@@ -59,10 +64,10 @@ export function WindowChrome() {
   if (platform === 'darwin') {
     return (
       <>
-        <div className="window-controls window-controls--darwin" aria-label="Window controls" data-bridge-status={bridgeStatus} data-minimized={windowState.minimized}>
+        <div className="window-controls window-controls--darwin" aria-label="Window controls" data-bridge-status={bridgeStatus} data-minimized={windowState.minimized} data-fullscreen={windowState.fullScreen}>
           <button className="window-control window-control--close" type="button" aria-label="Close window" onClick={() => void control('close')}><X size={8} /></button>
           <button className="window-control window-control--minimize" type="button" aria-label="Minimize window" onClick={() => void control('minimize')}><Minus size={8} /></button>
-          <button className="window-control window-control--maximize" type="button" aria-label={windowState.maximized ? 'Restore window' : 'Maximize window'} onClick={() => void control('toggle-maximize')}>{windowState.maximized ? <Copy size={7} /> : <span aria-hidden="true" />}</button>
+          <button className="window-control window-control--maximize" type="button" aria-label={maximizeLabel} onClick={() => void control(maximizeAction)}>{windowState.maximized ? <Copy size={7} /> : <span aria-hidden="true" />}</button>
         </div>
         {status}
       </>
@@ -71,9 +76,9 @@ export function WindowChrome() {
 
   return (
     <>
-      <div className={`window-controls window-controls--${platform}`} aria-label="Window controls" data-bridge-status={bridgeStatus} data-minimized={windowState.minimized}>
+      <div className={`window-controls window-controls--${platform}`} aria-label="Window controls" data-bridge-status={bridgeStatus} data-minimized={windowState.minimized} data-fullscreen={windowState.fullScreen}>
         <button className="window-control window-control--minimize" type="button" aria-label="Minimize window" onClick={() => void control('minimize')}><Minus size={14} /></button>
-        <button className="window-control window-control--maximize" type="button" aria-label={windowState.maximized ? 'Restore window' : 'Maximize window'} onClick={() => void control('toggle-maximize')}>{windowState.maximized ? <Copy size={12} /> : <Square size={11} />}</button>
+        <button className="window-control window-control--maximize" type="button" aria-label={maximizeLabel} onClick={() => void control(maximizeAction)}>{windowState.maximized ? <Copy size={12} /> : <Square size={11} />}</button>
         <button className="window-control window-control--close" type="button" aria-label="Close window" onClick={() => void control('close')}><X size={15} /></button>
       </div>
       {status}

@@ -1,4 +1,4 @@
-import { lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   getAgentDir,
@@ -13,13 +13,21 @@ import type { SessionBranch, SessionSummary } from '../../shared/contracts/ipc';
 import { messageText } from './PiEventNormalizer';
 
 export interface SessionRepositorySource {
-  list(cwd: string): Promise<SessionInfo[]>;
+  /** `includeSearchText` is intentionally opt-in: normal sidebar loading must not scan every transcript. */
+  list(cwd: string, includeSearchText?: boolean): Promise<SessionInfo[]>;
   rename(path: string, name: string): void;
   remove?(path: string): Promise<void>;
 }
 
-const sdkSource: SessionRepositorySource = {
-  list: (cwd) => SessionManager.list(cwd),
+export interface SessionSnapshot {
+  summary: SessionSummary;
+  /** All valid non-header JSONL entries, in append order. */
+  entries: readonly Record<string, unknown>[];
+  /** The active leaf-to-root path, ordered from root to leaf. */
+  branch: readonly Record<string, unknown>[];
+}
+
+const sdkMutationSource: Omit<SessionRepositorySource, 'list'> = {
   rename: (sessionPath, name) => { SessionManager.open(sessionPath).appendSessionInfo(name); },
   remove: (sessionPath) => rm(sessionPath),
 };
@@ -33,6 +41,18 @@ const sdkSource: SessionRepositorySource = {
  */
 export function defaultSessionsRoot(): string {
   return resolve(join(getAgentDir(), 'sessions'));
+}
+
+/**
+ * Mirrors Pi's default session-directory encoding without calling
+ * `SessionManager.create()`, which would create a directory as a side effect.
+ * Fate only calls this with an already canonical project path, so `resolve()`
+ * has the same shape as Pi's public SessionManager path resolution.
+ */
+export function projectSessionDirectory(cwd: string, sessionsRoot = defaultSessionsRoot()): string {
+  const resolvedCwd = resolve(cwd);
+  const encoded = `--${resolvedCwd.replace(/^[/\\]/u, '').replace(/[/\\:]/gu, '-')}--`;
+  return join(resolve(sessionsRoot), encoded);
 }
 
 /**
@@ -64,7 +84,207 @@ const MAX_SESSION_SEARCH_CACHE_CHARACTERS = 20_000_000;
 const SESSION_CACHE_TTL_MS = 2_000;
 const MAX_PROJECT_CACHE_ENTRIES = 4;
 const SESSION_BRANCH_REWRITE_RETRIES = 2;
+const MAX_SESSION_METADATA_PREFIX_BYTES = 256 * 1024;
+const MAX_SESSION_METADATA_TAIL_BYTES = 128 * 1024;
+export const MAX_SESSION_SNAPSHOT_BYTES = 128 * 1024 * 1024;
+const MAX_SESSION_SNAPSHOT_ENTRIES = 100_000;
+const MAX_SESSION_DISCOVERY_CONCURRENCY = 8;
 const sessionEntryTypes = new Set(['message', 'thinking_level_change', 'model_change', 'compaction', 'branch_summary', 'custom', 'custom_message', 'label', 'session_info']);
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseJsonRecord(line: string): JsonRecord | null {
+  if (!line.trim()) return null;
+  try {
+    const parsed: unknown = JSON.parse(line);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function textFromContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  let text = '';
+  for (const part of content) {
+    if (!isRecord(part) || part.type !== 'text' || typeof part.text !== 'string') continue;
+    text += part.text;
+    if (text.length >= MAX_SESSION_SEARCH_TEXT) return text.slice(0, MAX_SESSION_SEARCH_TEXT);
+  }
+  return text;
+}
+
+interface ScannedSessionMetadata {
+  header: JsonRecord;
+  name?: string;
+  firstMessage: string;
+  messageCount: number;
+  lastActivityTime?: number;
+  searchText: string;
+}
+
+function absorbSessionEntry(metadata: ScannedSessionMetadata, entry: JsonRecord, includeSearchText: boolean): void {
+  if (entry.type === 'session_info') {
+    const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+    if (name) metadata.name = name;
+    else delete metadata.name;
+    return;
+  }
+  if (entry.type !== 'message' || !isRecord(entry.message)) return;
+  metadata.messageCount += 1;
+  const message = entry.message;
+  const role = message.role;
+  if (role !== 'user' && role !== 'assistant') return;
+  const timestamp = typeof message.timestamp === 'number'
+    ? message.timestamp
+    : typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+  if (Number.isFinite(timestamp)) {
+    metadata.lastActivityTime = Math.max(metadata.lastActivityTime ?? Number.NEGATIVE_INFINITY, timestamp);
+  }
+  const text = textFromContent(message.content);
+  if (role === 'user' && !metadata.firstMessage && text) metadata.firstMessage = text;
+  if (includeSearchText && text && metadata.searchText.length < MAX_SESSION_SEARCH_TEXT) {
+    const separator = metadata.searchText ? '\n' : '';
+    metadata.searchText += `${separator}${text}`.slice(0, MAX_SESSION_SEARCH_TEXT - metadata.searchText.length);
+  }
+}
+
+function parseMetadataLines(source: string, metadata: ScannedSessionMetadata, includeSearchText: boolean, expectHeader: boolean, discardFirstPartialLine = false): boolean {
+  const lines = source.split(/\r?\n/gu);
+  if (discardFirstPartialLine) lines.shift();
+  let headerSeen = !expectHeader;
+  for (const line of lines) {
+    const entry = parseJsonRecord(line);
+    if (!entry) continue;
+    if (!headerSeen) {
+      if (entry.type !== 'session' || typeof entry.id !== 'string' || !entry.id) return false;
+      metadata.header = entry;
+      headerSeen = true;
+      continue;
+    }
+    absorbSessionEntry(metadata, entry, includeSearchText);
+  }
+  return headerSeen;
+}
+
+async function readFileRange(filePath: string, position: number, length: number): Promise<string> {
+  const handle = await open(filePath, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, position);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readSessionMetadata(filePath: string, includeSearchText: boolean): Promise<SessionInfo | null> {
+  try {
+    const stats = await lstat(filePath);
+    if (!stats.isFile() || stats.isSymbolicLink()) return null;
+    const prefixLength = Math.min(stats.size, MAX_SESSION_METADATA_PREFIX_BYTES);
+    const prefix = await readFileRange(filePath, 0, prefixLength);
+    const metadata: ScannedSessionMetadata = { header: {}, firstMessage: '', messageCount: 0, searchText: '' };
+    if (!parseMetadataLines(prefix, metadata, includeSearchText, true)) return null;
+
+    if (stats.size > prefixLength) {
+      const tailStart = Math.max(prefixLength, stats.size - MAX_SESSION_METADATA_TAIL_BYTES);
+      const tail = await readFileRange(filePath, tailStart, stats.size - tailStart);
+      // A tail beginning immediately after a newline already starts on a valid
+      // JSONL boundary. Otherwise discard its first partial record.
+      const discardFirstPartialLine = tailStart !== prefixLength || !prefix.endsWith('\n');
+      parseMetadataLines(tail, metadata, includeSearchText, false, discardFirstPartialLine);
+    }
+
+    const id = typeof metadata.header.id === 'string' ? metadata.header.id : '';
+    if (!id) return null;
+    const createdAt = typeof metadata.header.timestamp === 'string' ? new Date(metadata.header.timestamp) : null;
+    const created = createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : stats.birthtime;
+    const cwd = typeof metadata.header.cwd === 'string' ? metadata.header.cwd : '';
+    const parentSessionPath = typeof metadata.header.parentSession === 'string' ? metadata.header.parentSession : undefined;
+    return {
+      path: filePath,
+      id,
+      cwd,
+      ...(metadata.name === undefined ? {} : { name: metadata.name }),
+      ...(parentSessionPath === undefined ? {} : { parentSessionPath }),
+      created,
+      // Pi sorts by user/assistant activity rather than title/ledger writes.
+      // Prefix/tail metadata finds the recent activity in the common case and
+      // avoids turning every sidebar open into a transcript-wide scan.
+      modified: metadata.lastActivityTime === undefined ? created : new Date(metadata.lastActivityTime),
+      // The catalog deliberately reads bounded metadata rather than a full
+      // transcript. Counts remain an inexpensive sidebar estimate for very
+      // large sessions instead of a hidden transcript scan.
+      messageCount: Math.max(metadata.messageCount, metadata.firstMessage ? 1 : 0),
+      firstMessage: metadata.firstMessage || '(no messages)',
+      allMessagesText: metadata.searchText,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function mapWithConcurrency<T, R>(values: readonly T[], limit: number, operation: (value: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (true) {
+      const index = next;
+      next += 1;
+      if (index >= values.length) return;
+      results[index] = await operation(values[index]!);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function listSessionMetadata(cwd: string, sessionsRoot: string, includeSearchText = false): Promise<SessionInfo[]> {
+  const directory = projectSessionDirectory(cwd, sessionsRoot);
+  let entries: Array<{ name: string; isFile(): boolean }>;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const paths = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
+    .map((entry) => join(directory, entry.name))
+    .slice(0, MAX_CACHED_SESSIONS);
+  const sessions = await mapWithConcurrency(paths, MAX_SESSION_DISCOVERY_CONCURRENCY, (filePath) => readSessionMetadata(filePath, includeSearchText));
+  return sessions.filter((session): session is SessionInfo => session !== null)
+    .sort((left, right) => right.modified.getTime() - left.modified.getTime());
+}
+
+function isSnapshotEntry(value: JsonRecord): boolean {
+  return typeof value.type === 'string'
+    && sessionEntryTypes.has(value.type)
+    && typeof value.id === 'string'
+    && value.id.length > 0
+    && (typeof value.parentId === 'string' || value.parentId === null);
+}
+
+function activeSnapshotBranch(entries: readonly JsonRecord[]): JsonRecord[] {
+  const byId = new Map(entries.map((entry) => [entry.id as string, entry]));
+  const leaf = entries.at(-1);
+  const branch: JsonRecord[] = [];
+  const visited = new Set<string>();
+  let current = leaf;
+  while (current && branch.length < MAX_SESSION_SNAPSHOT_ENTRIES) {
+    const id = current.id as string;
+    if (visited.has(id)) break;
+    visited.add(id);
+    branch.push(current);
+    current = typeof current.parentId === 'string' ? byId.get(current.parentId) : undefined;
+  }
+  return branch.reverse();
+}
 
 function isSessionEntry(value: FileEntry): value is SessionEntry {
   return value.type !== 'session';
@@ -173,9 +393,14 @@ function boundedSessionSearchText(session: SessionInfo, limit: number): string {
 export class PiSessionRepository {
   private readonly cache = new Map<string, { expiresAt: number; value: Promise<CachedSessionInfo[]> }>();
   private readonly sessionsRoot: string;
+  private readonly source: SessionRepositorySource;
 
-  constructor(private readonly source: SessionRepositorySource = sdkSource, sessionsRoot: string = defaultSessionsRoot()) {
+  constructor(source?: SessionRepositorySource, sessionsRoot: string = defaultSessionsRoot()) {
     this.sessionsRoot = resolve(sessionsRoot);
+    this.source = source ?? {
+      ...sdkMutationSource,
+      list: (cwd, includeSearchText = false) => listSessionMetadata(cwd, this.sessionsRoot, includeSearchText),
+    };
   }
 
   /**
@@ -214,7 +439,8 @@ export class PiSessionRepository {
       return cached.value;
     }
     if (cached) this.cache.delete(key);
-    const value = this.source.list(cwd).then((sessions) => {
+    const listed = includeSearchText ? this.source.list(cwd, true) : this.source.list(cwd);
+    const value = listed.then((sessions) => {
       let remainingSearchCharacters = MAX_SESSION_SEARCH_CACHE_CHARACTERS;
       return [...sessions]
         .sort((left, right) => right.modified.getTime() - left.modified.getTime())
@@ -272,6 +498,45 @@ export class PiSessionRepository {
 
   async resolve(cwd: string, sessionId: string): Promise<SessionSummary | undefined> {
     return (await this.list(cwd, null)).find((session) => session.id === sessionId);
+  }
+
+  /**
+   * Loads one selected JSONL file for the read-only session view. This is the
+   * only full transcript read on the normal navigation path; list/sidebar reads
+   * remain bounded metadata work and never initialize a Pi runtime.
+   */
+  async snapshot(cwd: string, sessionId: string, knownSummary?: SessionSummary): Promise<SessionSnapshot | undefined> {
+    const summary = knownSummary?.id === sessionId ? knownSummary : await this.resolve(cwd, sessionId);
+    if (!summary || !isSafeSessionPath(this.sessionsRoot, summary.path)) return undefined;
+    try {
+      const stats = await lstat(summary.path);
+      if (!stats.isFile() || stats.isSymbolicLink()) return undefined;
+      if (stats.size > MAX_SESSION_SNAPSHOT_BYTES) {
+        throw new Error(`The saved session is larger than ${Math.floor(MAX_SESSION_SNAPSHOT_BYTES / 1024 / 1024)} MiB and cannot be previewed safely.`);
+      }
+      const source = await readFile(summary.path, 'utf8');
+      const entries: JsonRecord[] = [];
+      let header: JsonRecord | null = null;
+      for (const line of source.split(/\r?\n/gu)) {
+        const parsed = parseJsonRecord(line);
+        if (!parsed) continue;
+        if (!header) {
+          if (parsed.type !== 'session' || typeof parsed.id !== 'string' || !parsed.id) return undefined;
+          header = parsed;
+          continue;
+        }
+        if (!isSnapshotEntry(parsed)) continue;
+        entries.push(parsed);
+        if (entries.length > MAX_SESSION_SNAPSHOT_ENTRIES) {
+          throw new Error(`The saved session has more than ${MAX_SESSION_SNAPSHOT_ENTRIES.toLocaleString()} entries and cannot be previewed safely.`);
+        }
+      }
+      if (!header || header.id !== sessionId) return undefined;
+      return { summary, entries, branch: activeSnapshotBranch(entries) };
+    } catch (error) {
+      if (error instanceof Error && /cannot be previewed safely/u.test(error.message)) throw error;
+      return undefined;
+    }
   }
 
   async rename(cwd: string, sessionId: string, name: string): Promise<void> {

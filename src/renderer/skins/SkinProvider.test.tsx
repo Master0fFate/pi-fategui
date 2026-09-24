@@ -30,7 +30,8 @@ describe('skin component presentation', () => {
     expect(input).toHaveValue('keep my draft');
     fireEvent.click(screen.getByRole('button', { name: 'Open terminal' }));
     expect(screen.getByRole('status')).toHaveTextContent('2');
-    act(() => { applySkin('default'); });
+    act(() => { applySkin('m3-expressive'); });
+    expect(document.documentElement.dataset.skin).toBe('m3-expressive');
     expect(screen.getByTestId('default-icon')).toBeInTheDocument();
     expect(screen.getByRole('textbox')).toBe(input);
     expect(input).toHaveValue('keep my draft');

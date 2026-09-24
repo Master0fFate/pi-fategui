@@ -26,6 +26,7 @@ import { trimSpeechPcm } from '../../../shared/speechGate';
 import { VoiceStreamFeedQueue, startVoiceStream, type VoiceStreamController } from './voiceStream';
 import { ProviderConnectDialog } from '../../components/ProviderConnectDialog';
 import { modelIdentity, visibleModels } from '../../../shared/modelVisibility';
+import { hasStoppableChildWork } from '../../../shared/sessionStop';
 
 interface Attachment {
   name: string;
@@ -250,6 +251,13 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [caretPosition, setCaretPosition] = useState(0);
   const [composerError, setComposerError] = useState<string | null>(null);
+  // Status errors (voice failures, delivery failures, limits) are transient:
+  // auto-dismiss after 8s so they never squat on the composer indefinitely.
+  useEffect(() => {
+    if (!composerError) return;
+    const timer = window.setTimeout(() => setComposerError(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [composerError]);
   const [inputHeight, setInputHeight] = useState(MIN_COMPOSER_INPUT_HEIGHT);
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [voiceLag, setVoiceLag] = useState(false);
@@ -316,6 +324,8 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     sessionCapabilities: state.runtime.sessionCapabilities,
     sessionOperation: state.runtime.sessionOperation,
     agentTeams: state.runtime.agentTeams,
+    subagents: state.runtime.subagents,
+    subagentWorkflows: state.runtime.subagentWorkflows,
   })));
   const activeSessionDraftKey = sessionDraftKey(runtime.project?.path ?? null, runtime.sessionId, runtime.sessions);
   const cachedActiveDraft = activeSessionDraftKey === null ? undefined : sessionDraftsByIdentity.get(activeSessionDraftKey);
@@ -361,10 +371,11 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const PermissionIcon = permissionLevel === 'read-only' ? Shield : permissionLevel === 'full-access' ? Zap : ShieldCheck;
   const forkPoint = runtime.forkPoints?.at(-1);
   const activeSessionRunning = runtime.activeSessionRunning ?? runtime.streaming;
+  const childWorkActive = hasStoppableChildWork(runtime);
   const goalCancelable = Boolean(activeGoal && activeGoal.status !== 'completed' && activeGoal.status !== 'cancelled');
   const hasPendingPrompt = Boolean(draft.trim() || images.length > 0 || browserAnnotationIds.length > 0 || sessionReferences.length > 0);
   const liveAgentMessageTarget = liveAgentTarget !== null && liveAgentTarget.kind !== 'session';
-  const sendButtonStops = !liveAgentMessageTarget && !hasPendingPrompt && (activeSessionRunning || goalCancelable);
+  const sendButtonStops = !liveAgentMessageTarget && !hasPendingPrompt && (activeSessionRunning || goalCancelable || childWorkActive);
   const canFork = Boolean(runtime.sessionCapabilities?.fork && forkPoint && !activeSessionRunning && !runtime.sessionOperation);
   const forkTooltip = forking
     ? 'Creating the new session…'
@@ -384,14 +395,8 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const modelLabel = compactModelName(nextModelName);
   const modelTooltip = `Current: ${currentModelName}\nNext: ${nextModelName}`;
   const modelOptions = useMemo(() => {
-    if (!nextModel) return [{ value: '', label: 'Not connected' }];
-    const options = visibleModels(runtime.models, disabledModels).map((model) => ({ value: modelIdentity(model.provider, model.id), label: model.name, detail: model.provider }));
-    const selectedKey = modelIdentity(nextModel.provider, nextModel.id);
-    if (!options.some((option) => option.value === selectedKey)) {
-      options.unshift({ value: selectedKey, label: nextModel.name, detail: nextModel.provider });
-    }
-    return options;
-  }, [runtime.models, nextModel, disabledModels]);
+    return visibleModels(runtime.models, disabledModels).map((model) => ({ value: modelIdentity(model.provider, model.id), label: model.name, detail: model.provider }));
+  }, [runtime.models, disabledModels]);
   const voiceDownloadProgress = speechDownload?.modelId === speech.modelId
     ? speechDownload.state === 'verifying' ? 100 : Math.min(100, Math.round(speechDownload.downloadedBytes / speechDownload.totalBytes * 100))
     : 0;
@@ -1137,7 +1142,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     const cancellableGoal = Boolean(goalNow && goalNow.status !== 'completed' && goalNow.status !== 'cancelled');
     if (
       runtimeNow.status !== 'ready'
-      || (!runtimeNow.streaming && !runtimeNow.activeSessionRunning && !cancellableGoal)
+      || (!runtimeNow.streaming && !runtimeNow.activeSessionRunning && !cancellableGoal && !hasStoppableChildWork(runtimeNow))
       || !('piDesktop' in window)
     ) return;
     try {
@@ -2695,7 +2700,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                     aria-label={liveAgentMessageTarget ? 'Send message to live agent' : sendButtonStops ? goalCancelable ? 'Cancel goal' : 'Stop Pi' : runtime.streaming || runtime.activeSessionRunning ? 'Queue follow-up message' : 'Send message'}
                     aria-describedby={sendButtonStops ? 'streaming-send-instructions' : undefined}
                     aria-busy={submitting || liveAgentBusy}
-                    disabled={(!connected && runtime.status !== 'auth-required') || liveAgentBusy || (!runtime.streaming && submitting) || (!liveAgentMessageTarget && !runtime.streaming && !activeSessionRunning && !goalCancelable && !hasPendingPrompt)}
+                    disabled={(!connected && runtime.status !== 'auth-required') || liveAgentBusy || (!runtime.streaming && submitting) || (!liveAgentMessageTarget && !runtime.streaming && !activeSessionRunning && !goalCancelable && !childWorkActive && !hasPendingPrompt)}
                   >
                     <ActionContent text={submitting && !runtime.streaming ? 'sending' : liveAgentMessageTarget ? 'send' : sendButtonStops ? 'stop' : activeSessionRunning ? 'queue' : 'send'}>{submitting && !runtime.streaming ? <LoaderCircle className="tool-spinner" size={16} /> : sendButtonStops ? <Square size={16} strokeWidth={2.5} aria-hidden="true" /> : <ArrowUp size={18} aria-hidden="true" />}</ActionContent>
                   </button>

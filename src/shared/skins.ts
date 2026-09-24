@@ -9,9 +9,9 @@ export const MAX_SKIN_V2_MANIFEST_BYTES = 6 * 1024 * 1024;
 export const MAX_SKIN_IMAGE_BYTES = 4 * 1024 * 1024;
 export const MAX_SKIN_MASK_BYTES = 128 * 1024;
 const safeText = (maximum: number) => z.string().trim().min(1).max(maximum).regex(/^[^\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]+$/u, 'Control characters are not allowed.');
-export const builtInSkinIdSchema = z.enum(['default', 'dreamcore']);
+export const builtInSkinIdSchema = z.enum(['default', 'dreamcore', 'm3-expressive']);
 export type BuiltInSkinId = z.infer<typeof builtInSkinIdSchema>;
-export const skinPackFolderIdSchema = z.string().regex(/^[a-z][a-z0-9-]{1,31}$/).refine((id) => !/^(con|prn|aux|nul|com[0-9]|lpt[0-9]|default|dreamcore|angelcore)$/u.test(id), 'This pack ID is reserved.');
+export const skinPackFolderIdSchema = z.string().regex(/^[a-z][a-z0-9-]{1,31}$/).refine((id) => !/^(con|prn|aux|nul|com[0-9]|lpt[0-9]|default|dreamcore|angelcore|m3-expressive)$/u.test(id), 'This pack ID is reserved.');
 export const skinPackIdSchema = z.string().startsWith('pack:').max(37).refine((id) => skinPackFolderIdSchema.safeParse(id.slice(5)).success, 'Invalid skin pack ID.');
 const strictSkinIdSchema = z.union([builtInSkinIdSchema, skinPackIdSchema]);
 export const skinIdSchema = strictSkinIdSchema.catch('default');
@@ -35,7 +35,7 @@ export const skinPackManifestSchema = z.object({
   version: z.string().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[a-z0-9.-]{1,20})?$/u),
   description: safeText(240),
   author: safeText(80).optional(),
-  base: builtInSkinIdSchema,
+  base: z.enum(['default', 'dreamcore']),
   layout: skinLayoutSchema.optional(),
   palette: z.object({ tone: z.enum(['dark', 'light']), colors: themeColorsSchema }).strict().optional(),
   background: backgroundManifest.optional(),
@@ -75,7 +75,7 @@ export const skinDefinitionSchema = z.object({
 }).strict().refine((skin) => skin.origin === 'built-in' ? skin.id === skin.base : skin.id.startsWith('pack:'), 'Skin origin and ID must agree.');
 export type SkinDefinition = z.infer<typeof skinDefinitionSchema>;
 export const skinCatalogSchema = z.object({
-  skins: z.array(skinDefinitionSchema).min(2).max(MAX_SKIN_PACKS + 2),
+  skins: z.array(skinDefinitionSchema).min(2).max(MAX_SKIN_PACKS + 3),
   storagePath: z.string().max(4096),
   diagnostics: z.array(z.string().max(500)).max(MAX_SKIN_PACKS + 1),
 }).strict();
@@ -87,6 +87,7 @@ export const skinExportResultSchema = z.object({ path: z.string().max(4096) }).s
 export const builtInSkins: readonly SkinDefinition[] = [
   { id: 'default', base: 'default', origin: 'built-in', name: 'Default', description: 'The focused, continuous Fate UI workbench.' },
   { id: 'dreamcore', base: 'dreamcore', origin: 'built-in', name: 'Angelcore', description: 'Terminal-style controls, command input, and an open transcript.', appearance: { interfaceFont: 'jetbrains-mono' }, styles: { normal: { sidebar: { padding: 14 }, settings: { padding: 18 }, music: { padding: 12 }, tooltips: { padding: 8 } }, compact: { sidebar: { padding: 8 }, settings: { padding: 12 }, music: { padding: 8 } } } },
+  { id: 'm3-expressive', base: 'm3-expressive', origin: 'built-in', name: 'M3 Expressive', description: 'A continuous tonal workspace, expressive shapes, and focused controls.', appearance: { interfaceFont: 'roboto-flex' } },
 ];
 export function builtInSkinName(id: BuiltInSkinId): string { return builtInSkins.find((skin) => skin.id === id)!.name; }
 export function resolveSkinId(value: unknown): SkinId { return skinIdSchema.parse(value); }

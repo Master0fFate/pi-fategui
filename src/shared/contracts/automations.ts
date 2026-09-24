@@ -1,5 +1,12 @@
 import { z } from 'zod';
 
+/**
+ * Legacy Automations archive format. The standalone Automations tab was merged
+ * into the Agents library; this schema exists only to read documents written by
+ * the retired `~/.pi/fateGUI/automations/v1` store so they can be imported into
+ * TaskTemplates. It is intentionally write-free: nothing in the app creates or
+ * updates these files anymore.
+ */
 export const AUTOMATION_NAME_MAX_LENGTH = 80;
 export const AUTOMATION_PROMPT_MAX_LENGTH = 200_000;
 export const AUTOMATION_LIST_LIMIT = 500;
@@ -29,20 +36,6 @@ export const automationDefinitionSchema = z.object({
 }).strict();
 
 export const automationListSchema = z.array(automationDefinitionSchema).max(AUTOMATION_LIST_LIMIT);
-export const automationCreateInputSchema = z.object({
-  name: automationNameSchema,
-  prompt: automationPromptSchema,
-  permissionLevel: automationPermissionLevelSchema.default('read-only'),
-}).strict();
-export const automationUpdateInputSchema = automationCreateInputSchema.extend({ id: automationIdSchema }).strict();
-export const automationIdInputSchema = z.object({ id: automationIdSchema }).strict();
-export const automationLaunchRecordInputSchema = automationIdInputSchema.extend({
-  outcome: automationLaunchOutcomeSchema,
-}).strict();
-export const automationDeleteResultSchema = z.object({ deleted: z.literal(true) }).strict();
 
 export type AutomationDefinition = z.infer<typeof automationDefinitionSchema>;
-export type AutomationCreateInput = z.infer<typeof automationCreateInputSchema>;
-export type AutomationUpdateInput = z.infer<typeof automationUpdateInputSchema>;
 export type AutomationPermissionLevel = z.infer<typeof automationPermissionLevelSchema>;
-export type AutomationLaunchOutcome = z.infer<typeof automationLaunchOutcomeSchema>;

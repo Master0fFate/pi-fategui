@@ -53,6 +53,9 @@ importers:
       '@fontsource-variable/noto-sans-sc':
         specifier: ^5.3.0
         version: 5.3.0
+      '@fontsource-variable/roboto-flex':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@fontsource/poppins':
         specifier: ^5.3.0
         version: 5.3.0
@@ -632,6 +635,9 @@ packages:
 
   '@fontsource-variable/noto-sans@5.3.0':
     resolution: {integrity: sha512-e3ZuxzY9AL2psXPZlhwhnYrHUHv6PMoyK9MQ7croF0CUgURLqu9EMjW7q2FgVLwij1tjLsIHQrnwQ8aUcg4BiA==}
+
+  '@fontsource-variable/roboto-flex@5.3.0':
+    resolution: {integrity: sha512-bOxckUy0qXNRjhV6e4pcHGSvptix4ZRD1uaj5Za8h+p3qrb2GL4U4TQdpVmPSy0SmqwldfD+JJqEKdF68EyiAw==}
 
   '@fontsource/poppins@5.3.0':
     resolution: {integrity: sha512-cms1nM7U6SN8epIV1WMVOV8VsA645aSm3wHfzIQnkk188U341ThbJGSl2Sv54V29gnDbT2arMPfLzvVIIVCceQ==}
@@ -5006,6 +5012,8 @@ snapshots:
   '@fontsource-variable/noto-sans-sc@5.3.0': {}
 
   '@fontsource-variable/noto-sans@5.3.0': {}
+
+  '@fontsource-variable/roboto-flex@5.3.0': {}
 
   '@fontsource/poppins@5.3.0': {}
 

@@ -2,7 +2,9 @@
 
 Fate UI ships with built-in themes across dark and light tones — and maps any Pi-compatible theme into the same palette. Pick one under **Settings → Skins → Color theme**.
 
-Themes provide colors; [interface skins](skins.md) provide structural styling. They are independent: every built-in, custom Fate, or trusted-project Pi palette works under Default or Angelcore, and choosing one never silently changes the other.
+Themes provide colors; [interface skins](skins.md) provide structural styling. They are independent: every built-in, custom Fate, or trusted-project Pi palette works under Default, Angelcore, or M3 Expressive, and choosing one never silently changes the other.
+
+The built-in **M3 Expressive** dark palette uses near-black canvas, blue-indigo surfaces, and lavender emphasis. Select it independently from the skin of the same name; selecting either never selects the other. [Design notes and screenshots](m3-expressive.md).
 
 ## Create your own theme
 
