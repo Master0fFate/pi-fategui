@@ -1561,7 +1561,12 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.getByRole('button', { name: 'Close image viewer' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByRole('article', { name: 'read tool succeeded' })).toBeVisible();
-    await page.getByRole('article', { name: 'read tool succeeded' }).getByRole('button').click();
+    const detailToggle = page.getByRole('article', { name: 'read tool succeeded' }).locator('.tool-card-header');
+    await page.getByRole('button', { name: 'Expand all reasoning and tools' }).click();
+    await expect(detailToggle).toHaveAttribute('aria-expanded', 'true');
+    await page.getByRole('button', { name: 'Collapse all reasoning and tools' }).click();
+    await expect(detailToggle).toHaveAttribute('aria-expanded', 'false');
+    await detailToggle.click();
     await expect(page.getByRole('article', { name: 'read tool succeeded' }).getByText('export const answer = 42;')).toBeVisible();
     const chatFontRouting = await page.evaluate(() => {
       const interfaceFont = getComputedStyle(document.documentElement).getPropertyValue('--font-interface').trim();

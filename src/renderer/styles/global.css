@@ -911,12 +911,16 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .runtime-notice span { color: var(--theme-warning); line-height: 1.45; }
 .welcome--conversation { align-items: stretch; padding: 18px clamp(18px, 4vw, 56px) 0; overflow: hidden; }
 .welcome--conversation .runtime-notice { flex: none; margin: 0 auto 10px; }
-.conversation { --conversation-scrollbar-gap: 18px; position: relative; width: min(100%, 820px); min-height: 120px; margin: 0 auto; flex: 1; overflow: hidden; }
+.conversation { --conversation-scrollbar-gap: 18px; position: relative; display: flex; width: min(100%, 820px); min-height: 120px; margin: 0 auto; flex: 1; flex-direction: column; overflow: hidden; }
 .conversation--empty { min-height: 0; }
-.conversation-virtuoso { height: 100%; scrollbar-width: none; }
+.conversation-detail-toolbar { display: flex; height: 30px; flex: none; align-items: center; justify-content: flex-end; padding: 0 18px 0 10px; }
+.conversation-detail-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; color: var(--theme-muted); background: transparent; cursor: pointer; font: 10px var(--font-interface); }
+.conversation-detail-toggle:hover, .conversation-detail-toggle:focus-visible { color: var(--theme-text); background: var(--theme-raised); }
+.conversation-virtuoso { min-height: 0; height: 100%; flex: 1; scrollbar-width: none; }
 .conversation-virtuoso::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .conversation-composer-spacer { height: var(--composer-overlay-space, 188px); }
-.conversation-scrollbar { position: absolute; z-index: 10; top: 0; right: 0; bottom: max(0px, calc(var(--composer-overlay-space, 188px) - 20px + var(--conversation-scrollbar-gap))); width: 10px; touch-action: none; }
+.conversation-scrollbar { position: absolute; z-index: 10; top: 30px; right: 0; bottom: max(0px, calc(var(--composer-overlay-space, 188px) - 20px + var(--conversation-scrollbar-gap))); width: 10px; touch-action: none; }
+.conversation[data-has-details="false"] .conversation-scrollbar { top: 0; }
 .conversation-scrollbar[data-visible="false"] { visibility: hidden; pointer-events: none; }
 .conversation-scrollbar:focus-visible { outline: 1px solid var(--theme-accent); outline-offset: 1px; }
 .conversation-scrollbar-thumb { position: absolute; top: 0; right: 2px; left: 2px; min-height: 24px; border-radius: 999px; background: color-mix(in srgb, var(--theme-text-soft) 28%, var(--theme-panel)); cursor: grab; }

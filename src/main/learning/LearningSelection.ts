@@ -11,13 +11,17 @@ function containsTerm(task: Set<string>, term: string): boolean {
   const parts = [...words(term)];
   return parts.length > 0 && parts.every((word) => task.has(word));
 }
-export function learningRelevance(revision: LessonRevision, text: string): { score: number; reasons: string[]; pathMatch: boolean } {
-  const task = words(text);
-  const explicitPaths = new Set((text.match(/[\p{L}\p{N}_@.-]+(?:\/[\p{L}\p{N}_@.-]+)+/gu) ?? []).map((value) => value.replace(/[.,;]+$/u, '')));
+function relevanceForTask(revision: LessonRevision, task: Set<string>, explicitPaths: Set<string>): { score: number; reasons: string[]; pathMatch: boolean } {
   const paths = revision.content.activation.relativePaths.filter((value) => explicitPaths.has(value));
   const symbols = revision.content.activation.symbols.filter((value) => containsTerm(task, value));
   const keywords = [...new Set(revision.content.activation.keywords.map(normalized))].filter((value) => value.length >= 3 && !common.has(value) && containsTerm(task, value)).slice(0, 3);
   return { score: (paths.length ? 4 : 0) + (symbols.length ? 3 : 0) + keywords.length, pathMatch: revision.content.activation.relativePaths.length === 0 || paths.length > 0, reasons: [...(paths.length ? [`Path: ${paths.join(', ')}`] : []), ...(symbols.length ? [`Symbol: ${symbols.join(', ')}`] : []), ...(keywords.length ? [`Keywords: ${keywords.join(', ')}`] : [])].map((reason) => reason.slice(0, 500)) };
+}
+export function learningRelevance(revision: LessonRevision, text: string): { score: number; reasons: string[]; pathMatch: boolean } {
+  return relevanceForTask(revision, words(text), explicitPathsFor(text));
+}
+function explicitPathsFor(text: string): Set<string> {
+  return new Set((text.match(/[\p{L}\p{N}_@.-]+(?:\/[\p{L}\p{N}_@.-]+)+/gu) ?? []).map((value) => value.replace(/[.,;]+$/u, '')));
 }
 type ScopedRevision = { revision: LessonRevision; scope: LearningScope };
 function renderItems(items: ScopedRevision[]): string {
@@ -34,12 +38,17 @@ export async function selectLearning(input: {
   const skip = (lessonId: string, reason: string) => { if (selection.skipped.length < 100) selection.skipped.push({ lessonId, reason }); };
   const key = (scope: LearningScope, id: string) => `${scope}:${id}`;
   const pinned = new Map(input.pins.map((pin) => [key(pin.scope ?? input.pinScope ?? input.snapshot.scope, pin.lessonId), pin.revisionId]));
-  const candidates = snapshots.flatMap((snapshot) => snapshot.lessons.map((lesson) => {
-    const revision = snapshot.revisions.find((item) => item.id === lesson.activeRevisionId)!;
-    const relevance = learningRelevance(revision, input.text);
-    const core = isCoreMemory(revision.content);
-    return { snapshot, lesson, revision, ...relevance, core, priority: core ? (snapshot.scope === 'global' ? 11 : 10) : relevance.score, manual: pinned.has(key(snapshot.scope, lesson.id)) };
-  })).sort((a, b) => Number(b.manual) - Number(a.manual) || b.priority - a.priority || (key(a.snapshot.scope, a.lesson.id) < key(b.snapshot.scope, b.lesson.id) ? -1 : 1));
+  const task = words(input.text);
+  const explicitPaths = explicitPathsFor(input.text);
+  const candidates = snapshots.flatMap((snapshot) => {
+    const revisions = new Map(snapshot.revisions.map((revision) => [revision.id, revision]));
+    return snapshot.lessons.map((lesson) => {
+      const revision = revisions.get(lesson.activeRevisionId)!;
+      const relevance = relevanceForTask(revision, task, explicitPaths);
+      const core = isCoreMemory(revision.content);
+      return { snapshot, lesson, revision, ...relevance, core, priority: core ? (snapshot.scope === 'global' ? 11 : 10) : relevance.score, manual: pinned.has(key(snapshot.scope, lesson.id)) };
+    });
+  }).sort((a, b) => Number(b.manual) - Number(a.manual) || b.priority - a.priority || (key(a.snapshot.scope, a.lesson.id) < key(b.snapshot.scope, b.lesson.id) ? -1 : 1));
   for (const pin of input.pins) if (!candidates.some(({ snapshot, lesson }) => lesson.id === pin.lessonId && snapshot.scope === (pin.scope ?? input.pinScope ?? input.snapshot.scope))) skip(pin.lessonId, 'Selected lesson was deleted, unavailable, or belongs to another scope.');
   const attached: ScopedRevision[] = [];
   const cache = new Map<string, Promise<Buffer>>();
@@ -76,8 +85,7 @@ export async function selectLearning(input: {
         } catch { unavailable = 'Relevant file is missing, unsafe, or too large to check.'; }
       }
     }
-    const proposed = renderItems([...attached, { revision, scope: snapshot.scope }]);
-    if (!unavailable && utf8Bytes(proposed) > LEARNING_LIMITS.contextBytes) unavailable = 'Whole item does not fit the shared context byte budget; no steps were truncated.';
+    if (!unavailable && utf8Bytes(renderItems([...attached, { revision, scope: snapshot.scope }])) > LEARNING_LIMITS.contextBytes) unavailable = 'Whole item does not fit the shared context byte budget; no steps were truncated.';
     if (unavailable) { skip(lesson.id, unavailable); continue; }
     attached.push({ revision, scope: snapshot.scope });
     const coreReason = snapshot.scope === 'global' ? 'Reviewed user profile: reusable preferences across projects' : 'Reviewed project briefing: orientation across sessions';

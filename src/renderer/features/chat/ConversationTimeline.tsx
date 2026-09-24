@@ -1,4 +1,4 @@
-import { Brain, Check, CircleAlert, Copy, GitFork, PackageCheck, PackageOpen, Plug, RotateCcw } from 'lucide-react';
+import { Brain, Check, ChevronsDownUp, ChevronsUpDown, CircleAlert, Copy, GitFork, PackageCheck, PackageOpen, Plug, RotateCcw } from 'lucide-react';
 import { useLearningStore } from '../learning/learningStore';
 import { memo, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
@@ -10,6 +10,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { MentionText } from './AgentMention';
 import { AssistantMarkdown, ConversationImageViewerProvider } from './RichMessageContent';
 import { ToolCard } from './ToolCard';
+import { type DetailExpansionCommand, useDetailExpansion } from './detailExpansion';
 import { useSkinComponents } from '../../skins/SkinProvider';
 
 export { AssistantMarkdown } from './RichMessageContent';
@@ -158,12 +159,13 @@ export const MessageRow = memo(function MessageRow({ messageId }: { messageId: s
   );
 });
 
-const ReasoningRow = memo(function ReasoningRow({ messageId }: { messageId: string }) {
+const ReasoningRow = memo(function ReasoningRow({ messageId, expansionCommand }: { messageId: string; expansionCommand: DetailExpansionCommand }) {
   const reasoning = useRuntimeStore((state) => state.reasoningByMessageId[messageId]);
+  const { expanded, toggle } = useDetailExpansion(expansionCommand);
   if (!reasoning) return null;
   return (
-    <details className="reasoning-row">
-      <summary><Brain size={13} /><span className="icon-label">Reasoning</span></summary>
+    <details className="reasoning-row" open={expanded}>
+      <summary onClick={(event) => { event.preventDefault(); toggle(); }}><Brain size={13} /><span className="icon-label">Reasoning</span></summary>
       <pre>{reasoning}</pre>
     </details>
   );
@@ -260,12 +262,12 @@ export function coalesceSubagentWaitPolls(
 const scrollerIsAtBottom = (scroller: HTMLElement) =>
   scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= BOTTOM_THRESHOLD_PX;
 
-const TimelineRow = memo(function TimelineRow({ id, waitPollCount }: { id: string; waitPollCount?: number | undefined }) {
+const TimelineRow = memo(function TimelineRow({ id, waitPollCount, expansionCommand }: { id: string; waitPollCount?: number | undefined; expansionCommand: DetailExpansionCommand }) {
   const entry = useRuntimeStore((state) => state.timelineById[id]);
   if (!entry) return null;
   if (entry.kind === 'message') return <MessageRow messageId={entry.messageId} />;
-  if (entry.kind === 'reasoning') return <ReasoningRow messageId={entry.messageId} />;
-  if (entry.kind === 'tool') return <ToolCard toolCallId={entry.toolCallId} waitPollCount={waitPollCount} />;
+  if (entry.kind === 'reasoning') return <ReasoningRow messageId={entry.messageId} expansionCommand={expansionCommand} />;
+  if (entry.kind === 'tool') return <ToolCard toolCallId={entry.toolCallId} waitPollCount={waitPollCount} expansionCommand={expansionCommand} />;
   if (entry.kind === 'error') {
     return (
       <div className="timeline-notice timeline-notice--error" role="alert">
@@ -298,6 +300,15 @@ export const ConversationTimeline = memo(function ConversationTimeline() {
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
   const hasHistoricalTimeline = useRuntimeStore((state) => state.runtime.messages.length > 0 || Boolean(state.runtime.tools?.length));
   const timelineSessionKey = sessionTimelineKey(projectPath, sessionId);
+  const [detailCommand, setDetailCommand] = useState<DetailExpansionCommand>({ sessionKey: timelineSessionKey, revision: 0, expanded: false });
+  // A session switch must not carry the previous conversation's disclosure state.
+  const expansionCommand = detailCommand.sessionKey === timelineSessionKey
+    ? detailCommand
+    : { sessionKey: timelineSessionKey, revision: 0, expanded: false };
+  const hasDetails = useMemo(() => displayOrder.some((id) => {
+    const kind = timelineById[id]?.kind;
+    return kind === 'reasoning' || kind === 'tool';
+  }), [displayOrder, timelineById, timelineVersion]);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const positionedSessionRef = useRef<string | null>(null);
   const scrollerRef = useRef<HTMLElement | null>(null);
@@ -563,7 +574,16 @@ export const ConversationTimeline = memo(function ConversationTimeline() {
 
   return (
     <ConversationImageViewerProvider>
-      <div className="conversation" aria-label="Conversation timeline" aria-live="polite" data-entry-count={order.length} data-visible-entry-count={displayOrder.length}>
+      <div className="conversation" aria-label="Conversation timeline" aria-live="polite" data-entry-count={order.length} data-visible-entry-count={displayOrder.length} data-has-details={hasDetails}>
+      {hasDetails && <div className="conversation-detail-toolbar"><button
+        className="conversation-detail-toggle"
+        type="button"
+        aria-label={expansionCommand.expanded ? 'Collapse all reasoning and tools' : 'Expand all reasoning and tools'}
+        onClick={() => setDetailCommand((current) => {
+          const inSession = current.sessionKey === timelineSessionKey ? current : { sessionKey: timelineSessionKey, revision: 0, expanded: false };
+          return { sessionKey: timelineSessionKey, revision: inSession.revision + 1, expanded: !inSession.expanded };
+        })}
+      >{expansionCommand.expanded ? <ChevronsDownUp size={13} aria-hidden="true" /> : <ChevronsUpDown size={13} aria-hidden="true" />}<span>{expansionCommand.expanded ? 'Collapse details' : 'Expand details'}</span></button></div>}
       <Virtuoso
         key={timelineSessionKey ?? 'no-session'}
         ref={virtuosoRef}
@@ -572,7 +592,7 @@ export const ConversationTimeline = memo(function ConversationTimeline() {
         computeItemKey={(_index, id) => id}
         itemContent={(index, id) => {
           const previousEntry = index > 0 ? timelineById[displayOrder[index - 1] ?? ''] : undefined;
-          return <div className="timeline-row" data-entry-kind={timelineById[id]?.kind} data-follows-message={followsMessage(previousEntry) || undefined}><TimelineRow id={id} waitPollCount={waitPollCountById[id]} /></div>;
+          return <div className="timeline-row" data-entry-kind={timelineById[id]?.kind} data-follows-message={followsMessage(previousEntry) || undefined}><TimelineRow id={id} waitPollCount={waitPollCountById[id]} expansionCommand={expansionCommand} /></div>;
         }}
         components={{ Footer: ConversationFooter }}
         scrollerRef={bindScroller}
