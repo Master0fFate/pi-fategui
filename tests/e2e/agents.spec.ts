@@ -246,7 +246,8 @@ for (const skin of ['default', 'dreamcore', 'm3-expressive'] as const) {
       await page.getByRole('button', { name: /Open project/ }).first().click();
       await agents(page); await section(page, 'Agents');
       await page.getByRole('button', { name: 'Open home conversation', exact: true }).click();
-      expect((await page.evaluate(async () => (await window.piDesktop.getAgentLibrary()).states[0]!)).homeSessionId).toBe(home.homeSessionId);
+      // The project-scoped library can hydrate just after the session switch on slower hosts.
+      await expect.poll(() => page.evaluate(async (agentId: string) => (await window.piDesktop.getAgentLibrary()).states.find((state) => state.agentId === agentId)?.homeSessionId, home.agentId)).toBe(home.homeSessionId);
       await agents(page); await section(page, 'Agents');
       await itemAction(page, 'Reviewer v2', 'Disable');
       await expect(page.getByRole('button', { name: 'Open home conversation', exact: true })).toBeDisabled();

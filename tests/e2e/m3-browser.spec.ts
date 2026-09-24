@@ -45,6 +45,21 @@ async function chromeGeometry(page: Page) {
   })).toEqual({ selected: true, inactive: true, distinct: true, capsule: true, address: true, toolbarFits: true, centered: true, titleTruncates: true });
 }
 
+async function resizeBrowserPane(page: Page, key: 'ArrowLeft' | 'ArrowRight', count: number) {
+  const handle = page.getByRole('separator', { name: 'Resize chat and browser' });
+  if (await page.locator('.workspace').evaluate((workspace) => workspace.clientWidth <= 820)) {
+    // Narrow macOS runner displays use the real stacked layout, without a split handle.
+    await expect(handle).toBeHidden();
+    const preview = await page.locator('.browser-thread-preview').boundingBox();
+    const conversation = await page.locator('.browser-thread-conversation').boundingBox();
+    expect(preview!.y + preview!.height).toBeLessThanOrEqual(conversation!.y);
+    return;
+  }
+  await expect(handle).toBeVisible();
+  await handle.focus();
+  for (let index = 0; index < count; index += 1) await page.keyboard.press(key);
+}
+
 test('M3 browser capsules preserve real tabs, navigation and website styling in both densities and palettes', async () => {
   test.setTimeout(120_000);
   const directory = await mkdtemp(path.join(tmpdir(), 'fate-m3-browser-'));
@@ -86,20 +101,17 @@ test('M3 browser capsules preserve real tabs, navigation and website styling in 
     await expect(browser.getByRole('tab', { name: 'Second local page', exact: true })).toBeVisible();
     await browser.getByRole('button', { name: 'Go back' }).click();
     await expect(browser.getByRole('tab', { name: title, exact: true })).toHaveAttribute('aria-selected', 'true');
-    await page.getByRole('separator', { name: 'Resize chat and browser' }).focus();
-    for (let index = 0; index < 5; index += 1) await page.keyboard.press('ArrowLeft');
+    await resizeBrowserPane(page, 'ArrowLeft', 5);
     await browser.getByRole('button', { name: 'Go forward' }).click();
     await expect(browser.getByRole('tab', { name: 'Second local page', exact: true })).toBeVisible();
     await browser.getByRole('button', { name: 'Go back' }).click();
     await expect(browser.getByRole('tab', { name: title, exact: true })).toHaveAttribute('aria-selected', 'true');
     await browser.getByRole('button', { name: 'Reload page' }).click();
     await expect(browser.getByRole('button', { name: 'Reload page' })).toBeEnabled();
-    await page.getByRole('separator', { name: 'Resize chat and browser' }).focus();
-    for (let index = 0; index < 5; index += 1) await page.keyboard.press('ArrowRight');
+    await resizeBrowserPane(page, 'ArrowRight', 5);
     for (const compact of [false, true]) {
       if (compact) {
-        await page.getByRole('separator', { name: 'Resize chat and browser' }).focus();
-        for (let index = 0; index < 12; index += 1) await page.keyboard.press('ArrowRight');
+        await resizeBrowserPane(page, 'ArrowRight', 12);
       }
       for (const palette of ['M3 Expressive', 'Daylight', copper.name]) {
         await page.getByRole('button', { name: 'Settings', exact: true }).click();
