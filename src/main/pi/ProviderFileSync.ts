@@ -126,10 +126,15 @@ export class ProviderFileSync {
     try {
       this.watcher = watch(directory, { persistent: false }, (_event, filename) => {
         const name = typeof filename === 'string' ? filename : null;
-        if (!name || !watched.has(name)) return;
+        // macOS can omit the filename for a directory event. Reconcile when
+        // it does; content hashes make unrelated events safe and cheap.
+        if (name && !watched.has(name)) return;
         this.scheduleSync();
       });
       this.watcher.on('error', (error) => this.log(`Provider file watcher failed: ${error instanceof Error ? error.message : String(error)}`));
+      // Close the startup race: an external save can land between opening the
+      // directory watcher and the first notification on some native runners.
+      this.scheduleSync();
     } catch (error) {
       this.log(`Provider file watcher could not start: ${error instanceof Error ? error.message : String(error)}`);
       this.watcher = null;
