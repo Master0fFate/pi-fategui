@@ -1,4 +1,4 @@
-import { Brain, Check, ChevronsDownUp, ChevronsUpDown, CircleAlert, Copy, GitFork, PackageCheck, PackageOpen, Plug, RotateCcw } from 'lucide-react';
+import { Brain, Check, CircleAlert, Copy, GitFork, PackageCheck, PackageOpen, Plug, RotateCcw } from 'lucide-react';
 import { useLearningStore } from '../learning/learningStore';
 import { memo, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
@@ -10,7 +10,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { MentionText } from './AgentMention';
 import { AssistantMarkdown, ConversationImageViewerProvider } from './RichMessageContent';
 import { ToolCard } from './ToolCard';
-import { type DetailExpansionCommand, useDetailExpansion } from './detailExpansion';
+import { type DetailExpansionCommand, detailSessionKey, useDetailExpansion } from './detailExpansion';
 import { useSkinComponents } from '../../skins/SkinProvider';
 
 export { AssistantMarkdown } from './RichMessageContent';
@@ -174,9 +174,6 @@ const ReasoningRow = memo(function ReasoningRow({ messageId, expansionCommand }:
 const BOTTOM_THRESHOLD_PX = 4;
 const MIN_SCROLLBAR_THUMB_HEIGHT = 24;
 
-const sessionTimelineKey = (projectPath: string | null, sessionId: string | null) =>
-  sessionId === null ? null : JSON.stringify([projectPath, sessionId]);
-
 interface ScrollbarMetrics {
   maxScroll: number;
   scrollTop: number;
@@ -284,7 +281,7 @@ const TimelineRow = memo(function TimelineRow({ id, waitPollCount, expansionComm
   return <div className={`timeline-notice${entry.phase === 'failed' ? ' timeline-notice--error' : ''}`} role={entry.phase === 'failed' ? 'alert' : undefined}><Icon size={15} /><span>{text}{entry.error?.actionable && <small>{entry.error.actionable}</small>}</span></div>;
 });
 
-export const ConversationTimeline = memo(function ConversationTimeline() {
+export const ConversationTimeline = memo(function ConversationTimeline({ expansionCommand: requestedExpansion }: { expansionCommand?: DetailExpansionCommand } = {}) {
   const order = useRuntimeStore((state) => state.timelineOrder);
   const visibleOrder = useRuntimeStore((state) => state.visibleTimelineOrder);
   const timelineVersion = useRuntimeStore((state) => state.timelineVersion);
@@ -299,16 +296,10 @@ export const ConversationTimeline = memo(function ConversationTimeline() {
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
   const hasHistoricalTimeline = useRuntimeStore((state) => state.runtime.messages.length > 0 || Boolean(state.runtime.tools?.length));
-  const timelineSessionKey = sessionTimelineKey(projectPath, sessionId);
-  const [detailCommand, setDetailCommand] = useState<DetailExpansionCommand>({ sessionKey: timelineSessionKey, revision: 0, expanded: false });
-  // A session switch must not carry the previous conversation's disclosure state.
-  const expansionCommand = detailCommand.sessionKey === timelineSessionKey
-    ? detailCommand
+  const timelineSessionKey = detailSessionKey(projectPath, sessionId);
+  const expansionCommand = requestedExpansion?.sessionKey === timelineSessionKey
+    ? requestedExpansion
     : { sessionKey: timelineSessionKey, revision: 0, expanded: false };
-  const hasDetails = useMemo(() => displayOrder.some((id) => {
-    const kind = timelineById[id]?.kind;
-    return kind === 'reasoning' || kind === 'tool';
-  }), [displayOrder, timelineById, timelineVersion]);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const positionedSessionRef = useRef<string | null>(null);
   const scrollerRef = useRef<HTMLElement | null>(null);
@@ -574,16 +565,7 @@ export const ConversationTimeline = memo(function ConversationTimeline() {
 
   return (
     <ConversationImageViewerProvider>
-      <div className="conversation" aria-label="Conversation timeline" aria-live="polite" data-entry-count={order.length} data-visible-entry-count={displayOrder.length} data-has-details={hasDetails}>
-      {hasDetails && <div className="conversation-detail-toolbar"><button
-        className="conversation-detail-toggle"
-        type="button"
-        aria-label={expansionCommand.expanded ? 'Collapse all reasoning and tools' : 'Expand all reasoning and tools'}
-        onClick={() => setDetailCommand((current) => {
-          const inSession = current.sessionKey === timelineSessionKey ? current : { sessionKey: timelineSessionKey, revision: 0, expanded: false };
-          return { sessionKey: timelineSessionKey, revision: inSession.revision + 1, expanded: !inSession.expanded };
-        })}
-      >{expansionCommand.expanded ? <ChevronsDownUp size={13} aria-hidden="true" /> : <ChevronsUpDown size={13} aria-hidden="true" />}<span>{expansionCommand.expanded ? 'Collapse details' : 'Expand details'}</span></button></div>}
+      <div className="conversation" aria-label="Conversation timeline" aria-live="polite" data-entry-count={order.length} data-visible-entry-count={displayOrder.length}>
       <Virtuoso
         key={timelineSessionKey ?? 'no-session'}
         ref={virtuosoRef}

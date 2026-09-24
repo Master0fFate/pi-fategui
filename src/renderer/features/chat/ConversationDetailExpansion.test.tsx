@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeState } from '../../../shared/contracts/ipc';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { ConversationTimeline } from './ConversationTimeline';
+import { DetailExpansionToggle, detailSessionKey, type DetailExpansionCommand } from './detailExpansion';
 
 // JSDOM has no layout measurements. Render a two-row virtual window and let
 // the test move it: changing a DOM node is not enough to expand offscreen rows.
@@ -39,6 +40,23 @@ const seedDetails = (suffix = '') => useRuntimeStore.getState().applyEvents([
   { type: 'tool.completed' as const, toolCallId: `read-2${suffix}`, name: 'read', output: 'Second output', error: false, timestamp: 8 },
 ]);
 
+function Harness() {
+  const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
+  const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
+  const sessionKey = detailSessionKey(projectPath, sessionId);
+  const [requested, setRequested] = useState<DetailExpansionCommand>({ sessionKey: null, revision: 0, expanded: false });
+  const command = requested.sessionKey === sessionKey
+    ? requested
+    : { sessionKey, revision: 0, expanded: false };
+  return <>
+    <DetailExpansionToggle command={command} onToggle={() => setRequested((current) => {
+      const active = current.sessionKey === sessionKey ? current : { sessionKey, revision: 0, expanded: false };
+      return { sessionKey, revision: active.revision + 1, expanded: !active.expanded };
+    })} />
+    <ConversationTimeline expansionCommand={command} />
+  </>;
+}
+
 describe('conversation-wide detail expansion', () => {
   beforeEach(() => {
     useRuntimeStore.getState().setRuntime({ ...ready(), sessionId: null });
@@ -48,7 +66,7 @@ describe('conversation-wide detail expansion', () => {
   it('applies to reasoning and tools even after virtual rows unmount, and resets on session switch', async () => {
     const user = userEvent.setup();
     seedDetails();
-    const { container } = render(<ConversationTimeline />);
+    const { container } = render(<Harness />);
     const reasoning = () => container.querySelector<HTMLDetailsElement>('.reasoning-row');
     const tool = () => container.querySelector<HTMLButtonElement>('.tool-card-header');
     expect(reasoning()?.open).toBe(false);

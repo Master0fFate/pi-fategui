@@ -635,10 +635,12 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .composer-input-shell[data-overflow-top="true"]::before, .composer-input-shell[data-overflow-bottom="true"]::after { opacity: 1; }
 .composer textarea { position: relative; z-index: 1; width: 100%; height: 100%; padding: 2px 3px 4px; overflow-y: auto; resize: none; border: 0; outline: 0; color: var(--theme-text); background: transparent; font-size: 14px; line-height: 1.5; }
 .composer textarea::placeholder { color: var(--theme-subtle); }
-.extension-status-rail { position: absolute; z-index: 12; top: 76px; right: 22px; display: flex; width: max-content; max-width: min(260px, calc(100% - 44px)); height: 18px; align-items: center; gap: 5px; color: var(--theme-subtle); font-size: 9px; line-height: 1; opacity: .88; pointer-events: none; }
-/* Keep the rail aligned with the header action column instead of floating under the
-   OS window controls when the workspace reaches the window edge. */
-:root:not([data-platform="darwin"]) .app-shell--inspector-collapsed .extension-status-rail { right: calc(var(--window-controls-reserve) + 22px); }
+.workspace-status-row { position: absolute; z-index: 12; top: 76px; right: 22px; left: 22px; display: flex; height: 18px; align-items: center; justify-content: space-between; gap: 12px; pointer-events: none; }
+.extension-status-rail { display: flex; width: max-content; max-width: min(260px, 65%); height: 18px; align-items: center; gap: 5px; margin-left: auto; color: var(--theme-subtle); font-size: 9px; line-height: 1; opacity: .88; pointer-events: none; }
+/* Keep the row clear of OS window controls when the inspector is closed. */
+:root:not([data-platform="darwin"]) .app-shell--inspector-collapsed .workspace-status-row { right: calc(var(--window-controls-reserve) + 22px); }
+.conversation-detail-toggle { display: inline-flex; height: 18px; flex: none; align-items: center; gap: 5px; padding: 0; border: 0; border-radius: 0; color: var(--theme-subtle); background: transparent; cursor: pointer; font-size: 9px; line-height: 1; opacity: .88; pointer-events: auto; }
+.conversation-detail-toggle:hover, .conversation-detail-toggle:focus-visible { color: var(--theme-text-soft); background: transparent; }
 .extension-status-mark { flex: none; color: var(--theme-accent); }
 .extension-status-primary { min-width: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .extension-status-details-trigger { display: inline-flex; flex: none; height: 18px; align-items: center; gap: 2px; padding: 0 2px; border-radius: 4px; color: var(--theme-muted); background: transparent; cursor: pointer; font-size: 8px; pointer-events: auto; }
@@ -911,16 +913,12 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .runtime-notice span { color: var(--theme-warning); line-height: 1.45; }
 .welcome--conversation { align-items: stretch; padding: 18px clamp(18px, 4vw, 56px) 0; overflow: hidden; }
 .welcome--conversation .runtime-notice { flex: none; margin: 0 auto 10px; }
-.conversation { --conversation-scrollbar-gap: 18px; position: relative; display: flex; width: min(100%, 820px); min-height: 120px; margin: 0 auto; flex: 1; flex-direction: column; overflow: hidden; }
+.conversation { --conversation-scrollbar-gap: 18px; position: relative; width: min(100%, 820px); min-height: 120px; margin: 0 auto; flex: 1; overflow: hidden; }
 .conversation--empty { min-height: 0; }
-.conversation-detail-toolbar { display: flex; height: 30px; flex: none; align-items: center; justify-content: flex-end; padding: 0 18px 0 10px; }
-.conversation-detail-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; color: var(--theme-muted); background: transparent; cursor: pointer; font: 10px var(--font-interface); }
-.conversation-detail-toggle:hover, .conversation-detail-toggle:focus-visible { color: var(--theme-text); background: var(--theme-raised); }
-.conversation-virtuoso { min-height: 0; height: 100%; flex: 1; scrollbar-width: none; }
+.conversation-virtuoso { height: 100%; scrollbar-width: none; }
 .conversation-virtuoso::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .conversation-composer-spacer { height: var(--composer-overlay-space, 188px); }
-.conversation-scrollbar { position: absolute; z-index: 10; top: 30px; right: 0; bottom: max(0px, calc(var(--composer-overlay-space, 188px) - 20px + var(--conversation-scrollbar-gap))); width: 10px; touch-action: none; }
-.conversation[data-has-details="false"] .conversation-scrollbar { top: 0; }
+.conversation-scrollbar { position: absolute; z-index: 10; top: 0; right: 0; bottom: max(0px, calc(var(--composer-overlay-space, 188px) - 20px + var(--conversation-scrollbar-gap))); width: 10px; touch-action: none; }
 .conversation-scrollbar[data-visible="false"] { visibility: hidden; pointer-events: none; }
 .conversation-scrollbar:focus-visible { outline: 1px solid var(--theme-accent); outline-offset: 1px; }
 .conversation-scrollbar-thumb { position: absolute; top: 0; right: 2px; left: 2px; min-height: 24px; border-radius: 999px; background: color-mix(in srgb, var(--theme-text-soft) 28%, var(--theme-panel)); cursor: grab; }
@@ -2781,10 +2779,10 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 }
 :root[data-compact-mode="true"] .composer-input-shell { display: flex; align-items: center; min-height: 36px; }
 :root[data-compact-mode="true"] .composer textarea { font-size: 12px; line-height: 1.4; padding: 4px 2px; }
-:root[data-compact-mode="true"]:not([data-platform="darwin"]) .app-shell--inspector-collapsed .extension-status-rail { right: calc(var(--window-controls-reserve) + 12px); }
-:root[data-compact-mode="true"] .extension-status-rail {
-  top: 40px; right: 12px; max-width: min(220px, calc(100% - 36px)); height: 16px; font-size: 8px;
-}
+:root[data-compact-mode="true"]:not([data-platform="darwin"]) .app-shell--inspector-collapsed .workspace-status-row { right: calc(var(--window-controls-reserve) + 12px); }
+:root[data-compact-mode="true"] .workspace-status-row { top: 40px; right: 12px; left: 12px; height: 16px; }
+:root[data-compact-mode="true"] .extension-status-rail { max-width: min(220px, 65%); height: 16px; font-size: 8px; }
+:root[data-compact-mode="true"] .conversation-detail-toggle { height: 16px; font-size: 8px; }
 :root[data-compact-mode="true"] .composer-toolbar { gap: 8px; }
 :root[data-compact-mode="true"] .composer-toolbar button:not(.send-button) { font-size: 10px; }
 :root[data-compact-mode="true"] .send-button,
