@@ -1,23 +1,16 @@
-import { ipcRenderer } from 'electron';
 import { emptyInputSchema, ipcChannels } from '../shared/contracts/ipc';
-import { cancelLearningInputSchema, captureSchema, generateDraftInputSchema, generationResultSchema, learningChangedSchema, learningMutationSchema, learningStateSchema, previewEvidenceInputSchema, previewSelectionInputSchema, recoveryInputSchema, reviewCaptureInputSchema, selectionSchema, learningStorageSchema, learningStateInputSchema, type LearningApi, type LearningScope } from '../shared/contracts/learning';
+import { cancelLearningInputSchema, captureSchema, generateDraftInputSchema, generationResultSchema, learningChangedSchema, learningMutationSchema, learningStateSchema, previewEvidenceInputSchema, previewSelectionInputSchema, recoveryInputSchema, reviewCaptureInputSchema, selectionSchema, learningStorageSchema, learningStateInputSchema, type LearningApi } from '../shared/contracts/learning';
+import { invoke, subscribe, ignoreResult } from './transport';
 
 export const learningApi: LearningApi = {
-  async getLearningStorage() { return learningStorageSchema.parse(await ipcRenderer.invoke(ipcChannels.learningGetStorage, emptyInputSchema.parse({}))); },
-  async getLearningState(scope?: LearningScope) { return learningStateSchema.parse(await ipcRenderer.invoke(ipcChannels.learningGetState, learningStateInputSchema.parse(scope ? { scope } : {}))); },
-  async mutateLearning(input) { return learningStateSchema.parse(await ipcRenderer.invoke(ipcChannels.learningMutate, learningMutationSchema.parse(input))); },
-  async previewLearningEvidence(input) { return captureSchema.parse(await ipcRenderer.invoke(ipcChannels.learningPreviewEvidence, previewEvidenceInputSchema.parse(input))); },
-  async reviewLearningCapture(input) { return captureSchema.parse(await ipcRenderer.invoke(ipcChannels.learningReviewCapture, reviewCaptureInputSchema.parse(input))); },
-  async generateLearningDraft(input) { return generationResultSchema.parse(await ipcRenderer.invoke(ipcChannels.learningGenerateDraft, generateDraftInputSchema.parse(input))); },
-  async cancelLearning(input) { await ipcRenderer.invoke(ipcChannels.learningCancel, cancelLearningInputSchema.parse(input)); },
-  async recoverLearning(input) { return learningStateSchema.parse(await ipcRenderer.invoke(ipcChannels.learningRecover, recoveryInputSchema.parse(input))); },
-  async previewLearningSelection(input) { return selectionSchema.parse(await ipcRenderer.invoke(ipcChannels.learningPreviewSelection, previewSelectionInputSchema.parse(input))); },
-  onLearningChanged(listener) {
-    const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
-      const parsed = learningChangedSchema.safeParse(value);
-      if (parsed.success) listener(parsed.data);
-    };
-    ipcRenderer.on(ipcChannels.learningChanged, handler);
-    return () => { ipcRenderer.removeListener(ipcChannels.learningChanged, handler); };
-  },
+  getLearningStorage: () => invoke(ipcChannels.learningGetStorage, emptyInputSchema, learningStorageSchema),
+  getLearningState: (scope) => invoke(ipcChannels.learningGetState, learningStateInputSchema, learningStateSchema, scope ? { scope } : {}),
+  mutateLearning: (input) => invoke(ipcChannels.learningMutate, learningMutationSchema, learningStateSchema, input),
+  previewLearningEvidence: (input) => invoke(ipcChannels.learningPreviewEvidence, previewEvidenceInputSchema, captureSchema, input),
+  reviewLearningCapture: (input) => invoke(ipcChannels.learningReviewCapture, reviewCaptureInputSchema, captureSchema, input),
+  generateLearningDraft: (input) => invoke(ipcChannels.learningGenerateDraft, generateDraftInputSchema, generationResultSchema, input),
+  cancelLearning: (input) => invoke(ipcChannels.learningCancel, cancelLearningInputSchema, ignoreResult, input),
+  recoverLearning: (input) => invoke(ipcChannels.learningRecover, recoveryInputSchema, learningStateSchema, input),
+  previewLearningSelection: (input) => invoke(ipcChannels.learningPreviewSelection, previewSelectionInputSchema, selectionSchema, input),
+  onLearningChanged: (listener) => subscribe(ipcChannels.learningChanged, learningChangedSchema, listener, () => undefined),
 };

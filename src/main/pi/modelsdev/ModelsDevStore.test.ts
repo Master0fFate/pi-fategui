@@ -104,4 +104,32 @@ describe('ModelsDevStore', () => {
     expect(await secondStore.removeRegistryEntry('crof')).toBe(false);
     expect(Object.keys((await secondStore.readRegistry()).providers)).toEqual([]);
   });
+
+  it('fills missing aggregator compat on hand-edited openai-completions providers', async () => {
+    const store = new ModelsDevStore(dataRoot);
+    await fs.writeFile(store.storePaths.modelsPath, JSON.stringify({
+      providers: {
+        bai: {
+          name: 'B.AI',
+          baseUrl: 'https://api.b.ai/v1',
+          api: 'openai-completions',
+          models: [{ id: 'qwen3.8-flash', name: 'B.AI Qwen3.8-Flash', reasoning: true }],
+        },
+        zai: { models: [{ id: 'glm-5.3-flash' }] },
+      },
+    }), 'utf-8');
+    expect(await store.ensureOpenAIAggregatorCompat()).toBe(true);
+    const file = await store.readModelsJson();
+    const bai = file.providers.bai as { models: Array<{ compat?: { supportsDeveloperRole?: boolean; maxTokensField?: string } }> };
+    expect(bai.models[0]!.compat).toMatchObject({ supportsDeveloperRole: false, maxTokensField: 'max_tokens' });
+    expect(file.providers.zai).toEqual({ models: [{ id: 'glm-5.3-flash' }] });
+    expect(await store.ensureOpenAIAggregatorCompat()).toBe(false);
+  });
+
+  it('stamps aggregator compat when upserting a provider that omitted it', async () => {
+    const store = new ModelsDevStore(dataRoot);
+    await store.upsertProviderConfig(config('bai', { name: 'B.AI', baseUrl: 'https://api.b.ai/v1' }));
+    const written = (await store.readModelsJson()).providers.bai as { models: Array<{ compat?: { supportsDeveloperRole?: boolean } }> };
+    expect(written.models[0]!.compat?.supportsDeveloperRole).toBe(false);
+  });
 });

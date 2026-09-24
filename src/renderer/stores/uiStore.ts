@@ -9,18 +9,12 @@ export interface AppToastMessage {
   kind: AppToastKind;
   title: string;
   message: string;
+  agentRun?: { projectPath: string; runId: string };
 }
 
 let nextToastId = 0;
 let nextComposerDraftRequestId = 0;
-let nextAutomationOpenNonce = 0;
 let nextFlightDeckJumpNonce = 0;
-
-export interface AutomationOpenRequest {
-  nonce: number;
-  projectPath: string;
-  automationId: string;
-}
 
 export interface FlightDeckJump {
   nonce: number;
@@ -39,7 +33,7 @@ export const BROWSER_PANE_MIN = 360;
 // to the available width, so a high cap is harmless and just removes the cap.
 export const BROWSER_PANE_MAX = 2400;
 
-export type SidebarTab = 'sessions' | 'resources' | 'automations';
+export type SidebarTab = 'sessions' | 'resources' | 'agents';
 export type InspectorTab = 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context' | 'goal' | 'activity';
 export type InspectorDestination = 'work' | 'run' | 'system';
 export type InspectorLastViews = Record<InspectorDestination, InspectorTab>;
@@ -64,6 +58,7 @@ interface UiState {
   rightWidth: number;
   sidebarCollapsed: boolean;
   sidebarTab: SidebarTab;
+  sidebarTabRevision: number;
   inspectorCollapsed: boolean;
   paletteOpen: boolean;
   settingsOpen: boolean;
@@ -82,7 +77,6 @@ interface UiState {
   speechStatus: SpeechStatus | null;
   toast: AppToastMessage | null;
   composerDraftRequest: { id: number; text: string; selectAll: boolean; mode: 'replace' | 'insert'; notice?: string } | null;
-  automationOpenRequest: AutomationOpenRequest | null;
   inspectorTab: InspectorTab;
   inspectorLastViews: InspectorLastViews;
   selectedAgent: SelectedAgent | null;
@@ -92,6 +86,7 @@ interface UiState {
   setRightWidth: (width: number) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setSidebarTab: (tab: SidebarTab) => void;
+  noteSidebarTabInteraction: () => void;
   toggleSidebar: () => void;
   toggleInspector: () => void;
   setPaletteOpen: (open: boolean) => void;
@@ -116,8 +111,6 @@ interface UiState {
   requestComposerDraft: (text: string, selectAll?: boolean, notice?: string) => void;
   requestComposerInsertion: (text: string, notice?: string) => void;
   clearComposerDraftRequest: (id: number) => void;
-  openAutomation: (projectPath: string, automationId: string) => void;
-  clearAutomationOpenRequest: (nonce: number) => void;
   setInspectorTab: (tab: InspectorTab) => void;
   openInspectorTab: (tab: InspectorTab) => void;
   openInspectorDestination: (destination: InspectorDestination) => void;
@@ -150,6 +143,13 @@ function normalizeInspectorTab(tab: unknown): InspectorTab {
   return INSPECTOR_TABS.includes(tab as InspectorTab) ? (tab as InspectorTab) : 'changes';
 }
 
+function normalizeSidebarTab(tab: unknown): SidebarTab {
+  if (tab === 'agents' || tab === 'resources' || tab === 'sessions') return tab;
+  // The retired Automations destination now lives in the Agents library.
+  if (tab === 'automations') return 'agents';
+  return 'sessions';
+}
+
 function normalizeInspectorLastViews(views: unknown): InspectorLastViews {
   const record = (views ?? {}) as Partial<Record<InspectorDestination, unknown>>;
   return {
@@ -166,6 +166,7 @@ export const useUiStore = create<UiState>()(
       rightWidth: 332,
       sidebarCollapsed: false,
       sidebarTab: 'sessions',
+      sidebarTabRevision: 0,
       inspectorCollapsed: false,
       paletteOpen: false,
       settingsOpen: false,
@@ -184,7 +185,6 @@ export const useUiStore = create<UiState>()(
       speechStatus: null,
       toast: null,
       composerDraftRequest: null,
-      automationOpenRequest: null,
       inspectorTab: 'changes',
       inspectorLastViews: { ...INSPECTOR_DEFAULT_VIEWS },
       selectedAgent: null,
@@ -193,7 +193,8 @@ export const useUiStore = create<UiState>()(
       setLeftWidth: (leftWidth) => set({ leftWidth: clamp(leftWidth, LEFT_MIN, LEFT_MAX) }),
       setRightWidth: (rightWidth) => set({ rightWidth: clamp(rightWidth, RIGHT_MIN, RIGHT_MAX) }),
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
-      setSidebarTab: (sidebarTab) => set({ sidebarTab }),
+      setSidebarTab: (sidebarTab) => set((state) => ({ sidebarTab, sidebarTabRevision: state.sidebarTabRevision + 1 })),
+      noteSidebarTabInteraction: () => set((state) => ({ sidebarTabRevision: state.sidebarTabRevision + 1 })),
       toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
       toggleInspector: () => set((state) => ({ inspectorCollapsed: !state.inspectorCollapsed })),
       setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
@@ -218,12 +219,6 @@ export const useUiStore = create<UiState>()(
       requestComposerDraft: (text, selectAll = false, notice) => set({ composerDraftRequest: { id: ++nextComposerDraftRequestId, text, selectAll, mode: 'replace', ...(notice ? { notice } : {}) } }),
       requestComposerInsertion: (text, notice) => set({ composerDraftRequest: { id: ++nextComposerDraftRequestId, text, selectAll: false, mode: 'insert', ...(notice ? { notice } : {}) } }),
       clearComposerDraftRequest: (id) => set((state) => state.composerDraftRequest?.id === id ? { composerDraftRequest: null } : state),
-      openAutomation: (projectPath, automationId) => set({
-        sidebarCollapsed: false,
-        sidebarTab: 'automations',
-        automationOpenRequest: { nonce: ++nextAutomationOpenNonce, projectPath, automationId },
-      }),
-      clearAutomationOpenRequest: (nonce) => set((state) => state.automationOpenRequest?.nonce === nonce ? { automationOpenRequest: null } : state),
       setInspectorTab: (inspectorTab) => set((state) => selectInspectorTab(state, inspectorTab)),
       openInspectorTab: (inspectorTab) => set((state) => ({ ...selectInspectorTab(state, inspectorTab), inspectorCollapsed: false })),
       openInspectorDestination: (destination) => set((state) => ({
@@ -254,11 +249,12 @@ export const useUiStore = create<UiState>()(
     }),
     {
       name: 'pi-desktop-ui-v1',
-      version: 1,
+      version: 2,
       migrate: (persisted) => {
-        const state = (persisted ?? {}) as Partial<Pick<UiState, 'inspectorTab' | 'inspectorLastViews'>>;
+        const state = (persisted ?? {}) as Partial<Pick<UiState, 'sidebarTab' | 'inspectorTab' | 'inspectorLastViews'>>;
         return {
           ...state,
+          sidebarTab: normalizeSidebarTab(state.sidebarTab),
           inspectorTab: normalizeInspectorTab(state.inspectorTab),
           inspectorLastViews: normalizeInspectorLastViews(state.inspectorLastViews),
         };

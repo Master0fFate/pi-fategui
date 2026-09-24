@@ -296,4 +296,22 @@ describe('Composer voice input', () => {
     await waitFor(() => expect(container.querySelector('.composer-error')).toHaveTextContent('The voice model returned no text'));
     expect(container.querySelector('.composer-error')).not.toHaveTextContent('closer to the microphone');
   });
+
+  it('auto-dismisses voice errors after eight seconds', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      Object.defineProperty(window, 'piDesktop', { configurable: true, value: {
+        ensureSpeechModel: vi.fn(async () => undefined),
+        transcribeSpeech: vi.fn(async () => ({ text: '   ', language: 'en', backend: 'CPU', accelerated: false })),
+        cancelSpeechTranscription: vi.fn(async () => false),
+      } as unknown as PiDesktopApi });
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const { container } = render(<Composer onOpenProject={vi.fn()} />);
+      await user.click(screen.getByRole('button', { name: 'Start voice recording' }));
+      await user.click(await screen.findByRole('button', { name: 'Stop voice recording' }));
+      await waitFor(() => expect(container.querySelector('.composer-error')).toHaveTextContent('The voice model returned no text'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(8_000); });
+      expect(container.querySelector('.composer-error')).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
 });

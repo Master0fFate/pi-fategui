@@ -21,6 +21,10 @@ export interface AgentNodeRuntime {
   unsubscribe?: () => void;
   toolProvenanceByCall: Map<string, ToolProvenance>;
   lease?: TurnLease;
+  /** Prevalidated initial task prompt, retained while waiting for a checkout lease. */
+  initialPrompt?: string;
+  /** Abort signal for the prevalidated initial task. */
+  initialSignal?: AbortSignal;
   turn?: Promise<void>;
   /** Identity fence for the executable turn currently owning `turn` and `lease`. */
   turnId?: string;

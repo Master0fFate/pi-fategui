@@ -1,6 +1,7 @@
 import { CheckCircle2, CircleAlert, Info, TriangleAlert, X } from 'lucide-react';
 import { useEffect } from 'react';
 import { useUiStore } from '../stores/uiStore';
+import { openAgentNotice } from '../stores/agentsStore';
 
 export function AppToast() {
   const toast = useUiStore((state) => state.toast);
@@ -24,7 +25,7 @@ export function AppToast() {
   return (
     <div className={`app-toast app-toast--${toast.kind}`} role={toast.kind === 'error' || toast.kind === 'warning' ? 'alert' : 'status'} aria-atomic="true">
       <Icon size={17} aria-hidden="true" />
-      <div><strong>{toast.title}</strong><span>{toast.message}</span></div>
+      <div><strong>{toast.title}</strong><span>{toast.message}</span>{toast.agentRun && <button className="agent-notice-action" type="button" onClick={() => { void openAgentNotice(toast.agentRun!.projectPath, toast.agentRun!.runId); dismissToast(); }}>View Agent run</button>}</div>
       <button type="button" aria-label="Dismiss notification" onClick={dismissToast}><X size={13} /></button>
     </div>
   );

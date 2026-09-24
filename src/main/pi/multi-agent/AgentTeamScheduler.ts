@@ -19,9 +19,6 @@ export class AgentTeamScheduler {
 
   acquire(nodeId: string, permissionLevel: PermissionLevel, workspaceKey = 'legacy'): TurnLease {
     if (this.active.has(nodeId)) throw new Error(`Agent ${nodeId} already has an active turn.`);
-    if (this.active.size >= this.limits.maxActiveTurns) {
-      throw new Error(`Agent team capacity is full (${this.limits.maxActiveTurns} active non-root turns). Wait for an agent to settle and retry.`);
-    }
     const writer = permissionLevel !== 'read-only';
     const existingWriter = this.writerNodeIdsByWorkspace.get(workspaceKey);
     if (writer && existingWriter) {

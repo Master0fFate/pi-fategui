@@ -3,7 +3,6 @@ import path from 'node:path';
 import type { AgentSession, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import type { PiEvent, SubagentAgentSource, SubagentNotification, SubagentParentLivenessReport, SubagentRun, SubagentUsage, SubagentWorkflowLivenessReport } from '../../shared/contracts/ipc';
-import { AGENT_TEAM_MAX_HISTORY_NODES } from '../../shared/contracts/multiAgent';
 import { assertContextTransfer, isContextWindowError } from './SubagentContext';
 import { emptyUsage, addUsage } from './SubagentSessionFactory';
 import { scheduleLongTimeout, type CancelableTimer } from './SubagentTimer';
@@ -127,8 +126,7 @@ export class AgentWorkflowCoordinator {
         const team = this.teams.getTeams(workflow.parentSessionId)
           .find((candidate) => candidate.id === workflow.execution?.teamId && candidate.rootNodeId === workflow.execution.rootNodeId);
         if (!team) return 1;
-        const occupied = team.nodes.filter((node) => node.depth > 0 && node.status !== 'released').length;
-        return Math.max(1, Math.min(team.limits.maxActiveTurns, team.limits.maxNodes - occupied));
+        return workflow.maxConcurrency;
       },
       usedHandles: (parentSessionId) => this.teams.getTeams(parentSessionId).flatMap((team) => team.nodes.map((node) => node.handle)),
       runIdentity: (parentSessionId, runId) => {
@@ -151,7 +149,7 @@ export class AgentWorkflowCoordinator {
       promptSnippet: 'Run and manage an Agent Team dependency graph',
       promptGuidelines: [
         'Node IDs and dependencies define the graph. includeDependencyResults is the only automatic result transfer and is opt-in per node.',
-        'Requested permissions, models, thinking, tools, skills, instructions, routing attempts, and workspace are passed to Agent Team admission; policy and capacity failures are explicit.',
+        'Requested permissions, models, thinking, tools, skills, instructions, routing attempts, and workspace are passed to Agent Team admission. Workspace and permission safety policies remain enforced; no arbitrary team-size ceiling is imposed.',
         'dependencyFailure controls whether a node skips or runs after a failed dependency. Fallback models are used only when explicitly configured.',
         'Budget thresholds are advisory telemetry. A recovered running graph is paused and continues only through resume.',
       ],
@@ -235,28 +233,9 @@ export class AgentWorkflowCoordinator {
     const root = persisted?.rootNodeId ?? this.teams.rootNodeId(parentSessionId);
     const inspected = this.teams.inspectNode(root, root);
     const team = persistedTeam ?? this.teams.getTeams(parentSessionId).find((candidate) => candidate.id === inspected.teamId)!;
-    const attemptBudget = nodes.reduce((total, node) => total + node.routing.maxAttempts, 0);
-    const footprintChecks = [
-      { label: 'node history', used: team.nodes.filter((node) => node.depth > 0).length, required: attemptBudget, limit: AGENT_TEAM_MAX_HISTORY_NODES - 1 },
-      { label: 'task history', used: team.tasks.length, required: attemptBudget, limit: AGENT_TEAM_MAX_HISTORY_NODES },
-      { label: 'operation-receipt history', used: team.operationReceipts.length, required: attemptBudget, limit: AGENT_TEAM_MAX_HISTORY_NODES },
-      { label: 'message envelopes', used: team.envelopes.length, required: attemptBudget * 2, limit: team.limits.maxMessages },
-    ];
-    const impossibleFootprint = footprintChecks.find((check) => check.used + check.required > check.limit);
-    if (impossibleFootprint) {
-      throw new Error(`Agent workflow routing budget requires ${impossibleFootprint.required} additional ${impossibleFootprint.label} entries, but Team ${team.id} has ${impossibleFootprint.used}/${impossibleFootprint.limit} occupied. The finite Team ledger cannot execute this graph without partial side effects, so nothing was started.`);
-    }
     const oversizedTask = nodes.find((node) => Buffer.byteLength(node.task, 'utf8') > team.limits.maxMessageBytes);
     if (oversizedTask) {
       throw new Error(`Agent workflow node ${oversizedTask.id} requires a ${Buffer.byteLength(oversizedTask.task, 'utf8')}-byte input envelope, above the Team ${team.limits.maxMessageBytes}-byte limit. Nothing was started.`);
-    }
-    const occupied = team.nodes.filter((node) => node.depth > 0 && node.status !== 'released').length;
-    const retainedNodes = nodes.filter((node) => node.mailboxTtlMs > 0).length;
-    const transientSlot = nodes.some((node) => node.mailboxTtlMs === 0) ? 1 : 0;
-    const requiredSlots = retainedNodes + transientSlot;
-    const availableSlots = team.limits.maxNodes - occupied;
-    if (requiredSlots > availableSlots) {
-      throw new Error(`Agent workflow requires ${requiredSlots} simultaneous Team node slots (${retainedNodes} retained mailbox node(s)${transientSlot ? ' plus one transient execution slot' : ''}), but only ${availableSlots}/${team.limits.maxNodes} are available. Release nodes or reduce mailbox retention before starting; no partial graph was executed.`);
     }
     return { kind: 'agent-team', teamId: team.id, rootNodeId: root };
   }

@@ -6,6 +6,7 @@ import { createTrustedRendererPolicy, isExternalHttpsUrl, isTrustedRendererUrl }
 import { TerminalService } from '../terminal/TerminalService';
 import { MINIMUM_WINDOW_SIZE, WindowStateService, type WindowPlacement } from '../windowState';
 import { installWindowZoomShortcuts } from '../windowZoom';
+import { installWindowFullscreenShortcut } from '../windowFullscreen';
 import { appCommandSchema, ipcChannels, windowStateSchema, type AppCommand } from '../../shared/contracts/ipc';
 import { LaunchDispatcher } from './launchDispatcher';
 
@@ -103,17 +104,20 @@ export function createAppWindowFactory(deps: AppWindowFactoryDeps): AppWindowFac
       buildEditorContextMenu(params).popup({ window });
     });
     const removeWindowZoomShortcuts = installWindowZoomShortcuts(window);
+    const removeWindowFullscreenShortcut = installWindowFullscreenShortcut(window);
     window.once('ready-to-show', () => {
       if (placement.maximized) window.maximize();
       window.show();
     });
     const sendWindowState = () => {
-      if (!window.isDestroyed()) window.webContents.send(ipcChannels.windowState, windowStateSchema.parse({ maximized: window.isMaximized(), minimized: window.isMinimized() }));
+      if (!window.isDestroyed()) window.webContents.send(ipcChannels.windowState, windowStateSchema.parse({ maximized: window.isMaximized(), minimized: window.isMinimized(), fullScreen: window.isFullScreen() }));
     };
     window.on('maximize', sendWindowState);
     window.on('unmaximize', sendWindowState);
     window.on('minimize', sendWindowState);
     window.on('restore', sendWindowState);
+    window.on('enter-full-screen', sendWindowState);
+    window.on('leave-full-screen', sendWindowState);
     window.webContents.on('did-fail-load', (_event, code, description) => {
       if (code === -3 || window.isDestroyed()) return;
       void dialog.showMessageBox(window, {
@@ -145,6 +149,7 @@ export function createAppWindowFactory(deps: AppWindowFactoryDeps): AppWindowFac
     window.on('close', () => rememberWindowPlacement(window, deps.windowState));
     window.on('closed', () => {
       removeWindowZoomShortcuts();
+      removeWindowFullscreenShortcut();
       // The browser host is shared across every window; the dispatcher's
       // onLastWindowClosed tears it down when the last window leaves so a
       // remaining window keeps its embedded browser.

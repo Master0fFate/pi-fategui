@@ -312,33 +312,8 @@ describe('AgentWorkflowCoordinator', () => {
     expect(unsafe.teams.spawn).not.toHaveBeenCalled();
   });
 
-  it('preflights retained and finite Team ledger capacity but permits logical graphs beyond sixteen nodes', async () => {
+  it('admits logical graphs beyond sixteen nodes and only preflights per-message bounds', async () => {
     const run = harness([]);
-    await expect(execute(run.tool, 'retained-overflow', {
-      action: 'start',
-      nodes: [
-        ...Array.from({ length: 16 }, (_, index) => ({ id: `retained-${index}`, task: `Retained ${index}`, mailboxTtlSeconds: 60 })),
-        { id: 'transient', task: 'Needs a transient slot' },
-      ],
-    })).rejects.toThrow(/requires 17 simultaneous Team node slots[\s\S]*no partial graph/u);
-    expect(run.teams.spawn).not.toHaveBeenCalled();
-
-    run.envelopes.push(...Array.from({ length: 255 }, (_, index) => ({ id: `existing-${index}` })));
-    await expect(execute(run.tool, 'ledger-overflow', {
-      action: 'start', nodes: [{ id: 'one-more', task: 'Would require input and result envelopes' }],
-    })).rejects.toThrow(/requires 2 additional message envelopes[\s\S]*255\/256 occupied[\s\S]*nothing was started/iu);
-    expect(run.teams.spawn).not.toHaveBeenCalled();
-    run.envelopes.length = 0;
-
-    const retryFootprint = harness([]);
-    await expect(execute(retryFootprint.tool, 'retry-ledger-overflow', {
-      action: 'start',
-      nodes: Array.from({ length: 65 }, (_, index) => ({
-        id: `retry-${index}`, task: `Retry ${index}`,
-        routing: { fallbackModels: [{ provider: 'test', id: 'fallback' }], maxAttempts: 2 },
-      })),
-    })).rejects.toThrow(/requires 260 additional message envelopes[\s\S]*nothing was started/iu);
-    expect(retryFootprint.teams.spawn).not.toHaveBeenCalled();
 
     const oversizedInput = harness([]);
     await expect(execute(oversizedInput.tool, 'oversized-input', {
@@ -346,8 +321,8 @@ describe('AgentWorkflowCoordinator', () => {
     })).rejects.toThrow(/36000-byte input envelope[\s\S]*32768-byte limit[\s\S]*Nothing was started/u);
     expect(oversizedInput.teams.spawn).not.toHaveBeenCalled();
 
-    await execute(run.tool, 'large-sequential', {
-      action: 'start', maxConcurrency: 1,
+    await execute(run.tool, 'large-parallel', {
+      action: 'start', maxConcurrency: 17,
       nodes: Array.from({ length: 17 }, (_, index) => ({
         id: `node-${index}`,
         task: `Task ${index}`,
@@ -573,7 +548,7 @@ describe('AgentWorkflowCoordinator', () => {
     }
   });
 
-  it('preserves default workflow concurrency four as an upper bound under the real Team active-turn limit three', async () => {
+  it('preserves default workflow concurrency four with no team active-turn ceiling', async () => {
     let releasePrompts!: () => void;
     const promptGate = new Promise<void>((resolve) => { releasePrompts = resolve; });
     const run = await realTeamHarness(async () => { await promptGate; return 'done'; });
@@ -583,12 +558,12 @@ describe('AgentWorkflowCoordinator', () => {
         nodes: Array.from({ length: 6 }, (_, index) => ({ id: `parallel-${index}`, task: `Parallel ${index}`, mailboxTtlSeconds: 0 })),
       } as never, undefined, undefined, run.context);
       expect(run.coordinator.getWorkflowViews('parent-1').find((workflow) => workflow.id === (started.details as { workflowIds: string[] }).workflowIds[0])?.maxConcurrency).toBe(4);
-      await vi.waitFor(() => expect(run.children).toHaveLength(3));
-      expect(run.maximumActivePrompts()).toBe(3);
+      await vi.waitFor(() => expect(run.children).toHaveLength(4));
+      expect(run.maximumActivePrompts()).toBe(4);
       releasePrompts();
       await vi.waitFor(() => expect(run.coordinator.getWorkflowViews('parent-1')[0]?.status).toBe('completed'));
       expect(run.children).toHaveLength(6);
-      expect(run.maximumActivePrompts()).toBe(3);
+      expect(run.maximumActivePrompts()).toBe(4);
     } finally {
       releasePrompts();
       await run.cleanup();

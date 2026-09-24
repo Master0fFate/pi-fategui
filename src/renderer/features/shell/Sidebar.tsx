@@ -34,12 +34,12 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { useSkinComponents } from '../../skins/SkinProvider';
 import { SelectControl } from '../../components/SelectControl';
 import { formatRelativeTime } from '../../lib/relativeTime';
-import { useAutomationStore } from '../../stores/automationStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { projectPathKey, useProjectStore, type KnownProject } from '../../stores/projectStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
-import { SidebarAutomations } from '../automations/SidebarAutomations';
+import { SidebarAgents } from '../agents/SidebarAgents';
+import { openAgentNotice, useAgentsStore } from '../../stores/agentsStore';
 import { SidebarResources } from '../resources/SidebarResources';
 import { ConversationPaths, conversationPathViews, type ForkAction } from './ConversationPaths';
 
@@ -111,11 +111,19 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const openSettings = useUiStore((state) => state.setSettingsOpen);
   const sidebarTab = useUiStore((state) => state.sidebarTab);
   const setSidebarTab = useUiStore((state) => state.setSidebarTab);
+  const noteSidebarTabInteraction = useUiStore((state) => state.noteSidebarTabInteraction);
   const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed);
   const showToast = useUiStore((state) => state.showToast);
   const requestComposerDraft = useUiStore((state) => state.requestComposerDraft);
   const musicPlaying = useUiStore((state) => state.musicPlaying);
-  const initializeAutomations = useAutomationStore((state) => state.initialize);
+  useEffect(() => {
+    if (typeof window.piDesktop?.onAgentLibraryChanged !== 'function') return;
+    return window.piDesktop.onAgentLibraryChanged((event) => {
+      if (event.projectPath === useAgentsStore.getState().projectPath) void useAgentsStore.getState().load(event.projectPath);
+      if (event.focus && event.runId) void openAgentNotice(event.projectPath, event.runId);
+      else if (event.message && event.runId) useUiStore.getState().showToast({ kind: event.status === 'failed' ? 'error' : event.status === 'needs-attention' ? 'warning' : 'info', title: 'Agents', message: event.message, agentRun: { projectPath: event.projectPath, runId: event.runId } });
+    });
+  }, []);
   const gitBranch = useWorkspaceStore((state) => state.git?.repository && state.git.branch ? state.git.branch : null);
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<'manual' | 'recent' | 'oldest' | 'alphabetical'>('recent');
@@ -181,9 +189,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   };
   const sortedSessions = useMemo(() => [...sessions].sort(compareSessions), [manualRanks, sessions, sort]);
 
-  useEffect(() => {
-    void initializeAutomations(runtime.project?.path ?? null);
-  }, [initializeAutomations, runtime.project?.path]);
   useEffect(() => {
     const projectPath = runtime.project?.path ?? null;
     const latest = runtime.sessions ?? [];
@@ -1380,12 +1385,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             )}
           </div>
             </Tabs.Content>
-            <Tabs.Content value="automations" className="sidebar-tab-content"><SidebarAutomations /></Tabs.Content>
+            <Tabs.Content value="agents" className="sidebar-tab-content"><SidebarAgents /></Tabs.Content>
             <Tabs.Content value="resources" className="sidebar-tab-content"><SidebarResources onOpenProject={selectProject} projectSelectionBusy={replacementBusy} /></Tabs.Content>
             <Tabs.List className="sidebar-primary-nav" aria-label="Sidebar destinations">
-              <Tabs.Trigger value="sessions" className="sidebar-primary-trigger" aria-label="Sessions"><TabContent label="Sessions" active={sidebarTab === 'sessions'} /></Tabs.Trigger>
-              <Tabs.Trigger value="automations" className="sidebar-primary-trigger" aria-label="Automations"><TabContent label="Automations" active={sidebarTab === 'automations'} /></Tabs.Trigger>
-              <Tabs.Trigger value="resources" className="sidebar-primary-trigger" aria-label="Resources"><TabContent label="Resources" active={sidebarTab === 'resources'} /></Tabs.Trigger>
+              <Tabs.Trigger value="sessions" className="sidebar-primary-trigger" aria-label="Sessions" onPointerDown={noteSidebarTabInteraction}><TabContent label="Sessions" active={sidebarTab === 'sessions'} /></Tabs.Trigger>
+              <Tabs.Trigger value="agents" className="sidebar-primary-trigger" aria-label="Agents" onPointerDown={noteSidebarTabInteraction}><TabContent label="Agents" active={sidebarTab === 'agents'} /></Tabs.Trigger>
+              <Tabs.Trigger value="resources" className="sidebar-primary-trigger" aria-label="Resources" onPointerDown={noteSidebarTabInteraction}><TabContent label="Resources" active={sidebarTab === 'resources'} /></Tabs.Trigger>
             </Tabs.List>
           </Tabs.Root>
         </div>

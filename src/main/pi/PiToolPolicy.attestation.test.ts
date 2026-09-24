@@ -39,6 +39,54 @@ describe('createSecureWriteFile attestation hook', () => {
     return createSecureWriteFile({ policy, access, canonicalCwd: projectDir, ...(sink ? { attestations: sink } : {}), ...(maxPreHashBytes !== undefined ? { maxPreHashBytes } : {}) });
   }
 
+  it.each([false, true])('finishes admitted bytes when permission changes inside truncate (attested=%s)', async (attested) => {
+    const target = path.join(projectDir, 'admitted.txt');
+    await fs.writeFile(target, 'original');
+    let permission: 'edit' | 'read-only' = 'edit';
+    const access: ProjectToolAccess = { fullAccess: false, get permissionLevel() { return permission; } };
+    const open = fs.open.bind(fs);
+    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (String(args[0]) === target) {
+        const truncate = handle.truncate.bind(handle);
+        vi.spyOn(handle, 'truncate').mockImplementation(async (...truncateArgs) => {
+          await truncate(...truncateArgs);
+          permission = 'read-only';
+        });
+      }
+      return handle;
+    });
+    const captured: AttestationRecordInput[] = [];
+    const write = await makeWriter(access, attested ? makeSink(captured) : undefined);
+    await write('admitted.txt', 'complete replacement', 'write');
+    expect(await fs.readFile(target, 'utf8')).toBe('complete replacement');
+    await expect(write('admitted.txt', 'not admitted', 'write')).rejects.toThrow(/authority/);
+    expect(await fs.readFile(target, 'utf8')).toBe('complete replacement');
+  });
+
+  it('finishes an admitted attested replacement when permission changes inside a short write', async () => {
+    const target = path.join(projectDir, 'chunks.txt');
+    await fs.writeFile(target, 'original');
+    let permission: 'edit' | 'read-only' = 'edit';
+    const access: ProjectToolAccess = { fullAccess: false, get permissionLevel() { return permission; } };
+    const open = fs.open.bind(fs);
+    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (String(args[0]) === target) {
+        const write = handle.write.bind(handle);
+        handle.write = (async (buffer: Buffer, offset: number, length: number, position: number) => {
+          const result = await write(buffer, offset, Math.min(length, 1), position);
+          permission = 'read-only';
+          return result;
+        }) as typeof handle.write;
+      }
+      return handle;
+    });
+    const write = await makeWriter(access, makeSink([]));
+    await write('chunks.txt', 'all bytes', 'edit');
+    expect(await fs.readFile(target, 'utf8')).toBe('all bytes');
+  });
+
   it('records a new-file write with a missing pre-state and exact post hash', async () => {
     const captured: AttestationRecordInput[] = [];
     const writeFile = await makeWriter({ fullAccess: false }, makeSink(captured));

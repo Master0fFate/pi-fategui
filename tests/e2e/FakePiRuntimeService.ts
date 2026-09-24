@@ -100,6 +100,7 @@ export class FakePiRuntimeService {
   private conversationBranchesEnabled = false;
   private activeConversationBranchId = 'e2e-path-current';
   private readonly sessionPermissions = new Map<string, PermissionLevel>();
+  private readonly authorityRevisions = new Map<string, number>();
   private sink: (events: PiEvent[]) => void = () => undefined;
   private goalSink: (event: GoalMaxEvent) => void = () => undefined;
   private taskSink: (event: TaskEvent) => void = () => undefined;
@@ -391,7 +392,7 @@ export class FakePiRuntimeService {
   }
   async setModel(): Promise<RuntimeState> { return this.getState(); }
   setThinkingLevel(_level: ThinkingLevel): RuntimeState { return this.getState(); }
-  async setPermissionLevel(level: PermissionLevel): Promise<RuntimeState> { this.permissionLevel = level; this.sessionPermissions.set(this.activeSession, level); this.emitState(); return this.getState(); }
+  async setPermissionLevel(level: PermissionLevel): Promise<RuntimeState> { this.permissionLevel = level; this.sessionPermissions.set(this.activeSession, level); this.authorityRevisions.set(this.activeSession, (this.authorityRevisions.get(this.activeSession) ?? 0) + 1); this.emitState(); return this.getState(); }
   async mutateQueuedMessage(input: QueueMutationInput): Promise<QueueMutationResult> {
     const target = this.queuedMessages.find((item) => item.id === input.id);
     if (!target) throw new Error('That queued message is no longer waiting.');
@@ -526,17 +527,13 @@ export class FakePiRuntimeService {
     return { cleared: true, archivedGoalId: goal.id };
   }
   async newSession(): Promise<RuntimeState> { this.activeSession = 'e2e-session-1'; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(this.activeSession) ?? 'full-access'; this.emitState(); return this.getState(); }
-  async prepareAutomationSession(name: string, permissionLevel: 'read-only' | 'edit'): Promise<RuntimeState> {
-    const sessionId = 'e2e-automation-session';
-    if (!this.sessions.some((session) => session.id === sessionId)) {
-      this.sessions.push({ id: sessionId, title: name, firstMessage: '', path: 'test://automation-session', createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString(), messageCount: 0, active: true });
-    }
-    this.activeSession = sessionId;
-    this.queuedMessages = [];
-    this.permissionLevel = permissionLevel;
-    this.sessionPermissions.set(sessionId, permissionLevel);
-    this.emitState();
-    return this.getState();
+  registerAgentSession(summary: SessionSummary, permission: PermissionLevel): void {
+    if (!this.sessions.some((session) => session.id === summary.id)) this.sessions.push(summary);
+    this.sessionPermissions.set(summary.id, permission);
+  }
+  agentAuthority(sessionId: string): { level: PermissionLevel; revision: number } | null {
+    const level = sessionId === this.activeSession ? this.permissionLevel : this.sessionPermissions.get(sessionId);
+    return level ? { level, revision: this.authorityRevisions.get(sessionId) ?? 0 } : null;
   }
   async listSessions(query = ''): Promise<SessionSummary[]> { return this.getState().sessions!.filter((session) => session.title.toLowerCase().includes(query.toLowerCase())); }
   async switchSession(sessionId: string): Promise<RuntimeState> { this.activeSession = sessionId; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(sessionId) ?? 'full-access'; this.emitState(true); return this.getState(); }

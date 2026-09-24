@@ -454,6 +454,20 @@ describe('SubagentCoordinator', () => {
     expect(JSON.stringify(result.details)).not.toContain('example.test');
   });
 
+  it('treats blank provider filters as unfiltered and reads live availability on every call', async () => {
+    const parent = parentSession();
+    const coordinator = new SubagentCoordinator({
+      resolveParent: () => ({ projectPath: '/project', session: parent, permissionLevel: 'full-access' }),
+      emit: () => undefined,
+    });
+    const models = runtime();
+    const first = await executeNamedTool(coordinator, models, 'subagent_catalog', 'before-logout', { section: 'models', provider: ' ' });
+    expect(JSON.stringify(first.details)).toContain('alternate');
+    vi.mocked(models.getAvailable).mockResolvedValue([]);
+    const second = await executeNamedTool(coordinator, models, 'subagent_catalog', 'after-logout', { section: 'models' });
+    expect(second.details).toMatchObject({ models: [] });
+  });
+
   it('hides Fate-disabled models from the catalog and refuses them for children', async () => {
     const parent = parentSession();
     const coordinator = new SubagentCoordinator({

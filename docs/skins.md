@@ -127,7 +127,7 @@ The only supported `appearance` keys are `interfaceFont`, `codeFont`, `compactMo
 | `shell`, `sidebar` | Workspace chrome, navigation, project/session rows, compact sessions |
 | `conversation`, `composer`, `queue` | Transcript, input, tools menu, queued/held messages, goal steering |
 | `tasks`, `goal` | Ordinary tasks, GoalMax criteria, flight deck, goal editor and confirmation |
-| `agents` | Teams, child sessions, controls, transcripts, workspace review dialog |
+| `agents` | Agent library/editor, teams, child sessions, controls, transcripts, workspace review dialog |
 | `tools`, `activity`, `notifications` | Tool cards/output chrome, activity filters/timeline, toasts/notices/error banners |
 | `context`, `resources` | Context metrics, token charts, resource groups and rows |
 | `music` | Dock, transport, local/remote source input, populated playlist |
@@ -135,7 +135,7 @@ The only supported `appearance` keys are `interfaceFont`, `codeFont`, `compactMo
 | `modelPicker`, `tooltips` | Model/reasoning/provider pickers, options, app tooltips and native-title tooltips |
 | `files`, `changes` | File tree, preview chrome, review controls, Git rows |
 | `browser` | Tab strip, new/close tab buttons, address field, Back/Forward/Reload, local-file/annotation/device controls; not the Chromium page itself |
-| `learning`, `automations` | Memory library/review forms, automation list and editor |
+| `learning`, `automations` | Memory library/review forms; `automations` remains a legacy pack key with no current UI target |
 
 Allowed properties are `controlRadius` (0–12 px), `surfaceRadius` (0–16 px), `padding` (4–24 px), `rowHeight` (24–48 px minimum), `fontSize` (11–16 px base), `surface` (`canvas`, `panel`, `raised`), and `border` (`border`, `borderStrong`, `textSoft`). Colors always come from the selected palette. Controls and metadata retain their no-wrap/truncation rules; compact action labels may stay smaller than body text. Long messages, code, descriptions, and warnings remain readable rather than being forced onto one line.
 

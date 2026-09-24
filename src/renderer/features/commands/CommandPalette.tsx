@@ -14,7 +14,6 @@ import {
   Settings,
   Square,
   TerminalSquare,
-  Workflow,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -110,7 +109,6 @@ export function CommandPalette() {
       { id: 'open-project', label: 'Open project', hint: 'Ctrl/⌘ O', icon: FolderOpen, run: () => { if ('piDesktop' in window) invoke('Open project', () => window.piDesktop.selectProject(), true); } },
       { id: 'new-session', label: 'New session', hint: 'Ctrl/⌘ N', icon: Bot, disabled: Boolean(newSessionReason), ...(newSessionReason ? { disabledReason: newSessionReason } : {}), run: () => { if ('piDesktop' in window) invoke('New session', () => window.piDesktop.newSession(), true); } },
       { id: 'resources', label: 'Open resources', icon: Library, run: () => { actions.setSidebarCollapsed(false); actions.setSidebarTab('resources'); } },
-      { id: 'automations', label: 'Open automations', icon: Workflow, run: () => { actions.setSidebarCollapsed(false); actions.setSidebarTab('automations'); } },
       { id: 'focus-composer', label: 'Focus composer', icon: Search, disabled: Boolean(focusReason), ...(focusReason ? { disabledReason: focusReason } : {}), run: () => document.querySelector<HTMLTextAreaElement>('#pi-composer')?.focus() },
       { id: 'stop', label: 'Stop generation', hint: 'Esc', icon: Square, disabled: !runtime.streaming, ...(!runtime.streaming ? { disabledReason: 'Nothing is currently generating.' } : {}), run: () => { if ('piDesktop' in window) void window.piDesktop.abort().catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Stop generation failed', message: commandErrorMessage(error) })); } },
       { id: 'sidebar', label: 'Toggle sidebar', hint: 'Ctrl/⌘ B', icon: PanelLeft, run: actions.toggleSidebar },
@@ -296,12 +294,10 @@ function resourceIcon(resource: ResourceSearchItem): LucideIcon {
   if (resource.kind === 'file') return FileCode2;
   if (resource.kind === 'browser-tab') return Globe2;
   if (resource.kind === 'pi') return Library;
-  if (resource.kind === 'automation') return Workflow;
   if (resource.kind === 'session') return Bot;
   if (resource.surface === 'files') return FileCode2;
   if (resource.surface === 'browser') return Globe2;
   if (resource.surface === 'terminal') return TerminalSquare;
-  if (resource.surface === 'automations') return Workflow;
   return Library;
 }
 
@@ -318,7 +314,6 @@ function commandErrorMessage(error: unknown): string {
 function resourceKind(resource: ResourceSearchItem): string {
   if (resource.kind === 'browser-tab') return 'tab';
   if (resource.kind === 'pi') return resource.source === 'skill' ? 'skill' : 'Pi';
-  if (resource.kind === 'automation') return 'automation';
   if (resource.kind === 'session') return 'session';
   if (resource.kind === 'file') return 'file';
   return 'resource';

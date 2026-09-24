@@ -147,7 +147,7 @@ async function fixtureRepository(): Promise<{ root: string; worktree: string }> 
   return { root, worktree };
 }
 
-test('left sidebar unifies real resources and persisted project automations', async () => {
+test('left sidebar unifies real resources and the Agents library', async () => {
   const fixture = await fixtureRepository();
   const userData = await mkdtemp(path.join(tmpdir(), 'pi-desktop-resource-profile-'));
   const application = await electron.launch({
@@ -184,7 +184,7 @@ test('left sidebar unifies real resources and persisted project automations', as
     expect(pressedVoiceStyle.transform).toBe('none');
 
     const sidebarTabs = page.getByRole('tablist', { name: 'Sidebar destinations' });
-    await expect(sidebarTabs.getByRole('tab')).toHaveText(['Sessions', 'Automations', 'Resources']);
+    await expect(sidebarTabs.getByRole('tab')).toHaveText(['Sessions', 'Agents', 'Resources']);
     const sessionSearch = page.getByLabel('Search sessions');
     const sessionSearchVisual = await sidebarSearchVisual(sessionSearch);
     const sessionToolbarLayout = await sidebarToolbarLayout(sessionSearch);
@@ -211,44 +211,7 @@ test('left sidebar unifies real resources and persisted project automations', as
     await expect(page.getByRole('tab', { name: 'Files' })).toHaveAttribute('data-state', 'active');
     await expect(page.locator('.preview-heading')).toContainText('src/example.ts');
 
-    await sidebarTabs.getByRole('tab', { name: 'Automations' }).click();
-    const automationSearch = page.getByRole('searchbox', { name: 'Search automations' });
-    const automationSearchVisual = await sidebarSearchVisual(automationSearch);
-    expectSidebarSearchVisualMatch(automationSearchVisual, sessionSearchVisual);
-    expect(sidebarSearchWidth(automationSearchVisual)).toBeGreaterThan(sidebarSearchWidth(sessionSearchVisual) + 20);
-    const automationToolbarLayout = await sidebarToolbarLayout(automationSearch);
-    expect(automationToolbarLayout.rowTopSpread).toBeLessThanOrEqual(1);
-    expect(automationToolbarLayout.overflow).toBeLessThanOrEqual(0);
-    const automationPanel = page.locator('.sidebar-automation-panel');
-    const automationEmpty = automationPanel.locator('.sidebar-tab-empty');
-    await expect(automationEmpty).toContainText('No automations yet');
-    const [panelBox, emptyBox] = await Promise.all([automationPanel.boundingBox(), automationEmpty.boundingBox()]);
-    expect(panelBox).not.toBeNull();
-    expect(emptyBox).not.toBeNull();
-    expect(emptyBox!.height).toBeGreaterThan(panelBox!.height * 0.6);
-    await page.getByRole('button', { name: 'New automation' }).click();
-    const editor = page.getByRole('dialog', { name: 'New automation' });
-    await editor.getByLabel('Name').fill('Review fixture');
-    await editor.getByLabel('Prompt').fill('Review the fixture changes and report focused test coverage.');
-    await editor.getByRole('button', { name: 'Create automation' }).click();
-    await expect(page.getByRole('button', { name: /^Review fixture/u })).toBeVisible();
 
-    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+K' : 'Control+K');
-    const commandCenter = page.getByRole('dialog', { name: 'Command center' });
-    await commandCenter.getByRole('textbox', { name: 'Search commands and resources' }).fill('Review fixture');
-    await commandCenter.getByRole('option', { name: /^Review fixture/u }).click();
-    const exactAutomation = page.getByRole('dialog', { name: 'Edit automation' });
-    await expect(exactAutomation.getByLabel('Name')).toHaveValue('Review fixture');
-    await exactAutomation.getByRole('button', { name: 'Cancel' }).click();
-
-    const saved = await page.evaluate(() => window.piDesktop.listAutomations());
-    expect(saved).toHaveLength(1);
-    expect(saved[0]).toMatchObject({ name: 'Review fixture', permissionLevel: 'read-only' });
-
-    await page.getByRole('button', { name: /^Review fixture/u }).click();
-    await expect(page.getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByLabel('Message Pi')).toHaveValue('Review the fixture changes and report focused test coverage.');
-    await expect.poll(async () => (await page.evaluate(() => window.piDesktop.listAutomations()))[0]?.launchCount).toBe(1);
   } finally {
     await application.close();
     await rm(fixture.root, { recursive: true, force: true });
@@ -1005,7 +968,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await composerInput.fill('');
     const v2Team = agents.getByLabel('E2E team Agent Team e2e-agent-team');
     await expect(v2Team).toBeVisible();
-    await expect(v2Team).toContainText('2/16 nodes · 1/3 active · writer leased');
+    await expect(v2Team.locator('.agent-tree-branch-copy small')).toHaveText('2 agents · 1 active · writer leased');
     const teamToggle = v2Team.getByRole('button', { name: /^E2E team · Current/u });
     await expect(teamToggle).toHaveAttribute('aria-expanded', 'true');
     await teamToggle.click();
@@ -1518,6 +1481,11 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
 
     await page.getByLabel('Message Pi').fill('Inspect this project');
     await page.getByRole('button', { name: 'Send message' }).click();
+    const streamingStop = page.getByRole('button', { name: 'Stop Pi', exact: true });
+    await expect(streamingStop).toBeVisible();
+    await expect(streamingStop).toBeEnabled();
+    await expect(streamingStop.locator('.lucide-square')).toBeVisible();
+    await page.getByLabel('Message Pi').fill('Use the smaller API');
     const streamingArrow = page.getByRole('button', { name: 'Queue follow-up message' });
     await expect(streamingArrow).toBeVisible();
     await expect(streamingArrow).toBeEnabled();
@@ -1525,7 +1493,6 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(page.getByRole('button', { name: 'New session', exact: true })).toBeEnabled();
     await expect(page.getByRole('button', { name: 'Model and reasoning settings' })).toBeEnabled();
     await expect(page.locator('.session-open').filter({ hasText: 'Second session' })).toBeEnabled();
-    await page.getByLabel('Message Pi').fill('Use the smaller API');
     await page.getByLabel('Message Pi').press('Enter');
     const queuedMessages = page.getByRole('region', { name: 'Queued messages' });
     await expect(queuedMessages).toContainText('Use the smaller API');
@@ -1614,7 +1581,9 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.waitForTimeout(180);
     await openInspectorView(page, 'System', /Context/u);
     await expect(page.getByRole('img', { name: 'Stacked token traffic for the 24 most recent responses on the active branch' })).toBeVisible();
-    await expect(page.getByRole('region', { name: 'Session token summary' })).toContainText('provider-reported input');
+    await expect(page.getByRole('region', { name: 'Session token summary' })).toContainText('root + child provider input');
+    await expect(page.getByRole('region', { name: 'Session token summary' })).toContainText('24 responses · root + child agents');
+    await expect(page.getByRole('region', { name: 'Session token summary' })).toContainText('root + child model rates');
     await expect(page.getByText('included in output')).toBeVisible();
     const contextLayout = await page.locator('.context-dashboard').evaluate((panel) => ({
       scrollWidth: panel.scrollWidth,

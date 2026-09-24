@@ -524,6 +524,27 @@ describe('transactional project activation', () => {
   });
 });
 
+describe('Agents IPC authorization', () => {
+  it('rejects an untrusted sender and malformed input before the named Agent service', async () => {
+    const handlers = new Map<string, (event: Electron.IpcMainInvokeEvent, input: unknown) => Promise<unknown>>();
+    vi.mocked(ipcMain.handle).mockImplementation((channel, handler) => { handlers.set(channel, handler as never); });
+    const agents = { setChangeSink: vi.fn(), saveAgent: vi.fn() };
+    registerIpc({
+      runtime: { setEventSink: vi.fn(), setGoalEventSink: vi.fn(), setTaskEventSink: vi.fn() },
+      projects: {}, files: {}, git: {}, settings: {}, agents,
+      terminal: { setEventSink: vi.fn() }, logs: { write: vi.fn() }, music: { setDurationSink: vi.fn() },
+      speech: { setEventSink: vi.fn(), setStreamSink: vi.fn() }, hotkey: {}, updates: {}, browser: {}, automations: {}, attestations: {},
+      rendererPolicy: { documentUrl: 'file:///fate/index.html', developmentOrigin: null },
+    } as never);
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue({ isDestroyed: () => false } as Electron.BrowserWindow);
+    const foreign = { url: 'https://untrusted.invalid' } as Electron.WebFrameMain;
+    await expect(handlers.get(ipcChannels.agentsSave)!({ sender: { mainFrame: foreign }, senderFrame: foreign } as Electron.IpcMainInvokeEvent, {})).rejects.toThrow(/main frame/);
+    const frame = { url: 'file:///fate/index.html' } as Electron.WebFrameMain;
+    await expect(handlers.get(ipcChannels.agentsSave)!({ sender: { mainFrame: frame }, senderFrame: frame } as Electron.IpcMainInvokeEvent, { id: '../escape', projectPath: '/other' })).rejects.toThrow();
+    expect(agents.saveAgent).not.toHaveBeenCalled();
+  });
+});
+
 describe('attestation query resolves the main-owned current project', () => {
   const project = { path: '/project', name: 'project', trusted: true } as ProjectState;
 

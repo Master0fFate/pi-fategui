@@ -2,14 +2,15 @@ import { z } from 'zod';
 import { toolProvenanceSchema } from './provenance';
 
 export const AGENT_TEAM_MAX_DEPTH = 2;
-export const AGENT_TEAM_MAX_NODES = 16;
-export const AGENT_TEAM_MAX_ACTIVE_TURNS = 3;
-export const AGENT_TEAM_MAX_MESSAGES = 256;
+// Legacy limit fields remain in the persisted contract, but agent count, active
+// turns, message count, and retained node history have no product-imposed cap.
+export const AGENT_TEAM_MAX_NODES = Number.MAX_SAFE_INTEGER;
+export const AGENT_TEAM_MAX_ACTIVE_TURNS = Number.MAX_SAFE_INTEGER;
+export const AGENT_TEAM_MAX_MESSAGES = Number.MAX_SAFE_INTEGER;
 export const AGENT_TEAM_MAX_MESSAGE_BYTES = 32 * 1024;
 export const AGENT_TEAM_DEFAULT_WAIT_MS = 30_000;
 export const AGENT_TEAM_MAX_WAIT_MS = 5 * 60_000;
-export const AGENT_TEAM_MAX_HISTORY_NODES = 512;
-export const AGENT_TEAM_MAX_GLOBAL_NODES = 64;
+export const AGENT_TEAM_MAX_HISTORY_NODES = Number.MAX_SAFE_INTEGER;
 
 const id = z.string().min(1).max(160);
 const boundedText = z.string().max(AGENT_TEAM_MAX_MESSAGE_BYTES);
@@ -112,7 +113,7 @@ export const agentTeamNodeSchema = z.object({
   thinkingLevel: thinking,
   status: agentTeamNodeStatusSchema,
   currentTaskId: id.optional(),
-  // Historical topology retains released children; live admission remains capped by maxNodes.
+  // Historical topology retains released children. Agent count is not capped.
   childIds: z.array(id).max(AGENT_TEAM_MAX_HISTORY_NODES),
   unreadMessages: z.number().int().nonnegative().max(AGENT_TEAM_MAX_MESSAGES),
   writer: z.boolean(),

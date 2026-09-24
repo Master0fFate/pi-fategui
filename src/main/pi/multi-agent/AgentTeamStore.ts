@@ -186,7 +186,6 @@ export function addEnvelope(
   input: Omit<AgentTeamEnvelope, 'id' | 'teamId' | 'sequence' | 'createdAt' | 'state'>,
   now = Date.now(),
 ): AgentTeamEnvelope {
-  if (runtime.envelopes.size >= runtime.state.limits.maxMessages) throw new Error(`Agent team message limit (${runtime.state.limits.maxMessages}) reached.`);
   if (Buffer.byteLength(input.content, 'utf8') > runtime.state.limits.maxMessageBytes) throw new Error(`Agent team messages are limited to ${runtime.state.limits.maxMessageBytes} UTF-8 bytes.`);
   const envelope: AgentTeamEnvelope = {
     ...input,

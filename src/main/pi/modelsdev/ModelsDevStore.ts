@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fateDataRoot, fateProviderStoragePaths } from '../FateProviderStorage';
-import type { GeneratedPiProviderConfig } from './ModelsDevCatalog';
+import { applyOpenAIAggregatorCompatToModelsFile, applyOpenAIAggregatorCompatToProvider, type GeneratedPiProviderConfig } from './ModelsDevCatalog';
 
 /**
  * Persistence for models.dev-managed providers.
@@ -15,8 +15,9 @@ import type { GeneratedPiProviderConfig } from './ModelsDevCatalog';
  *   ids Fate added, their frozen identity (baseUrl, api kind, env var), and
  *   the last successful catalog check time.
  *
- * Non-managed entries in models.json are never touched. Writes are atomic
- * (temp file + rename) with 0600 permissions where the platform allows it.
+ * Non-managed entries are never removed. Missing OpenAI-aggregator `compat`
+ * defaults are filled in so hand-edited proxies are not treated as api.openai.com.
+ * Writes are atomic (temp file + rename) with 0600 permissions where the platform allows it.
  */
 
 export const MODELS_DEV_REGISTRY_VERSION = 1;
@@ -181,14 +182,23 @@ export class ModelsDevStore {
   /** Write one managed provider into models.json, preserving all other entries. */
   async upsertProviderConfig(config: GeneratedPiProviderConfig): Promise<void> {
     const file = await this.readModelsJson();
-    file.providers[config.id] = {
+    file.providers[config.id] = applyOpenAIAggregatorCompatToProvider({
       name: config.name,
       baseUrl: config.baseUrl,
       ...(config.apiKey ? { apiKey: config.apiKey } : {}),
       api: config.api,
       models: config.models,
-    };
+    });
     await writeJsonAtomic(this.paths.modelsPath, file);
+  }
+
+  /** Fill missing aggregator `compat` on OpenAI-compatible custom providers. */
+  async ensureOpenAIAggregatorCompat(): Promise<boolean> {
+    const file = await this.readModelsJson();
+    const { file: next, changed } = applyOpenAIAggregatorCompatToModelsFile(file);
+    if (!changed) return false;
+    await writeJsonAtomic(this.paths.modelsPath, next);
+    return true;
   }
 
   /** Remove one managed provider from models.json, preserving all other entries. */

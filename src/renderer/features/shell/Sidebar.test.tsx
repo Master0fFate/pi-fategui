@@ -2,7 +2,6 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, RuntimeState, SessionSummary } from '../../../shared/contracts/ipc';
-import { useAutomationStore } from '../../stores/automationStore';
 import { useBrowserStore } from '../../stores/browserStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useProjectStore } from '../../stores/projectStore';
@@ -48,9 +47,8 @@ describe('Sidebar sessions', () => {
     useRuntimeStore.getState().setRuntime(ready());
     // Tests exercise expanded-folder rendering; production starts collapsed.
     useProjectStore.setState({ projects: [], expandedByPath: { '/project': true } });
-    useUiStore.setState({ sidebarTab: 'sessions', composerDraftRequest: null, automationOpenRequest: null, toast: null, compactSessions: false });
+    useUiStore.setState({ sidebarTab: 'sessions', composerDraftRequest: null, toast: null, compactSessions: false });
     useWorkspaceStore.setState({ projectPath: '/project', git: null });
-    useAutomationStore.getState().reset();
     useBrowserStore.getState().reset();
   });
 
@@ -394,18 +392,12 @@ describe('Sidebar sessions', () => {
     expect(screen.queryByLabelText('Session running')).not.toBeInTheDocument();
   });
 
-  it('orders the persistent navigator by workflow and centers the empty Automations state', async () => {
+  it('orders the persistent navigator by workflow and opens Resources', async () => {
     const user = userEvent.setup();
-    const { container } = render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
 
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Sessions', 'Automations', 'Resources']);
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Sessions', 'Agents', 'Resources']);
     expect(screen.getByRole('tab', { name: 'Sessions' })).toHaveAttribute('aria-selected', 'true');
-
-    await user.click(screen.getByRole('tab', { name: 'Automations' }));
-    expect(screen.getByRole('searchbox', { name: 'Search automations' })).toBeInTheDocument();
-    expect(screen.getByText('No automations yet')).toBeInTheDocument();
-    expect(container.querySelector('.automation-list')).not.toBeInTheDocument();
-    expect(useUiStore.getState().sidebarTab).toBe('automations');
 
     await user.click(screen.getByRole('tab', { name: 'Resources' }));
     expect(screen.getByRole('searchbox', { name: 'Search resources' })).toBeInTheDocument();
@@ -462,56 +454,6 @@ describe('Sidebar sessions', () => {
     await user.click(launchers[0]!);
 
     expect(useUiStore.getState()).toMatchObject({ inspectorTab: 'resources', inspectorCollapsed: false });
-  });
-
-  it('opens the exact automation editor requested by a resource deep link', async () => {
-    const definition = {
-      id: '00000000-0000-4000-8000-000000000001', projectPath: '/project', name: 'Review auth', prompt: 'Review authentication changes.',
-      permissionLevel: 'read-only' as const, createdAt: 1, updatedAt: 1, lastLaunchedAt: null, lastLaunchOutcome: null, launchCount: 0,
-    };
-    const listAutomations = vi.fn(async () => [definition]);
-    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { listAutomations } as unknown as PiDesktopApi });
-    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
-    await waitFor(() => expect(useAutomationStore.getState().items).toHaveLength(1));
-
-    act(() => useUiStore.getState().openAutomation('/another-project', definition.id));
-    await waitFor(() => expect(useUiStore.getState().automationOpenRequest).toBeNull());
-    expect(screen.queryByRole('dialog', { name: 'Edit automation' })).not.toBeInTheDocument();
-
-    act(() => useUiStore.getState().openAutomation('/project', definition.id));
-
-    await waitFor(() => expect(useUiStore.getState().sidebarTab).toBe('automations'));
-    const editor = await screen.findByRole('dialog', { name: 'Edit automation' });
-    expect(editor).toBeInTheDocument();
-    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Review auth');
-    expect(useUiStore.getState().automationOpenRequest).toBeNull();
-  });
-
-  it('opens a saved automation in a renamed permission-scoped session without auto-sending', async () => {
-    const definition = {
-      id: '00000000-0000-4000-8000-000000000001', projectPath: '/project', name: 'Review auth', prompt: 'Review authentication changes.',
-      permissionLevel: 'read-only' as const, createdAt: 1, updatedAt: 1, lastLaunchedAt: null, lastLaunchOutcome: null, launchCount: 0,
-    };
-    const scoped = ready({ sessionId: 's3', sessionFile: '/sessions/s3.jsonl', permissionLevel: 'read-only', sessions: [session('s3', 'Review auth', true)] });
-    const launched = { ...definition, launchCount: 1, lastLaunchedAt: 2, lastLaunchOutcome: 'accepted' as const };
-    const listAutomations = vi.fn().mockResolvedValueOnce([definition]).mockResolvedValue([launched]);
-    const prepareAutomationSession = vi.fn(async () => ({ state: scoped, automation: launched }));
-    Object.defineProperty(window, 'piDesktop', {
-      configurable: true,
-      value: { listAutomations, prepareAutomationSession } as unknown as PiDesktopApi,
-    });
-    const user = userEvent.setup();
-    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
-
-    await user.click(screen.getByRole('tab', { name: 'Automations' }));
-    await user.click(await screen.findByRole('button', { name: /^Review auth/u }));
-
-    await waitFor(() => expect(prepareAutomationSession).toHaveBeenCalledWith(definition.id));
-    expect(useRuntimeStore.getState().runtime).toMatchObject({ sessionId: 's3', permissionLevel: 'read-only' });
-    expect(useUiStore.getState().composerDraftRequest).toMatchObject({
-      text: 'Review authentication changes.', mode: 'replace', selectAll: true,
-    });
-    expect(useUiStore.getState().sidebarTab).toBe('sessions');
   });
 
   it('groups sessions under project folders and previews other folders from disk', async () => {

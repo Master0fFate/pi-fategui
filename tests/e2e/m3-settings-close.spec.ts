@@ -71,8 +71,15 @@ test('M3 noncompact Settings close owns its visible pointer target and supports 
         const bounds = win.getContentBounds();
         return screen.dipToScreenPoint({ x: Math.round(bounds.x + center.x), y: Math.round(bounds.y + center.y) });
       }, { x: evidence.x, y: evidence.y });
-      execFileSync('powershell', ['-NoProfile', '-Command', `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Mouse { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y); [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint x,uint y,uint data,UIntPtr extra); }'; [Mouse]::SetProcessDPIAware(); [Mouse]::SetCursorPos(${point.x}, ${point.y}); [Mouse]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [Mouse]::mouse_event(4,0,0,0,[UIntPtr]::Zero)`]);
-      await expect(dialog).toBeHidden();
+      // A host window can sit above the Electron test window even when Electron
+      // reports it focused. Put the test window at the top for this real OS click.
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setAlwaysOnTop(true));
+      try {
+        execFileSync('powershell', ['-NoProfile', '-Command', `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class Mouse { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y); [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint x,uint y,uint data,UIntPtr extra); }'; [Mouse]::SetProcessDPIAware(); [Mouse]::SetCursorPos(${point.x}, ${point.y}); [Mouse]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [Mouse]::mouse_event(4,0,0,0,[UIntPtr]::Zero)`]);
+        await expect(dialog).toBeHidden();
+      } finally {
+        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setAlwaysOnTop(false));
+      }
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
     }
     await page.mouse.click(evidence.x, evidence.y);

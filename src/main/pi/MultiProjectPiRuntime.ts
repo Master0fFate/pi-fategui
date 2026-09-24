@@ -307,6 +307,14 @@ export class MultiProjectPiRuntime {
       undefined,
       this.deps.createQueuePersistence?.(),
     );
+    service.setModelCatalogListener((models) => {
+      if (this.bootService && this.bootService !== service) {
+        this.bootService.synchronizeModelCatalog(models, this.getFocused() === this.bootService && this.pendingOpenPath === null);
+      }
+      this.manager?.forEach((_path, other) => {
+        if (other !== service) other.synchronizeModelCatalog(models);
+      });
+    });
     if (this.deps.learning) service.setLearningService(this.deps.learning);
     service.setSessionSettledListener(() => this.deps.notifySessionSettled?.());
     if (this.deps.getDisabledModels) service.setDisabledModelsSource(this.deps.getDisabledModels);

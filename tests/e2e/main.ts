@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { appCommandSchema, appSettingsSchema, ipcChannels, type AppSettings, type ProjectState, type TerminalEvent } from '../../src/shared/contracts/ipc';
 import { browserEventBatchSchema } from '../../src/shared/contracts/browser';
 import { builtInThemes } from '../../src/shared/themes';
-import { AutomationRepository } from '../../src/main/automations/AutomationRepository';
+import { LegacyAutomations } from '../../src/main/automations/LegacyAutomations';
 import { LearningService } from '../../src/main/learning/LearningService';
 import { LearningRepository } from '../../src/main/learning/LearningRepository';
 import { FilesystemService } from '../../src/main/files/FilesystemService';
@@ -28,6 +28,9 @@ import type { TerminalService } from '../../src/main/terminal/TerminalService';
 import { installWindowZoomShortcuts } from '../../src/main/windowZoom';
 import { MINIMUM_WINDOW_SIZE } from '../../src/main/windowState';
 import { FakePiRuntimeService } from './FakePiRuntimeService';
+import { agentExecutionFixture } from './AgentExecutionFixture';
+import { AgentsService } from '../../src/main/agents/AgentsService';
+import { AgentRepository } from '../../src/main/agents/AgentRepository';
 
 protocol.registerSchemesAsPrivileged([{
   scheme: LOCAL_PAGE_SCHEME,
@@ -98,7 +101,10 @@ const settings = {
   }).loadThemes(),
 } as unknown as SettingsService;
 const logs = { list: () => [], write: () => undefined } as unknown as AppLogService;
-const automations = new AutomationRepository(logs, path.join(process.env.PI_DESKTOP_E2E_USER_DATA ?? app.getPath('userData'), 'automations'));
+const legacyAutomations = new LegacyAutomations(logs, path.join(process.env.PI_DESKTOP_E2E_USER_DATA ?? app.getPath('userData'), 'automations'));
+const agentSessionsRoot = path.join(app.getPath('userData'), 'agent-sessions');
+const agentFixture = agentExecutionFixture(runtime, agentSessionsRoot);
+const agents = new AgentsService({ runtime: agentFixture.host, workspacePolicy: () => settingsValue.agentWorkspace, disabledModels: () => settingsValue.disabledModels, sessionsRoot: agentSessionsRoot }, new AgentRepository(path.join(app.getPath('userData'), 'agents')), legacyAutomations, agentFixture.execute);
 const music = {
   getStatus: async () => ({ available: false, version: null, message: 'yt-dlp is unavailable in the E2E harness.' }),
   load: async () => { throw new Error('Music loading is disabled in the E2E harness.'); },
@@ -174,6 +180,7 @@ app.whenReady().then(() => {
     git,
     settings,
     learning,
+    agents,
     terminal,
     logs,
     music,
@@ -181,10 +188,10 @@ app.whenReady().then(() => {
     hotkey: { getStatus: () => ({ pushToTalkAvailable: true }), applySpeechSettings: async () => ({ pushToTalkAvailable: true }), register: async () => ({ pushToTalkAvailable: true }), unregister() {}, resetActive() {}, dispose() {} } as never,
     updates,
     browser,
-    automations,
     attestations: { query: async () => ({ rows: [], truncated: false }) },
     rendererPolicy: createTrustedRendererPolicy(rendererPath),
   });
+  agents.start();
   window = new BrowserWindow({
     width: 1280, height: 720,
     minWidth: MINIMUM_WINDOW_SIZE.width, minHeight: MINIMUM_WINDOW_SIZE.height,
@@ -200,7 +207,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   if (shutdown) return;
   shutdown = Promise.race([
-    browser.reset(),
+    Promise.all([agents.dispose(), browser.reset()]).then(() => undefined),
     new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
   ]).catch(() => undefined).finally(() => {
     quitReady = true;

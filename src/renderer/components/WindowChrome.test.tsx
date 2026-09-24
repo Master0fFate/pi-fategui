@@ -10,9 +10,10 @@ afterEach(() => {
 
 describe('WindowChrome', () => {
   it.each(['win32', 'darwin', 'linux'] as const)('routes %s title-bar actions through the bridge in platform order', async (platform) => {
-    let state: WindowState = { maximized: false, minimized: false };
+    let state: WindowState = { maximized: false, minimized: false, fullScreen: false };
     const controlWindow = vi.fn(async (action: WindowControlAction) => {
-      if (action === 'toggle-maximize') state = { maximized: !state.maximized, minimized: false };
+      if (action === 'toggle-maximize') state = { maximized: !state.maximized, minimized: false, fullScreen: false };
+      if (action === 'toggle-fullscreen') state = { maximized: false, minimized: false, fullScreen: !state.fullScreen };
       if (action === 'minimize') state = { ...state, minimized: true };
       return state;
     });
@@ -39,6 +40,31 @@ describe('WindowChrome', () => {
     await user.click(screen.getByRole('button', { name: 'Close window' }));
 
     expect(controlWindow.mock.calls.map(([action]) => action)).toEqual(['toggle-maximize', 'minimize', 'close']);
+  });
+
+  it('routes the square title-bar button to exit-fullscreen while F11 fullscreen is active', async () => {
+    let state: WindowState = { maximized: false, minimized: false, fullScreen: true };
+    const controlWindow = vi.fn(async (action: WindowControlAction) => {
+      if (action === 'toggle-fullscreen') state = { maximized: false, minimized: false, fullScreen: !state.fullScreen };
+      return state;
+    });
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getAppInfo: vi.fn(async () => ({ name: 'Fate UI', version: 'test', platform: 'win32', packaged: false })),
+        getWindowState: vi.fn(async () => state),
+        controlWindow,
+        onWindowState: vi.fn(() => () => undefined),
+      } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    render(<WindowChrome />);
+
+    await waitFor(() => expect(screen.getByLabelText('Window controls')).toHaveAttribute('data-bridge-status', 'ready'));
+    expect(screen.getByLabelText('Window controls')).toHaveAttribute('data-fullscreen', 'true');
+    await user.click(screen.getByRole('button', { name: 'Exit full screen' }));
+    expect(screen.getByRole('button', { name: 'Maximize window' })).toBeInTheDocument();
+    expect(controlWindow.mock.calls.map(([action]) => action)).toEqual(['toggle-fullscreen']);
   });
 
   it('makes a stale or missing preload visible instead of failing silently', async () => {

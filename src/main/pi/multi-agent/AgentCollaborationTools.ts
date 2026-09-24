@@ -80,7 +80,7 @@ export function createAgentCollaborationTools(
       parameters: Type.Object({}, { additionalProperties: false }), executionMode: 'parallel',
       execute: async (_id, _params, _signal, _update, ctx) => {
         const teams = coordinator.getTeams(ctx.sessionManager.getSessionId());
-        return text(teams.map((team) => `${team.selected ? '*' : '-'} ${team.name} · ${team.id} · ${team.status} · ${team.nodes.filter((node) => node.depth > 0 && node.status !== 'released').length}/${team.limits.maxNodes} nodes`).join('\n') || 'No teams exist.', { teams });
+        return text(teams.map((team) => `${team.selected ? '*' : '-'} ${team.name} · ${team.id} · ${team.status} · ${team.nodes.filter((node) => node.depth > 0 && node.status !== 'released').length} agents`).join('\n') || 'No teams exist.', { teams });
       },
     }),
     defineTool({

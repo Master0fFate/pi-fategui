@@ -2,7 +2,6 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, RuntimeState } from '../../../shared/contracts/ipc';
-import { useAutomationStore } from '../../stores/automationStore';
 import { useBrowserStore } from '../../stores/browserStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -29,9 +28,8 @@ const ready = (overrides: Partial<RuntimeState> = {}): RuntimeState => ({
 describe('CommandPalette resource search', () => {
   beforeEach(() => {
     useRuntimeStore.getState().setRuntime(ready());
-    useUiStore.setState({ paletteOpen: true, sidebarCollapsed: false, sidebarTab: 'sessions', inspectorCollapsed: false, composerDraftRequest: null, automationOpenRequest: null, toast: null });
+    useUiStore.setState({ paletteOpen: true, sidebarCollapsed: false, sidebarTab: 'sessions', inspectorCollapsed: false, composerDraftRequest: null, toast: null });
     useWorkspaceStore.setState({ projectPath: '/project', directories: {}, selectedFile: null, preview: null, error: null });
-    useAutomationStore.getState().reset();
     useBrowserStore.getState().reset();
   });
 
@@ -98,26 +96,6 @@ describe('CommandPalette resource search', () => {
 
     expect(await screen.findByRole('option', { name: /target\.ts/u })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /target-folder/u })).not.toBeInTheDocument();
-  });
-
-  it('routes a specific automation result to an exact transient open request', async () => {
-    const automation = {
-      id: '00000000-0000-4000-8000-000000000001', projectPath: '/project', name: 'Review auth', prompt: 'Review authentication changes.',
-      permissionLevel: 'read-only' as const, createdAt: 1, updatedAt: 1, lastLaunchedAt: null, lastLaunchOutcome: null, launchCount: 0,
-    };
-    useAutomationStore.setState({ projectPath: '/project', items: [automation], loading: false, error: null });
-    const user = userEvent.setup();
-    render(<CommandPalette />);
-
-    await user.type(screen.getByRole('textbox', { name: 'Search commands and resources' }), 'Review auth');
-    await user.click(await screen.findByRole('option', { name: /Review auth/u }));
-
-    expect(useUiStore.getState()).toMatchObject({
-      paletteOpen: false,
-      sidebarCollapsed: false,
-      sidebarTab: 'automations',
-      automationOpenRequest: { projectPath: '/project', automationId: automation.id },
-    });
   });
 
   it('disables contextual commands instead of closing on a no-op', async () => {

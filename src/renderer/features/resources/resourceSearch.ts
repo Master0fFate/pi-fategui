@@ -1,20 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FileEntry, RuntimeState } from '../../../shared/contracts/ipc';
-import { useAutomationStore } from '../../stores/automationStore';
-import { automationPromptPreview, automationSearchPattern } from '../automations/automationText';
 import { useBrowserStore } from '../../stores/browserStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 
-export type ResourceSurface = 'files' | 'browser' | 'pi-library' | 'terminal' | 'automations';
+export type ResourceSurface = 'files' | 'browser' | 'pi-library' | 'terminal';
 
 export type ResourceSearchItem =
   | { id: string; kind: 'surface'; surface: ResourceSurface; title: string; subtitle: string; disabledReason?: string }
   | { id: string; kind: 'file'; path: string; title: string; subtitle: string }
   | { id: string; kind: 'browser-tab'; tabId: string; title: string; subtitle: string }
   | { id: string; kind: 'pi'; commandName: string; source: 'extension' | 'prompt' | 'skill' | 'builtin'; title: string; subtitle: string }
-  | { id: string; kind: 'automation'; automationId: string; title: string; subtitle: string }
   | { id: string; kind: 'session'; sessionId: string; title: string; subtitle: string };
 
 interface ResourceSearchState {
@@ -33,7 +30,6 @@ const surfaces: Array<Extract<ResourceSearchItem, { kind: 'surface' }>> = [
   { id: 'surface:browser', kind: 'surface', surface: 'browser', title: 'Browser', subtitle: 'Open the built-in Chromium workspace' },
   { id: 'surface:pi-library', kind: 'surface', surface: 'pi-library', title: 'Pi Library', subtitle: 'Skills, prompts, and extension commands' },
   { id: 'surface:terminal', kind: 'surface', surface: 'terminal', title: 'Manual terminal', subtitle: 'Open the project terminal' },
-  { id: 'surface:automations', kind: 'surface', surface: 'automations', title: 'Automations', subtitle: 'Saved project prompts' },
 ];
 
 export function useResourceSearch(query: string, enabled = true): ResourceSearchState {
@@ -46,7 +42,6 @@ export function useResourceSearch(query: string, enabled = true): ResourceSearch
   const skills = runtimeSkills ?? EMPTY_SKILLS;
   const sessions = runtimeSessions ?? EMPTY_SESSIONS;
   const browserTabs = useBrowserStore((state) => state.state.tabs);
-  const automations = useAutomationStore((state) => state.items);
   const [fileState, setFileState] = useState<{ entries: FileEntry[]; searching: boolean; truncated: boolean; error: string | null }>({
     entries: [], searching: false, truncated: false, error: null,
   });
@@ -102,31 +97,21 @@ export function useResourceSearch(query: string, enabled = true): ResourceSearch
         };
       }),
       ...piSearchItems(commands, skills),
-      ...automations.map((automation) => ({
-        id: `automation:${automation.id}`,
-        kind: 'automation' as const,
-        automationId: automation.id,
-        title: automation.name,
-        subtitle: `${automation.permissionLevel === 'edit' ? 'Edit project' : 'Read only'} · ${automation.prompt}`,
-      })),
     ];
     return staticItems.map((item) => {
       const normalizedTitle = item.title.toLocaleLowerCase();
       return { item, normalizedTitle, titleParts: normalizedTitle.split(/[^a-z0-9]+/u) };
     });
-  }, [automations, browserTabs, commands, projectPath, projectTrusted, sessions, skills]);
+  }, [browserTabs, commands, projectPath, projectTrusted, sessions, skills]);
 
   const items = useMemo(() => {
     if (!enabled || !needle) return [];
-    const pattern = automationSearchPattern(needle);
     const ranked = staticSearchItems
-      .map(({ item, normalizedTitle, titleParts }) => ({ item, score: matchScore(needle, normalizedTitle, titleParts, item.subtitle, pattern) }))
+      .map(({ item, normalizedTitle, titleParts }) => ({ item, score: matchScore(needle, normalizedTitle, titleParts, item.subtitle, fuzzyPattern(needle)) }))
       .filter((entry): entry is { item: ResourceSearchItem; score: number } => entry.score !== null)
       .sort((left, right) => left.score - right.score || left.item.title.localeCompare(right.item.title))
       .slice(0, 40)
-      .map(({ item }) => item.kind === 'automation'
-        ? { ...item, subtitle: automationPromptPreview(item.subtitle) }
-        : item);
+      .map(({ item }) => item);
     const files: ResourceSearchItem[] = fileState.entries
       .filter((entry) => entry.kind === 'file')
       .map((entry) => ({
@@ -161,9 +146,6 @@ export async function openResource(item: ResourceSearchItem): Promise<void> {
         ui.openInspectorTab('resources');
       } else if (item.surface === 'terminal') {
         ui.setTerminalOpen(true);
-      } else if (item.surface === 'automations') {
-        ui.setSidebarCollapsed(false);
-        ui.setSidebarTab('automations');
       }
       return;
     }
@@ -184,11 +166,6 @@ export async function openResource(item: ResourceSearchItem): Promise<void> {
     if (item.kind === 'pi') {
       ui.requestComposerInsertion(`/${item.commandName} `);
       ui.showToast({ kind: 'success', title: 'Added to composer', message: `${item.title} was inserted without sending it.` });
-      return;
-    }
-    if (item.kind === 'automation') {
-      if (!runtime.project) throw new Error('Open a project before opening an automation.');
-      ui.openAutomation(runtime.project.path, item.automationId);
       return;
     }
     await switchSession(item.sessionId);
@@ -254,6 +231,11 @@ function matchScore(needle: string, normalizedTitle: string, titleParts: readonl
   if (normalizedTitle.includes(needle)) return 3;
   if (pattern.test(subtitle)) return 4;
   return null;
+}
+
+function fuzzyPattern(query: string): RegExp {
+  const escaped = query.trim().replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return new RegExp(escaped, 'iu');
 }
 
 function safeUrlLabel(value: string): string {

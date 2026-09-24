@@ -144,7 +144,7 @@ async function stableSidebarSearch(page: Page, name: string) {
   })).toEqual({ count: 5, groupCentered: true, contained: true, iconsCentered: true });
   await page.locator('.workspace-header').screenshot({ path: `screenshots/m3-expressive/header-${name.replace('search-', '')}.png`, animations: 'disabled' });
   const boxes: Array<{ x: number; y: number; width: number; height: number }> = [];
-  for (const tab of ['Sessions', 'Automations', 'Resources', 'Sessions', 'Resources', 'Automations', 'Sessions']) {
+  for (const tab of ['Sessions', 'Resources', 'Sessions', 'Resources', 'Sessions', 'Resources', 'Sessions']) {
     await page.getByRole('tab', { name: tab, exact: true }).click();
     const input = page.getByRole('searchbox', { name: `Search ${tab.toLowerCase()}` });
     await expect(input).toBeVisible();

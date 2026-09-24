@@ -9,6 +9,7 @@ This directory holds the focused guides referenced by the [project README](../RE
 - **Choose a skin or author a theme** — [Skins](skins.md) and [Themes](themes.md).
 - **Build a dense operate UI** — [Fate Compact](../design/COMPACT.md) (Settings density system; candidate for a full-app transition).
 - **Remember project and personal coding notes** — [Memory Learning](project-learning.md).
+- **Save Agents, tasks, and routines or copy old Automations** — [Agents library and upgrade](agents.md).
 - **Drive multi-agent work** — [Agent orchestration](agent-orchestration.md) (one executor for direct agents and dependency-based workflows).
 - **Manage longer objectives** — [GoalMax and durable work](goalmax.md).
 - **Understand the embedded runtime** — [Pi SDK compatibility](sdk-compatibility.md).
@@ -20,9 +21,9 @@ This directory holds the focused guides referenced by the [project README](../RE
 - **New users** — README → [Sessions and processes](sessions-and-processes.md) → [Features](features.md).
 - **Operators and reviewers** — [Features](features.md) → [Architecture and security](architecture.md) → [SECURITY.md](../SECURITY.md).
 - **Customizers** — [Skins](skins.md) → [Themes](themes.md).
-- **Power users** — [Agent orchestration](agent-orchestration.md) → [Sessions and processes](sessions-and-processes.md).
+- **Power users** — [Agents library and upgrade](agents.md) → [Agent orchestration](agent-orchestration.md) → [Sessions and processes](sessions-and-processes.md).
 - **Contributors and maintainers** — [CONTRIBUTING.md](../CONTRIBUTING.md) → [Development and release](development.md).
 
 ## Conventions
 
-Fate UI uses numeric `major.minor.patch` versions with an optional display name: **V1.0.0 - Modulo**. Update ordering and artifact names use the version, not the name. Installers remain unsigned; verify downloads against `SHA256SUMS` and review platform trust warnings. Keep important work backed up. See the README's [trust boundaries](../README.md#local-first-with-explicit-boundaries) and [Architecture and security](architecture.md).
+Fate UI uses numeric `major.minor.patch` versions with an optional display name. The source tree is prepared for **V1.1.0 - Axiom**; see Releases for the latest published version. Update ordering and artifact names use the version, not the name. Installers remain unsigned; verify downloads against `SHA256SUMS` and review platform trust warnings. Keep important work backed up. See the README's [trust boundaries](../README.md#local-first-with-explicit-boundaries) and [Architecture and security](architecture.md).

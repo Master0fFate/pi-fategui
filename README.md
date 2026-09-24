@@ -36,7 +36,7 @@ An agent should not turn your workspace into a black box. Fate UI brings the con
 
 Run individual agents or dependency-based workflows through one execution engine. Choose each agent’s model, reasoning effort, tools, and skills. Use shared checkouts or isolated Git worktrees, with explicit review before integration.
 
-[Agents and workflows →](docs/agent-orchestration.md)
+[Agents library and upgrade →](docs/agents.md) · [Agent orchestration →](docs/agent-orchestration.md)
 
 </td>
 <td width="50%" valign="top">
@@ -145,15 +145,15 @@ Get installers and `SHA256SUMS` from [GitHub Releases](https://github.com/Master
 
 - **Windows:** run the installer. Keep **Add Fate UI to PATH** selected for the `fate` command, then open a new terminal.
 - **macOS:** choose your architecture. The `.pkg` installs the app and the `fate` launcher; the `.dmg` lets you copy the app to Applications.
-- **Linux:** install the `.deb`, or make the AppImage executable and launch it.
+- **Linux:** install the `.deb`, or make the AppImage executable and launch it. Use the **actual published filename** from Releases; a source-tree version does not mean its installer exists.
 
 ```bash
-# Debian / Ubuntu
-sudo apt install ./Fate-UI-1.0.0-Linux-x64.deb
+# Debian / Ubuntu (replace VERSION with the downloaded release number)
+sudo apt install ./Fate-UI-VERSION-Linux-x64.deb
 
-# Portable AppImage
-chmod +x Fate-UI-1.0.0-Linux-x64.AppImage
-./Fate-UI-1.0.0-Linux-x64.AppImage
+# Portable AppImage (same downloaded version)
+chmod +x Fate-UI-VERSION-Linux-x64.AppImage
+./Fate-UI-VERSION-Linux-x64.AppImage
 ```
 
 ### 2. Connect your provider
@@ -206,6 +206,7 @@ Fate UI is an independent community project, not an official Pi distribution.
 | You want to… | Start here |
 | :-- | :-- |
 | Understand the workspace | [Features](docs/features.md) |
+| Save Agents, tasks, and routines or copy old Automations | [Agents library and upgrade](docs/agents.md) |
 | Delegate and review agent work | [Agent orchestration](docs/agent-orchestration.md) |
 | Run goals and manage queued work | [GoalMax](docs/goalmax.md) · [Sessions](docs/sessions-and-processes.md) |
 | Customize the interface | [Skins](docs/skins.md) · [Themes](docs/themes.md) |

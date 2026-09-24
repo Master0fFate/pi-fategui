@@ -64,7 +64,12 @@ function makeFakeRuntime(): AgentSessionRuntime {
 
 function makeMulti(getAgentWorkspacePolicy: () => { preferredMode: 'shared' | 'worktree'; strict: boolean } = () => ({ preferredMode: 'worktree', strict: false })) {
   const created = vi.fn();
-  const modelRuntime = { getAvailable: vi.fn(async () => [model]), getModel: vi.fn(() => model) };
+  const modelRuntime = {
+    getAvailable: vi.fn(async () => [model]), getModel: vi.fn(() => model),
+    getProvider: vi.fn(() => ({ id: 'test' })),
+    removeRuntimeApiKey: vi.fn(async () => undefined),
+    logout: vi.fn(async () => { modelRuntime.getAvailable.mockResolvedValue([]); }),
+  };
   const adapter: PiSdkAdapter = {
     supportsClone: true,
     createModelRuntime: vi.fn(async () => modelRuntime as unknown as ModelRuntime),
@@ -79,10 +84,30 @@ function makeMulti(getAgentWorkspacePolicy: () => { preferredMode: 'shared' | 'w
     browserIntegration: null,
     defaults: async () => ({ thinkingLevel: 'medium', defaultModel: null }),
   });
-  return { multi, created };
+  return { multi, created, modelRuntime };
 }
 
 describe('MultiProjectPiRuntime multi-folder', () => {
+  it('broadcasts logout to background pickers and clears staged models without rebuilding agents', async () => {
+    const { multi, created, modelRuntime } = makeMulti();
+    try {
+      await multi.openProject({ path: '/proj-A', name: 'A', trusted: true });
+      await multi.getFocused().setModel('test', 'model');
+      await multi.openProject({ path: '/proj-B', name: 'B', trusted: true });
+      const calls = modelRuntime.getAvailable.mock.calls.length;
+      await multi.asRouter().logoutProvider('test');
+      expect(multi.getFocused().getState(false).models).toEqual([]);
+      multi.focus('/proj-A');
+      expect(multi.getFocused().getState(false).models).toEqual([]);
+      expect(multi.getFocused().getState(false).pendingModel).toBeNull();
+      expect(modelRuntime.removeRuntimeApiKey).toHaveBeenCalledWith('test');
+      expect(modelRuntime.getAvailable).toHaveBeenCalledTimes(calls + 1);
+      expect(created).toHaveBeenCalledTimes(2);
+    } finally {
+      await multi.dispose();
+    }
+  });
+
   it('keeps folder A alive after opening folder B and re-focuses A as live', async () => {
     const { multi } = makeMulti();
     const a: ProjectState = { path: '/proj-A', name: 'A', trusted: true };

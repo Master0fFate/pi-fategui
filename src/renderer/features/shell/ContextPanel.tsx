@@ -273,17 +273,17 @@ export function ContextPanel({ runtime }: { runtime: ContextPanelRuntime }) {
         <div>
           <span>Session traffic</span>
           <strong title={session ? exactTokens(session.totalTokens) : undefined}>{session ? formatTokens(session.totalTokens) : '—'}</strong>
-          <small>{session ? `${session.turns} ${session.turns === 1 ? 'response' : 'responses'}` : 'No usage yet'}</small>
+          <small>{session ? `${session.turns} ${session.turns === 1 ? 'response' : 'responses'} · root + child agents` : 'No usage yet'}</small>
         </div>
         <div>
           <span>Cache coverage</span>
           <strong>{formatPercent(coverage)}</strong>
-          <small>provider-reported input</small>
+          <small>root + child provider input</small>
         </div>
         <div>
           <span>Session cost</span>
           <strong>{session ? formatCost(session.cost) : '—'}</strong>
-          <small>{session?.cost ? 'estimated from model rates' : 'pricing unavailable'}</small>
+          <small>{session?.cost ? 'root + child model rates' : 'pricing unavailable'}</small>
         </div>
       </section>
 
@@ -312,7 +312,7 @@ export function ContextPanel({ runtime }: { runtime: ContextPanelRuntime }) {
       </section>
 
       <section className="context-breakdown">
-        <InspectorSectionHeading icon={BarChart3} title="Session ledger" detail="All billed session work" />
+        <InspectorSectionHeading icon={BarChart3} title="Session ledger" detail="Root and child billed work" />
         {session ? <UsageComposition usage={session} /> : <div className="context-inline-empty">Token totals appear after the first completed response.</div>}
       </section>
 

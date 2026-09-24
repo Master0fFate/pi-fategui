@@ -55,6 +55,30 @@ describe('SubagentSessionFactory boundaries', () => {
     }
   });
 
+  it('revokes previously captured write and shell tools when live authority narrows', async () => {
+    const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-child-live-authority-'));
+    let session: AgentSession | undefined;
+    let permission: 'read-only' | 'edit' | 'full-access' = 'full-access';
+    try {
+      const modelRuntime = await ModelRuntime.create({ authPath: path.join(projectPath, 'auth.json'), modelsPath: null, modelsStorePath: path.join(projectPath, 'models-store.json'), allowModelNetwork: false });
+      session = await createSdkChildSession({
+        projectPath, modelRuntime, model: modelRuntime.getModels()[0]!, thinkingLevel: 'off',
+        permissionLevel: 'full-access', getPermissionLevel: () => permission,
+        role: 'worker', agentName: 'direct', profileSystemPrompt: '',
+        toolNames: ['read', 'write', 'edit', 'bash'], skillMode: 'none', selectedSkills: [],
+      });
+      const write = session.getToolDefinition('write')!;
+      const shell = session.getToolDefinition('bash')!;
+      permission = 'read-only';
+      await expect(write.execute('captured-write', { path: 'denied.txt', content: 'denied' }, undefined, undefined, {} as never)).rejects.toThrow(/authority/);
+      expect(() => shell.execute('captured-shell', { command: 'echo should-not-run' }, undefined, undefined, {} as never)).toThrow(/authority/);
+      await expect(fs.stat(path.join(projectPath, 'denied.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      session?.dispose();
+      await fs.rm(projectPath, { recursive: true, force: true });
+    }
+  });
+
   it('registers and activates every Agent Team collaboration tool', async () => {
     const projectPath = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-child-session-test-'));
     let session: AgentSession | undefined;

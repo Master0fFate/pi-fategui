@@ -17,7 +17,10 @@ import { parseLaunchProjectPath, hasNewInstanceFlag } from './launchProject';
 import { acquireInstanceProfile } from './instanceProfile';
 import { AppLogService } from './logging/AppLogService';
 import { CrashTelemetryService } from './logging/CrashTelemetry';
-import { AutomationRepository } from './automations/AutomationRepository';
+import { LegacyAutomations } from './automations/LegacyAutomations';
+import { AgentsService } from './agents/AgentsService';
+import { AgentRepository } from './agents/AgentRepository';
+import { notifyAgentRun } from './agents/AgentNotifications';
 import { MEDIA_SCHEME, MusicService, PublicHttpsProxy } from './music/MusicService';
 import { BrowserRuntimeBridge } from './pi/BrowserRuntimeBridge';
 import { MultiProjectPiRuntime } from './pi/MultiProjectPiRuntime';
@@ -114,7 +117,7 @@ process.on('unhandledRejection', (reason) => {
 app.on('render-process-gone', (_event, _contents, details) => {
   void crashTelemetry.record(`render-process-gone ${details.reason} ${details.exitCode}`).catch(() => undefined);
 });
-const automations = new AutomationRepository(logs);
+const legacyAutomations = new LegacyAutomations(logs);
 let browserHost: BrowserHost | null = null;
 const browserBridge = new BrowserRuntimeBridge(
   () => browserHost?.current() ?? null,
@@ -153,6 +156,10 @@ const piRuntime = new MultiProjectPiRuntime({
   },
 });
 const runtime = piRuntime.asRouter();
+const agents = new AgentsService({
+  runtime, workspacePolicy: () => settings.get().agentWorkspace, disabledModels: () => settings.get().disabledModels ?? [],
+  notify: (change, osNotification) => { notifyAgentRun(change, osNotification); },
+}, new AgentRepository(), legacyAutomations);
 const projects = new ProjectService();
 const files = new FilesystemService();
 const git = new GitService(files);
@@ -224,7 +231,7 @@ const shutdown = new ShutdownCoordinator({
   onBeforeDispose: () => rememberWindowPlacement(dispatcher.activeHandle(), windowState),
   disposeSync: () => { learning.dispose(); terminal.dispose(); music.dispose(); rendererNetworkProxy.dispose(); },
   disposeAsync: () => [
-    runtime.dispose().finally(() => learning.repository.flush()).finally(() => attestationLedger.flush()).finally(() => recovery.markClean()),
+    agents.dispose().finally(() => runtime.dispose()).finally(() => learning.repository.flush()).finally(() => attestationLedger.flush()).finally(() => recovery.markClean()),
     speech.dispose(),
     hotkey.dispose(),
     windowState.flush(),
@@ -392,9 +399,10 @@ app.whenReady().then(async () => {
     }
   }
   await recovery.load();
-  const mainCommands = registerIpc({ runtime, projects, files, git, settings, learning, terminal, logs, music, speech, hotkey, updates, recovery, browser: browserHost, automations, attestations: attestationLedger, newWindow: () => windows.createWindow(), rendererPolicy });
+  const mainCommands = registerIpc({ runtime, projects, files, git, settings, learning, agents, terminal, logs, music, speech, hotkey, updates, recovery, browser: browserHost, attestations: attestationLedger, newWindow: () => windows.createWindow(), rendererPolicy });
   // Refresh every models.dev-managed provider's model list once per Fate GUI
   // start. Runs beside startup, never blocking it; offline keeps the cache.
+  agents.start();
   void runtime.refreshManagedModelsDevProviders().catch((error) => {
     logs.write('warn', 'providers', `models.dev catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`);
   });

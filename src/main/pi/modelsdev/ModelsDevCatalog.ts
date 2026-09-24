@@ -26,7 +26,7 @@ export type PiApiKind =
 export const MAX_MODELS_PER_PROVIDER = 500;
 
 /** Verified-safe compat defaults for OpenAI-compatible aggregators. */
-const OPENAI_COMPAT_DEFAULTS = {
+export const OPENAI_COMPAT_DEFAULTS = {
   supportsStore: false,
   supportsDeveloperRole: false,
   supportsReasoningEffort: true,
@@ -34,6 +34,68 @@ const OPENAI_COMPAT_DEFAULTS = {
   maxTokensField: 'max_tokens',
   thinkingFormat: 'openai',
 } as const;
+
+/** Official OpenAI hosts keep Pi's native OpenAI client profile. */
+export function isOfficialOpenAIBaseUrl(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === 'api.openai.com' || host.endsWith('.api.openai.com');
+  } catch {
+    return false;
+  }
+}
+
+function aggregatorCompatEquals(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
+  if (Object.keys(left).length !== Object.keys(right).length) return false;
+  for (const [key, value] of Object.entries(right)) {
+    if (left[key] !== value) return false;
+  }
+  return true;
+}
+
+function applyOpenAIAggregatorCompatToModel(model: unknown): unknown {
+  if (!isRecord(model)) return model;
+  const merged = { ...OPENAI_COMPAT_DEFAULTS, ...(isRecord(model.compat) ? model.compat : {}) };
+  if (isRecord(model.compat) && aggregatorCompatEquals(model.compat, merged)) return model;
+  return { ...model, compat: merged };
+}
+
+/**
+ * Fill aggregator-safe `compat` on OpenAI-compatible custom providers.
+ * Pi otherwise treats unknown hosts as api.openai.com (`developer` role,
+ * `max_completion_tokens`, `store`), which aggregators such as B.AI reject.
+ * Explicit `compat` fields always win.
+ */
+export function applyOpenAIAggregatorCompatToProvider(provider: unknown): unknown {
+  if (!isRecord(provider)) return provider;
+  const api = provider.api;
+  const baseUrl = typeof provider.baseUrl === 'string' ? provider.baseUrl : undefined;
+  const openaiCompletions = api === 'openai-completions'
+    || ((api === undefined || api === null) && typeof baseUrl === 'string' && /^https?:\/\//.test(baseUrl));
+  if (!openaiCompletions || isOfficialOpenAIBaseUrl(baseUrl) || !Array.isArray(provider.models)) return provider;
+  let changed = false;
+  const models = provider.models.map((model) => {
+    const next = applyOpenAIAggregatorCompatToModel(model);
+    if (next !== model) changed = true;
+    return next;
+  });
+  return changed ? { ...provider, models } : provider;
+}
+
+export function applyOpenAIAggregatorCompatToModelsFile(file: { providers: Record<string, unknown> }): {
+  file: { providers: Record<string, unknown> };
+  changed: boolean;
+} {
+  let changed = false;
+  const providers: Record<string, unknown> = {};
+  for (const [id, provider] of Object.entries(file.providers)) {
+    const next = applyOpenAIAggregatorCompatToProvider(provider);
+    providers[id] = next;
+    if (next !== provider) changed = true;
+  }
+  return changed ? { file: { providers }, changed: true } : { file, changed: false };
+}
 
 /** Map a models.dev npm adapter to the pi streaming API kind. */
 export function mapApiKind(npm: string | undefined): PiApiKind {

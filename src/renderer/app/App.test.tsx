@@ -43,7 +43,7 @@ describe('first-launch shell', () => {
       sidebarCollapsed: false, sidebarTab: 'sessions', inspectorCollapsed: false, leftWidth: 264, rightWidth: 332,
       inspectorTab: 'changes', inspectorLastViews: { work: 'changes', run: 'goal', system: 'context' }, selectedAgent: null,
       terminalOpen: false, browserOpen: false, musicPlayerEnabled: false, musicPlaying: false, sendMessageWithModifier: false,
-      paletteOpen: false, settingsOpen: false, toast: null, composerDraftRequest: null, automationOpenRequest: null, goalEditorOpen: false,
+      paletteOpen: false, settingsOpen: false, toast: null, composerDraftRequest: null, goalEditorOpen: false,
     });
     useGoalMaxStore.setState({ projectPath: null, sessionId: null, goal: null, loading: false, selectionGeneration: 0 });
     useRuntimeStore.getState().setRuntime({
@@ -62,7 +62,7 @@ describe('first-launch shell', () => {
     expect(screen.getByText('No sessions yet')).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Inspector destinations' })).toBeInTheDocument();
     expect(['Work', 'Run', 'System'].map((name) => screen.getByRole('button', { name }).textContent)).toEqual(['Work', 'Run', 'System']);
-    expect(within(screen.getByRole('tablist', { name: 'Sidebar destinations' })).getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Sessions', 'Automations', 'Resources']);
+    expect(within(screen.getByRole('tablist', { name: 'Sidebar destinations' })).getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Sessions', 'Agents', 'Resources']);
     expect(within(screen.getByRole('tablist', { name: 'Work views' })).getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Changes', 'Files']);
     expect(screen.getByRole('button', { name: 'Model and reasoning settings' })).toBeDisabled();
   });
@@ -324,6 +324,40 @@ describe('first-launch shell', () => {
     act(() => useRuntimeStore.getState().setRuntime({ ...runtime, streaming: true }));
     act(() => appCommand?.('stop-generation'));
     await waitFor(() => expect(abort).toHaveBeenCalledOnce());
+  });
+
+  it('stops owned child work from the native stop-generation command', async () => {
+    let appCommand: ((command: AppCommand) => void) | undefined;
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+      subagents: [{
+        id: 'child-1', parentSessionId: 's1', parentToolCallId: 'delegate-1', task: 'Explore', role: 'explorer', handle: 'explorer-1',
+        displayName: 'Explorer', agentName: 'direct', agentSource: 'direct', permissionLevel: 'read-only', enabledTools: ['read'],
+        skills: [], skillMode: 'none', preloadedSkills: [], status: 'running',
+        model: { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 }, routingModels: [], thinkingLevel: 'medium',
+        executionMode: 'managed', controlCount: 0, attempt: 1, maxAttempts: 1, mailbox: { state: 'closed', ttlMs: 300_000, followUpCount: 0 },
+        notification: 'never', dependsOn: [], createdAt: 1, updatedAt: 2, messages: [], tools: [], omittedActivity: 0, transcriptTruncated: false,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+      }],
+    };
+    useRuntimeStore.getState().setRuntime(runtime);
+    const abort = vi.fn(async () => ({ aborted: true }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => runtime),
+        onEvents: vi.fn(() => () => undefined),
+        onAppCommand: vi.fn((listener: (command: AppCommand) => void) => { appCommand = listener; return () => undefined; }),
+        abort,
+      } as unknown as PiDesktopApi,
+    });
+    render(<App />);
+    await waitFor(() => expect(appCommand).toBeTypeOf('function'));
+
+    act(() => appCommand?.('stop-generation'));
+    await waitFor(() => expect(abort).toHaveBeenCalledOnce());
+    expect(useUiStore.getState().toast).toBeNull();
   });
 
   it('shows playback activity beside the title only while the sidebar is expanded', async () => {

@@ -1,9 +1,9 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { AgentSession, SessionInfo } from '@earendil-works/pi-coding-agent';
+import { SessionManager, type AgentSession, type SessionInfo } from '@earendil-works/pi-coding-agent';
 import { describe, expect, it, vi } from 'vitest';
-import { isSafeSessionPath, PiSessionRepository, sessionDisplayTitle } from './PiSessionRepository';
+import { isSafeSessionPath, PiSessionRepository, projectSessionDirectory, sessionDisplayTitle } from './PiSessionRepository';
 
 /**
  * A realistic session store layout: `<sessionsRoot>/--<encoded project>--/<name>.jsonl`,
@@ -36,6 +36,41 @@ describe('PiSessionRepository', () => {
     expect(sessionDisplayTitle(undefined, '(no messages)')).toBe('Untitled session');
   });
 
+  it('reads bounded default metadata and only hydrates the selected JSONL without SessionManager.list', async () => {
+    const sessionsRoot = mkdtempSync(path.join(tmpdir(), 'fate-session-metadata-'));
+    const projectPath = '/project';
+    const sessionDir = projectSessionDirectory(projectPath, sessionsRoot);
+    const sessionPath = path.join(sessionDir, 'fast.jsonl');
+    mkdirSync(sessionDir, { recursive: true });
+    const entries = [
+      { type: 'session', version: 3, id: 'fast', timestamp: '2025-01-01T00:00:00.000Z', cwd: projectPath },
+      { type: 'message', id: 'user', parentId: null, timestamp: '2025-01-01T00:00:01.000Z', message: { role: 'user', content: 'Inspect this saved session', timestamp: 1 } },
+      { type: 'message', id: 'assistant', parentId: 'user', timestamp: '2025-01-01T00:00:02.000Z', message: { role: 'assistant', content: 'Already inspected', timestamp: 2 } },
+      { type: 'custom', id: 'large', parentId: 'assistant', timestamp: '2025-01-01T00:00:03.000Z', customType: 'test', data: 'x'.repeat(300_000) },
+      { type: 'message', id: 'tail-assistant', parentId: 'large', timestamp: '2025-01-01T00:00:04.000Z', message: { role: 'assistant', content: 'Tail searchable evidence', timestamp: 4 } },
+      { type: 'session_info', id: 'name', parentId: 'tail-assistant', timestamp: '2025-01-01T00:00:05.000Z', name: 'Fast metadata title' },
+    ];
+    const list = vi.spyOn(SessionManager, 'list');
+    try {
+      writeFileSync(sessionPath, entries.map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
+      const repository = new PiSessionRepository(undefined, sessionsRoot);
+
+      await expect(repository.list(projectPath, 'fast')).resolves.toEqual([
+        expect.objectContaining({ id: 'fast', title: 'Fast metadata title', firstMessage: 'Inspect this saved session', active: true }),
+      ]);
+      await expect(repository.list(projectPath, null, 'tail searchable')).resolves.toEqual([
+        expect.objectContaining({ id: 'fast', title: 'Fast metadata title' }),
+      ]);
+      expect(list).not.toHaveBeenCalled();
+
+      const snapshot = await repository.snapshot(projectPath, 'fast');
+      expect(snapshot?.branch.map((entry) => entry.id)).toEqual(['user', 'assistant', 'large', 'tail-assistant', 'name']);
+    } finally {
+      list.mockRestore();
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
   it('projects, searches, sorts, and marks persistent Pi sessions', async () => {
     const { sessionsRoot, sessionDir } = sessionStore();
     try {
@@ -45,7 +80,7 @@ describe('PiSessionRepository', () => {
       ]) };
       const repository = new PiSessionRepository(source, sessionsRoot);
       const sessions = await repository.list('/project', 'two', 'zebra');
-      expect(source.list).toHaveBeenCalledWith('/project');
+      expect(source.list).toHaveBeenCalledWith('/project', true);
       expect(sessions).toEqual([expect.objectContaining({ id: 'two', title: 'Build parser', active: true })]);
       await repository.rename('/project', 'two', 'Parser work');
       expect(source.rename).toHaveBeenCalledWith(path.join(sessionDir, 'two.jsonl'), 'Parser work');

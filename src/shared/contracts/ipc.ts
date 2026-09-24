@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { memoryLearningSettingsSchema, learningTurnSchema, type LearningApi } from './learning';
+import { agentChannels, type AgentsApi } from './agents';
 import { MAX_SPEECH_STREAM_FEED_SAMPLES, SPEECH_PCM_BYTES_PER_SAMPLE } from '../speech';
 import {
   SUBAGENT_DISPLAY_NAME_MAX_LENGTH,
@@ -32,14 +33,6 @@ import {
 import { imageGenerationProviderIds } from '../imageGeneration';
 
 export * from './browser';
-export * from './automations';
-import {
-  automationDefinitionSchema,
-  type AutomationCreateInput,
-  type AutomationDefinition,
-  type AutomationLaunchOutcome,
-  type AutomationUpdateInput,
-} from './automations';
 import type {
   GoalMaxClearResult,
   GoalMaxControlInput,
@@ -61,6 +54,7 @@ import {
 } from './tasks';
 
 export const ipcChannels = {
+  ...agentChannels,
   systemGetInfo: 'system:get-info',
   windowControl: 'window:control',
   windowGetState: 'window:get-state',
@@ -105,12 +99,6 @@ export const ipcChannels = {
   browserHighlightAnnotation: 'browser:highlight-annotation',
   browserRespondConfirmation: 'browser:respond-confirmation',
   browserEvents: 'browser:events',
-  automationsList: 'automations:list',
-  automationsCreate: 'automations:create',
-  automationsUpdate: 'automations:update',
-  automationsDelete: 'automations:delete',
-  automationsRecordLaunch: 'automations:record-launch',
-  automationsPrepareSession: 'automations:prepare-session',
   runtimeGetState: 'runtime:get-state',
   runtimePrompt: 'runtime:prompt',
   runtimeOptimizePrompt: 'runtime:optimize-prompt',
@@ -231,9 +219,9 @@ export const ipcChannels = {
 export const getAppInfoInputSchema = z.object({}).strict();
 export const emptyInputSchema = z.object({}).strict();
 export const windowControlInputSchema = z.object({
-  action: z.enum(['minimize', 'toggle-maximize', 'close']),
+  action: z.enum(['minimize', 'toggle-maximize', 'toggle-fullscreen', 'close']),
 }).strict();
-export const windowStateSchema = z.object({ maximized: z.boolean(), minimized: z.boolean() }).strict();
+export const windowStateSchema = z.object({ maximized: z.boolean(), minimized: z.boolean(), fullScreen: z.boolean() }).strict();
 
 export const appInfoSchema = z.object({
   name: z.literal('Fate UI'),
@@ -1011,11 +999,6 @@ export const modelsDevMutationResultSchema = z.object({
   state: runtimeStateSchema,
 });
 
-export const automationSessionPreparationResultSchema = z.object({
-  state: runtimeStateSchema,
-  automation: automationDefinitionSchema,
-}).strict();
-
 const eventBaseSchema = z.object({ timestamp: z.number().finite(), cursor: z.number().int().nonnegative().optional() }).strict();
 const runStartedEventSchema = eventBaseSchema.extend({ type: z.literal('run.started'), runId: z.string().min(1) });
 const runCompletedEventSchema = eventBaseSchema.extend({ type: z.literal('run.completed'), runId: z.string().min(1), aborted: z.boolean() });
@@ -1398,7 +1381,6 @@ export type TokenMetrics = z.infer<typeof tokenMetricsSchema>;
 export type TokenUsageSample = z.infer<typeof tokenUsageSampleSchema>;
 export type RuntimeTokenTelemetry = z.infer<typeof runtimeTokenTelemetrySchema>;
 export type RuntimeState = z.infer<typeof runtimeStateSchema>;
-export type AutomationSessionPreparationResult = z.infer<typeof automationSessionPreparationResultSchema>;
 export type SubagentRole = z.infer<typeof subagentRoleSchema>;
 export type SubagentAgentSource = z.infer<typeof subagentAgentSourceSchema>;
 export type SubagentStatus = z.infer<typeof subagentStatusSchema>;
@@ -1475,7 +1457,7 @@ export type ModelsDevAddInput = z.infer<typeof modelsDevAddInputSchema>;
 export type ModelsDevRemoveInput = z.infer<typeof modelsDevRemoveInputSchema>;
 export type ModelsDevMutationResult = z.infer<typeof modelsDevMutationResultSchema>;
 
-export interface PiDesktopApi extends LearningApi {
+export interface PiDesktopApi extends LearningApi, AgentsApi {
   getAppInfo: () => Promise<AppInfo>;
   controlWindow: (action: WindowControlAction) => Promise<WindowState>;
   getWindowState: () => Promise<WindowState>;
@@ -1518,12 +1500,6 @@ export interface PiDesktopApi extends LearningApi {
   highlightBrowserAnnotation: (id: string) => Promise<boolean>;
   respondToBrowserConfirmation: (id: BrowserConfirmation['id'], approved: boolean) => Promise<boolean>;
   onBrowserEvents: (listener: (events: BrowserEvent[]) => void) => () => void;
-  listAutomations: () => Promise<AutomationDefinition[]>;
-  createAutomation: (input: AutomationCreateInput) => Promise<AutomationDefinition>;
-  updateAutomation: (input: AutomationUpdateInput) => Promise<AutomationDefinition>;
-  deleteAutomation: (id: string) => Promise<void>;
-  recordAutomationLaunch: (id: string, outcome: AutomationLaunchOutcome) => Promise<AutomationDefinition>;
-  prepareAutomationSession: (id: string) => Promise<AutomationSessionPreparationResult>;
   getRuntimeState: () => Promise<RuntimeState>;
   prompt: (input: PromptInput) => Promise<PromptAcceptance>;
   optimizePrompt: (text: string, options?: PromptOptimizationOptions) => Promise<PromptOptimizationResult>;

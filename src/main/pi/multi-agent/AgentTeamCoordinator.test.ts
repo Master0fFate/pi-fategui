@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { AGENT_TEAM_MAX_MESSAGE_BYTES, AGENT_TEAM_MAX_NODES, agentTeamSchema, type AgentTeam } from '../../../shared/contracts/multiAgent';
+import { AGENT_TEAM_MAX_MESSAGE_BYTES, agentTeamSchema, type AgentTeam } from '../../../shared/contracts/multiAgent';
 import { AgentWorkspaceGitService } from '../../git/AgentWorkspaceGitService';
 import { createSdkChildSession, type ChildSessionInput } from '../SubagentSessionFactory';
 import type { AgentTeamLedgerEvent } from './AgentTeamTypes';
@@ -25,6 +25,7 @@ vi.mock('../SubagentSessionFactory', async () => {
     createSdkChildSession: vi.fn(async (input: ChildSessionInput) => {
       createdInputs.push(input);
       const messages: unknown[] = [];
+      let activeTools = [...input.toolNames, ...(input.collaborationTools ?? []).map((tool) => tool.name)];
       let releaseAbort: () => void = () => undefined;
       const aborted = new Promise<void>((resolve) => { releaseAbort = resolve; });
       let listener: ((event: unknown) => void) | null = null;
@@ -41,6 +42,8 @@ vi.mock('../SubagentSessionFactory', async () => {
         sessionManager: { getSessionId: () => `child-${childSessions.length + 1}` },
         resourceLoader: { getSkills: () => ({ skills: [] }) },
         getToolDefinition: vi.fn((name: string) => input.collaborationTools?.find((tool) => tool.name === name)),
+        getActiveToolNames: vi.fn(() => [...activeTools]),
+        setActiveToolsByName: vi.fn((names: string[]) => { activeTools = [...names]; }),
         subscribe: vi.fn((next: (event: unknown) => void) => { listener = next; return unsubscribe; }),
         prompt: vi.fn(async (text: string) => {
           messages.push({ role: 'user', content: text });
@@ -130,6 +133,24 @@ describe('AgentTeamCoordinator spawn preflight', () => {
     expect(createdInputs).toHaveLength(0);
     expect(coordinator.getTeams('root-session')[0]).toMatchObject({ nodes: [expect.objectContaining({ depth: 0 })], tasks: [], envelopes: [], operationReceipts: [] });
   }
+
+  it('narrows loaded child tools and live effect authority when the root permission falls', async () => {
+    promptBarrier = new Promise(() => undefined);
+    const coordinator = coordinatorFor();
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'inspect', permission: 'full-access', tools: ['read', 'write', 'edit', 'bash'] }, 'live-authority', runtime());
+    const session = childSessions[0]!;
+    const input = createdInputs[0]!;
+    expect(input.getPermissionLevel?.()).toBe('full-access');
+    coordinator.lowerRootPermission('root-session', 'read-only');
+    expect(input.getPermissionLevel?.()).toBe('read-only');
+    expect(session.getActiveToolNames()).toContain('read');
+    expect(session.getActiveToolNames()).not.toEqual(expect.arrayContaining(['write', 'edit', 'bash']));
+    expect(session.getActiveToolNames().filter((name) => ['write', 'edit', 'bash'].includes(name))).toEqual([]);
+    coordinator.lowerRootPermission('root-session', 'full-access');
+    expect(input.getPermissionLevel?.()).toBe('read-only');
+    await coordinator.release(rootId, child.nodeId, true);
+  });
 
   it.each([
     ['undefined', undefined],
@@ -330,12 +351,22 @@ describe('AgentTeamCoordinator vertical slice', () => {
       await Promise.race([entered, integration]);
       expect(integrate).toHaveBeenCalled();
       const other = coordinator.createTeam('root-session', 'other');
-      await expect(coordinator.spawn(other.rootNodeId, { task: 'read during integration', permission: 'read-only' }, 'locked-reader', runtime())).rejects.toThrow('workspace operation');
       const create = vi.spyOn(service, 'create');
-      await expect(coordinator.spawn(other.rootNodeId, { task: 'isolate during integration', permission: 'edit', workspace: { mode: 'worktree' } }, 'locked-worktree', runtime())).rejects.toThrow('workspace operation');
+      const reader = coordinator.spawn(other.rootNodeId, { task: 'read during integration', permission: 'read-only' }, 'locked-reader', runtime());
+      const isolated = coordinator.spawn(other.rootNodeId, { task: 'isolate during integration', permission: 'edit', workspace: { mode: 'worktree' } }, 'locked-worktree', runtime());
+      await settle();
       expect(create).not.toHaveBeenCalled();
+      unblock();
+      await integration;
+      const readerNode = await reader;
+      await settle();
+      expect(coordinator.getTeams('root-session').find((team) => team.id === other.id)!.nodes.find((node) => node.id === readerNode.nodeId)?.status).toBe('ready');
+      const isolatedNode = await isolated;
+      expect(create).toHaveBeenCalled();
       create.mockRestore();
-    } finally { unblock(); await integration; integrate.mockRestore(); }
+      await coordinator.release(other.rootNodeId, readerNode.nodeId);
+      await coordinator.release(other.rootNodeId, isolatedNode.nodeId);
+    } finally { unblock(); await integration.catch(() => undefined); integrate.mockRestore(); }
     await coordinator.release(rootId, child.nodeId);
     await coordinator.workspace(rootId, child.nodeId, 'cleanup');
   }, 30_000);
@@ -387,14 +418,20 @@ describe('AgentTeamCoordinator vertical slice', () => {
     await coordinator.release(rootId, secondIsolated.nodeId);
     await coordinator.workspace(rootId, secondIsolated.nodeId, 'cleanup');
     const sharedWriter = await coordinator.spawn(rootId, { task: 'shared write', name: 'shared-writer', permission: 'full-access', workspace: { mode: 'shared' } }, 'workspace-shared-writer', runtime());
-    await expect(coordinator.spawn(rootId, { task: 'blocked shared write', name: 'blocked-shared-writer', permission: 'full-access', workspace: { mode: 'shared' } }, 'workspace-shared-blocked', runtime())).rejects.toThrow(/writer lease/);
+    const blocked = await coordinator.spawn(rootId, { task: 'blocked shared write', name: 'blocked-shared-writer', permission: 'full-access', workspace: { mode: 'shared' } }, 'workspace-shared-blocked', runtime());
+    expect(blocked.status).toBe('creating');
+    expect(coordinator.getTeams('root-session')[0]!.tasks.find((task) => task.id === coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === blocked.nodeId)?.currentTaskId)?.status).toBe('queued');
     const grandchild = await coordinator.spawn(child.nodeId, { task: 'inherit', name: 'shared', permission: 'read-only', workspace: { mode: 'shared' } }, 'workspace-grandchild', runtime());
     await settle();
     expect(createdInputs.at(-1)?.projectPath).toBe(childNode.workspace?.path);
     releasePrompt();
     promptBarrier = null;
     await settle();
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === blocked.nodeId)?.status).toBe('ready'));
+    const blockedTask = coordinator.getTeams('root-session')[0]!.tasks.find((task) => task.id === coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === blocked.nodeId)?.currentTaskId);
+    expect(blockedTask?.status).toBe('completed');
     await coordinator.release(rootId, sharedWriter.nodeId);
+    await coordinator.release(rootId, blocked.nodeId);
     await coordinator.release(rootId, child.nodeId);
     await coordinator.workspace(rootId, child.nodeId, 'cleanup');
     expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === grandchild.nodeId)?.workspace?.state).toBe('removed');
@@ -749,6 +786,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     };
     const coordinator = new AgentTeamCoordinator(host, dataRoot);
     const rootId = coordinator.rootNodeId('root-session');
+    const spawnTime = Date.now();
     const child = await coordinator.spawn(
       rootId,
       { task: 'workflow initial', name: 'retained-workflow' },
@@ -758,8 +796,11 @@ describe('AgentTeamCoordinator vertical slice', () => {
       { allowDelegation: false, deliverFinalAnswer: false, idleReleaseMs: 10_000 },
     );
     await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks[0]?.status).toBe('completed'));
-    const firstDeadline = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.idleReleaseAt!;
-    expect(firstDeadline).toBe(Date.now() + 10_000);
+    const nodeDeadline = () => coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.idleReleaseAt;
+    await vi.waitFor(() => expect(nodeDeadline()).toBeDefined());
+    const firstDeadline = nodeDeadline()!;
+    expect(firstDeadline).toBeGreaterThanOrEqual(spawnTime + 10_000);
+    expect(firstDeadline).toBeLessThanOrEqual(Date.now() + 10_000);
     expect(coordinator.inspectNode(rootId, child.nodeId).resources.idleReleaseTimerArmed).toBe(true);
     expect(sendRootMessage).not.toHaveBeenCalled();
 
@@ -821,10 +862,12 @@ describe('AgentTeamCoordinator vertical slice', () => {
       'idle-parent-spawn',
       runtime(),
       undefined,
-      { deliverFinalAnswer: false, idleReleaseMs: 10 },
+      { deliverFinalAnswer: false, idleReleaseMs: 10_000 },
     );
     await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks[0]?.status).toBe('completed'));
-    const deadline = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === parent.nodeId)!.idleReleaseAt!;
+    const deadlineOf = (nodeId: string) => coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === nodeId)!.idleReleaseAt;
+    await vi.waitFor(() => expect(deadlineOf(parent.nodeId)).toBeDefined());
+    const deadline = deadlineOf(parent.nodeId)!;
     const descendant = await coordinator.spawn(parent.nodeId, { task: 'remain retained', name: 'retained-child' }, 'retained-child-spawn', runtime());
     await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === descendant.nodeId)?.status).toBe('ready'));
 
@@ -835,7 +878,8 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(coordinator.inspectNode(rootId, parent.nodeId).resources.idleReleaseTimerArmed).toBe(true);
 
     await coordinator.release(parent.nodeId, descendant.nodeId);
-    await vi.advanceTimersByTimeAsync(Math.max(0, deadline + 1_000 - Date.now()));
+    // Retry is armed for retryDelay = min(idleReleaseMs, 60s); idleReleaseMs here is 10s.
+    await vi.advanceTimersByTimeAsync(Math.max(0, deadline + 10_000 - Date.now()));
     await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === parent.nodeId)?.status).toBe('released'));
     expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === descendant.nodeId)?.status).toBe('released');
   });
@@ -855,10 +899,12 @@ describe('AgentTeamCoordinator vertical slice', () => {
       'retry-release-spawn',
       runtime(),
       undefined,
-      { deliverFinalAnswer: false, idleReleaseMs: 10 },
+      { deliverFinalAnswer: false, idleReleaseMs: 10_000 },
     );
     await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks[0]?.status).toBe('completed'));
-    const deadline = coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)!.idleReleaseAt!;
+    const releaseDeadlineOf = (nodeId: string) => coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === nodeId)!.idleReleaseAt;
+    await vi.waitFor(() => expect(releaseDeadlineOf(child.nodeId)).toBeDefined());
+    const deadline = releaseDeadlineOf(child.nodeId)!;
     const internals = coordinator as unknown as { releaseNode: (...args: unknown[]) => Promise<void> };
     const releaseNode = vi.spyOn(internals, 'releaseNode');
     releaseNode.mockRejectedValueOnce(new Error('transient release failure'));
@@ -874,7 +920,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(failed.timeline.at(-1)).toMatchObject({ type: 'error', summary: expect.stringContaining('retry remains armed') });
     expect(coordinator.inspectNode(rootId, child.nodeId).resources.idleReleaseTimerArmed).toBe(true);
 
-    const retryAt = deadline + 1_000;
+    const retryAt = deadline + 10_000;
     await vi.advanceTimersByTimeAsync(Math.max(0, retryAt - Date.now() - 1));
     expect(releaseNode).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
@@ -910,7 +956,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps an exhausted result-envelope slot separate from successful execution', async () => {
+  it('does not let legacy message-count values block agent results', async () => {
     let releasePrompt!: () => void;
     promptBarrier = new Promise<void>((resolve) => { releasePrompt = resolve; });
     const coordinator = new AgentTeamCoordinator({
@@ -928,13 +974,12 @@ describe('AgentTeamCoordinator vertical slice', () => {
     await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.tasks[0]?.status).toBe('completed'));
 
     const team = coordinator.getTeams('root-session')[0]!;
-    expect(team.tasks[0]).toMatchObject({
-      status: 'completed',
-      resultTransportError: expect.stringContaining('message limit (1) reached'),
-    });
-    expect(team.tasks[0]!.resultEnvelopeId).toBeUndefined();
+    expect(team.tasks[0]).toMatchObject({ status: 'completed' });
+    expect(team.tasks[0]!.resultTransportError).toBeUndefined();
+    expect(team.tasks[0]!.resultEnvelopeId).toBeDefined();
     expect(team.tasks[0]!.error).toBeUndefined();
     expect(team.envelopes).toHaveLength(1);
+    expect(team.envelopes[0]?.kind).toBe('FINAL_ANSWER');
     expect(childSessions[0]!.prompt).toHaveBeenCalledTimes(1);
     expect(team).toMatchObject({ activeTurns: 0, writerNodeId: null });
   });
@@ -1918,14 +1963,15 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(restored.selectedTeamId('root-session')).toBe(second.id);
   });
 
-  it('preserves more than the live child cap in released historical topology', async () => {
+  it('allows more same-role agents than the former team limit', async () => {
     const coordinator = new AgentTeamCoordinator({
       resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
       getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
     const rootId = coordinator.rootNodeId('root-session');
-    for (let index = 0; index < AGENT_TEAM_MAX_NODES + 1; index += 1) {
+    const spawned = 20;
+    for (let index = 0; index < spawned; index += 1) {
       const child = await coordinator.spawn(rootId, { task: `sequential task ${index}`, name: `historical-${index}` }, `historical-spawn-${index}`, runtime());
       await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === child.nodeId)?.status).toBe('ready'));
       await coordinator.release(rootId, child.nodeId);
@@ -1935,8 +1981,9 @@ describe('AgentTeamCoordinator vertical slice', () => {
 
     const team = coordinator.getTeams('root-session')[0]!;
     const root = team.nodes.find((node) => node.id === rootId)!;
-    expect(root.childIds).toHaveLength(AGENT_TEAM_MAX_NODES + 1);
-    expect(team.nodes.filter((node) => node.depth > 0)).toHaveLength(AGENT_TEAM_MAX_NODES + 1);
+    expect(root.childIds).toHaveLength(spawned);
+    expect(new Set(team.nodes.filter((node) => node.depth > 0).map((node) => node.role)).size).toBe(1);
+    expect(team.nodes.filter((node) => node.depth > 0)).toHaveLength(spawned);
     expect(() => agentTeamSchema.parse(team)).not.toThrow();
   });
 
@@ -2009,12 +2056,13 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const replacementTeam = coordinator.createTeam('root-session', 'Replacement writer team');
     coordinator.selectTeam('root-session', replacementTeam.id);
     const replacementRoot = coordinator.rootNodeId('root-session');
-    await expect(coordinator.spawn(replacementRoot, { task: 'must wait for old writer', permission: 'edit' }, 'blocked-replacement-writer', runtime()))
-      .rejects.toThrow(/Project writer lease is held/u);
+    const blockedReplacement = await coordinator.spawn(replacementRoot, { task: 'must wait for old writer', permission: 'edit' }, 'blocked-replacement-writer', runtime());
+    expect(blockedReplacement.status).toBe('creating');
 
     releasePrompt();
     promptBarrier = null;
     await vi.waitFor(() => expect(coordinator.inspectNode(rootId, writer.nodeId).resources).toMatchObject({ turnActive: false, leaseHeld: false }));
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session').find((team) => team.id === replacementTeam.id)?.nodes.find((node) => node.id === blockedReplacement.nodeId)?.status).toBe('ready'));
     expect(coordinator.getTeams('root-session')[0]?.nodes.find((node) => node.id === writer.nodeId)?.status).toBe('closing');
     await coordinator.closeTeam('root-session', closingTeamId, true);
     expect(coordinator.getTeams('root-session').find((team) => team.id === closingTeamId)?.status).toBe('closed');
@@ -2061,13 +2109,14 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const replacementTeam = coordinator.createTeam('root-session', 'Post-cancel replacement');
     coordinator.selectTeam('root-session', replacementTeam.id);
     const replacementRoot = coordinator.rootNodeId('root-session');
-    await expect(coordinator.spawn(replacementRoot, { task: 'blocked until old prompt settles', permission: 'edit' }, 'cancel-all-blocked-writer', runtime()))
-      .rejects.toThrow(/Project writer lease is held/u);
+    const blockedReplacement = await coordinator.spawn(replacementRoot, { task: 'blocked until old prompt settles', permission: 'edit' }, 'cancel-all-blocked-writer', runtime());
+    expect(blockedReplacement.status).toBe('creating');
 
     releasePrompt();
     promptBarrier = null;
     await vi.waitFor(() => expect(coordinator.inspectNode(firstRoot, writer.nodeId).resources).toMatchObject({ turnActive: false, leaseHeld: false }));
     await coordinator.closeTeam('root-session', firstTeamId, true);
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session').find((team) => team.id === replacementTeam.id)?.nodes.find((node) => node.id === blockedReplacement.nodeId)?.status).toBe('ready'));
     const replacement = await coordinator.spawn(replacementRoot, { task: 'writer after cancelAll cleanup', permission: 'edit' }, 'cancel-all-replacement-writer', runtime());
     expect(replacement.status).toBe('active');
     await vi.waitFor(() => expect(coordinator.getTeams('root-session').find((team) => team.id === replacementTeam.id)?.activeTurns).toBe(0));
