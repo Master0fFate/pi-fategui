@@ -35,17 +35,29 @@ describe('Learning contracts and selection limits', () => {
       state.lessons.push({ id, activeRevisionId: revisionId, enabled: true, freshness: 'current', conflict: false, createdAt: 0, updatedAt: 0 });
       state.revisions.push({ id: revisionId, lessonId: id, revisionNumber: 1, content, evidenceIds: [], contentDigest: learningDigest({ content, evidenceIds: [] }), approvedAt: 0, approvalSource: 'local-user', createdFromDraftId: randomUUID(), supersedesRevisionId: null });
     }
-    const timings: number[] = [];
+    const wallTimings: number[] = [];
+    const cpuTimings: number[] = [];
     let first: string | undefined;
     for (let index = 0; index < 60; index++) {
-      const start = performance.now();
+      const wallStart = performance.now();
+      const cpuStart = process.threadCpuUsage();
       const selected = await selectLearning({ snapshot: state, enabled: true, root: '/project', projectKey: state.projectKey, text: 'renderer 文件系统', pins: [], branch: null });
-      if (index >= 10) timings.push(performance.now() - start);
+      const cpu = process.threadCpuUsage(cpuStart);
+      const wall = performance.now() - wallStart;
+      if (index >= 10) {
+        wallTimings.push(wall);
+        cpuTimings.push((cpu.user + cpu.system) / 1_000);
+      }
       expect(selected.selection.selected).toHaveLength(3);
       first ??= selected.block; expect(selected.block).toBe(first);
     }
-    const p95 = timings.sort((a, b) => a - b)[Math.floor(timings.length * 0.95)]!;
-    process.stdout.write(`Learning selection: ${os.platform()}/${os.arch()} ${os.cpus()[0]?.model}; 100 synthetic notes, 50 warm runs, no file I/O; p95=${p95.toFixed(2)}ms\n`);
-    expect(p95).toBeLessThan(100);
+    const p95 = (timings: number[]) => timings.sort((a, b) => a - b)[Math.floor(timings.length * 0.95)]!;
+    const wallP95 = p95(wallTimings);
+    const cpuP95 = p95(cpuTimings);
+    process.stdout.write(`Learning selection: ${os.platform()}/${os.arch()} ${os.cpus()[0]?.model}; 100 synthetic notes, 50 warm runs, no file I/O; wall p95=${wallP95.toFixed(2)}ms; CPU p95=${cpuP95.toFixed(2)}ms\n`);
+    // Shared CI runners can suspend this thread for >100ms. Gate CPU
+    // used by this test thread, not other concurrent Vitest workers, and
+    // still report user-visible wall time.
+    expect(cpuP95).toBeLessThan(100);
   });
 });
