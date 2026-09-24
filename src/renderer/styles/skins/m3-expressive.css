@@ -27,7 +27,8 @@
 :root[data-skin="m3-expressive"] .browser-thread-layout { margin: 0 10px 10px; border-radius: 24px; background: transparent; }
 :root[data-skin="m3-expressive"] .workspace::before { position: absolute; z-index: -2; inset: 82px 10px 10px; border-radius: 24px; background: var(--theme-canvas); content: ''; pointer-events: none; }
 :root[data-skin="m3-expressive"] .workspace-backdrop { inset: 82px 10px 10px; border-radius: 24px; }
-:root[data-skin="m3-expressive"] .extension-status-rail { top: 94px; right: 24px; font-size: 10px; }
+:root[data-skin="m3-expressive"] .workspace-status-row { top: 94px; right: 24px; }
+:root[data-skin="m3-expressive"] :is(.extension-status-rail, .conversation-detail-toggle) { font-size: 10px; }
 :root[data-skin="m3-expressive"] .welcome--conversation { padding-inline: 22px; }
 :root[data-skin="m3-expressive"] :where(button:not(.window-control):not(.resize-handle):not(.composer-resize-handle), .custom-select-trigger, input:not([type="range"]):not([type="checkbox"]):not([type="radio"]), select) { border-radius: var(--m3-control-radius); }
 :root[data-skin="m3-expressive"] :is(.primary-button, .new-session) { border-radius: 24px; box-shadow: none; }
@@ -198,7 +199,7 @@
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .workspace::before,
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .workspace-backdrop { top: 58px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .workspace-header strong { font-size: 13px; }
-:root[data-skin="m3-expressive"][data-compact-mode="true"] .extension-status-rail { top: 64px; }
+:root[data-skin="m3-expressive"][data-compact-mode="true"] .workspace-status-row { top: 64px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .session-controls .icon-button { width: 30px; height: 30px; flex-basis: 30px; border-radius: 12px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .session-controls .icon-button > svg { width: 18px; height: 18px; }
 :root[data-skin="m3-expressive"][data-compact-mode="true"] .composer { padding: 12px; border-radius: 28px; }

@@ -1,11 +1,12 @@
 import { FolderOpen, FolderSearch, GitPullRequest, Globe2, KeyRound, PanelRightClose, PanelRightOpen, Search, SearchCode, TerminalSquare } from 'lucide-react';
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { ResizeHandle } from '../../components/ResizeHandle';
 import { IconButton } from '../../components/IconButton';
 import { Composer } from '../chat/Composer';
 import { ConversationTimeline } from '../chat/ConversationTimeline';
 import { ExtensionStatusRail } from '../chat/ExtensionStatusRail';
+import { DetailExpansionToggle, detailSessionKey, type DetailExpansionCommand } from '../chat/detailExpansion';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useBrowserStore } from '../../stores/browserStore';
 import { BROWSER_PANE_MAX, BROWSER_PANE_MIN, useUiStore } from '../../stores/uiStore';
@@ -42,6 +43,27 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
   })));
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
   const entryCount = useRuntimeStore((state) => state.timelineOrder.length);
+  const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
+  const hasConversationDetails = useRuntimeStore((state) => state.visibleTimelineOrder.some((id) => {
+    const kind = state.timelineById[id]?.kind;
+    return kind === 'reasoning' || kind === 'tool';
+  }));
+  const currentDetailSession = detailSessionKey(projectPath, sessionId);
+  const [detailCommand, setDetailCommand] = useState<DetailExpansionCommand>(() => ({ sessionKey: currentDetailSession, revision: 0, expanded: false }));
+  useLayoutEffect(() => {
+    setDetailCommand((current) => current.sessionKey === currentDetailSession
+      ? current
+      : { sessionKey: currentDetailSession, revision: 0, expanded: false });
+  }, [currentDetailSession]);
+  const expansionCommand = detailCommand.sessionKey === currentDetailSession
+    ? detailCommand
+    : { sessionKey: currentDetailSession, revision: 0, expanded: false };
+  const toggleDetails = () => setDetailCommand((current) => {
+    const inSession = current.sessionKey === currentDetailSession
+      ? current
+      : { sessionKey: currentDetailSession, revision: 0, expanded: false };
+    return { sessionKey: currentDetailSession, revision: inSession.revision + 1, expanded: !inSession.expanded };
+  });
   const lastError = useRuntimeStore((state) => state.lastError);
   const activeSessionTitle = useMemo(() => sessions?.find((session) => session.active)?.title, [sessions]);
   const terminalOpen = useUiStore((state) => state.terminalOpen);
@@ -132,7 +154,7 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
             <button className="action-card" type="button" disabled={projectPending} onClick={() => openProject('ship')}><span className="action-icon"><GitPullRequest size={19} /></span><strong>Ship a change</strong><small>Plan, edit, test, and review in one focused session.</small></button>
           </div>
         </>
-      ) : entryCount > 0 ? <ConversationTimeline /> : <div className="conversation conversation--empty" aria-hidden="true" />}
+      ) : entryCount > 0 ? <ConversationTimeline expansionCommand={expansionCommand} /> : <div className="conversation conversation--empty" aria-hidden="true" />}
       <Composer onOpenProject={() => openProject()} connectRequest={connectRequest} />
     </section>
   );
@@ -182,7 +204,10 @@ export function Workspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
         </div>
         <div className="workspace-header-drag-tail" aria-hidden="true" />
       </header>
-      {!showBrowser && <ExtensionStatusRail />}
+      {!showBrowser && <div className="workspace-status-row">
+        {hasConversationDetails && <DetailExpansionToggle command={expansionCommand} onToggle={toggleDetails} />}
+        <ExtensionStatusRail />
+      </div>}
       {revealError && <div className="project-reveal-error" role="alert">{revealError}</div>}
       {projectError && <div className="project-reveal-error" role="alert">{projectError}</div>}
 

@@ -10,6 +10,7 @@ import { useUiStore } from '../../stores/uiStore';
 import { MentionText } from './AgentMention';
 import { AssistantMarkdown, ConversationImageViewerProvider } from './RichMessageContent';
 import { ToolCard } from './ToolCard';
+import { type DetailExpansionCommand, detailSessionKey, useDetailExpansion } from './detailExpansion';
 import { useSkinComponents } from '../../skins/SkinProvider';
 
 export { AssistantMarkdown } from './RichMessageContent';
@@ -158,12 +159,13 @@ export const MessageRow = memo(function MessageRow({ messageId }: { messageId: s
   );
 });
 
-const ReasoningRow = memo(function ReasoningRow({ messageId }: { messageId: string }) {
+const ReasoningRow = memo(function ReasoningRow({ messageId, expansionCommand }: { messageId: string; expansionCommand: DetailExpansionCommand }) {
   const reasoning = useRuntimeStore((state) => state.reasoningByMessageId[messageId]);
+  const { expanded, toggle } = useDetailExpansion(expansionCommand);
   if (!reasoning) return null;
   return (
-    <details className="reasoning-row">
-      <summary><Brain size={13} /><span className="icon-label">Reasoning</span></summary>
+    <details className="reasoning-row" open={expanded}>
+      <summary onClick={(event) => { event.preventDefault(); toggle(); }}><Brain size={13} /><span className="icon-label">Reasoning</span></summary>
       <pre>{reasoning}</pre>
     </details>
   );
@@ -171,9 +173,6 @@ const ReasoningRow = memo(function ReasoningRow({ messageId }: { messageId: stri
 
 const BOTTOM_THRESHOLD_PX = 4;
 const MIN_SCROLLBAR_THUMB_HEIGHT = 24;
-
-const sessionTimelineKey = (projectPath: string | null, sessionId: string | null) =>
-  sessionId === null ? null : JSON.stringify([projectPath, sessionId]);
 
 interface ScrollbarMetrics {
   maxScroll: number;
@@ -260,12 +259,12 @@ export function coalesceSubagentWaitPolls(
 const scrollerIsAtBottom = (scroller: HTMLElement) =>
   scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= BOTTOM_THRESHOLD_PX;
 
-const TimelineRow = memo(function TimelineRow({ id, waitPollCount }: { id: string; waitPollCount?: number | undefined }) {
+const TimelineRow = memo(function TimelineRow({ id, waitPollCount, expansionCommand }: { id: string; waitPollCount?: number | undefined; expansionCommand: DetailExpansionCommand }) {
   const entry = useRuntimeStore((state) => state.timelineById[id]);
   if (!entry) return null;
   if (entry.kind === 'message') return <MessageRow messageId={entry.messageId} />;
-  if (entry.kind === 'reasoning') return <ReasoningRow messageId={entry.messageId} />;
-  if (entry.kind === 'tool') return <ToolCard toolCallId={entry.toolCallId} waitPollCount={waitPollCount} />;
+  if (entry.kind === 'reasoning') return <ReasoningRow messageId={entry.messageId} expansionCommand={expansionCommand} />;
+  if (entry.kind === 'tool') return <ToolCard toolCallId={entry.toolCallId} waitPollCount={waitPollCount} expansionCommand={expansionCommand} />;
   if (entry.kind === 'error') {
     return (
       <div className="timeline-notice timeline-notice--error" role="alert">
@@ -282,7 +281,7 @@ const TimelineRow = memo(function TimelineRow({ id, waitPollCount }: { id: strin
   return <div className={`timeline-notice${entry.phase === 'failed' ? ' timeline-notice--error' : ''}`} role={entry.phase === 'failed' ? 'alert' : undefined}><Icon size={15} /><span>{text}{entry.error?.actionable && <small>{entry.error.actionable}</small>}</span></div>;
 });
 
-export const ConversationTimeline = memo(function ConversationTimeline() {
+export const ConversationTimeline = memo(function ConversationTimeline({ expansionCommand: requestedExpansion }: { expansionCommand?: DetailExpansionCommand } = {}) {
   const order = useRuntimeStore((state) => state.timelineOrder);
   const visibleOrder = useRuntimeStore((state) => state.visibleTimelineOrder);
   const timelineVersion = useRuntimeStore((state) => state.timelineVersion);
@@ -297,7 +296,10 @@ export const ConversationTimeline = memo(function ConversationTimeline() {
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
   const sessionId = useRuntimeStore((state) => state.runtime.sessionId);
   const hasHistoricalTimeline = useRuntimeStore((state) => state.runtime.messages.length > 0 || Boolean(state.runtime.tools?.length));
-  const timelineSessionKey = sessionTimelineKey(projectPath, sessionId);
+  const timelineSessionKey = detailSessionKey(projectPath, sessionId);
+  const expansionCommand = requestedExpansion?.sessionKey === timelineSessionKey
+    ? requestedExpansion
+    : { sessionKey: timelineSessionKey, revision: 0, expanded: false };
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const positionedSessionRef = useRef<string | null>(null);
   const scrollerRef = useRef<HTMLElement | null>(null);
@@ -572,7 +574,7 @@ export const ConversationTimeline = memo(function ConversationTimeline() {
         computeItemKey={(_index, id) => id}
         itemContent={(index, id) => {
           const previousEntry = index > 0 ? timelineById[displayOrder[index - 1] ?? ''] : undefined;
-          return <div className="timeline-row" data-entry-kind={timelineById[id]?.kind} data-follows-message={followsMessage(previousEntry) || undefined}><TimelineRow id={id} waitPollCount={waitPollCountById[id]} /></div>;
+          return <div className="timeline-row" data-entry-kind={timelineById[id]?.kind} data-follows-message={followsMessage(previousEntry) || undefined}><TimelineRow id={id} waitPollCount={waitPollCountById[id]} expansionCommand={expansionCommand} /></div>;
         }}
         components={{ Footer: ConversationFooter }}
         scrollerRef={bindScroller}

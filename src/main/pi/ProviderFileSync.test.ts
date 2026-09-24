@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ProviderFileSync,
   parseAuthApiKeys,
@@ -306,13 +306,13 @@ describe('ProviderFileSync', () => {
       await writeModels(root, { '15bai': SAMPLE_PROVIDER });
       await writeAuth(root, { '15bai': { type: 'api_key', key: 'sk-watcher-key' } });
 
-      for (let attempt = 0; attempt < 100 && observed.length === 0; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-
-      expect(observed.length).toBeGreaterThan(0);
-      expect(runtime.state.registered).toEqual(['15bai']);
-      expect(runtime.state.keys.get('15bai')).toBe('sk-watcher-key');
+      // The startup catch-up can legitimately report an empty directory first.
+      // Wait for the external save itself, not merely the first callback.
+      await vi.waitFor(() => {
+        expect(observed.some((result) => result.registered.includes('15bai'))).toBe(true);
+        expect(runtime.state.registered).toEqual(['15bai']);
+        expect(runtime.state.keys.get('15bai')).toBe('sk-watcher-key');
+      }, { timeout: 10_000, interval: 25 });
     } finally {
       sync.stop();
     }

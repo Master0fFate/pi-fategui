@@ -710,7 +710,7 @@ describe('first-launch shell', () => {
     });
     const { container } = render(<App />);
 
-    expect(container.querySelector('.workspace > .extension-status-rail')).toHaveTextContent('MCP: 0/13 servers');
+    expect(container.querySelector('.workspace > .workspace-status-row > .extension-status-rail')).toHaveTextContent('MCP: 0/13 servers');
     expect(container.querySelector('.composer .extension-status-rail')).toBeNull();
   });
 

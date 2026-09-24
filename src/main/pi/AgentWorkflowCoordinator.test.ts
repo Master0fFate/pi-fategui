@@ -540,7 +540,9 @@ describe('AgentWorkflowCoordinator', () => {
           ...(index ? { dependsOn: [`step-${index - 1}`] } : {}),
         })),
       } as never, undefined, undefined, run.context);
-      await vi.waitFor(() => expect(run.coordinator.getWorkflowViews('parent-1')[0]?.status).toBe('completed'));
+      // Twenty real Team admissions and releases do filesystem work in series.
+      // Wait for completion, not a one-second wall-clock race on shared CI hosts.
+      await vi.waitFor(() => expect(run.coordinator.getWorkflowViews('parent-1')[0]?.status).toBe('completed'), { timeout: 20_000 });
       expect(run.children).toHaveLength(20);
       expect(run.teams.getTeams('parent-1')[0]?.nodes.filter((node) => node.depth > 0 && node.status !== 'released')).toHaveLength(0);
     } finally {

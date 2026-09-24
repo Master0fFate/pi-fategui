@@ -817,6 +817,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(extensionRail).toContainText('PLUGIN: output ready');
     const readExtensionRailLayout = () => page.evaluate(() => {
       const rail = document.querySelector<HTMLElement>('.extension-status-rail')!;
+      const row = document.querySelector<HTMLElement>('.workspace-status-row')!;
       const trigger = document.querySelector<HTMLElement>('.extension-status-details-trigger')!;
       const workspace = document.querySelector<HTMLElement>('.workspace')!;
       const header = document.querySelector<HTMLElement>('.workspace-header')!;
@@ -827,7 +828,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
         return { top: bounds.top, right: bounds.right, bottom: bounds.bottom, left: bounds.left, width: bounds.width, height: bounds.height };
       };
       return {
-        position: getComputedStyle(rail).position,
+        position: getComputedStyle(row).position,
         detailBackground: getComputedStyle(trigger).backgroundColor,
         rail: rect(rail),
         trigger: rect(trigger),
@@ -1561,7 +1562,28 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await page.getByRole('button', { name: 'Close image viewer' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByRole('article', { name: 'read tool succeeded' })).toBeVisible();
-    await page.getByRole('article', { name: 'read tool succeeded' }).getByRole('button').click();
+    const detailToggle = page.getByRole('article', { name: 'read tool succeeded' }).locator('.tool-card-header');
+    const expandDetails = page.getByRole('button', { name: 'Expand all reasoning and tools' });
+    await expect(expandDetails).toBeVisible();
+    const detailPlacement = await page.evaluate(() => {
+      const button = document.querySelector<HTMLElement>('.conversation-detail-toggle')!;
+      const rail = document.querySelector<HTMLElement>('.extension-status-rail')!;
+      const left = button.getBoundingClientRect();
+      const right = rail.getBoundingClientRect();
+      const style = getComputedStyle(button);
+      return {
+        sameRow: Math.abs((left.top + left.bottom) / 2 - (right.top + right.bottom) / 2) < 1,
+        leftOfRail: left.right < right.left,
+        noBox: style.backgroundColor === 'rgba(0, 0, 0, 0)' && style.borderWidth === '0px',
+        sharedParent: button.parentElement === rail.parentElement,
+      };
+    });
+    expect(detailPlacement).toEqual({ sameRow: true, leftOfRail: true, noBox: true, sharedParent: true });
+    await expandDetails.click();
+    await expect(detailToggle).toHaveAttribute('aria-expanded', 'true');
+    await page.getByRole('button', { name: 'Collapse all reasoning and tools' }).click();
+    await expect(detailToggle).toHaveAttribute('aria-expanded', 'false');
+    await detailToggle.click();
     await expect(page.getByRole('article', { name: 'read tool succeeded' }).getByText('export const answer = 42;')).toBeVisible();
     const chatFontRouting = await page.evaluate(() => {
       const interfaceFont = getComputedStyle(document.documentElement).getPropertyValue('--font-interface').trim();

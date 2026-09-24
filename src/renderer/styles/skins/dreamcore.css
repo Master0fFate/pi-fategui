@@ -150,14 +150,17 @@
   letter-spacing: 0;
 }
 :root[data-skin="dreamcore"] .activity-pulse { grid-column: 1 / -1; }
-:root[data-skin="dreamcore"] .app-shell .extension-status-rail {
+:root[data-skin="dreamcore"] .app-shell .workspace-status-row {
   position: relative;
   inset: auto;
+  width: calc(100% - 48px);
+  height: 20px;
   flex: 0 0 20px;
   align-self: flex-end;
-  max-width: calc(100% - 48px);
-  height: 20px;
   margin: 8px 24px 0;
+}
+:root[data-skin="dreamcore"] .app-shell :is(.extension-status-rail, .conversation-detail-toggle) {
+  height: 20px;
   color: var(--theme-muted);
   font: 10px/1.4 var(--font-code);
   opacity: 1;
@@ -314,10 +317,10 @@
 
 :root[data-skin="dreamcore"][data-compact-mode="true"] .workspace-header-drag { padding-inline: 12px; }
 :root[data-skin="dreamcore"][data-compact-mode="true"] .workspace-header-identity { display: flex; }
-:root[data-skin="dreamcore"][data-compact-mode="true"] .app-shell .extension-status-rail {
+:root[data-skin="dreamcore"][data-compact-mode="true"] .app-shell .workspace-status-row {
   inset: auto;
+  width: calc(100% - 24px);
   margin-inline: 12px;
-  max-width: calc(100% - 24px);
 }
 :root[data-skin="dreamcore"][data-compact-mode="true"] .settings-header { flex-basis: 36px; padding: 0 10px 0 14px; }
 :root[data-skin="dreamcore"][data-compact-mode="true"] .settings-layout { grid-template-columns: 156px minmax(0, 1fr); }
