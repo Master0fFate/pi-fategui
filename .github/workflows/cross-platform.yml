@@ -25,8 +25,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: cross-platform-installers-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  group: cross-platform-installers-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.promote_run_id != '' && 'promotion' || 'verification' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') && (github.event_name != 'workflow_dispatch' || inputs.promote_run_id == '') }}
 
 jobs:
   verify-package:
