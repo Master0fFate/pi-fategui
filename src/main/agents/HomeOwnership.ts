@@ -4,7 +4,6 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { z } from 'zod';
-import { MAX_SESSION_SNAPSHOT_BYTES } from '../pi/PiSessionRepository';
 import { readAgentSessionPreset, SAVED_AGENT_SESSION_TYPE } from './AgentSessionPreset';
 import type { SavedAgentSession } from '../../shared/contracts/agents';
 
@@ -33,7 +32,6 @@ export class HomeOwnership {
     try {
       const stat = await fs.lstat(file).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
       if (stat && (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size === 0)) throw new Error('Unsafe or ambiguous home session. Recover manually.');
-      if (stat && stat.size > MAX_SESSION_SNAPSHOT_BYTES) throw new Error('Home exceeds the supported 128 MiB session-reader limit. Its history is retained; export or archive it before opening another conversation.');
       if (!stat && lifecycle.requireExisting) throw new Error('The retained home session is missing. Restore it from backup; ownership was not silently reassigned.');
       if (!stat) {
         temp = path.join(root, `${randomUUID()}.tmp`);

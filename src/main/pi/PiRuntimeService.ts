@@ -1042,17 +1042,20 @@ function persistedChildUsage(branch: readonly Record<string, unknown>[], parentS
 
 function sessionHistoryFromPersistedBranch(branch: readonly Record<string, unknown>[]): readonly unknown[] {
   const projected: unknown[] = [];
-  const omittedEntries = Math.max(0, branch.length - (MAX_HYDRATED_HISTORY_ENTRIES - 1));
+  const firstRetained = branch.findIndex((entry) => (entry.type === 'message' && entry.message && typeof entry.message === 'object' && 'content' in entry.message)
+    || (entry.type === 'custom_message' && 'content' in entry) || entry.type === 'compaction');
+  const omittedEntries = Math.max(firstRetained < 0 ? branch.length : firstRetained, branch.length - (MAX_HYDRATED_HISTORY_ENTRIES - 1));
   if (omittedEntries > 0) projected.push(historyBoundary(omittedEntries, 'branch'));
   const visible = omittedEntries > 0 ? branch.slice(-(MAX_HYDRATED_HISTORY_ENTRIES - 1)) : branch;
   for (const entry of visible) {
     const timestamp = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
     if (entry.type === 'message') {
       const message = entry.message;
+      if (!message || typeof message !== 'object' || !('content' in message)) continue;
       projected.push(message && typeof message === 'object' && !('timestamp' in message)
         ? { ...(message as Record<string, unknown>), timestamp: Number.isFinite(timestamp) ? timestamp : 0 }
         : message);
-    } else if (entry.type === 'custom_message') {
+    } else if (entry.type === 'custom_message' && 'content' in entry) {
       projected.push({
         role: 'custom',
         customType: entry.customType,

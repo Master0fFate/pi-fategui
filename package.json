@@ -1,6 +1,6 @@
 {
   "name": "pi-fategui",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "releaseName": "Axiom",
   "description": "A local-first desktop interface for the Pi coding agent",
   "type": "module",

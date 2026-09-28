@@ -1,4 +1,6 @@
+import { createReadStream } from 'node:fs';
 import { lstat, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   getAgentDir,
@@ -86,8 +88,10 @@ const MAX_PROJECT_CACHE_ENTRIES = 4;
 const SESSION_BRANCH_REWRITE_RETRIES = 2;
 const MAX_SESSION_METADATA_PREFIX_BYTES = 256 * 1024;
 const MAX_SESSION_METADATA_TAIL_BYTES = 128 * 1024;
-export const MAX_SESSION_SNAPSHOT_BYTES = 128 * 1024 * 1024;
-const MAX_SESSION_SNAPSHOT_ENTRIES = 100_000;
+// Cold previews keep recent transcript data in memory. The complete JSONL
+// remains on disk and is read one line at a time, regardless of file size.
+const MAX_PREVIEW_ENTRY_CHARACTERS = 256_000;
+const MAX_PREVIEW_WINDOW_CHARACTERS = 16_000_000;
 const MAX_SESSION_DISCOVERY_CONCURRENCY = 8;
 const sessionEntryTypes = new Set(['message', 'thinking_level_change', 'model_change', 'compaction', 'branch_summary', 'custom', 'custom_message', 'label', 'session_info']);
 
@@ -276,7 +280,7 @@ function activeSnapshotBranch(entries: readonly JsonRecord[]): JsonRecord[] {
   const branch: JsonRecord[] = [];
   const visited = new Set<string>();
   let current = leaf;
-  while (current && branch.length < MAX_SESSION_SNAPSHOT_ENTRIES) {
+  while (current) {
     const id = current.id as string;
     if (visited.has(id)) break;
     visited.add(id);
@@ -284,6 +288,48 @@ function activeSnapshotBranch(entries: readonly JsonRecord[]): JsonRecord[] {
     current = typeof current.parentId === 'string' ? byId.get(current.parentId) : undefined;
   }
   return branch.reverse();
+}
+
+function snapshotLedgerEntry(entry: JsonRecord, length: number): JsonRecord {
+  if (entry.type === 'custom' && entry.customType !== 'fate-saved-agent-v1'
+    && entry.customType !== 'fate-subagent-run' && entry.customType !== 'fate-agent-team-event') {
+    return { type: entry.type, id: entry.id, parentId: entry.parentId, timestamp: entry.timestamp, customType: entry.customType };
+  }
+  if (entry.type === 'custom_message' || (length > MAX_PREVIEW_ENTRY_CHARACTERS && entry.type === 'branch_summary')) {
+    return { type: entry.type, id: entry.id, parentId: entry.parentId, timestamp: entry.timestamp, customType: entry.customType, display: entry.display, usage: entry.usage };
+  }
+  if (length > MAX_PREVIEW_ENTRY_CHARACTERS && entry.type !== 'message') {
+    return {
+      type: entry.type, id: entry.id, parentId: entry.parentId, timestamp: entry.timestamp,
+      usage: entry.usage, targetId: entry.targetId, label: entry.label,
+      name: typeof entry.name === 'string' ? entry.name.slice(0, 500) : entry.name,
+      provider: entry.provider, modelId: entry.modelId, thinkingLevel: entry.thinkingLevel,
+    };
+  }
+  if (entry.type !== 'message' || !isRecord(entry.message)) return entry;
+  const message = entry.message;
+  return {
+    type: entry.type, id: entry.id, parentId: entry.parentId, timestamp: entry.timestamp,
+    message: { role: message.role, usage: message.usage, timestamp: message.timestamp },
+  };
+}
+
+function previewEntry(entry: JsonRecord, length: number): JsonRecord {
+  if (length <= MAX_PREVIEW_ENTRY_CHARACTERS) return entry;
+  if (entry.type === 'custom_message') {
+    return { ...snapshotLedgerEntry(entry, length), content: '[Large saved message; full content is retained in the saved session.]' };
+  }
+  if (entry.type === 'custom' && entry.customType !== 'fate-subagent-run' && entry.customType !== 'fate-agent-team-event' && entry.customType !== 'fate-saved-agent-v1') {
+    return snapshotLedgerEntry(entry, length);
+  }
+  if (entry.type !== 'message' || !isRecord(entry.message)) return snapshotLedgerEntry(entry, length);
+  const message = entry.message;
+  // Large tool output, image data, or text must not make opening the session
+  // allocate the entire transcript. The original entry stays in the JSONL.
+  const content = typeof message.content === 'string'
+    ? `${message.content.slice(0, MAX_PREVIEW_ENTRY_CHARACTERS)}\n[Preview shortened; full content is retained in the saved session.]`
+    : '[Large saved message; full content is retained in the saved session.]';
+  return { ...entry, message: { ...message, content } };
 }
 
 function isSessionEntry(value: FileEntry): value is SessionEntry {
@@ -511,30 +557,46 @@ export class PiSessionRepository {
     try {
       const stats = await lstat(summary.path);
       if (!stats.isFile() || stats.isSymbolicLink()) return undefined;
-      if (stats.size > MAX_SESSION_SNAPSHOT_BYTES) {
-        throw new Error(`The saved session is larger than ${Math.floor(MAX_SESSION_SNAPSHOT_BYTES / 1024 / 1024)} MiB and cannot be previewed safely.`);
-      }
-      const source = await readFile(summary.path, 'utf8');
       const entries: JsonRecord[] = [];
+      const recent = new Map<string, JsonRecord>();
+      const recentLengths = new Map<string, number>();
+      let recentCharacters = 0;
       let header: JsonRecord | null = null;
-      for (const line of source.split(/\r?\n/gu)) {
-        const parsed = parseJsonRecord(line);
-        if (!parsed) continue;
-        if (!header) {
-          if (parsed.type !== 'session' || typeof parsed.id !== 'string' || !parsed.id) return undefined;
-          header = parsed;
-          continue;
+      const stream = createReadStream(summary.path, { encoding: 'utf8', highWaterMark: 256 * 1024 });
+      const lines = createInterface({ input: stream, crlfDelay: Infinity });
+      try {
+        for await (const line of lines) {
+          const parsed = parseJsonRecord(line);
+          if (!parsed) continue;
+          if (!header) {
+            if (parsed.type !== 'session' || typeof parsed.id !== 'string' || !parsed.id) return undefined;
+            header = parsed;
+            continue;
+          }
+          if (!isSnapshotEntry(parsed)) continue;
+          entries.push(snapshotLedgerEntry(parsed, line.length));
+          const projected = previewEntry(parsed, line.length);
+          const length = Math.min(line.length, MAX_PREVIEW_ENTRY_CHARACTERS);
+          const id = parsed.id as string;
+          if (recent.has(id)) recentCharacters -= recentLengths.get(id) ?? 0;
+          recent.set(id, projected);
+          recentLengths.set(id, length);
+          recentCharacters += length;
+          while (recentCharacters > MAX_PREVIEW_WINDOW_CHARACTERS) {
+            const oldest = recent.keys().next().value;
+            if (oldest === undefined) break;
+            recentCharacters -= recentLengths.get(oldest) ?? 0;
+            recent.delete(oldest);
+            recentLengths.delete(oldest);
+          }
         }
-        if (!isSnapshotEntry(parsed)) continue;
-        entries.push(parsed);
-        if (entries.length > MAX_SESSION_SNAPSHOT_ENTRIES) {
-          throw new Error(`The saved session has more than ${MAX_SESSION_SNAPSHOT_ENTRIES.toLocaleString()} entries and cannot be previewed safely.`);
-        }
+      } finally {
+        lines.close();
+        stream.destroy();
       }
       if (!header || header.id !== sessionId) return undefined;
-      return { summary, entries, branch: activeSnapshotBranch(entries) };
+      return { summary, entries, branch: activeSnapshotBranch(entries).map((entry) => recent.get(entry.id as string) ?? entry) };
     } catch (error) {
-      if (error instanceof Error && /cannot be previewed safely/u.test(error.message)) throw error;
       return undefined;
     }
   }

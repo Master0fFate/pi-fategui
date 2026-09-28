@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SessionManager, type AgentSession, type SessionInfo } from '@earendil-works/pi-coding-agent';
@@ -67,6 +67,62 @@ describe('PiSessionRepository', () => {
       expect(snapshot?.branch.map((entry) => entry.id)).toEqual(['user', 'assistant', 'large', 'tail-assistant', 'name']);
     } finally {
       list.mockRestore();
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('streams a session larger than 128 MiB and keeps its recent messages and complete branch', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'large.jsonl');
+    const handle = openSync(sessionPath, 'w');
+    try {
+      writeSync(handle, `${JSON.stringify({ type: 'session', id: 'large', cwd: '/project' })}\n`);
+      const payload = 'x'.repeat(1024 * 1024);
+      let parentId: string | null = null;
+      for (let index = 0; index < 129; index += 1) {
+        const id = `blob-${index}`;
+        writeSync(handle, `${JSON.stringify({ type: 'custom', id, parentId, customType: 'fixture', data: payload })}\n`);
+        parentId = id;
+      }
+      for (let index = 0; index < 1_000; index += 1) {
+        const id = `message-${index}`;
+        writeSync(handle, `${JSON.stringify({ type: 'message', id, parentId, message: { role: 'user', content: `Turn ${index}`, timestamp: index } })}\n`);
+        parentId = id;
+      }
+    } finally {
+      closeSync(handle);
+    }
+    try {
+      const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => [info(sessionDir, { id: 'large', path: sessionPath })]) }, sessionsRoot);
+      const snapshot = await repository.snapshot('/project', 'large');
+      expect(snapshot?.entries).toHaveLength(1_129);
+      expect(snapshot?.branch).toHaveLength(1_129);
+      expect(snapshot?.branch.at(-1)).toMatchObject({ id: 'message-999', message: { content: 'Turn 999' } });
+      expect(snapshot?.branch[0]).toMatchObject({ id: 'blob-0', customType: 'fixture' });
+      expect(snapshot?.branch[0]).not.toHaveProperty('data');
+    } finally {
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('shortens a large message only in the cold preview while preserving the saved file', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'one.jsonl');
+    const content = 'important text '.repeat(25_000);
+    const source = [
+      { type: 'session', id: 'one', cwd: '/project' },
+      { type: 'message', id: 'large', parentId: null, message: { role: 'user', content, timestamp: 1 } },
+      { type: 'message', id: 'reply', parentId: 'large', message: { role: 'assistant', content: 'Last reply', timestamp: 2 } },
+    ].map((entry) => JSON.stringify(entry)).join('\n').concat('\n');
+    try {
+      writeFileSync(sessionPath, source);
+      const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => [info(sessionDir)]) }, sessionsRoot);
+      const snapshot = await repository.snapshot('/project', 'one');
+      expect(snapshot?.branch).toHaveLength(2);
+      expect((snapshot?.branch[0]?.message as { content: string }).content).toContain('[Preview shortened; full content is retained');
+      expect(snapshot?.branch[1]).toMatchObject({ message: { content: 'Last reply' } });
+      expect(readFileSync(sessionPath, 'utf8')).toBe(source);
+    } finally {
       rmSync(sessionsRoot, { recursive: true, force: true });
     }
   });
