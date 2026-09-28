@@ -12,7 +12,7 @@ on:
         required: false
         type: string
       promote_tag:
-        description: Existing version tag to publish when promoting a verified run
+        description: Version tag to create from the verified run and publish
         required: false
         type: string
       parakeet_stream_smoke:
@@ -492,17 +492,26 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$PROMOTE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$PROMOTE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
           run_head=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .head_sha)
           run_conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .conclusion)
           run_workflow=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROMOTE_RUN_ID" --jq .path)
-          tag_head=$(git rev-parse "$PROMOTE_TAG^{}")
           test "$run_conclusion" = success
           test "$run_workflow" = .github/workflows/cross-platform.yml
-          test "$run_head" = "$tag_head"
-          git merge-base --is-ancestor "$tag_head" origin/main
-          git checkout --detach "$PROMOTE_TAG"
+          git merge-base --is-ancestor "$run_head" origin/main
+          git checkout --detach "$run_head"
           node scripts/release-artifacts.mjs validate-tag --tag "$PROMOTE_TAG"
           test -s ".github/release-notes/$PROMOTE_TAG.md"
+          if git rev-parse -q --verify "refs/tags/$PROMOTE_TAG^{}" >/dev/null; then
+            tag_head=$(git rev-parse "refs/tags/$PROMOTE_TAG^{}")
+            test "$run_head" = "$tag_head"
+          else
+            # A workflow token does not trigger another tag push workflow, so
+            # this promotion must publish the verified artifacts itself.
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$PROMOTE_TAG" -f sha="$run_head" --jq .ref
+            git tag "$PROMOTE_TAG" "$run_head"
+          fi
       - name: Prepare artifact directory
         run: rm -rf artifacts && mkdir artifacts
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
