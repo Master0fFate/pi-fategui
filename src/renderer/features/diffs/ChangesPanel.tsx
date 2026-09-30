@@ -1,3 +1,4 @@
+import { getFateApi, getFateApiOptional } from '../../platform/api';
 import * as Popover from '@radix-ui/react-popover';
 import {
   ArrowDown,
@@ -462,11 +463,11 @@ export function ChangesPanel() {
       }
   };
   const switchWorktree = async (path: string) => {
-    if (!('piDesktop' in window) || worktreeBusy) return;
+    if (!getFateApiOptional() || worktreeBusy) return;
     setWorktreeBusy(true);
     try {
       const previousProject = runtime.project?.path;
-      const nextRuntime = await window.piDesktop.switchGitWorktree(path);
+      const nextRuntime = await getFateApi().switchGitWorktree(path);
       setRuntime(nextRuntime);
       if (nextRuntime.project?.path === previousProject) {
         showToast({ kind: 'info', title: 'Worktree unchanged', message: 'The worktree change was cancelled.' });

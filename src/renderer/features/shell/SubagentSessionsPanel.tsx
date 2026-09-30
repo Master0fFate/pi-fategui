@@ -1,3 +1,8 @@
+import { getFateApi, getWebApiOptional } from '../../platform/api';
+import type { InputOf } from '../../../shared/protocol/methods';
+import { UnconfirmedCommand } from '../../../client/HttpCommandTransport';
+import { TaskControlsPanel } from '../goalmaxxing/GoalMaxTaskStrip';
+import type { FateApi } from '../../../client/FateApi';
 import {
   Bot,
   Brain,
@@ -34,7 +39,7 @@ import { AssistantMarkdown, MessageImages } from '../chat/RichMessageContent';
 import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { useSkinComponents } from '../../skins/SkinProvider';
-import { useRuntimeStore } from '../../stores/runtimeStore';
+import { canMutateNetwork, currentNetworkScope, useRuntimeStore, type NetworkTeam } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { GoalMaxAgentMarker, GoalMaxAssignmentScope, type GoalMaxAgentLink } from '../goalmaxxing/GoalMaxAgentMarker';
@@ -605,60 +610,97 @@ type TeamConfirmation = {
   message: string;
   confirmLabel: string;
   force?: boolean;
+  network?: { scopeKey: string; teamId: string };
 };
 
-function AgentTeamLifecycleControls({ team }: { team: AgentTeam }) {
+function AgentTeamLifecycleControls({ team }: { team: AgentTeam | NetworkTeam }) {
+  const web = getWebApiOptional();
+  const networkBusy = useRuntimeStore((state) => state.networkBusy);
+  const teamName = 'name' in team ? team.name : team.id;
   const [pending, setPending] = useState<string | null>(null);
   const pendingRef = useRef(false);
   const [confirmation, setConfirmation] = useState<TeamConfirmation | null>(null);
   const [controlError, setControlError] = useState<string | null>(null);
-  const ask = (next: TeamConfirmation) => { setControlError(null); setConfirmation(next); };
-  const run = async (input: Parameters<typeof window.piDesktop.controlAgentTeam>[0]) => {
+  const ask = (next: TeamConfirmation) => {
+    const captured = web ? currentNetworkScope() : null;
+    if (web && !captured) return;
+    setControlError(null);
+    setConfirmation({ ...next, ...(captured ? { network: { scopeKey: captured.key, teamId: team.id } } : {}) });
+  };
+  const run = async (input: Extract<InputOf<'team.control'>, { action: 'selectTeam' | 'pauseTeam' | 'resumeTeam' | 'closeTeam' | 'resetTeam' | 'deleteTeam' }>) => {
     if (pendingRef.current) return false;
+    if (web) {
+      const captured = currentNetworkScope();
+      if (!captured || getWebApiOptional() !== web) return false;
+      const { operationId, ...named } = input; void operationId;
+      const ok = await useRuntimeStore.getState().runNetworkMutation(web, 'agent.control', async (scope) => {
+        const receipt = await web.controlTeam(scope, named);
+        if (named.action === 'deleteTeam' && (receipt.durability !== 'journaled' || receipt.operation !== 'team.control'
+          || receipt.outcome !== 'applied' || receipt.sessionId !== captured.sessionId)) throw new UnconfirmedCommand(receipt.requestId);
+        return receipt;
+      });
+      if (!ok && named.action === 'deleteTeam') setControlError('Deletion was not confirmed. No deleted state is inferred. Review the original command if its outcome is unknown; do not retry.');
+      return ok;
+    }
     pendingRef.current = true;
     setControlError(null);
     const origin = useRuntimeStore.getState().runtime;
     setPending(input.action);
     try {
-      const state = await window.piDesktop.controlAgentTeam(input);
+      const state = await getFateApi().controlAgentTeam(input);
       const current = useRuntimeStore.getState().runtime;
       if (current.sessionId === origin.sessionId && current.project?.path === origin.project?.path) useRuntimeStore.getState().setRuntime(state);
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : `Team ${team.id} could not be changed.`;
       setControlError(message);
-      useUiStore.getState().showToast({ kind: 'error', title: `${team.name} control failed`, message });
+      useUiStore.getState().showToast({ kind: 'error', title: `${teamName} control failed`, message });
       return false;
     } finally { pendingRef.current = false; setPending(null); }
   };
   const active = team.activeTurns > 0;
+  // A bounded network summary is neither deletion readiness nor a refusal.
+  // The explicit request reaches the existing host executor's canonical work gates.
+  const deletionBlocked = !web && (active
+    || team.nodes.some((node) => node.parentNodeId !== null && (node.status === 'creating' || node.status === 'active'))
+    || !('tasks' in team) || team.tasks.some((task) => task.status === 'queued' || task.status === 'running' || task.status === 'waiting-for-children'));
+  const unavailable = Boolean(pending) || networkBusy || Boolean(web && !canMutateNetwork(web, 'agent.control'));
   return (
-    <div className="agent-team-lifecycle-actions" aria-label={`${team.name} lifecycle controls`}>
-      {!team.selected && team.status !== 'released' ? <button type="button" disabled={Boolean(pending)} title="Select this team for root agent tools" aria-label={`Select team ${team.name}`} onClick={() => void run({ action: 'selectTeam', teamId: team.id, operationId: crypto.randomUUID() })}><Check size={12} /></button> : null}
-      {team.status === 'active' || team.status === 'restored-interrupted' ? <button type="button" disabled={Boolean(pending)} title="Pause new work" aria-label={`Pause team ${team.name}`} onClick={() => void run({ action: 'pauseTeam', teamId: team.id, operationId: crypto.randomUUID() })}><Pause size={12} /></button> : null}
-      {team.status === 'paused' ? <button type="button" disabled={Boolean(pending)} title="Resume new work" aria-label={`Resume team ${team.name}`} onClick={() => void run({ action: 'resumeTeam', teamId: team.id, operationId: crypto.randomUUID() })}><Play size={12} /></button> : null}
-      {team.status !== 'closed' && team.status !== 'released' ? <button type="button" disabled={Boolean(pending)} title="Close team and preserve history" aria-label={`Close team ${team.name}`} onClick={() => {
+    <div className="agent-team-lifecycle-actions" aria-label={`${teamName} lifecycle controls`}>
+      {!team.selected && team.status !== 'released' ? <button type="button" disabled={unavailable} title="Select this team for root agent tools" aria-label={`Select team ${teamName}`} onClick={() => void run({ action: 'selectTeam', teamId: team.id, operationId: crypto.randomUUID() })}><Check size={12} /></button> : null}
+      {team.status === 'active' || team.status === 'restored-interrupted' ? <button type="button" disabled={unavailable} title="Pause new work" aria-label={`Pause team ${teamName}`} onClick={() => void run({ action: 'pauseTeam', teamId: team.id, operationId: crypto.randomUUID() })}><Pause size={12} /></button> : null}
+      {team.status === 'paused' ? <button type="button" disabled={unavailable} title="Resume new work" aria-label={`Resume team ${teamName}`} onClick={() => void run({ action: 'resumeTeam', teamId: team.id, operationId: crypto.randomUUID() })}><Play size={12} /></button> : null}
+      {team.status !== 'closed' && team.status !== 'released' ? <button type="button" disabled={unavailable} title="Close team and preserve history" aria-label={`Close team ${teamName}`} onClick={() => {
         const force = active;
         if (force) {
-          ask({ action: 'closeTeam', force, title: `Close ${team.name}?`, message: `${team.activeTurns} active turn(s) will be cancelled. Team history stays available.`, confirmLabel: 'Close team' });
+          ask({ action: 'closeTeam', force, title: `Close ${teamName}?`, message: `${team.activeTurns} active turn(s) will be cancelled. Team history stays available.`, confirmLabel: 'Close team' });
           return;
         }
         void run({ action: 'closeTeam', teamId: team.id, force, operationId: crypto.randomUUID() });
       }}><X size={12} /></button> : null}
-      {team.status !== 'released' ? <button type="button" disabled={Boolean(pending)} title="Reset team history and runtime" aria-label={`Reset team ${team.name}`} onClick={() => ask({ action: 'resetTeam', force: active, title: `Reset ${team.name}?`, message: 'Team tasks and messages will be cleared.', confirmLabel: 'Reset team' })}><RotateCcw size={12} /></button> : null}
-      {(team.status === 'closed' || team.status === 'released') ? <button type="button" className="subagent-control-danger" disabled={Boolean(pending)} title="Delete team history" aria-label={`Delete team history for ${team.name}`} onClick={() => ask({ action: 'deleteTeam', title: `Delete ${team.name} history?`, message: 'Saved tasks and conversations will be permanently removed. Repository files and Git branches are kept.', confirmLabel: 'Delete history' })}><Trash2 size={12} /></button> : null}
+      {team.status !== 'released' ? <button type="button" disabled={unavailable} title="Reset team history and runtime" aria-label={`Reset team ${teamName}`} onClick={() => ask({ action: 'resetTeam', force: active, title: `Reset ${teamName}?`, message: 'Team tasks and messages will be cleared.', confirmLabel: 'Reset team' })}><RotateCcw size={12} /></button> : null}
+      <button type="button" className="subagent-control-danger" disabled={unavailable || deletionBlocked} title={deletionBlocked ? 'Queued task state must be confirmed before deleting team history' : web ? 'Request host-checked history deletion' : 'Delete team history'} aria-label={`Delete team history for ${teamName}`} onClick={() => {
+        const captured = web ? currentNetworkScope() : null;
+        ask({ action: 'deleteTeam', title: `Delete ${teamName} history?`, message: `${captured ? `Host: ${web?.hostName ?? web?.origin}. Workspace: ${captured.scope.label}. Session: ${captured.sessionId}. Team: ${team.id}. The host checks active and queued work, waiting tasks and leases before deletion. Missing summary detail is not an empty queue. ` : ''}Saved tasks and conversations will be permanently removed. Idle agents will be released. Repository and worktree files and Git branches are kept.${captured ? ' An unknown outcome must be reviewed by its original ID, never retried.' : ''}`, confirmLabel: 'Delete history' });
+      }}><Trash2 size={12} /></button>
+      {web && !('tasks' in team) && <small>Task-queue detail is omitted. Only an explicit request and a confirmed host receipt can establish deletion; the host can refuse active or queued work.</small>}
+      {web && controlError && !confirmation && <p role="status">{controlError}</p>}
       {pending ? <LoaderCircle className="tool-spinner" size={12} aria-label={`${pending} pending`} /> : null}
       {confirmation ? <ConfirmDialog
         title={confirmation.title}
         message={confirmation.message}
         confirmLabel={confirmation.confirmLabel}
-        busy={Boolean(pending)}
+        busy={unavailable}
         error={controlError}
         onCancel={() => setConfirmation(null)}
         onConfirm={() => {
           const current = confirmation;
-          void run({ action: current.action, teamId: team.id, ...(current.force === undefined ? {} : { force: current.force }), operationId: crypto.randomUUID() })
-            .then((success) => { if (success) setConfirmation(null); });
+          if (current.network && (!web || getWebApiOptional() !== web || currentNetworkScope()?.key !== current.network.scopeKey
+            || team.id !== current.network.teamId) || web && !current.network) {
+            setConfirmation(null); setControlError('Selection changed. No deletion or other Team action was sent. Review the current source before a new confirmation.'); return;
+          }
+          void run({ action: current.action, teamId: current.network?.teamId ?? team.id, ...(current.force === undefined ? {} : { force: current.force }), operationId: crypto.randomUUID() })
+            .then((success) => { if (success || web && current.action === 'deleteTeam') setConfirmation(null); });
         }}
       /> : null}
     </div>
@@ -707,6 +749,47 @@ function AgentTeamBranch({ team, goalLinks }: { team: AgentTeam; goalLinks: Read
 }
 
 export function SubagentSessionsPanel() {
+  const source = useRuntimeStore((state) => state.source);
+  return source === 'network' ? <NetworkAgentProjection /> : <DesktopSubagentSessionsPanel />;
+}
+function NetworkAgentProjection() {
+  const web = getWebApiOptional();
+  const snapshot = useRuntimeStore((state) => state.snapshot);
+  const phase = useRuntimeStore((state) => state.phase);
+  const views = useRuntimeStore((state) => state.networkViews);
+  const navigation = useRuntimeStore((state) => state.networkNavigation);
+  const nodeRefs = useRef(new Map<string, HTMLLIElement>());
+  const target = navigation && navigation.scopeKey === currentNetworkScope()?.key ? navigation.target : null;
+  useEffect(() => {
+    if (target?.kind !== 'team-node' || views.teams.status !== 'ready' || views.scopeKey !== currentNetworkScope()?.key) return;
+    const row = nodeRefs.current.get(`${target.teamId}:${target.nodeId}`);
+    row?.focus({ preventScroll: true }); row?.scrollIntoView?.({ block: 'nearest' });
+  }, [target, views.teams, views.scopeKey]);
+  useRuntimeStore((state) => state.networkBusy);
+  useEffect(() => { if (web && phase === 'observing') void useRuntimeStore.getState().loadNetworkViews(web, 'agents'); }, [web, snapshot, phase]);
+  if (!web || !currentNetworkScope() || views.scopeKey !== currentNetworkScope()?.key) return <p role="status">Agents and tasks are not current. Host work may continue.</p>;
+  return <section className="subagent-sessions" aria-label="Host agents and tasks"><h2>Teams</h2>
+    <button type="button" disabled={!canMutateNetwork(web, 'agent.control')} onClick={() => void useRuntimeStore.getState().runNetworkMutation(web, 'agent.control', (scope) => web.controlTeam(scope, { action: 'createTeam' }))}>Create Team</button>
+    {views.teams.status === 'ready' ? <>{views.teams.value.truncated && <p>Team list is partial.</p>}{views.teams.value.teams.map((team) => <section key={team.id} className="agent-tree-branch" aria-label={`Team ${team.id}`}>
+      <h3>{team.id} · {team.status}{team.selected ? ' · Current' : ''} · {team.activeTurns} active turns</h3><AgentTeamLifecycleControls team={team} />
+      {team.nodesTruncated && <p>Node list is partial. Missing rows do not prove work is stopped.</p>}
+      <ol aria-label={`Team tree ${team.id}`}>{team.nodes.map((node) => <li key={node.id} className="agent-tree-node" tabIndex={-1}
+        ref={(element) => { const key = `${team.id}:${node.id}`; if (element) nodeRefs.current.set(key, element); else nodeRefs.current.delete(key); }}
+        data-team-id={team.id} data-node-id={node.id} data-network-focus={target?.kind === 'team-node' && target.teamId === team.id && target.nodeId === node.id || undefined}>
+        <strong>{node.path}</strong> · @{node.handle} · {node.status} · {node.permissionLevel}{node.writer && ' · writer'}
+        <p>Parent: {node.parentNodeId ?? 'root'} · unread {node.unreadMessages}{node.currentTaskId ? ` · task ${node.currentTaskId}` : ''}</p>
+        {target?.kind === 'team-node' && target.teamId === team.id && target.nodeId === node.id && <small className="network-focus-label">Selected from Monitor</small>}
+        {node.id !== team.rootNodeId ? <><AgentTeamControls teamId={team.id} node={node} /><AgentWorkspaceDetails team={team} node={node} /></>
+          : <p>Root work is controlled through this Team's lifecycle controls.</p>}
+      </li>)}</ol>
+    </section>)}</> : <p role="status">Team read {views.teams.status}. Unknown is not empty.</p>}
+    <h2>Agents</h2>{views.agents.status === 'ready' ? <>{views.agents.value.truncated && <p>Agent list is partial.</p>}<ol>{views.agents.value.agents.map((agent) => <li key={agent.id}>
+      <strong>{agent.id}</strong> · {agent.status} · {new Date(agent.updatedAt).toLocaleString()}{agent.workflowId ? ` · workflow ${agent.workflowId}` : ''}<SubagentControls run={agent} compact />
+    </li>)}</ol><p>Transcripts and mailbox availability are not included in this bounded read.</p></> : <p role="status">Agent read {views.agents.status}. Unknown is not empty.</p>}
+    <TaskControlsPanel />
+  </section>;
+}
+function DesktopSubagentSessionsPanel() {
   const { Symbol } = useSkinComponents();
   const runtime = useRuntimeStore(useShallow((state) => ({
     project: state.runtime.project,

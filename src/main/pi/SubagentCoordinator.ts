@@ -297,6 +297,7 @@ export class SubagentCoordinator {
   constructor(
     private readonly host: SubagentCoordinatorHost,
     private readonly childSessionFactory: SubagentChildSessionFactory = createSdkChildSession,
+    private readonly agentDir?: string,
   ) {
     this.runStore = new SubagentRunStore((run) => runTerminal(run.status));
     this.workflows = new SubagentWorkflowEngine({
@@ -535,7 +536,7 @@ export class SubagentCoordinator {
       executionMode: 'parallel',
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
         const parent = this.requireParent(ctx.sessionManager.getSessionId(), ctx.cwd);
-        const result = await buildSubagentCatalog(parent.projectPath, parent.session, modelRuntime, params, this.disabledModels(parent.session.sessionId));
+        const result = await buildSubagentCatalog(parent.projectPath, parent.session, modelRuntime, params, this.disabledModels(parent.session.sessionId), this.agentDir);
         return this.deliverToParent(parent, result, 'orchestrator-to-parent catalog result');
       },
     });
@@ -934,7 +935,7 @@ export class SubagentCoordinator {
   }
 
   private async prepareRequests(requests: RequestedTask[], parent: SubagentParentContext, modelRuntime: ModelRuntime): Promise<PreparedTask[]> {
-    const profiles = await discoverSubagentProfiles(parent.projectPath);
+    const profiles = await discoverSubagentProfiles(parent.projectPath, this.agentDir);
     const selectedProfiles = requests.map((request) => {
       const profile = resolveSubagentProfile(profiles, request.agent);
       if (!profile) throw new Error(`Unknown Pi agent profile ${request.agent}. Call subagent_catalog with section agents for exact selectors.`);

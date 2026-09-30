@@ -96,6 +96,27 @@ describe('browser last-URL history', () => {
     }
   });
 
+  it('isolates session histories from each other and from legacy project-only state', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-browser-history-'));
+    try {
+      const repo = new BrowserHistoryRepository(root);
+      await repo.save('/project-a', 'https://old.example/');
+      expect(await repo.load('/project-a', 'session-one')).toBeNull();
+      await repo.save('/project-a', 'https://one.example/', 'session-one');
+      await repo.save('/project-a', 'https://two.example/', 'session-two');
+      expect(await repo.load('/project-a', 'session-one')).toBe('https://one.example/');
+      expect(await repo.load('/project-a', 'session-two')).toBe('https://two.example/');
+      await repo.save('/project-a', null, 'session-one');
+      expect(await repo.load('/project-a', 'session-one')).toBeNull();
+      expect(await repo.load('/project-a', 'session-two')).toBe('https://two.example/');
+      const reopened = new BrowserHistoryRepository(root);
+      expect(await reopened.load('/project-a', 'session-two')).toBe('https://two.example/');
+      expect(await reopened.load('/project-a')).toBe('https://old.example/');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('treats a corrupt history file as empty instead of crashing', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-browser-history-'));
     try {

@@ -100,13 +100,48 @@ describe('D0-03 supported SDK home ownership proof', () => {
     expect(resumed.sessionId).toBe(first.sessionId);
   });
 
-  it('reopens legitimate mature homes beyond the old 8 MiB prototype cap', async () => {
+  it('reopens legitimate mature homes with an oversized unrelated JSONL entry', async () => {
     const { root, owner } = await fixture();
     const directory = path.join(root, 'homes');
     const homes = new HomeOwnership(directory);
     const home = await homes.open(owner);
     SessionManager.open(home.file, directory, owner.projectPath).appendCustomEntry('large-history-fixture', { content: 'x'.repeat(9 * 1024 * 1024) });
+    await fs.appendFile(home.file, `${JSON.stringify({ type: 'custom', id: randomUUID(), parentId: null, data: { customType: 'fate-agent-home-v1', padding: 'x'.repeat(2 * 1024 * 1024) }, customType: 'unrelated-fixture' })}\n`);
     expect(await homes.open(owner)).toEqual(home);
+  });
+
+  it('reopens a saved home above 128 MiB without rewriting or truncating its history', async () => {
+    const { root, owner } = await fixture();
+    const directory = path.join(root, 'homes');
+    const homes = new HomeOwnership(directory);
+    const preset = { schemaVersion: 1 as const, agentId: owner.agentId, revision: 1, name: 'Reviewer', instructions: owner.instructions, skillRefs: [], defaults: { model: null, permission: 'read-only' as const, thinkingLevel: 'high' as const, workspace: 'shared' as const }, background: false, runId: null as null, projectPath: owner.projectPath };
+    const home = await homes.open({ ...owner, preset });
+    const contents = 'x'.repeat(640 * 1024);
+    const handle = await fs.open(home.file, 'a');
+    try {
+      let parentId = SessionManager.open(home.file, directory, owner.projectPath).getEntries().at(-1)!.id;
+      for (let index = 0; index < 206; index += 1) {
+        const id = `history-${index}`;
+        await handle.writeFile(`${JSON.stringify({ type: 'message', id, parentId, timestamp: new Date().toISOString(), message: { role: 'user', content: contents, timestamp: index } })}\n`);
+        parentId = id;
+      }
+    } finally { await handle.close(); }
+    const before = await fs.stat(home.file);
+    expect(before.size).toBeGreaterThan(128 * 1024 * 1024);
+    expect(await homes.open({ ...owner, revision: 2, instructions: 'New instructions must not alter history.' }, { enabled: true, deleted: false, requireExisting: true, requirePreset: true })).toEqual(home);
+    const after = await fs.stat(home.file);
+    expect(after.size).toBe(before.size);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  }, 30_000);
+
+  it('rejects a second owner even when its customType follows a giant payload', async () => {
+    const { root, owner } = await fixture();
+    const homes = new HomeOwnership(path.join(root, 'homes'));
+    const home = await homes.open(owner);
+    await fs.appendFile(home.file, `${JSON.stringify({ type: 'custom', id: randomUUID(), parentId: null, data: { padding: 'x'.repeat(2 * 1024 * 1024) }, customType: 'fate-agent-home-v1' })}\n`);
+    const before = await fs.stat(home.file);
+    await expect(homes.open(owner)).rejects.toThrow(/ambiguous/i);
+    expect((await fs.stat(home.file)).size).toBe(before.size);
   });
 
   it('does not silently reconstruct empty/corrupt ownership after a crash', async () => {

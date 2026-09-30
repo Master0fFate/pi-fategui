@@ -2,6 +2,125 @@ import { create } from 'zustand';
 import type { AppError, PiEvent, RuntimeMessage, RuntimeState, RuntimeTool, SubagentRun } from '../../shared/contracts/ipc';
 import type { AgentTeam, AgentTeamEnvelope, AgentTeamNode, AgentTeamTask } from '../../shared/contracts/multiAgent';
 import { applySubagentChildEvent, boundSubagentRun, boundSubagentRuns } from '../../shared/subagents';
+import type { Capability, WireResultOf } from '../../shared/protocol/methods';
+import type { NetworkWorkspaceApi } from '../../client/NetworkWorkspaceApi';
+export type { NetworkWorkspaceApi } from '../../client/NetworkWorkspaceApi';
+import { UnconfirmedCommand } from '../../client/HttpCommandTransport';
+import type { PendingCommandMethod } from '../../client/WebFateApi';
+
+export type ReadView<T> = { status: 'loading' | 'unavailable' | 'error'; value?: never }
+  | { status: 'ready'; value: T };
+interface NetworkViews {
+  scopeKey: string | null;
+  sessions: ReadView<WireResultOf<'session.list'>>;
+  models: ReadView<WireResultOf<'runtime.models'>>;
+  queue: ReadView<WireResultOf<'runtime.queueRead'>>;
+  teams: ReadView<WireResultOf<'team.read'>>;
+  agents: ReadView<WireResultOf<'agent.read'>>;
+}
+const emptyNetworkViews = (): NetworkViews => ({ scopeKey: null, sessions: { status: 'loading' }, models: { status: 'loading' },
+  queue: { status: 'loading' }, teams: { status: 'loading' }, agents: { status: 'loading' } });
+export function currentNetworkScope() {
+  const state = useRuntimeStore.getState();
+  const header = state.snapshot?.header;
+  if (state.source !== 'network' || state.phase !== 'observing' || !state.selected || !header?.sessionId
+    || header.selectionRevision === undefined || header.workspaceId !== state.selected.workspaceId
+    || header.workspaceGeneration !== state.selected.workspaceGeneration) return null;
+  return { scope: state.selected, sessionId: header.sessionId, header,
+    key: `${header.serverEpoch}:${header.workspaceId}:${header.workspaceGeneration}:${header.sessionId}:${header.selectionRevision}:${header.snapshotId}:${state.request}` };
+}
+export function canMutateNetwork(api: NetworkWorkspaceApi, capability: Capability): boolean {
+  const state = useRuntimeStore.getState();
+  const captured = currentNetworkScope();
+  return activeViewApi === api && api.isConnected && api.control !== null && api.supports(capability) && captured !== null
+    && captured.header.serverEpoch === api.serverEpoch
+    && api.pendingPromptReview(captured.scope, captured.sessionId).kind === 'none'
+    && !state.networkBusy && state.pendingReview === null && state.networkError === null;
+}
+import type { SnapshotHeader, SnapshotItem } from '../../shared/protocol/snapshots';
+
+export type RegisteredWorkspace = WireResultOf<'workspace.list'>['workspaces'][number];
+export type NetworkTeam = WireResultOf<'team.read'>['teams'][number];
+export type NetworkTeamNode = NetworkTeam['nodes'][number];
+export type NetworkAgent = WireResultOf<'agent.read'>['agents'][number];
+export interface BoundedSnapshot { readonly header: SnapshotHeader; readonly items: readonly SnapshotItem[] }
+/** Narrow renderer read port. Neither transport has to invent a full RuntimeState. */
+export interface WorkspaceViewApi {
+  readonly isConnected: boolean;
+  readonly reconnectError: string | null;
+  listWorkspaces(): Promise<readonly RegisteredWorkspace[]>;
+  /** Resolve only after all pages and the scoped replay acknowledgement are validated.
+   * The adapter enforces incomplete-transaction expiry using host time, not the renderer clock.
+   */
+  readSnapshot(workspace: RegisteredWorkspace): Promise<BoundedSnapshot>;
+}
+interface WorkspaceViewState {
+  networkNavigation: { scopeKey: string; target: NonNullable<WireResultOf<'workspace.monitorDetail'>['target']> } | null;
+  networkSelectionNotice: string | null;
+  networkViews: NetworkViews;
+  networkBusy: boolean;
+  networkError: string | null;
+  pendingReview: { scope: RegisteredWorkspace; sessionId: string; requestId: string; method?: PendingCommandMethod } | null;
+  loadNetworkViews: (api: NetworkWorkspaceApi, group: 'session' | 'queue' | 'agents') => Promise<void>;
+  recoverPendingReview: (api: NetworkWorkspaceApi) => void;
+  reviewNetworkCommand: (api: NetworkWorkspaceApi) => Promise<void>;
+  runNetworkMutation: (api: NetworkWorkspaceApi, capability: Capability, operation: (scope: RegisteredWorkspace) => Promise<{ readonly requestId: string }>) => Promise<boolean>;
+  source: 'desktop' | 'network';
+  workspaces: readonly RegisteredWorkspace[];
+  selected: RegisteredWorkspace | null;
+  snapshot: BoundedSnapshot | null;
+  phase: 'synchronizing' | 'observing' | 'disconnected' | 'error';
+  error: string | null;
+  request: number;
+  select: (workspace: RegisteredWorkspace | null) => void;
+  initialize: (api: WorkspaceViewApi) => Promise<void>;
+  refresh: (api: WorkspaceViewApi) => Promise<void>;
+  invalidate: () => void;
+  disconnect: () => void;
+  reset: () => void;
+}
+const emptyView = { workspaces: [] as readonly RegisteredWorkspace[], selected: null, snapshot: null,
+  phase: 'synchronizing' as const, error: null, networkSelectionNotice: null, networkNavigation: null };
+let activeViewApi: WorkspaceViewApi | null = null;
+let networkMutationRequest = 0;
+const sameWorkspace = (a: RegisteredWorkspace | null, b: RegisteredWorkspace) => a !== null
+  && a.workspaceId === b.workspaceId && a.workspaceGeneration === b.workspaceGeneration;
+
+/** Common, source-backed controls. Missing wire fields remain unknown, not defaults. */
+export function selectSessionView(state: RuntimeStore) {
+  const network = state.source === 'network';
+  const controls = network ? state.snapshot?.header.controls : null;
+  return {
+    source: state.source,
+    label: network ? state.selected?.label ?? null : state.runtime.project?.name ?? null,
+    sessionId: network ? state.snapshot?.header.sessionId ?? null : state.runtime.sessionId,
+    status: network ? controls?.status ?? null : state.runtime.status,
+    activeSessionRunning: network ? controls?.activeSessionRunning ?? null : state.runtime.activeSessionRunning ?? state.runtime.streaming,
+    permissionLevel: network ? controls?.permissionLevel ?? null : state.runtime.permissionLevel ?? null,
+    thinkingLevel: network ? controls?.thinkingLevel ?? null : state.runtime.thinkingLevel,
+    model: network ? controls?.model ?? null : state.runtime.model,
+    queue: network ? controls?.queue ?? null : state.queue,
+    // Transaction/page TTL does not expire a completed, acknowledged live view.
+    confirmed: network ? state.phase === 'observing' && state.snapshot !== null
+      : state.runtime.status !== 'disconnected',
+    capturedAt: network ? state.snapshot?.header.capturedAt ?? null : null,
+  };
+}
+
+/** Host summaries and desktop Team state are different sources, never interchangeable lifecycle objects. */
+export function selectAgentView(state: RuntimeStore): { source: 'desktop' | 'network'; rows: SnapshotHeader['agents']; partial: boolean } {
+  if (state.source === 'network') return { source: state.source, rows: state.snapshot?.header.agents ?? [], partial: true };
+  const rows = [
+    ...state.subagentOrder.flatMap((id) => {
+      const run = state.subagentsById[id];
+      return run ? [{ id: run.id, title: (run.displayName ?? run.id).slice(0, 240), status: run.status }] : [];
+    }),
+    ...state.agentTeamOrder.flatMap((id) => state.agentTeamsById[id]?.nodes.map((node) => ({
+      id: node.id, title: node.id.slice(0, 240), status: node.status,
+    })) ?? []),
+  ];
+  return { source: state.source, rows: rows.slice(0, 500), partial: rows.length > 500 };
+}
 
 type RuntimeQueue = NonNullable<RuntimeState['queue']>;
 const emptyQueue = (): RuntimeQueue => ({ steering: 0, followUp: 0, items: [] });
@@ -35,7 +154,7 @@ const disconnected: RuntimeState = {
   model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
 };
 
-interface RuntimeStore {
+interface RuntimeStore extends WorkspaceViewState {
   runtime: RuntimeState;
   messagesById: Record<string, RuntimeMessage>;
   messageOrder: string[];
@@ -270,7 +389,169 @@ function indexed(messages: RuntimeMessage[], tools: RuntimeTool[] = []) {
   return { messagesById, messageOrder, reasoningByMessageId, toolsById, toolOrder, timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds: new Set(visibleTimelineOrder) };
 }
 
-export const useRuntimeStore = create<RuntimeStore>((set) => ({
+export const useRuntimeStore = create<RuntimeStore>((set, get) => ({
+  ...emptyView, source: 'desktop', request: 0,
+  networkViews: emptyNetworkViews(), networkBusy: false, networkError: null, pendingReview: null,
+  recoverPendingReview: (api) => {
+    const captured = currentNetworkScope();
+    if (!captured || activeViewApi !== api) return;
+    const retained = get().pendingReview;
+    if (retained) {
+      const saved = api.pendingPromptReview(retained.scope, retained.sessionId);
+      if (retained.method === 'runtime.prompt' || saved.kind !== 'none' && saved.value?.requestId === retained.requestId && saved.value.method === 'runtime.prompt') {
+        set({ pendingReview: null, networkError: `Original prompt ${retained.requestId} is retained for Composer review. Its draft and unknown outcome are not cleared.` });
+      }
+      return;
+    }
+    const pending = api.pendingPromptReview(captured.scope, captured.sessionId);
+    if (pending.kind === 'match' && pending.value.method === 'runtime.prompt') {
+      // Composer owns the current prompt draft and its correlated receipt review.
+      // Do not strand a second generic record after Composer settles that prompt.
+      set({ networkError: `Original prompt ${pending.value.requestId} needs review in Composer. Do not resend.` });
+    } else if (pending.kind === 'match') set({ pendingReview: { scope: captured.scope, sessionId: captured.sessionId, requestId: pending.value.requestId, method: pending.value.method },
+      networkError: 'Review the original command before another mutation.' });
+    else if (pending.kind === 'blocked') {
+      const original = pending.value;
+      const originalScope = original && original.origin === api.origin && original.authSessionId === api.authenticatedSessionId
+        && (!original.hostId || original.hostId === api.hostId)
+        ? get().workspaces.find((scope) => scope.workspaceId === original.workspaceId && scope.workspaceGeneration === original.workspaceGeneration) : undefined;
+      if (original?.method === 'runtime.prompt') set({ networkError: `Original prompt ${original.requestId} remains bound to workspace ${original.workspaceId}, session ${original.sessionId}. Review it in Composer; changing session or epoch does not permit resend.` });
+      else if (original && originalScope) set({ pendingReview: { scope: originalScope, sessionId: original.sessionId, requestId: original.requestId, method: original.method },
+        networkError: 'Saved original command needs review in its original workspace. A different selected session does not permit resend.' });
+      else set({ networkError: `Pending command recovery is blocked.${original ? ` Original ID: ${original.requestId}.` : ''} Return to its original host/workspace and review it. Do not resend.` });
+    } else set({ networkError: null });
+  },
+  reviewNetworkCommand: async (api) => {
+    const pending = get().pendingReview;
+    if (!pending || get().networkBusy || !api.isConnected || activeViewApi !== api) return;
+    const savedOwner = api.pendingPromptReview(pending.scope, pending.sessionId);
+    if (pending.method === 'runtime.prompt' || savedOwner.kind !== 'none' && savedOwner.value?.method === 'runtime.prompt') {
+      set({ pendingReview: null, networkError: `Original prompt ${pending.requestId} is retained for Composer review. No original ID, draft or status was cleared.` }); return;
+    }
+    const request = ++networkMutationRequest;
+    const current = () => activeViewApi === api && networkMutationRequest === request && get().pendingReview === pending;
+    set({ networkBusy: true });
+    try {
+      const status = await api.reviewPromptStatus(pending.scope, pending.requestId);
+      if (!current()) return;
+      if (status.state === 'rejected' || status.state === 'settled' && status.receipt?.requestId === pending.requestId) {
+        const saved = api.pendingPromptReview(pending.scope, pending.sessionId);
+        if (saved.kind !== 'none' && saved.value?.requestId !== pending.requestId) {
+          set({ networkError: 'Saved pending identity changed. Do not erase it or resend; review the saved original ID.' }); return;
+        }
+        api.clearPendingPromptReview();
+        set({ pendingReview: null, networkError: null });
+        await get().refresh(api);
+      } else set({ networkError: `Original command ${status.state}. No mutation was replayed. Review again; host work may continue.` });
+    } catch { if (current()) set({ networkError: 'Original command status is unavailable. Do not resend; reconnect and review its original ID.' }); }
+    finally { if (activeViewApi === api && networkMutationRequest === request) set({ networkBusy: false }); }
+  },
+  runNetworkMutation: async (api, capability, operation) => {
+    // Composer alone owns prompt drafts and correlated prompt uncertainty.
+    if (capability === 'runtime.prompt') return false;
+    const captured = currentNetworkScope();
+    if (!captured || !canMutateNetwork(api, capability)) return false;
+    get().recoverPendingReview(api);
+    if (get().pendingReview || get().networkError) return false;
+    const request = ++networkMutationRequest;
+    const current = () => activeViewApi === api && networkMutationRequest === request;
+    set({ networkBusy: true, networkError: null });
+    try {
+      api.assertPendingReviewStorageAvailable();
+      await operation(captured.scope);
+      if (!current() || get().selected?.workspaceId !== captured.scope.workspaceId || get().selected?.workspaceGeneration !== captured.scope.workspaceGeneration) return false;
+      await get().refresh(api); // Receipts are admission/outcome facts, never full domain state.
+      return current() && get().phase === 'observing';
+    } catch (error) {
+      if (!current()) return false;
+      if (error instanceof UnconfirmedCommand) {
+        const saved = api.pendingPromptReview(captured.scope, captured.sessionId);
+        const original = saved.kind !== 'none' && saved.value?.requestId === error.requestId ? saved.value : null;
+        if (original?.method === 'runtime.prompt') set({ pendingReview: null, networkError: `Original prompt ${error.requestId} is retained for Composer review. Do not resend.` });
+        else set({ pendingReview: { scope: captured.scope, sessionId: captured.sessionId, requestId: error.requestId,
+          ...(original ? { method: original.method } : {}) }, networkError: 'Command outcome unknown. Review its original ID; do not retry the action.' });
+      } else {
+        const pending = api.pendingPromptReview(captured.scope, captured.sessionId);
+        if (pending.kind === 'match' && pending.value.method !== 'runtime.prompt') set({ pendingReview: { scope: captured.scope,
+          sessionId: captured.sessionId, requestId: pending.value.requestId, method: pending.value.method } });
+        set({ networkError: 'Host action was not confirmed. Refresh the workspace or review the original command before another action.' });
+      }
+      return false;
+    } finally { if (current()) set({ networkBusy: false }); }
+  },
+  loadNetworkViews: async (api, group) => {
+    const captured = currentNetworkScope();
+    if (!captured || !api.isConnected) return;
+    if (get().networkViews.scopeKey !== captured.key) set({ networkViews: { ...emptyNetworkViews(), scopeKey: captured.key } });
+    const current = () => api.isConnected && currentNetworkScope()?.key === captured.key;
+    const load = async <T extends { sessionId: string; selectionRevision: number }>(capability: Capability, read: () => Promise<T>, install: (view: ReadView<T>) => void) => {
+      install({ status: api.supports(capability) ? 'loading' : 'unavailable' });
+      if (!api.supports(capability)) return;
+      try {
+        const value = await read();
+        if (value.sessionId !== captured.sessionId || value.selectionRevision !== captured.header.selectionRevision) throw new Error('Read selection changed.');
+        if (current()) install({ status: 'ready', value });
+      } catch { if (current()) install({ status: 'error' }); }
+    };
+    if (group === 'session') await Promise.all([
+      load('session.read', () => api.readSessions(captured.scope), (sessions) => set((state) => ({ networkViews: { ...state.networkViews, sessions } }))),
+      load('runtime.configure', () => api.readModels(captured.scope), (models) => set((state) => ({ networkViews: { ...state.networkViews, models } }))),
+    ]);
+    if (group === 'queue') await load('queue.read', () => api.readQueue(captured.scope), (queue) => set((state) => ({ networkViews: { ...state.networkViews, queue } })));
+    if (group === 'agents') await Promise.all([
+      load('agent.read', () => api.readTeams(captured.scope), (teams) => set((state) => ({ networkViews: { ...state.networkViews, teams } }))),
+      load('agent.read', () => api.readAgents(captured.scope), (agents) => set((state) => ({ networkViews: { ...state.networkViews, agents } }))),
+    ]);
+  },
+  select: (selected) => set((current) => ({ source: 'network', selected, snapshot: null, error: null,
+    phase: selected ? 'synchronizing' : 'observing', request: current.request + 1, networkViews: emptyNetworkViews(), networkSelectionNotice: null, networkNavigation: null })),
+  invalidate: () => set((current) => ({ phase: 'synchronizing', request: current.request + 1, networkViews: emptyNetworkViews(), networkNavigation: null })),
+  disconnect: () => set((current) => ({ phase: activeViewApi?.reconnectError ? 'error' : 'disconnected',
+    error: activeViewApi?.reconnectError ?? null, request: current.request + 1 })),
+  reset: () => { activeViewApi = null; networkMutationRequest++; set((current) => ({ ...emptyView, source: 'desktop', request: current.request + 1,
+    networkViews: emptyNetworkViews(), networkBusy: false, networkError: null, pendingReview: null })); },
+  initialize: async (api) => {
+    get().reset();
+    activeViewApi = api;
+    set({ source: 'network' });
+    const request = get().request;
+    try {
+      const workspaces = await api.listWorkspaces();
+      if (activeViewApi !== api || get().request !== request || !api.isConnected) return;
+      set({ workspaces, selected: workspaces[0] ?? null, phase: workspaces.length ? 'synchronizing' : 'observing' });
+    } catch (error) {
+      if (activeViewApi === api && get().request === request) set({ phase: api.isConnected ? 'error' : 'disconnected',
+        error: error instanceof Error ? error.message : 'Registered workspaces are unavailable.' });
+    }
+  },
+  refresh: async (api) => {
+    const selected = get().selected;
+    if (!selected || activeViewApi !== api) return;
+    const request = get().request + 1;
+    set({ request, phase: api.isConnected ? 'synchronizing' : 'disconnected', error: null, networkViews: emptyNetworkViews(), networkNavigation: null });
+    if (!api.isConnected) return;
+    try {
+      const snapshot = await api.readSnapshot(selected);
+      if (activeViewApi !== api || get().request !== request || !api.isConnected || !sameWorkspace(get().selected, selected)) return;
+      if (snapshot.header.workspaceId !== selected.workspaceId || snapshot.header.workspaceGeneration !== selected.workspaceGeneration) {
+        throw new Error('Snapshot scope changed. Select this workspace again.');
+      }
+      // Both timestamps are host facts. Reject an invalid transaction lifetime,
+      // but never compare the host page TTL with the renderer's wall clock.
+      // readSnapshot owns expired/incomplete assembly refusal before it resolves.
+      if (snapshot.header.expiresAt <= snapshot.header.capturedAt) {
+        throw new Error('Snapshot transaction has an invalid lifetime. Refresh this workspace.');
+      }
+      const previous = get().snapshot?.header;
+      const selectionChanged = previous?.serverEpoch === snapshot.header.serverEpoch && previous.sessionId !== snapshot.header.sessionId;
+      set({ snapshot, phase: 'observing', error: null, ...(selectionChanged ? {
+        networkSelectionNotice: 'Host selected a different session. Unsent drafts stay under their original host, workspace and session.' } : {}) });
+    } catch (error) {
+      if (activeViewApi !== api || get().request !== request) return;
+      set({ phase: api.isConnected ? 'error' : 'disconnected',
+        error: error instanceof Error ? error.message : 'The bounded snapshot is unavailable.' });
+    }
+  },
   runtime: disconnected,
   ...indexed([]),
   ...indexedSubagents(),
@@ -289,6 +570,8 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   pendingSessionSwitch: null,
   sessionSwitchGeneration: 0,
   setRuntime: (runtime) => set((current) => {
+    // Desktop domain results never overwrite an authenticated network view.
+    if (current.source === 'network') return current;
     const sameSession = current.runtime.sessionId !== null
       && current.runtime.sessionId === runtime.sessionId
       && current.runtime.project?.path === runtime.project?.path;
@@ -311,7 +594,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
           ...current.runtime,
           ...runtime,
           messages: current.runtime.messages,
-          ...(current.runtime.tools ? { tools: current.runtime.tools } : {}),
+          tools: current.runtime.tools ?? [],
           subagents: subagents.subagentOrder.flatMap((id) => subagents.subagentsById[id] ? [subagents.subagentsById[id]!] : []),
           agentTeams: agentTeams.agentTeamOrder.flatMap((id) => agentTeams.agentTeamsById[id] ? [agentTeams.agentTeamsById[id]!] : []),
         },
@@ -361,6 +644,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     };
   }),
   hydrateRuntime: (runtime) => set((current) => {
+    if (current.source === 'network') return current;
     const projection = indexed(runtime.messages, runtime.tools);
     const subagents = indexedSubagents(runtime.subagents);
     const agentTeams = indexedAgentTeams(runtime.agentTeams);
@@ -392,6 +676,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   beginSessionSwitch: (sessionId) => {
     let generation: number | null = null;
     set((current) => {
+      if (current.source === 'network') return current;
       const projectPath = current.runtime.project?.path;
       const target = current.runtime.sessions?.find((session) => session.id === sessionId);
       if (!projectPath || !target || target.active || current.pendingSessionSwitch) return current;
@@ -444,6 +729,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   completeSessionSwitch: (generation, runtime) => {
     let completed = false;
     set((current) => {
+      if (current.source === 'network') return current;
       const pending = current.pendingSessionSwitch;
       if (!pending || pending.generation !== generation || pending.projectPath !== runtime.project?.path || pending.sessionId !== runtime.sessionId) return current;
       completed = true;
@@ -480,7 +766,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   cancelSessionSwitch: (generation, runtime) => {
     let cancelled = false;
     set((current) => {
-      if (current.pendingSessionSwitch?.generation !== generation) return current;
+      if (current.source === 'network' || current.pendingSessionSwitch?.generation !== generation) return current;
       cancelled = true;
       const projection = indexed(runtime.messages, runtime.tools);
       const subagents = indexedSubagents(runtime.subagents);
@@ -513,6 +799,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     return cancelled;
   },
   applyEvents: (events) => set((current) => {
+    if (current.source === 'network') return current;
     let runtime = current.runtime;
     let messagesById = current.messagesById;
     let messageOrder = current.messageOrder;
@@ -540,6 +827,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     let activeCompactionId = current.activeCompactionId;
     let pendingSessionSwitch = current.pendingSessionSwitch;
     let imagePayloadChanged = false;
+    let runtimeHistoryChanged = false;
     let messagesChanged = false;
     let reasoningChanged = false;
     let toolsChanged = false;
@@ -551,6 +839,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     // projections that need a whole record. This avoids cloning up to 5,000
     // record properties for every streaming delta or tool-output batch.
     const setMessage = (id: string, message: RuntimeMessage) => {
+      imagePayloadChanged ||= messagesById[id]?.images !== message.images;
       messagesById[id] = message;
       messagesChanged = true;
     };
@@ -559,6 +848,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       reasoningChanged = true;
     };
     const setTool = (id: string, tool: ToolExecution) => {
+      imagePayloadChanged ||= toolsById[id]?.images !== tool.images;
       toolsById[id] = tool;
       toolsChanged = true;
     };
@@ -655,6 +945,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         if (event.messagesIncluded || !sameSession) {
           runtime = event.state;
           ({ messagesById, messageOrder, reasoningByMessageId, toolsById, toolOrder, timelineById, timelineOrder, visibleTimelineOrder, visibleTimelineIds } = indexed(event.state.messages, event.state.tools));
+          runtimeHistoryChanged = true;
           messagesChanged = true;
           reasoningChanged = true;
           toolsChanged = true;
@@ -679,7 +970,7 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
             ...runtime,
             ...event.state,
             messages: runtime.messages,
-            ...(runtime.tools ? { tools: runtime.tools } : {}),
+            tools: runtime.tools ?? [],
             subagents: subagentOrder.flatMap((id) => subagentsById[id] ? [subagentsById[id]!] : []),
           };
           if (event.state.queue) queue = event.state.queue;
@@ -700,7 +991,6 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       } else if (event.type === 'message.completed') {
         appendMessage(event.messageId, event.role, event.timestamp);
         const existing = messagesById[event.messageId];
-        imagePayloadChanged ||= Boolean(existing?.images?.length || event.images?.length);
         setMessage(event.messageId, {
           id: event.messageId,
           role: event.role,
@@ -736,7 +1026,6 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
         appendTool(event.toolCallId, event.timestamp);
         const existing = toolsById[event.toolCallId];
         waitPollChanged ||= isSubagentWaitPoll(event.name, existing?.input ?? '');
-        imagePayloadChanged ||= Boolean(existing?.images?.length || event.images?.length);
         setTool(event.toolCallId, {
           id: event.toolCallId,
           name: event.name,
@@ -873,10 +1162,12 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     }
     if (imagePayloadChanged) {
       ({ messagesById, toolsById } = enforceLiveImageBudget(messagesById, toolsById, timelineOrder));
+      runtimeHistoryChanged = true;
       messagesChanged = true;
       toolsChanged = true;
     }
     if (timelineOrder.length > MAX_LIVE_TIMELINE_ENTITIES) {
+      runtimeHistoryChanged = true;
       messagesChanged = true;
       reasoningChanged = true;
       toolsChanged = true;
@@ -934,6 +1225,12 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
       toolOrder = toolOrder.filter((id) => Boolean(toolsById[id]));
       visibleTimelineOrder = timelineOrder.filter((id) => id === boundaryTimelineId || visibleTimelineIds.has(id));
       visibleTimelineIds = new Set(visibleTimelineOrder);
+    }
+
+    // Snapshot arrays must not retain image/history entities removed from the
+    // normalized indexes. Refresh once at these boundaries, not on text/tool
+    // deltas that preserve image references and intentionally leave snapshots stale.
+    if (runtimeHistoryChanged) {
       runtime = {
         ...runtime,
         messages: messageOrder.flatMap((id) => messagesById[id] ? [messagesById[id]!] : []),

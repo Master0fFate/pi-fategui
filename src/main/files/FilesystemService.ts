@@ -1,4 +1,4 @@
-import { shell } from 'electron';
+import { UnsupportedHostCapabilityError, type HostFileReference, type LocalFileActionsPort } from '../../core/ports';
 import { promises as fs, type Dirent } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,8 @@ const MAX_FUZZY_TOKEN_LENGTH = 128;
 const SEARCH_INDEX_TTL_MS = 10_000;
 const SEARCH_YIELD_INTERVAL = 128;
 const DIRECTORY_ENTRY_STAT_CONCURRENCY = 32;
+// Reuse the same default-locale ordering without constructing a collator for every heap comparison.
+const filenameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 const ignoredDirectories = new Set(['.git', 'node_modules']);
 const safeExternalExtensions = new Set([
   '.c', '.cc', '.cpp', '.cs', '.css', '.csv', '.go', '.h', '.hpp', '.ini', '.java', '.json', '.jsx', '.log',
@@ -131,7 +133,7 @@ function fuzzyPathScore(indexed: SearchIndexEntry, queryTokens: readonly string[
 
 function compareSearchEntries(left: ScoredSearchEntry, right: ScoredSearchEntry): number {
   return left.score - right.score
-    || left.indexed.entry.path.localeCompare(right.indexed.entry.path, undefined, { numeric: true, sensitivity: 'base' });
+    || filenameCollator.compare(left.indexed.entry.path, right.indexed.entry.path);
 }
 
 function siftSearchHeapUp(heap: ScoredSearchEntry[], start: number): void {
@@ -183,7 +185,7 @@ async function mapConcurrent<T, R>(values: readonly T[], concurrency: number, ma
 }
 
 function compareDirectoryEntries(left: Dirent, right: Dirent): number {
-  return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' });
+  return filenameCollator.compare(left.name, right.name);
 }
 
 function retainDirectoryEntry(heap: Dirent[], candidate: Dirent): void {
@@ -369,9 +371,28 @@ export class FilesystemService {
   private externalOpensSettled: Promise<void> = Promise.resolve();
   private settleExternalOpens: (() => void) | null = null;
 
-  constructor(private readonly maxSearchVisitedEntries = MAX_SEARCH_VISITED_ENTRIES) {}
+  private rootBound = false;
+  private boundRootIdentity: { readonly dev: bigint; readonly ino: bigint } | null = null;
 
+  constructor(
+    private readonly maxSearchVisitedEntries = MAX_SEARCH_VISITED_ENTRIES,
+    private readonly localFileActions?: LocalFileActionsPort,
+  ) {}
+
+  /** A separate validated, non-rebindable instance for each future workspace owner. */
+  static async forRoot(root: string, options: { maxSearchVisitedEntries?: number; localFileActions?: LocalFileActionsPort } = {}): Promise<FilesystemService> {
+    const service = new FilesystemService(options.maxSearchVisitedEntries, options.localFileActions);
+    await service.setRoot(root);
+    const stat = await fs.lstat(service.getRoot(), { bigint: true });
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.ino <= 0n) invalidPath('The workspace root cannot be pinned.');
+    service.boundRootIdentity = { dev: stat.dev, ino: stat.ino };
+    service.rootBound = true;
+    return service;
+  }
+
+  /** Legacy desktop focus adapter only. Bound instances cannot change workspace. */
   async setRoot(root: string): Promise<void> {
+    if (this.rootBound) invalidPath('A bound file service cannot change its workspace root.');
     const requestGeneration = ++this.rootRequestGeneration;
     const canonical = path.normalize(await fs.realpath(root));
     const stat = await fs.stat(canonical);
@@ -384,12 +405,26 @@ export class FilesystemService {
   }
 
   async clearRoot(): Promise<void> {
+    if (this.rootBound) invalidPath('A bound file service cannot clear its workspace root.');
     const requestGeneration = ++this.rootRequestGeneration;
     while (this.activeExternalOpens > 0) await this.externalOpensSettled;
     if (requestGeneration !== this.rootRequestGeneration) throw this.searchSuperseded();
     this.invalidateSearchIndex();
     this.root = null;
     this.rootGeneration += 1;
+  }
+
+  /** Host root identity is pinned for scoped reads, not for the legacy mutable desktop focus adapter. */
+  async assertBoundRootIdentity(): Promise<void> {
+    if (!this.rootBound || !this.boundRootIdentity) invalidPath('A bound workspace is required.');
+    const root = this.getRoot();
+    let stat;
+    let canonical: string;
+    try {
+      [stat, canonical] = await Promise.all([fs.lstat(root, { bigint: true }), fs.realpath(root)]);
+    } catch { invalidPath('The registered workspace root is unavailable.'); }
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== this.boundRootIdentity.dev || stat.ino !== this.boundRootIdentity.ino
+      || path.normalize(canonical) !== root) invalidPath('The registered workspace root changed.');
   }
 
   getRootOrNull(): string | null {
@@ -715,6 +750,15 @@ export class FilesystemService {
     }
   }
 
+  private async assertOpenedFileConfined(relativePath: string, opened: { dev: bigint; ino: bigint }): Promise<void> {
+    // Re-resolve the caller path after opening, then pair the opened handle with
+    // the confined file identity. A checked parent can become a junction before
+    // open; merely reading through the first canonical string is not enough.
+    const current = await this.resolvePath(relativePath);
+    const currentStat = await fs.stat(current, { bigint: true });
+    if (opened.ino <= 0n || currentStat.dev !== opened.dev || currentStat.ino !== opened.ino) invalidPath('The project file changed during opening.');
+  }
+
   async read(relativePath: string): Promise<FilePreview> {
     const operation = this.rootOperation();
     const absolute = await this.resolvePath(relativePath);
@@ -722,11 +766,14 @@ export class FilesystemService {
     const handle = await fs.open(absolute, 'r');
     try {
       this.assertRootOperation(operation);
-      // Size checks and reads use the same open handle so a later path swap
-      // cannot substitute a different file after validation.
+      // Check the opened descriptor, not only the earlier canonical path. The
+      // handle's identity is stable even if the caller swaps the path again.
       const stat = await handle.stat();
       this.assertRootOperation(operation);
       if (!stat.isFile()) invalidPath('The requested path is not a file.');
+      const identity = await handle.stat({ bigint: true });
+      await this.assertOpenedFileConfined(relativePath, identity);
+      this.assertRootOperation(operation);
       const base = { path: relativePath, name: path.basename(absolute), size: stat.size, language: languageForPath(relativePath), openable: isSafeExternalPath(relativePath) };
       const length = Math.min(stat.size, 8_192);
       const sample = Buffer.alloc(length);
@@ -738,6 +785,7 @@ export class FilesystemService {
       else if (imageMimeType) preview = { ...base, state: 'image', content: (await handle.readFile()).toString('base64'), mimeType: imageMimeType };
       else if (isBinaryBuffer(sample)) preview = { ...base, state: 'binary' };
       else preview = { ...base, state: 'text', content: await handle.readFile({ encoding: 'utf8' }) };
+      await this.assertOpenedFileConfined(relativePath, identity);
       this.assertRootOperation(operation);
       return preview;
     } finally {
@@ -745,7 +793,14 @@ export class FilesystemService {
     }
   }
 
-  async revealLink(reference: string): Promise<{ opened: boolean; error?: string }> {
+  private requireLocalFileActions(origin: HostFileReference['origin']): LocalFileActionsPort {
+    if (origin !== 'local' || !this.localFileActions) throw new UnsupportedHostCapabilityError('local-file-actions');
+    return this.localFileActions;
+  }
+
+  // Origin is host-adapter context, not an authority field accepted from the wire.
+  async revealLink(reference: string, origin: HostFileReference['origin'] = 'local'): Promise<{ opened: boolean; error?: string }> {
+    const actions = this.requireLocalFileActions(origin);
     const operation = this.rootOperation();
     let decoded: string;
     try {
@@ -772,11 +827,18 @@ export class FilesystemService {
     this.ensureConfined(absolute);
     if (!(await fs.stat(absolute)).isFile()) invalidPath('The file link does not point to a file.');
     this.assertRootOperation(operation);
-    shell.showItemInFolder(absolute);
-    return { opened: true };
+    const releaseExternalOpen = this.beginExternalOpen();
+    try {
+      await actions.showItemInFolder({ origin, path: absolute });
+      this.assertRootOperation(operation);
+      return { opened: true };
+    } finally {
+      releaseExternalOpen();
+    }
   }
 
-  async open(relativePath: string): Promise<{ opened: boolean; error?: string }> {
+  async open(relativePath: string, origin: HostFileReference['origin'] = 'local'): Promise<{ opened: boolean; error?: string }> {
+    const actions = this.requireLocalFileActions(origin);
     const operation = this.rootOperation();
     if (await this.pathKind(relativePath) === 'symlink') {
       this.assertRootOperation(operation);
@@ -800,7 +862,7 @@ export class FilesystemService {
     this.assertRootOperation(operation);
     const releaseExternalOpen = this.beginExternalOpen();
     try {
-      const error = await shell.openPath(absolute);
+      const error = await actions.openPath({ origin, path: absolute });
       this.assertRootOperation(operation);
       return error ? { opened: false, error } : { opened: true };
     } finally {

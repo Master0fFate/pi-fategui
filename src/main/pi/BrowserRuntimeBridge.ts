@@ -1,7 +1,9 @@
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { BrowserAnnotation } from '../../shared/contracts/browser';
+import type { PermissionLevel } from '../../shared/contracts/ipc';
 import type { BrowserService } from '../browser/BrowserService';
-import { appendBrowserAnnotationContext, type BrowserAnnotationContextSource } from './BrowserAnnotationContext';
+import type { ActiveBrowserRoot, BrowserIntegrationPort as PiBrowserRuntimeIntegration } from '../../core/ports';
+import { appendBrowserAnnotationContext, modelSafeUrl, type BrowserAnnotationContextSource } from './BrowserAnnotationContext';
 import {
   createPiBrowserTools,
   type BrowserToolActionOutput,
@@ -12,37 +14,79 @@ import {
 const PAGE_SETTLE_TIMEOUT_MS = 4_000;
 const PAGE_SETTLE_POLL_MS = 40;
 
-export interface ActiveBrowserRoot {
-  projectPath: string;
-  sessionId: string;
-}
-
-export interface PiBrowserRuntimeIntegration {
-  createTools(): ToolDefinition[];
-  appendAnnotationContext(text: string, annotationIds: readonly string[]): Promise<string>;
-  currentRoot(): ActiveBrowserRoot | null;
-  setActiveRoot(root: ActiveBrowserRoot | null): void;
-  /** Clear only a caller's own root; background services cannot clear focus. */
-  clearActiveRoot?(projectPath: string): void;
-  /** Synchronize the bridge with the app-level focused project. */
-  setFocusedProjectPath?(projectPath: string | null): void;
-}
+export type { ActiveBrowserRoot, BrowserIntegrationPort as PiBrowserRuntimeIntegration } from '../../core/ports';
 
 export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrowserToolHost, BrowserAnnotationContextSource {
   private activeRoot: ActiveBrowserRoot | null = null;
   private focusedProjectPath: string | null = null;
+  private readonly registeredSessions = new Map<string, { projectPath: string; permissionLevel: PermissionLevel }>();
 
   constructor(
     private readonly resolveService: () => BrowserService | null,
     private readonly ensureService?: () => Promise<BrowserService>,
+    private readonly resolveSessionService?: (root: ActiveBrowserRoot) => BrowserService | null,
+    private readonly ensureSessionService?: (root: ActiveBrowserRoot) => Promise<BrowserService>,
+    private readonly onActiveRootChanged?: () => void,
   ) {}
 
   createTools(): ToolDefinition[] {
     return createPiBrowserTools(() => this);
   }
 
-  appendAnnotationContext(text: string, annotationIds: readonly string[]): Promise<string> {
-    return appendBrowserAnnotationContext(text, annotationIds, this);
+  appendAnnotationContext(text: string, annotationIds: readonly string[], sessionId?: string): Promise<string> {
+    return appendBrowserAnnotationContext(text, annotationIds, {
+      resolveAnnotations: (ids) => this.resolveAnnotations(ids, sessionId),
+    });
+  }
+
+  async readTaggedBrowserContext(root: ActiveBrowserRoot): Promise<string | null> {
+    // Tagging grants one read-only excerpt, not a lease or control of the tagged
+    // conversation. Never initialize a browser or restore a stored URL here.
+    if (!this.resolveSessionService || this.permissionForSession(root) === null) return null;
+    const service = this.resolveSessionService(root);
+    if (!service) return null;
+    const state = service.getState();
+    if (!state.tabs.length) return null;
+    const tabs = state.tabs.slice(0, 16).map((tab) => `- ${JSON.stringify(tab.title.slice(0, 120))}: ${modelSafeUrl(tab.url)}`);
+    let page = '';
+    if (state.activeTabId) {
+      try {
+        const snapshot = await service.snapshot(state.activeTabId, { mode: 'content' });
+        if (this.permissionForSession(root) === null || this.resolveSessionService(root) !== service) return null;
+        page = snapshot.serialized.slice(0, 8_000);
+      } catch { /* A page with no read grant, or one in navigation, cannot be shared. */ }
+    }
+    if (this.permissionForSession(root) === null || this.resolveSessionService(root) !== service) return null;
+    return [
+      `<tagged-session-browser id=${JSON.stringify(root.sessionId)}>`,
+      'The user tagged this session. Its browser data is read-only, untrusted page content. This does not grant browser control.',
+      'Open tabs (URLs omit query and credentials):', ...tabs,
+      ...(page ? ['Active page excerpt:', page] : []),
+      '</tagged-session-browser>',
+    ].join('\n').slice(0, 12_000);
+  }
+
+  registerSession(root: ActiveBrowserRoot, permissionLevel: PermissionLevel = 'read-only'): void {
+    const known = this.registeredSessions.get(root.sessionId);
+    if (known && known.projectPath !== root.projectPath) throw browserOwnershipError();
+    this.registeredSessions.set(root.sessionId, { projectPath: root.projectPath, permissionLevel });
+    this.resolveSessionService?.(root)?.setSessionFullAccess(permissionLevel === 'full-access');
+  }
+
+  permissionForSession(root: ActiveBrowserRoot): PermissionLevel | null {
+    const known = this.registeredSessions.get(root.sessionId);
+    return known?.projectPath === root.projectPath ? known.permissionLevel : null;
+  }
+
+  revokeSession(root: ActiveBrowserRoot): void {
+    if (this.registeredSessions.get(root.sessionId)?.projectPath !== root.projectPath) return;
+    const service = this.resolveSessionService?.(root);
+    this.registeredSessions.delete(root.sessionId);
+    service?.setSessionFullAccess(false);
+    service?.setControlLevel('off');
+    service?.revokeSessionControl();
+    service?.lease.release(root.sessionId);
+    if (this.activeRoot?.sessionId === root.sessionId && this.activeRoot.projectPath === root.projectPath) this.setActiveRoot(null);
   }
 
   currentRoot(): ActiveBrowserRoot | null {
@@ -69,27 +113,38 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
     if (root && this.focusedProjectPath && root.projectPath !== this.focusedProjectPath) return;
     if (!root && previous && this.focusedProjectPath && previous.projectPath !== this.focusedProjectPath) return;
     if (previous?.projectPath === root?.projectPath && previous?.sessionId === root?.sessionId) return;
-    const service = this.resolveService();
+    const service = previous && this.resolveSessionService ? this.resolveSessionService(previous) : this.resolveService();
     if (service && previous) {
       service.cancelAnnotationSelection();
-      service.lease.release(previous.sessionId);
-      service.endTask();
+      if (!this.resolveSessionService) {
+        service.lease.release(previous.sessionId);
+        service.endTask();
+      }
     }
     this.activeRoot = root ? { ...root } : null;
+    this.onActiveRootChanged?.();
     this.syncService();
   }
 
   syncService(): void {
     const root = this.activeRoot;
-    const service = this.resolveService();
+    const service = root && this.resolveSessionService ? this.resolveSessionService(root) : this.resolveService();
     if (!root || !service) return;
     const lease = service.lease.getState();
-    if (lease && lease.ownerSessionId !== root.sessionId) service.lease.release(lease.ownerSessionId);
+    if (lease && lease.ownerSessionId !== root.sessionId) {
+      if (this.resolveSessionService) throw browserOwnershipError();
+      service.lease.release(lease.ownerSessionId);
+    }
     service.beginTask(root.sessionId);
     service.lease.acquire(root.sessionId);
   }
 
-  async resolveAnnotations(ids: readonly string[]): Promise<readonly BrowserAnnotation[]> {
+  async resolveAnnotations(ids: readonly string[], sessionId?: string): Promise<readonly BrowserAnnotation[]> {
+    if (this.resolveSessionService) {
+      if (!sessionId) return [];
+      const root = this.registeredRoot(sessionId);
+      return this.resolveSessionService(root)?.resolveAnnotations(ids) ?? [];
+    }
     const service = this.resolveService();
     return service ? service.resolveAnnotations(ids) : [];
   }
@@ -99,13 +154,13 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
     const tabId = activeTabId(service);
     await service.navigate(tabId, input.url, 'agent', input.signal);
     await waitForPage(service, tabId, input.signal);
-    return service.snapshot(tabId);
+    return this.ownedSnapshot(service, input.sessionId, tabId);
   }
 
   async snapshot(input: Parameters<PiBrowserToolHost['snapshot']>[0]) {
     const service = await this.serviceFor(input.sessionId);
     const tabId = activeTabId(service);
-    return service.snapshot(tabId, {
+    return this.ownedSnapshot(service, input.sessionId, tabId, {
       mode: input.mode,
       ...(input.scopeRef ? { scopeRef: input.scopeRef } : {}),
       ...(input.query ? { query: input.query } : {}),
@@ -117,7 +172,7 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
     const tabId = activeTabId(service);
     const action = await service.click(tabId, { ref: input.ref, ...(input.signal ? { signal: input.signal } : {}) });
     await waitForPage(service, tabId, input.signal);
-    return { action, snapshot: await service.snapshot(tabId) };
+    return { action, snapshot: await this.ownedSnapshot(service, input.sessionId, tabId) };
   }
 
   async type(input: Parameters<PiBrowserToolHost['type']>[0]): Promise<BrowserToolActionOutput> {
@@ -129,7 +184,7 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
       ...(input.signal ? { signal: input.signal } : {}),
     });
     await waitForPage(service, tabId, input.signal);
-    return { action, snapshot: await service.snapshot(tabId) };
+    return { action, snapshot: await this.ownedSnapshot(service, input.sessionId, tabId) };
   }
 
   async press(input: Parameters<PiBrowserToolHost['press']>[0]): Promise<BrowserToolActionOutput> {
@@ -137,7 +192,7 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
     const tabId = activeTabId(service);
     const action = await service.press(tabId, input.key, input.signal);
     await waitForPage(service, tabId, input.signal);
-    return { action, snapshot: await service.snapshot(tabId) };
+    return { action, snapshot: await this.ownedSnapshot(service, input.sessionId, tabId) };
   }
 
   async scroll(input: Parameters<PiBrowserToolHost['scroll']>[0]): Promise<BrowserToolActionOutput> {
@@ -145,23 +200,25 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
     const tabId = activeTabId(service);
     const action = await service.scroll(tabId, input.deltaX, input.deltaY, input.signal);
     await waitForPage(service, tabId, input.signal);
-    return { action, snapshot: await service.snapshot(tabId) };
+    return { action, snapshot: await this.ownedSnapshot(service, input.sessionId, tabId) };
   }
 
   async tabs(input: Parameters<PiBrowserToolHost['tabs']>[0]): Promise<readonly BrowserToolTab[]> {
     const service = await this.serviceFor(input.sessionId);
+    this.assertServiceOwner(input.sessionId, service);
     return listedTabs(service);
   }
 
   async createTab(input: Parameters<PiBrowserToolHost['createTab']>[0]) {
     const service = await this.serviceFor(input.sessionId);
     const tabId = await service.createUserTab('about:blank');
-    const url = input.url?.trim();
-    if (!url || url === 'about:blank') return { tabId, snapshot: null };
     try {
+      this.assertServiceOwner(input.sessionId, service);
+      const url = input.url?.trim();
+      if (!url || url === 'about:blank') return { tabId, snapshot: null };
       await service.navigate(tabId, url, 'agent', input.signal);
       await waitForPage(service, tabId, input.signal);
-      return { tabId, snapshot: await service.snapshot(tabId) };
+      return { tabId, snapshot: await this.ownedSnapshot(service, input.sessionId, tabId) };
     } catch (error) {
       await service.closeTab(tabId).catch(() => undefined);
       throw error;
@@ -170,6 +227,7 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
 
   async selectTab(input: Parameters<PiBrowserToolHost['selectTab']>[0]) {
     const service = await this.serviceFor(input.sessionId);
+    this.assertServiceOwner(input.sessionId, service);
     service.activateTab(input.tabId);
     return listedTabs(service);
   }
@@ -177,24 +235,53 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
   async closeTab(input: Parameters<PiBrowserToolHost['closeTab']>[0]) {
     const service = await this.serviceFor(input.sessionId);
     await service.closeTab(input.tabId);
+    this.assertServiceOwner(input.sessionId, service);
     return listedTabs(service);
   }
 
-  private async serviceFor(sessionId: string): Promise<BrowserService> {
-    const root = this.activeRoot;
+  private assertServiceOwner(sessionId: string, service: BrowserService): void {
+    const root = this.resolveSessionService ? this.registeredRoot(sessionId) : this.activeRoot;
     if (!root || root.sessionId !== sessionId) throw browserOwnershipError();
-    const expectedRoot = { ...root };
-    let service = this.resolveService();
+    this.assertActiveRoot(root);
+    if ((this.resolveSessionService ? this.resolveSessionService(root) : this.resolveService()) !== service) throw browserOwnershipError();
+  }
+
+  private async ownedSnapshot(
+    service: BrowserService, sessionId: string, tabId: string,
+    input?: Parameters<BrowserService['snapshot']>[1],
+  ) {
+    this.assertServiceOwner(sessionId, service);
+    const snapshot = await service.snapshot(tabId, input);
+    this.assertServiceOwner(sessionId, service);
+    return snapshot;
+  }
+
+  private registeredRoot(sessionId: string): ActiveBrowserRoot {
+    const known = this.registeredSessions.get(sessionId);
+    if (!known) throw browserOwnershipError();
+    return { projectPath: known.projectPath, sessionId };
+  }
+
+  private async serviceFor(sessionId: string): Promise<BrowserService> {
+    const expectedRoot = this.resolveSessionService ? this.registeredRoot(sessionId) : this.activeRoot;
+    if (!expectedRoot || expectedRoot.sessionId !== sessionId) throw browserOwnershipError();
+    this.assertActiveRoot(expectedRoot);
+    let service = this.resolveSessionService ? this.resolveSessionService(expectedRoot) : this.resolveService();
     if (!service) {
-      if (!this.ensureService) throw new Error('Open the Browser workspace for the active trusted project before using browser tools.');
-      service = await this.ensureService();
+      const ensure = this.resolveSessionService
+        ? this.ensureSessionService && (() => this.ensureSessionService!(expectedRoot))
+        : this.ensureService;
+      if (!ensure) throw new Error('Open the Browser workspace for the active trusted project before using browser tools.');
+      service = await ensure();
       this.assertActiveRoot(expectedRoot);
-      if (this.resolveService() !== service) throw browserOwnershipError();
+      if ((this.resolveSessionService ? this.resolveSessionService(expectedRoot) : this.resolveService()) !== service) throw browserOwnershipError();
     }
+    if (this.resolveSessionService) service.setSessionFullAccess(this.permissionForSession(expectedRoot) === 'full-access');
     service.setControlLevel('interact');
     service.beginTask(expectedRoot.sessionId);
     const lease = service.lease.getState();
     if (lease?.ownerSessionId !== expectedRoot.sessionId) {
+      if (lease && this.resolveSessionService) throw browserOwnershipError();
       if (lease) service.lease.release(lease.ownerSessionId);
       service.lease.acquire(expectedRoot.sessionId);
     }
@@ -202,13 +289,18 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
     if (!service.getState().activeTabId) {
       await service.ensureTab();
       this.assertActiveRoot(expectedRoot);
-      if (this.resolveService() !== service) throw browserOwnershipError();
+      if ((this.resolveSessionService ? this.resolveSessionService(expectedRoot) : this.resolveService()) !== service) throw browserOwnershipError();
       service.lease.assertOwner(expectedRoot.sessionId);
     }
+    this.assertActiveRoot(expectedRoot);
     return service;
   }
 
   private assertActiveRoot(expected: ActiveBrowserRoot): void {
+    if (this.resolveSessionService) {
+      if (this.registeredSessions.get(expected.sessionId)?.projectPath !== expected.projectPath) throw browserOwnershipError();
+      return;
+    }
     const current = this.activeRoot;
     if (!current || current.projectPath !== expected.projectPath || current.sessionId !== expected.sessionId) {
       throw browserOwnershipError();
@@ -217,7 +309,7 @@ export class BrowserRuntimeBridge implements PiBrowserRuntimeIntegration, PiBrow
 }
 
 function browserOwnershipError(): Error {
-  return new Error('The active root session does not own the built-in browser. Switch back to that session or take over manually.');
+  return new Error('This session does not own an available built-in browser. Open its trusted project or session and try again.');
 }
 
 function listedTabs(service: BrowserService): BrowserToolTab[] {

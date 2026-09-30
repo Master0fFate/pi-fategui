@@ -360,7 +360,9 @@ describe('conversation components', () => {
     render(<AssistantMarkdown text={'![Architecture](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=)'} />);
     const trigger = screen.getByRole('button', { name: 'Expand image: Architecture' });
     await user.click(trigger);
-    const dialog = screen.getByRole('dialog');
+    const dialog = screen.getByRole('dialog', { name: 'Architecture' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByRole('button', { name: 'Close image viewer' })).toHaveFocus();
     await user.click(screen.getByRole('button', { name: 'Save image as' }));
     expect(await screen.findByRole('button', { name: 'Image saved' })).toBeInTheDocument();
     expect(saveImageAs).toHaveBeenCalledWith(expect.objectContaining({ mimeType: 'image/png', suggestedName: 'Architecture' }));
@@ -372,6 +374,16 @@ describe('conversation components', () => {
 
     await user.click(trigger);
     await user.click(screen.getByRole('button', { name: 'Close image viewer' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('closes the cinematic viewer when the backdrop is clicked', async () => {
+    const user = userEvent.setup();
+    render(<AssistantMarkdown text={'![Architecture](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=)'} />);
+    await user.click(screen.getByRole('button', { name: 'Expand image: Architecture' }));
+    const backdrop = document.querySelector<HTMLElement>('.cinematic-image-overlay');
+    if (!backdrop) throw new Error('Image viewer backdrop was not rendered.');
+    await user.click(backdrop);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
@@ -387,8 +399,10 @@ describe('conversation components', () => {
 
     rerender(<ConversationImageViewerProvider><span>Row recycled</span></ConversationImageViewerProvider>);
 
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Close image viewer' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Architecture' })).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByRole('button', { name: 'Close image viewer' })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('does not fetch model-authored remote images without user consent', async () => {

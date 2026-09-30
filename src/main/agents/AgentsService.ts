@@ -5,8 +5,10 @@ import {
   type AgentDefinition, type AgentLibrary, type AgentRun, type AgentSave, type AgentApprovalInput, type LegacyImportItem, type RoutineDefinition, type RoutineSave, type SavedAgentSession, type TaskTemplate, type TaskTemplateSave,
 } from '../../shared/contracts/agents';
 import type { AgentWorkspacePolicy } from '../../shared/contracts/multiAgent';
+import type { MonitorDashboard, MonitorReadInput } from '../../shared/contracts/monitorDashboard';
 import type { LegacyAutomations } from '../automations/LegacyAutomations';
 import type { PiRuntimeService } from '../pi/PiRuntimeService';
+import type { MonitorRunsSource } from '../pi/monitor/MonitorDashboard';
 import { projectSessionDirectory } from '../pi/PiSessionRepository';
 import { isModelDisabled } from '../../shared/modelVisibility';
 import { AgentRepository, type AgentProject } from './AgentRepository';
@@ -22,8 +24,13 @@ export interface AgentsHost {
   runtime: Pick<PiRuntimeService, 'getState' | 'agentAuthority' | 'agentModelRuntime' | 'agentResources' | 'openAgentSavedSession' | 'createAgentForegroundExecution'>;
   workspacePolicy: () => AgentWorkspacePolicy;
   disabledModels: () => readonly string[];
+  readMonitorDashboard?: (projectPath: string, rootSessionId: string, query: MonitorReadInput) => Promise<MonitorDashboard>;
   notify?: (change: AgentChange, os: boolean) => void;
   sessionsRoot?: string;
+  piAgentDir?: string;
+  serverProfile?: boolean;
+  /** Host storage gate for new saved-agent work; abort and inspection remain available. */
+  assertAdmission?: (projectPath: string, sessionId?: string | null) => void;
 }
 interface ActiveRun {
   project: AgentProject; ledgerId: string; run: AgentRun; gate: ApprovalGate; session: AgentExecutionHandle | null;
@@ -41,7 +48,8 @@ export class AgentsService {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
   private stopping = false;
-  private changed: (change: AgentChange) => void = () => undefined;
+  private readonly monitorRunsCache = new Map<string, { loadedAt: number; value: MonitorRunsSource }>();
+  private changed: (change: AgentChange) => void = (change) => { this.monitorRunsCache.delete(change.projectPath); };
   private readonly processId = randomUUID();
 
   constructor(
@@ -50,19 +58,27 @@ export class AgentsService {
     private readonly legacy?: Pick<LegacyAutomations, 'list'>,
     private readonly execute: (input: AgentExecutionInput) => Promise<AgentExecutionHandle> = createAgentExecution,
   ) {}
-  setChangeSink(sink: (change: AgentChange) => void): void { this.changed = sink; }
+  setChangeSink(sink: (change: AgentChange) => void): void {
+    this.changed = (change) => { this.monitorRunsCache.delete(change.projectPath); sink(change); };
+  }
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => { void this.tick().catch(() => undefined); }, 5000);
     this.timer.unref?.();
   }
-  async dispose(): Promise<void> {
+  beginShutdown(): void {
     this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+  async dispose(): Promise<void> {
+    this.beginShutdown();
     const active = [...this.active.values()];
-    await Promise.allSettled(active.map(async (run) => { run.cancelled = true; if (run.heartbeat) clearInterval(run.heartbeat); run.heartbeat = null; await run.session?.abort(); }));
-    await Promise.allSettled([...this.queues.values(), ...this.opening.values(), ...active.flatMap((run) => run.completion ? [run.completion] : [])]);
+    const stops = await Promise.allSettled(active.map(async (run) => { run.cancelled = true; if (run.heartbeat) clearInterval(run.heartbeat); run.heartbeat = null; await run.session?.abort(); }));
+    const settlements = await Promise.allSettled([...this.queues.values(), ...this.opening.values(), ...active.flatMap((run) => run.completion ? [run.completion] : [])]);
+    const failures = [...stops, ...settlements].flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+    if (active.some((run) => this.active.has(run.run.id))) failures.push(new Error('Saved Agent execution has not settled.'));
+    if (failures.length) throw new AggregateError(failures, 'Saved Agent shutdown was incomplete.');
   }
   private project(): AgentProject {
     if (this.stopping) throw new Error('Agents are shutting down.');
@@ -90,7 +106,31 @@ export class AgentsService {
   }
 
   async list(routineId?: string): Promise<AgentLibrary> {
-    const project = this.project();
+    return this.listProject(this.project(), routineId);
+  }
+
+  /** Trusted runtime callers may inspect their own project without changing desktop focus. */
+  async monitorRuns(projectPath: string): Promise<MonitorRunsSource> {
+    const cached = this.monitorRunsCache.get(projectPath);
+    if (cached && Date.now() - cached.loadedAt < 30_000) {
+      this.monitorRunsCache.delete(projectPath);
+      this.monitorRunsCache.set(projectPath, cached);
+      return cached.value;
+    }
+    const library = await this.listProject({ path: projectPath, trusted: true });
+    const retentionNotice = 'Showing the latest 1,000 runs.';
+    if (library.diagnostics.some((message) => !message.startsWith(retentionNotice))) throw new Error('Run records could not be read completely.');
+    const agents = new Map(library.agents.map((agent) => [agent.id, agent.name]));
+    const tasks = new Map(library.tasks.map((task) => [task.id, task.name]));
+    const value: MonitorRunsSource = { runs: library.runs, checkedAt: Date.now(), partial: library.diagnostics.some((message) => message.startsWith(retentionNotice)),
+      names: Object.fromEntries(library.runs.map((run) => [run.id,
+      `${tasks.get(run.taskTemplateId) ?? 'Deleted task'} · ${agents.get(run.agentId) ?? 'Deleted agent'}`])) };
+    this.monitorRunsCache.set(projectPath, { loadedAt: value.checkedAt, value });
+    while (this.monitorRunsCache.size > 32) this.monitorRunsCache.delete(this.monitorRunsCache.keys().next().value!);
+    return value;
+  }
+
+  private async listProject(project: AgentProject, routineId?: string): Promise<AgentLibrary> {
     const library = await this.repository.list(project);
     try { await this.initialize(project); }
     catch (error) { library.diagnostics.push(`Run recovery: ${failure(error)}`); }
@@ -166,6 +206,7 @@ export class AgentsService {
 
   async open(agentId: string, mode: 'home' | 'new'): Promise<{ sessionId: string; appliedRevision: number }> {
     const project = this.project();
+    this.host.assertAdmission?.(project.path);
     const key = `${project.path}:${agentId}:${mode}`;
     const existing = this.opening.get(key);
     if (existing) return existing;
@@ -179,6 +220,7 @@ export class AgentsService {
       const home = await new HomeOwnership(projectSessionDirectory(project.path, this.host.sessionsRoot)).open({ agentId, revision: agent.revision, instructions: agent.instructions, projectPath: project.path, ...(preset ? { preset } : {}) }, { enabled: agent.enabled, deleted: agent.deleted, ...(retained ? { requireExisting: true, requirePreset: true } : {}) }, mode === 'home' ? agentId : randomUUID());
       if (retained && home.sessionId !== state?.homeSessionId) throw new Error('Home ownership conflicts with the retained state. Restore the original mapping before opening.');
       if (mode === 'home') await this.repository.updateState(agentId, (current) => ({ ...current, homeSessionId: home.sessionId, homeProjectPath: project.path, appliedRevision: home.appliedRevision, lastOpenedAt: Date.now() }));
+      this.host.assertAdmission?.(project.path, home.sessionId);
       await this.host.runtime.openAgentSavedSession(home.sessionId);
       this.changed({ projectPath: project.path });
       return { sessionId: home.sessionId, appliedRevision: home.appliedRevision };
@@ -196,6 +238,7 @@ export class AgentsService {
   }
   async run(input: { agentId: string; taskTemplateId: string; routineId?: string | undefined }): Promise<AgentRun> {
     const project = this.project();
+    this.host.assertAdmission?.(project.path);
     const [{ item: agent }, { item: task }] = await Promise.all([this.repository.get(project, 'agent', input.agentId), this.repository.get(project, 'task', input.taskTemplateId)]);
     const routineRecord = input.routineId ? await this.repository.get(project, 'routine', input.routineId) : null;
     const routine = routineRecord?.item ?? null;
@@ -205,7 +248,7 @@ export class AgentsService {
     const ledgerId = routine?.id ?? 'manual';
     if (routine) await this.serialize(project.path, () => this.ledger(project.path).configure(ledgerId, { anchor: Date.now() + routine.intervalMinutes * 60_000, intervalMs: routine.intervalMinutes * 60_000, timeZone: routine.timeZone }, routine.revision, routineRecord?.snapshot.digest ?? null));
     const run = this.runRecord(`${ledgerId}:${randomUUID()}`, agent, task, routine, project.path, Date.now(), 'queued');
-    await this.serialize(project.path, () => this.ledger(project.path).admit(ledgerId, run));
+    await this.serialize(project.path, () => { this.host.assertAdmission?.(project.path); return this.ledger(project.path).admit(ledgerId, run); });
     await this.launch(project, ledgerId, run, Boolean(routine));
     return (await this.findRun(project, run.id)).run;
   }
@@ -215,6 +258,7 @@ export class AgentsService {
     this.ticking = true;
     try {
       const project = this.project();
+      this.host.assertAdmission?.(project.path);
       await this.initialize(project);
       const ledger = this.ledger(project.path);
       for (const id of await this.repository.ledgerJournal(project.path).ids(501)) {
@@ -228,8 +272,12 @@ export class AgentsService {
         // A Routine may outlive a later Agent/TaskTemplate disable. Do not
         // admit a new occurrence that can only fail at execution time.
         if (!agent?.enabled || !task?.enabled) continue;
+        this.host.assertAdmission?.(project.path);
         await this.serialize(project.path, () => this.ledger(project.path).configure(routine.id, { anchor: routine.createdAt + routine.intervalMinutes * 60_000, intervalMs: routine.intervalMinutes * 60_000, timeZone: routine.timeZone }, routine.revision, library.revisions[`routine:${routine.id}`]!.digest));
-        const admitted = await this.serialize(project.path, () => this.ledger(project.path).tick(routine.id, now, (id, scheduledFor, status) => this.runRecord(id, agent, task, routine, project.path, scheduledFor, status)));
+        const admitted = await this.serialize(project.path, () => {
+          this.host.assertAdmission?.(project.path);
+          return this.ledger(project.path).tick(routine.id, now, (id, scheduledFor, status) => this.runRecord(id, agent, task, routine, project.path, scheduledFor, status));
+        });
         if (!admitted?.payload) continue;
         if (admitted.status === 'queued') await this.launch(project, routine.id, admitted.payload, true);
         else this.changed({ projectPath: project.path, runId: admitted.id, status: 'skipped', message: admitted.reason ?? 'Run skipped.' });
@@ -244,11 +292,13 @@ export class AgentsService {
     try {
       if (this.active.size >= 4) throw new Error('Four Agent runs are already active. Run again after one settles.');
       const state = this.host.runtime.getState(false);
+      this.host.assertAdmission?.(project.path, state.sessionId);
       if (state.project?.path !== project.path || !state.project.trusted || !state.sessionId) throw new Error('The original project needs a live trusted session.');
       const [{ item: agent, snapshot: agentSnapshot }, { item: task, snapshot: taskSnapshot }] = await Promise.all([this.repository.get(project, 'agent', run.agentId), this.repository.get(project, 'task', run.taskTemplateId)]);
       const routine = run.routineId ? await this.repository.get(project, 'routine', run.routineId) : null;
       if (!agent.enabled || !task.enabled || agent.revision !== run.agentRevision || task.revision !== run.taskTemplateRevision || (routine && routine.item.revision !== run.routineRevision)) throw new Error('The admitted definition changed or was disabled before execution.');
       const preset = await this.preset(agent, project, background, run.id, run.permission);
+      this.host.assertAdmission?.(project.path, state.sessionId);
       await this.serialize(project.path, () => this.ledger(project.path).claim(ledgerId, run.id, this.processId, Date.now()));
       const currentContext = () => {
         const current = this.host.runtime.getState(false);
@@ -280,16 +330,21 @@ export class AgentsService {
       active.heartbeat.unref?.();
       const home = await new HomeOwnership(projectSessionDirectory(project.path, this.host.sessionsRoot)).open({ agentId: agent.id, revision: agent.revision, instructions: agent.instructions, projectPath: project.path, preset }, { enabled: true, deleted: false, requirePreset: true }, randomUUID());
       const resources = background ? await this.host.runtime.agentResources(preset.skillRefs) : { skills: [], contextPrompts: [] };
-      const session = background ? await this.execute({ preset, sessionFile: home.file, modelRuntime: await this.host.runtime.agentModelRuntime(), context: currentContext, approvals: gate, approvedSkills: resources.skills, contextPrompts: resources.contextPrompts,
-        validate: async () => {
+      const session = background ? await this.execute({ preset, sessionFile: home.file, ...(this.host.piAgentDir ? { agentDir: this.host.piAgentDir } : {}), ...(this.host.serverProfile ? { serverProfile: true } : {}), modelRuntime: await this.host.runtime.agentModelRuntime(), context: currentContext, approvals: gate, approvedSkills: resources.skills, contextPrompts: resources.contextPrompts,
+        ...(this.host.readMonitorDashboard ? { readMonitorDashboard: (query: MonitorReadInput) => this.host.readMonitorDashboard!(project.path, active.originSessionId, query) } : {}),
+        validate: async (kind = 'effect') => {
           if (!currentContext().trusted || active.cancelled) throw new Error('The owning live project/session is unavailable.');
           if (effectiveWorkspace(this.host.workspacePolicy(), preset.defaults.workspace) !== 'shared') throw new Error('The live workspace policy no longer permits this shared run.');
           const [currentAgent, currentTask] = await Promise.all([this.repository.get(project, 'agent', agent.id), this.repository.get(project, 'task', task.id)]);
           if (currentAgent.snapshot.digest !== active.agentDigest || currentTask.snapshot.digest !== active.taskDigest
             || routine && (await this.repository.get(project, 'routine', routine.item.id)).snapshot.digest !== active.routineDigest) throw new Error('A run definition changed. Cancel and review before running again.');
           if (preset.defaults.model && isModelDisabled(this.host.disabledModels(), preset.defaults.model.provider, preset.defaults.model.id)) throw new Error('This Agent model was disabled during the run.');
+          // Definition reads above await disk. Fence immediately before the
+          // provider or tool effect, not only before preparation started.
+          if (kind === 'effect') this.host.assertAdmission?.(project.path, active.originSessionId);
         },
-      }) : await this.host.runtime.createAgentForegroundExecution(home.sessionId);
+      }) : await this.host.runtime.createAgentForegroundExecution(home.sessionId,
+        () => this.host.assertAdmission?.(project.path, home.sessionId));
       active.session = session;
       if (!background) active.originSessionId = session.sessionId;
       if (!currentContext().trusted || active.cancelled) throw new Error('Agent launch was cancelled or its project changed.');
@@ -298,6 +353,7 @@ export class AgentsService {
       active.timer = setTimeout(() => { active.cancelled = true; void session.abort(); }, 30 * 60_000);
       active.timer.unref?.();
       this.changed({ projectPath: project.path, runId: run.id, status: 'running' });
+      this.host.assertAdmission?.(project.path, session.sessionId);
       active.completion = session.prompt(task.prompt, { expandPromptTemplates: false }).then(async () => {
         const last = [...session.messages].reverse().find((message) => message.role === 'assistant');
         const summary = last?.role === 'assistant' ? last.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n').slice(0, 4000) : '';

@@ -69,6 +69,8 @@ function freshList(projectPath: string, sessionId: string, now: number): TaskLis
  */
 export class TaskService {
   private readonly states = new Map<string, TaskList>();
+  private readonly loaded = new Set<string>();
+  private readonly loadedBindings = new Map<string, string>();
   private readonly sessionKeys = new Map<string, string>();
   private readonly mutationQueues = new Map<string, Promise<void>>();
 
@@ -80,20 +82,28 @@ export class TaskService {
   async bind(projectPath: string, sessionId: string): Promise<TaskList | null> {
     const key = listKey(projectPath, sessionId);
     const restored = await this.repository.load(projectPath, sessionId);
+    this.loadedBindings.set(sessionId, key);
     if (!restored) {
       this.states.delete(key);
       this.sessionKeys.delete(sessionId);
+      this.loaded.add(key); // Confirmed missing on disk, not an unperformed read.
       return null;
     }
     this.states.set(key, restored);
+    this.loaded.add(key);
     this.sessionKeys.set(sessionId, key);
     this.host.emit(snapshotEvent(restored));
     return structuredClone(restored);
   }
 
   unbind(sessionId: string): void {
+    const key = this.loadedBindings.get(sessionId);
+    if (key) this.loaded.delete(key);
+    this.loadedBindings.delete(sessionId);
     this.sessionKeys.delete(sessionId);
   }
+
+  hasLoaded(projectPath: string, sessionId: string): boolean { return this.loaded.has(listKey(projectPath, sessionId)); }
 
   get(projectPath: string, sessionId: string): TaskList | null {
     const list = this.states.get(listKey(projectPath, sessionId));
@@ -108,6 +118,8 @@ export class TaskService {
     const list = freshList(projectPath, sessionId, Date.now());
     this.states.set(listKey(projectPath, sessionId), list);
     this.sessionKeys.set(sessionId, listKey(projectPath, sessionId));
+    this.loaded.add(listKey(projectPath, sessionId));
+    this.loadedBindings.set(sessionId, listKey(projectPath, sessionId));
     return structuredClone(list);
   }
 
@@ -213,6 +225,8 @@ export class TaskService {
 
   async deleteSession(projectPath: string, sessionId: string): Promise<void> {
     this.states.delete(listKey(projectPath, sessionId));
+    this.loaded.delete(listKey(projectPath, sessionId));
+    this.loadedBindings.delete(sessionId);
     this.sessionKeys.delete(sessionId);
     await this.repository.deleteSession(projectPath, sessionId);
   }
@@ -317,6 +331,8 @@ export class TaskService {
   }
 
   async dispose(): Promise<void> {
+    this.loaded.clear();
+    this.loadedBindings.clear();
     this.states.clear();
     this.sessionKeys.clear();
     this.mutationQueues.clear();
@@ -353,6 +369,8 @@ export class TaskService {
     await this.repository.save(parsed, repoExpected);
     this.states.set(listKey(parsed.projectPath, parsed.sessionId), parsed);
     this.sessionKeys.set(parsed.sessionId, listKey(parsed.projectPath, parsed.sessionId));
+    this.loaded.add(listKey(parsed.projectPath, parsed.sessionId));
+    this.loadedBindings.set(parsed.sessionId, listKey(parsed.projectPath, parsed.sessionId));
     this.host.emit(snapshotEvent(parsed));
   }
 

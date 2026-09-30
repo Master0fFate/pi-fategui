@@ -32,6 +32,19 @@ describe('instance profiles', () => {
     expect(attemptedPaths).toEqual([base]);
   });
 
+  it('forwards a requested project in the secondary instance lock data', () => {
+    const base = path.resolve('profiles/fate-ui');
+    const project = path.resolve('workspace with spaces');
+    const requestSingleInstanceLock = vi.fn(() => false);
+    acquireInstanceProfile({
+      getPath: () => base,
+      setPath: () => undefined,
+      requestSingleInstanceLock,
+    }, 'single', () => undefined, project);
+
+    expect(requestSingleInstanceLock).toHaveBeenCalledWith({ instanceSlot: 1, mode: 'single', projectPath: project });
+  });
+
   it('allocates an uncapped sequence of isolated slots for explicit multi-instance launches', () => {
     const base = path.resolve('profiles/fate-ui');
     const occupiedSlots = 7;

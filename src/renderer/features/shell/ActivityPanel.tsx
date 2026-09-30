@@ -1,3 +1,4 @@
+import { getFateApi } from '../../platform/api';
 import {
   Bot,
   CircleAlert,
@@ -161,7 +162,7 @@ function useAttestationLedger(projectPath: string | null, trusted: boolean) {
       : { status: 'loading', result: null, projectPath }));
     void (async () => {
       try {
-        const result = await window.piDesktop.queryAttestations({ limit: LEDGER_QUERY_LIMIT });
+        const result = await getFateApi().queryAttestations({ limit: LEDGER_QUERY_LIMIT });
         if (!cancelled) setState({ status: 'ready', result, projectPath });
       } catch {
         if (!cancelled) setState({ status: 'error', result: null, projectPath });

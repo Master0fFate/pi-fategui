@@ -1,3 +1,4 @@
+import { getFateApiOptional, getDesktopApi } from '../../platform/api';
 import {
   ArrowLeft,
   ArrowRight,
@@ -59,7 +60,7 @@ export function BrowserToolbar() {
   }, [currentGrant?.interact, currentOrigin, state.sessionFullAccess]);
 
   const run = async (label: string, operation: () => Promise<unknown>) => {
-    if (!('piDesktop' in window) || !browserReady || pending) return;
+    if (!getFateApiOptional() || !browserReady || pending) return;
     useBrowserStore.getState().setPending(label);
     useBrowserStore.getState().setError(null);
     try {
@@ -78,24 +79,24 @@ export function BrowserToolbar() {
       return;
     }
     addressFocused.current = false;
-    void run('navigation', () => window.piDesktop.navigateBrowser(address));
+    void run('navigation', () => getDesktopApi().navigateBrowser(address));
   };
 
   // Annotate is a picker overlay on top of the always-on agent interaction.
   const toggleAnnotate = () => {
-    void run('mode change', () => window.piDesktop.setBrowserMode(state.mode === 'annotate' ? 'agent' : 'annotate'));
+    void run('mode change', () => getDesktopApi().setBrowserMode(state.mode === 'annotate' ? 'agent' : 'annotate'));
   };
 
   // The device toolbar is a separate switch: it never changes the agent or
   // annotate state, only device emulation for phone-like testing.
   const toggleDevice = () => {
-    void run('device toolbar', () => window.piDesktop.setBrowserDeviceEmulation(state.deviceEmulation ? null : DEFAULT_DEVICE_EMULATION));
+    void run('device toolbar', () => getDesktopApi().setBrowserDeviceEmulation(state.deviceEmulation ? null : DEFAULT_DEVICE_EMULATION));
   };
 
   const grant = (interact: boolean) => {
     if (!currentOrigin) return;
     void run('agent access', async () => {
-      const next = await window.piDesktop.setBrowserOriginGrant({
+      const next = await getDesktopApi().setBrowserOriginGrant({
         origin: currentOrigin,
         read: true,
         interact,
@@ -108,7 +109,7 @@ export function BrowserToolbar() {
   };
 
   const openLocalFile = () => {
-    void run('local file', async () => (await window.piDesktop.openBrowserLocalFile()) ?? state);
+    void run('local file', async () => (await getDesktopApi().openBrowserLocalFile()) ?? state);
   };
 
   const closeBrowser = () => {
@@ -121,9 +122,9 @@ export function BrowserToolbar() {
     <>
       <div className="browser-toolbar" role="toolbar" aria-label="Browser controls">
         <div className="browser-history-controls">
-          <AppTooltip content="Back"><button type="button" aria-label="Go back" disabled={!tab?.canGoBack || Boolean(pending)} onClick={() => void run('back', () => window.piDesktop.controlBrowserHistory('back'))}><ActionContent text="<"><ArrowLeft size={15} /></ActionContent></button></AppTooltip>
-          <AppTooltip content="Forward"><button type="button" aria-label="Go forward" disabled={!tab?.canGoForward || Boolean(pending)} onClick={() => void run('forward', () => window.piDesktop.controlBrowserHistory('forward'))}><ActionContent text=">"><ArrowRight size={15} /></ActionContent></button></AppTooltip>
-          <AppTooltip content={tab?.loading ? 'Stop loading' : 'Reload'}><button type="button" aria-label={tab?.loading ? 'Stop loading' : 'Reload page'} disabled={!tab || Boolean(pending)} onClick={() => void run(tab?.loading ? 'stop' : 'reload', () => window.piDesktop.controlBrowserHistory(tab?.loading ? 'stop' : 'reload'))}><ActionContent text={tab?.loading ? 'x' : 'r'}>{tab?.loading ? <X size={14} /> : <RefreshCw size={14} />}</ActionContent></button></AppTooltip>
+          <AppTooltip content="Back"><button type="button" aria-label="Go back" disabled={!tab?.canGoBack || Boolean(pending)} onClick={() => void run('back', () => getDesktopApi().controlBrowserHistory('back'))}><ActionContent text="<"><ArrowLeft size={15} /></ActionContent></button></AppTooltip>
+          <AppTooltip content="Forward"><button type="button" aria-label="Go forward" disabled={!tab?.canGoForward || Boolean(pending)} onClick={() => void run('forward', () => getDesktopApi().controlBrowserHistory('forward'))}><ActionContent text=">"><ArrowRight size={15} /></ActionContent></button></AppTooltip>
+          <AppTooltip content={tab?.loading ? 'Stop loading' : 'Reload'}><button type="button" aria-label={tab?.loading ? 'Stop loading' : 'Reload page'} disabled={!tab || Boolean(pending)} onClick={() => void run(tab?.loading ? 'stop' : 'reload', () => getDesktopApi().controlBrowserHistory(tab?.loading ? 'stop' : 'reload'))}><ActionContent text={tab?.loading ? 'x' : 'r'}>{tab?.loading ? <X size={14} /> : <RefreshCw size={14} />}</ActionContent></button></AppTooltip>
         </div>
         <form className="browser-address" onSubmit={(event: FormEvent) => { event.preventDefault(); navigate(); }}>
           <Symbol text=">">{isLocalPage ? <FileCode2 size={13} aria-hidden="true" /> : <Globe2 size={13} aria-hidden="true" />}</Symbol>

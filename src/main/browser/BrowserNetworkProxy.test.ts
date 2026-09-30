@@ -91,6 +91,7 @@ describe('BrowserNetworkProxy', () => {
     const proxy = new BrowserNetworkProxy(policy);
     disposables.push(() => proxy.dispose());
     const proxyUrl = new URL(await proxy.start());
+    expect(proxyUrl.hostname).toBe('127.0.0.1');
 
     const body = await new Promise<string>((resolve, reject) => {
       const outgoing = request({
@@ -127,6 +128,7 @@ describe('BrowserNetworkProxy', () => {
     const proxy = new BrowserNetworkProxy(policy);
     disposables.push(() => proxy.dispose());
     const proxyUrl = new URL(await proxy.start());
+    expect(proxyUrl.hostname).toBe('127.0.0.1');
 
     await new Promise<void>((resolve, reject) => {
       const outgoing = request({

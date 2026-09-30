@@ -47,7 +47,7 @@ goto parse
 
 :run
 if defined FATE_NEW_INSTANCE (
-  start "" "%~dp0fate-ui.exe" --project "%FATE_PROJECT%" --new-instance
+  start "" "%~dp0fate-ui.exe" "--project=%FATE_PROJECT%" --new-instance
 ) else (
-  start "" "%~dp0fate-ui.exe" --project "%FATE_PROJECT%"
+  start "" "%~dp0fate-ui.exe" "--project=%FATE_PROJECT%"
 )

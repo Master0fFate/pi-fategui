@@ -107,6 +107,37 @@ describe('Sidebar sessions', () => {
     await waitFor(() => expect(selectProject).toHaveBeenCalledOnce());
   });
 
+  it('expands a newly opened folder even before it has saved sessions', async () => {
+    useProjectStore.setState({ projects: [], expandedByPath: {} });
+    useRuntimeStore.getState().setRuntime(ready({ project: { path: '/fresh', name: 'fresh', trusted: true }, sessionId: null, sessions: [] }));
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    expect(await screen.findByRole('button', { name: 'Collapse fresh' })).toBeInTheDocument();
+    expect(useProjectStore.getState().expandedByPath['/fresh']).toBe(true);
+  });
+
+  it('reveals a new session in a previously collapsed active folder', async () => {
+    useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }], expandedByPath: { '/project': false } });
+    const newSession = vi.fn(async () => ready());
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { newSession } as unknown as PiDesktopApi });
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'New session in project' }));
+    await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+    expect(screen.getByRole('button', { name: 'Collapse project' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^First/u })).toBeInTheDocument();
+  });
+
+  it('reveals a session started outside the sidebar without changing the initial saved collapse state', async () => {
+    useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }], expandedByPath: { '/project': false } });
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Expand project' })).toBeInTheDocument();
+
+    act(() => useRuntimeStore.getState().setRuntime(ready({ sessionId: 's3', sessions: [session('s3', 'Third', true)] })));
+    expect(screen.getByRole('button', { name: 'Collapse project' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Third/u })).toBeInTheDocument();
+  });
+
   it('updates the selected session shell immediately while the desktop history load is pending', async () => {
     let finishSwitch: ((state: RuntimeState) => void) | undefined;
     const initial = ready({ messages: [{ id: 'old', role: 'user', text: 'Old conversation', timestamp: 1 }] });
@@ -613,6 +644,19 @@ describe('Sidebar sessions', () => {
     await user.click(screen.getByRole('button', { name: 'Actions for Second' }));
     expect(await screen.findByRole('menuitem', { name: 'Clone Second' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'Open Second before exporting it' })).toBeDisabled();
+  });
+
+  it('expands a collapsed foreign folder when creating a session there', async () => {
+    const other = { path: '/other', name: 'other' };
+    useProjectStore.setState({ projects: [{ path: '/project', name: 'project' }, other], expandedByPath: { '/project': true, '/other': false } });
+    const openProject = vi.fn(async () => ready({ project: { ...other, trusted: true }, sessionId: 'created', sessions: [session('created', 'Created here', true)] }));
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { openProject } as unknown as PiDesktopApi });
+    render(<Sidebar collapsed={false} onToggle={vi.fn()} />);
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'New session in other' }));
+    await waitFor(() => expect(openProject).toHaveBeenCalledWith('/other', { newSession: true }));
+    expect(screen.getByRole('button', { name: 'Collapse other' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /^Created here/u })).toBeInTheDocument();
   });
 
   it('routes a foreign folder focus through focusProject when the bridge is available', async () => {

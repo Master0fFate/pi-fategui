@@ -86,6 +86,8 @@ export interface BrowserAnnotationOwner {
 
 export interface BrowserServiceOptions {
   canonicalProjectPath: string;
+  /** Stable Pi conversation identity. Each project/session/profile gets its own persistent Chromium storage. */
+  browserSessionId?: string;
   confirmAction?: BrowserConfirmationHandler;
   annotationOwner?: () => BrowserAnnotationOwner | null;
   onAppShortcut?: (shortcut: BrowserAppShortcut) => void;
@@ -239,7 +241,7 @@ export class BrowserService {
   ): Promise<void> {
     if (this.tabs.has(tabId)) throw new BrowserError('ACTION_BLOCKED', `Browser tab ${tabId} already exists.`);
     if (this.tabs.size >= 16) throw new BrowserError('ACTION_BLOCKED', 'Close a browser tab before opening another.');
-    const partition = projectProfilePartition(this.options.canonicalProjectPath, profileId);
+    const partition = projectProfilePartition(this.options.canonicalProjectPath, profileId, this.options.browserSessionId);
     const view = new WebContentsView({
       webPreferences: {
         partition,
@@ -375,8 +377,12 @@ export class BrowserService {
   setViewBlocked(reason: string, blocked: boolean): void {
     const key = reason.trim().slice(0, 100);
     if (!key) return;
-    if (blocked) this.viewBlockers.add(key);
-    else this.viewBlockers.delete(key);
+    if (blocked) {
+      this.viewBlockers.add(key);
+      // A native element picker must not complete for a conversation after
+      // its view is hidden by a focus switch or an application dialog.
+      this.cancelAnnotationSelection();
+    } else this.viewBlockers.delete(key);
     this.applyVisibility();
     if (!blocked && this.mode === 'annotate') this.startAnnotationLoop();
     this.emitState();
@@ -487,6 +493,13 @@ export class BrowserService {
     this.policy.clearScopedGrants('once');
     this.policy.clearScopedGrants('task');
     this.networkProxy.resetConnections();
+  }
+
+  /** Revoke a Pi session's outstanding browser work without destroying its
+   *  tabs or persistent partition. A later run can acquire this same service. */
+  revokeSessionControl(): void {
+    this.cancelActions();
+    this.endTask();
   }
 
   async navigate(tabId: string, value: string, source: BrowserNavigationSource = 'user', signal?: AbortSignal): Promise<void> {
@@ -1402,10 +1415,13 @@ export class BrowserService {
   private emitState(): void { this.eventSink?.({ type: 'state', state: this.getState() }); }
 }
 
-export function projectProfilePartition(canonicalProjectPath: string, profileId = 'project'): string {
-  const normalized = path.normalize(canonicalProjectPath).normalize('NFC');
+export function projectProfilePartition(canonicalProjectPath: string, profileId = 'project', browserSessionId?: string): string {
+  const normalized = path.normalize(path.resolve(canonicalProjectPath)).normalize('NFC');
   const identity = process.platform === 'win32' ? normalized.toLocaleLowerCase('en-US') : normalized;
-  const digest = createHash('sha256').update(identity).digest('hex').slice(0, 32);
+  // Never fall back to the historical project-only partition for a named
+  // session. That partition can contain another conversation's cookies,
+  // cache and local storage from a previous version of the application.
+  const digest = createHash('sha256').update(JSON.stringify([identity, browserSessionId ?? null])).digest('hex').slice(0, 32);
   const profile = createHash('sha256').update(profileId).digest('hex').slice(0, 12);
   return `persist:fate-browser-${digest}-${profile}`;
 }

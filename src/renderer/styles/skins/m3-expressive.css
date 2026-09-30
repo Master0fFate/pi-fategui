@@ -131,6 +131,9 @@
 :root[data-skin="m3-expressive"] .subagent-empty strong { font-size: 14px; }
 :root[data-skin="m3-expressive"] .subagent-empty p { font-size: 12px; line-height: 1.6; }
 :root[data-skin="m3-expressive"] :is(.settings-dialog, [role="dialog"], [role="alertdialog"], .model-popover, .provider-dialog-content) { border-radius: 24px; background: var(--theme-panel); }
+/* The image viewer is a transparent canvas over the dimmed image backdrop, not a modal card. */
+:root[data-skin="m3-expressive"] .cinematic-image-viewer { border-radius: 0; background: transparent; }
+:root[data-skin="m3-expressive"] .cinematic-image-viewer .cinematic-image-close { z-index: 1; border-radius: 50%; }
 :root[data-skin="m3-expressive"] :is([role="menu"], .custom-select-content, .popover-content) { border-radius: 18px; background: var(--theme-raised); }
 :root[data-skin="m3-expressive"] :is(.settings-group, .context-dashboard > section, .goalmax-overview-facts, .agent-tree-branch) { box-shadow: none; }
 :root[data-skin="m3-expressive"] :is(.settings-nav-button, .custom-select-item, .palette-item, .file-row, .resource-type-row, .automation-open, .activity-chip) { border-radius: 10px; }

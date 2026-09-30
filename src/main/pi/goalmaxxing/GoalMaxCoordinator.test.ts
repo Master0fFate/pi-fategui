@@ -1289,6 +1289,99 @@ describe('GoalMax coordinator', () => {
     expect(host.verifyGoal).toHaveBeenCalledOnce();
   });
 
+  it('retires a failed inline verification only after an explicit same-scope passing retry', async () => {
+    const { coordinator, repository, events, host, progress } = fixture();
+    await coordinator.create({ objective: 'Validate the plan and implementation', verificationLevel: 'normal', agentStrategy: 'off', tokenLimit: null, timeLimitMs: null });
+    await captureTestPlan(coordinator);
+    const failedCommand = `python plans/tools/planctl.py check && python -c "assert 'task-manifest.json'" && pnpm typecheck`;
+    const passingCommand = `python plans/tools/planctl.py check && python -c "assert 'task-manifest.json'.encode('utf-8')" && pnpm typecheck`;
+    const observe = (id: string, command: string, isError: boolean) => {
+      coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: id, toolName: 'bash', args: { command } } as never);
+      coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: id, toolName: 'bash', result: isError ? 'failed' : 'passed', isError } as never);
+    };
+    observe('failed-inline', failedCommand, true);
+    observe('passing-inline', passingCommand, false);
+    const state = (await coordinator.statusForModel('session-1')).details;
+    const failed = state.evidence.find((item) => item.command === failedCommand)!;
+    const passing = state.evidence.find((item) => item.command === passingCommand)!;
+    expect(failed.current).toBe(true);
+    expect((await coordinator.requestCompletion('session-1', {
+      summary: 'Premature',
+      criterionEvidence: state.criteria.filter((criterion) => criterion.title !== 'Verify the delivered result').map((criterion) => ({ criterionId: criterion.id, evidenceIds: [passing.id] })),
+    })).text).toContain('Resolve the current failed evidence');
+
+    const resolved = await coordinator.report('session-1', { outcome: 'progress', summary: 'Corrected the inline check.', resolvedFailures: [
+      { failedEvidenceId: failed.id, passingEvidenceId: passing.id, reason: 'Replaced shell-quoted script with a UTF-8-safe equivalent.' },
+    ] });
+    expect(resolved.details.evidence.find((item) => item.id === failed.id)?.current).toBe(false);
+    expect(resolved.details.evidence.find((item) => item.id === passing.id)?.current).toBe(true);
+    expect(resolved.details.timeline.at(-1)?.summary).toContain('UTF-8-safe equivalent');
+    expect((await repository.load('/project', 'session-1'))?.evidence.find((item) => item.id === failed.id)?.current).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: 'goalmax.snapshot', goal: { evidence: expect.arrayContaining([expect.objectContaining({ id: failed.id, current: false })]) } });
+    const rebound = new GoalMaxCoordinator(host, repository, progress as never);
+    await rebound.bind('/project', 'session-1');
+    const completion = await rebound.requestCompletion('session-1', { summary: 'Plan and checks validated.' });
+    expect(completion.details.status).toBe('completed');
+  });
+
+  it('keeps an independent blocker when a failed check is resolved', async () => {
+    const { coordinator } = fixture();
+    await coordinator.create({ objective: 'Preserve explicit pause and blocker state', verificationLevel: 'normal', agentStrategy: 'off', tokenLimit: null, timeLimitMs: null });
+    await captureTestPlan(coordinator);
+    // Use two different inline forms to exercise the explicit path.
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'inline-fail', toolName: 'bash', args: { command: `python -c "assert 'plan.json'" && pnpm typecheck` } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'inline-fail', toolName: 'bash', result: 'failed', isError: true } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: 'inline-pass', toolName: 'bash', args: { command: `python -c "assert 'plan.json'.encode('utf-8')" && pnpm typecheck` } } as never);
+    coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: 'inline-pass', toolName: 'bash', result: 'passed', isError: false } as never);
+    const state = (await coordinator.statusForModel('session-1')).details;
+    const failed = state.evidence.find((item) => item.command?.includes('plan.json') && item.exitCode === 1)!;
+    const passing = state.evidence.find((item) => item.command?.includes('plan.json') && item.exitCode === 0)!;
+    await coordinator.report('session-1', { outcome: 'blocked', summary: 'Waiting for user review.', blocker: 'Review permission before continuing.' });
+    const resolved = await coordinator.report('session-1', { outcome: 'progress', summary: 'The syntax was corrected.', resolvedFailures: [
+      { failedEvidenceId: failed.id, passingEvidenceId: passing.id, reason: 'Corrected the inline JSON check.' },
+    ] });
+    expect(resolved.details.status).toBe('blocked');
+    expect(resolved.details.blockedReason).toBe('Review permission before continuing.');
+  });
+
+  it('refuses unrelated, older, missing, or repeated passing evidence as failure resolution', async () => {
+    const { coordinator, repository } = fixture();
+    await coordinator.create({ objective: 'Keep unresolved failures visible', verificationLevel: 'normal', agentStrategy: 'off', tokenLimit: null, timeLimitMs: null });
+    await captureTestPlan(coordinator);
+    const observe = (id: string, command: string, isError: boolean) => {
+      coordinator.observeSessionEvent('session-1', { type: 'tool_execution_start', toolCallId: id, toolName: 'bash', args: { command } } as never);
+      coordinator.observeSessionEvent('session-1', { type: 'tool_execution_end', toolCallId: id, toolName: 'bash', result: isError ? 'failed' : 'passed', isError } as never);
+    };
+    observe('early-pass', 'pnpm typecheck', false);
+    observe('plan-fail', `python plans/tools/planctl.py check && python -c "assert 'task-manifest.json'" && pnpm typecheck`, true);
+    observe('unrelated-pass', `python plans/tools/planctl.py check && python -c "assert 'other.json'" && pnpm typecheck`, false);
+    const state = (await coordinator.statusForModel('session-1')).details;
+    const failed = state.evidence.find((item) => item.exitCode === 1)!;
+    const early = state.evidence.find((item) => item.command === 'pnpm typecheck')!;
+    const unrelated = state.evidence.find((item) => item.command?.includes('other.json'))!;
+    const resolve = (passingEvidenceId: string, failedEvidenceId = failed.id) => coordinator.report('session-1', { outcome: 'progress', summary: 'Try to retire this failure.', resolvedFailures: [
+      { failedEvidenceId, passingEvidenceId, reason: 'This is claimed to be an equivalent check.' },
+    ] });
+    await expect(resolve(early.id)).rejects.toThrow(/same scope/);
+    await expect(resolve(unrelated.id)).rejects.toThrow(/same scope/);
+    await expect(resolve('evidence-not-present')).rejects.toThrow(/same scope/);
+    expect((await repository.load('/project', 'session-1'))?.evidence.find((item) => item.id === failed.id)?.current).toBe(true);
+    expect((await coordinator.requestCompletion('session-1', { summary: 'Still failing.' })).text).toContain('Resolve the current failed evidence');
+    observe('proper-pass', `python plans/tools/planctl.py check && python -c "assert 'task-manifest.json'.encode('utf-8')" && pnpm typecheck`, false);
+    const proper = (await coordinator.statusForModel('session-1')).details.evidence.find((item) => item.command?.includes(".encode('utf-8')"))!;
+    await expect(coordinator.report('session-1', { outcome: 'progress', summary: 'Partial resolution must not commit.', resolvedFailures: [
+      { failedEvidenceId: failed.id, passingEvidenceId: proper.id, reason: 'Corrected the quoted inline script.' },
+      { failedEvidenceId: 'evidence-missing', passingEvidenceId: proper.id, reason: 'No matching failed check exists.' },
+    ] })).rejects.toThrow(/same scope/);
+    expect((await repository.load('/project', 'session-1'))?.evidence.find((item) => item.id === failed.id)?.current).toBe(true);
+    await resolve(proper.id);
+    await expect(resolve(proper.id)).rejects.toThrow(/same scope/);
+    observe('later-fail', `python plans/tools/planctl.py check && python -c "assert 'task-manifest.json'.encode('utf-8')" && pnpm typecheck`, true);
+    const later = (await coordinator.statusForModel('session-1')).details.evidence.findLast((item) => item.exitCode === 1)!;
+    await expect(resolve(proper.id, later.id)).rejects.toThrow(/same scope/);
+    expect((await coordinator.requestCompletion('session-1', { summary: 'New failure still blocks.' })).text).toContain('Resolve the current failed evidence');
+  });
+
   it('returns an explicit per-criterion rejection when a satisfied update cannot be honored (BUG 3)', async () => {
     const { coordinator } = fixture();
     await coordinator.create({ objective: 'Implement and verify the release', verificationLevel: 'normal', agentStrategy: 'auto', tokenLimit: null, timeLimitMs: null });

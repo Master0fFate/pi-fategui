@@ -1,0 +1,26 @@
+# MCP in Fate UI
+
+Fate UI includes an opt-in MCP client built on the official Model Context Protocol SDK. It does not install `pi-mcp-adapter`, start a server when opening a project, or read a project's `.mcp.json`. The Pi SDK itself does not implement MCP.
+
+1. Open **Settings → MCP**.
+2. Add a local command (executable plus JSON array of arguments) or an HTTPS endpoint. A local `http://localhost` endpoint is also allowed.
+3. Enable the server and save. Select **Test saved server** to start it once and check its tool catalog. This explicit user action works even if the current agent session is Read-only. Reopen the project to load the changed list into new session runtimes.
+4. In a **Full access** session, ask the agent to list the server's tools. It uses `fate_mcp` to list, then call a named tool. Other access levels cannot use this bridge.
+
+Config is stored globally in `~/.pi/fateGUI/mcp-servers.json` (or `$FATE_GUI_DATA_DIR/mcp-servers.json`). It is separate from Pi CLI's MCP bridge configuration. No server is enabled by default. If a local server needs Node, Python, or another runtime, install that runtime separately; Fate UI does not download or update third-party server programs. Pin package versions in `npx` arguments where possible.
+
+## Existing Pi Agent MCP setups
+
+Fate UI still loads trusted **global Pi extensions** through the Pi SDK. A global Pi MCP bridge can keep using its own `mcp` tool and its own `~/.pi/agent/mcp.json` or other supported config files; `fate_mcp` is a separate tool name and does not replace it. An isolated test loaded the locally installed `pi-mcp-adapter@2.34.0` beside `fate_mcp` under Pi SDK 0.87.1, without reading personal MCP config or connecting to servers. Other bridge versions and authenticated server flows still need their own checks. Context Mode's Pi extension has its own bridge for `ctx_*` tools. Do not add the same server to both paths unless you want duplicate tool surfaces.
+
+A config file alone is not an MCP client: Pi's SDK has no built-in MCP reader. In **Settings → MCP → Switch from Pi Terminal**, Fate can import compatible servers from Pi's global `mcp.json` and shared global MCP files on demand. It never overwrites existing Fate servers or edits Pi files, and it skips advanced settings (OAuth, headers, environment, SSE, and adapter policy) rather than dropping them. When `pi-mcp-adapter` is configured as a global Pi package, Fate leaves its servers with that bridge and does not create duplicates. Project-local Pi extensions remain blocked by Fate UI, even in a trusted project; project MCP configuration therefore requires the global Pi bridge and project trust.
+
+**Important:** Tools supplied by a separate global Pi extension are owned by that extension. Fate UI's `fate_mcp` Full-access gate does not wrap those legacy tools. This preserves extension compatibility, not a Read-only security guarantee for them.
+
+## Trust and limits
+
+A local server process has the current user's OS rights, not Fate UI's project file gate. Remote servers receive tool inputs. Enable only servers you trust. The first-party bridge checks Full access again before connecting and before each call, but Full access is **not a sandbox**. User-installed Pi extensions have their own authority; this gate cannot constrain another extension's MCP implementation.
+
+For a full Pi Terminal switch: install Fate UI, open **Settings → MCP**, review **Switch from Pi Terminal**, and use **Import missing Pi providers and MCP servers** if there are provider entries or basic global MCP servers to move. Restart Fate after importing providers and reopen the project after changing MCP servers. Test each MCP server before removing Pi CLI; Fate does not install the server program or its Node/Python runtime. Pi sessions, user settings, global skills, prompts and extensions use the same `~/.pi/agent` directory after Pi CLI is uninstalled, so keep that directory and any needed Node/Python installation. Package dependencies must remain installed there. Existing advanced servers stay with a compatible global Pi MCP extension; inspect the reported conflicts and unsupported entries before uninstalling anything. Fate does not copy project-local executable extensions, and it cannot guarantee every third-party extension's terminal-only UI works in the desktop SDK. Do not claim a complete migration while these checks fail.\n\nThis initial bridge supports stdio and Streamable HTTP, tool discovery and tool calls. It does **not** implement OAuth, bearer-token management, SSE fallback, MCP prompts/resources, per-tool approvals, or per-project configuration. Servers needing these features require a separately installed, trusted Pi extension until Fate UI adds them. It creates and closes one connection per operation to avoid child processes leaking across project/session switches; some servers may start slowly. Large responses are truncated for model context.
+
+Context Mode's current Pi extension also includes its own MCP bridge. Install it as a trusted global Pi package if you want its extension hooks; adding its server here is not necessary for the extension's own registered `ctx_*` tools. Do not configure both paths without a reason.

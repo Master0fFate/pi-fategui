@@ -31,6 +31,7 @@ export interface GoalMaxReportInput {
     removeCriterionIds?: string[];
   };
   criterionUpdates?: Array<{ criterionId: string; status: typeof reportStatusValues[number]; evidenceIds?: string[] }>;
+  resolvedFailures?: Array<{ failedEvidenceId: string; passingEvidenceId: string; reason: string }>;
   ownerAssignments?: Array<{ criterionId: string; nodeId: string }>;
 }
 
@@ -57,12 +58,13 @@ export function createGoalMaxTools(coordinator: GoalMaxCoordinator): ToolDefinit
       name: GOALMAX_TOOL_NAMES.report,
       label: 'Goal progress',
       promptSnippet: 'Report evidence-linked goal progress, a blocker, or a completion candidate',
-      description: 'Report bounded interim progress to the GoalMax control plane. During intake, the model may replace provisional criteria with a concrete taskPlan. It may also update phase, attach current evidence IDs to criteria, assign criterion ownership, or report an exact blocker. The completion-candidate outcome remains available for compatibility; prefer goalmax_complete for the final handoff. This tool cannot pause, cancel, clear, budget, elevate permissions, or mark the goal completed.',
+      description: 'Report bounded interim progress to the GoalMax control plane. During intake, the model may replace provisional criteria with a concrete taskPlan. It may also update phase, attach current evidence IDs to criteria, assign criterion ownership, or report an exact blocker. To retire a failed verification whose command needed a fix, submit resolvedFailures with the failed and later passing evidence IDs and a brief reason in a separate progress report; the control plane checks the verification scope and keeps the failed record for audit. The completion-candidate outcome remains available for compatibility; prefer goalmax_complete for the final handoff. This tool cannot pause, cancel, clear, budget, elevate permissions, or mark the goal completed.',
       promptGuidelines: [
         'At the first GoalMax turn, submit taskPlan before implementation. Use 2-12 ordered implementation tasks, or more only when necessary.',
         'Give every planned task a distinct action title and a detailed observable completion condition. Do not copy the full objective, use placeholders, duplicate tasks, or add the final verification task.',
         'When new user steering changes remaining scope, use pendingTaskChanges. It may add new pending tasks or remove untouched pending criteria only; it never rewrites the active or completed work.',
         'Use only evidence IDs returned by goalmax_status; prose claims are not evidence.',
+        'If a corrected validation command leaves its earlier failed run current, use resolvedFailures to link the failed ID to a later passing check of the same scope. An unrelated pass cannot clear a failure.',
         'Use goalmax_complete, not a prose claim, when all work and checks are finished.',
         'Report an exact blocker instead of looping on the same failed action.',
       ],
@@ -89,6 +91,11 @@ export function createGoalMaxTools(coordinator: GoalMaxCoordinator): ToolDefinit
           status: enumString(reportStatusValues, 'Proposed criterion state. Satisfaction requires current evidence.'),
           evidenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 160 }), { maxItems: 64 })),
         }, { additionalProperties: false }), { maxItems: 32 })),
+        resolvedFailures: Type.Optional(Type.Array(Type.Object({
+          failedEvidenceId: Type.String({ minLength: 1, maxLength: 160 }),
+          passingEvidenceId: Type.String({ minLength: 1, maxLength: 160 }),
+          reason: Type.String({ minLength: 8, maxLength: 500 }),
+        }, { additionalProperties: false }), { minItems: 1, maxItems: 16 })),
         ownerAssignments: Type.Optional(Type.Array(Type.Object({
           criterionId: Type.String({ minLength: 1, maxLength: 160 }),
           nodeId: Type.String({ minLength: 1, maxLength: 160 }),

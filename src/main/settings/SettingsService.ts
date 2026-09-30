@@ -1,4 +1,4 @@
-import { app } from 'electron';
+import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,7 @@ import { defaultAgentWorkspacePolicy } from '../../shared/contracts/multiAgent';
 import { builtInThemes, customThemeFileSchema, themeCatalogSchema, type ThemeDefinition } from '../../shared/themes';
 import type { AppLogService } from '../logging/AppLogService';
 import { PiThemeService } from './PiThemeService';
-import { SkinPackService } from './SkinPackService';
+import { SkinPackService, type SkinImagePreparer } from './SkinPackService';
 import { skinPackIdSchema, skinPackThemeId, type SkinCatalog } from '../../shared/skins';
 import { removePackFontPreferences } from '../../shared/skinAppearance';
 
@@ -39,6 +39,12 @@ const defaults: AppSettings = {
   speech: defaultSpeechSettings,
 };
 
+export interface SettingsHostOptions {
+  /** Desktop host supplies its legacy Electron userData path; Node has no implicit migration. */
+  readonly legacySettingsPath?: () => string;
+  readonly prepareImage?: SkinImagePreparer;
+}
+
 export class SettingsService {
   private settings: AppSettings = defaults;
   private loaded = false;
@@ -51,7 +57,9 @@ export class SettingsService {
       ? path.resolve(process.env.FATE_GUI_DATA_DIR)
       : path.join(os.homedir(), '.pi', 'fateGUI'),
     private readonly piThemes: Pick<PiThemeService, 'discover'> = new PiThemeService(),
-  ) { this.skinPacks = new SkinPackService(this.dataRoot); }
+    private readonly piAgentDir = getAgentDir(),
+    private readonly host: SettingsHostOptions = {},
+  ) { this.skinPacks = new SkinPackService(this.dataRoot, host.prepareImage); }
 
   async load(): Promise<AppSettings> {
     if (this.loaded) return this.get();
@@ -62,6 +70,10 @@ export class SettingsService {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         await this.migrateLegacy();
+        // A new Fate profile starts with Pi's chosen model and reasoning level.
+        // An existing Fate settings file, including a migrated legacy file, always wins.
+        try { await fs.access(this.filePath()); }
+        catch { await this.migratePiDefaults(); }
       } else {
         this.logs.write('warn', 'settings', `Using defaults because settings could not be loaded: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -168,12 +180,44 @@ export class SettingsService {
 
   getStoragePath(): string { return this.filePath(); }
 
+  async flush(): Promise<void> {
+    await this.writeQueue;
+    await this.skinPacks.flush();
+  }
+
   private filePath(): string {
     return path.join(this.dataRoot, 'settings.json');
   }
 
+  private async migratePiDefaults(): Promise<void> {
+    try {
+      const file = path.join(this.piAgentDir, 'settings.json');
+      const stat = await fs.lstat(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256_000) return;
+      const value: unknown = JSON.parse(await fs.readFile(file, 'utf8'));
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+      const pi = value as Record<string, unknown>;
+      const provider = typeof pi.defaultProvider === 'string' ? pi.defaultProvider : '';
+      const model = typeof pi.defaultModel === 'string' ? pi.defaultModel : '';
+      const candidate = {
+        ...this.settings,
+        ...(provider && model && provider.length < 200 && model.length < 300 ? { defaultModel: `${provider}/${model}` } : {}),
+        ...(typeof pi.defaultThinkingLevel === 'string' ? { thinkingLevel: pi.defaultThinkingLevel } : {}),
+      };
+      const parsed = appSettingsSchema.safeParse(candidate);
+      if (parsed.success && (parsed.data.defaultModel !== this.settings.defaultModel || parsed.data.thinkingLevel !== this.settings.thinkingLevel)) {
+        this.settings = parsed.data;
+        await this.persist(this.settings);
+        this.logs.write('info', 'settings', 'Imported startup model and thinking level from Pi settings.');
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.logs.write('warn', 'settings', 'Pi startup settings could not be imported.');
+    }
+  }
+
   private async migrateLegacy(): Promise<void> {
-    const legacyPath = path.join(app.getPath('userData'), 'settings.json');
+    const legacyPath = this.host.legacySettingsPath?.();
+    if (!legacyPath) return;
     if (path.normalize(legacyPath) === path.normalize(this.filePath())) return;
     try {
       const value: unknown = JSON.parse(await fs.readFile(legacyPath, 'utf8'));

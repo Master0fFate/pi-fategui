@@ -5,10 +5,43 @@ import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { BrowserAnnotationRepository } from './BrowserAnnotationRepository';
 import { BrowserError } from './BrowserErrors';
-import { BrowserService } from './BrowserService';
+import { BrowserService, projectProfilePartition } from './BrowserService';
 import type { LocalPageRegistry } from './LocalPageRegistry';
 
 describe('BrowserService visibility safety', () => {
+  it('uses distinct persistent Chromium partitions for every project/session/profile tuple', () => {
+    const first = projectProfilePartition('/project', 'project', 'session-1');
+    expect(first).toMatch(/^persist:fate-browser-/u);
+    expect(projectProfilePartition('/project/', 'project', 'session-1')).toBe(first);
+    expect(projectProfilePartition('/project', 'project', 'session-2')).not.toBe(first);
+    expect(projectProfilePartition('/other', 'project', 'session-1')).not.toBe(first);
+    expect(projectProfilePartition('/project', 'other', 'session-1')).not.toBe(first);
+    expect(projectProfilePartition('/project', 'project')).not.toBe(first);
+  });
+
+  it('revokes in-flight actions and scoped grants without disposing tabs', async () => {
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(), browserSessionId: 'session-1',
+    });
+    service.beginTask('session-1');
+    service.setOriginGrant({ origin: 'https://example.test', read: true, interact: true, scope: 'task', allowPrivateNetwork: false });
+    const running = (service as unknown as { actionController: AbortController }).actionController.signal;
+    service.revokeSessionControl();
+    expect(running.aborted).toBe(true);
+    expect(service.getState().grants).toEqual([]);
+    await service.dispose();
+  });
+
+  it('cancels a native picker when the session goes into the background', async () => {
+    const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
+      canonicalProjectPath: process.cwd(), browserSessionId: 'session-1',
+    });
+    const controller = (service as unknown as { startAnnotationSelection(): AbortController }).startAnnotationSelection();
+    service.setViewBlocked('inactive-session', true);
+    expect(controller.signal.aborted).toBe(true);
+    expect(service.getState().viewBlocked).toBe(true);
+    await service.dispose();
+  });
   it('stays fully available and hidden-state free when the native browser is hidden', async () => {
     const service = new BrowserService({ isDestroyed: () => false } as BrowserWindow, {
       canonicalProjectPath: process.cwd(),

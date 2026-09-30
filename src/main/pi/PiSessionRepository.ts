@@ -1,4 +1,4 @@
-import { lstat, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, open, opendir, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   getAgentDir,
@@ -10,7 +10,10 @@ import {
   type SessionTreeNode,
 } from '@earendil-works/pi-coding-agent';
 import type { SessionBranch, SessionSummary } from '../../shared/contracts/ipc';
+import type { SnapshotItem } from '../../shared/protocol/snapshots';
 import { messageText } from './PiEventNormalizer';
+import { agentTeamSchema, type AgentTeam } from '../../shared/contracts/multiAgent';
+import { OversizedRecordFields, readSessionSnapshot, SessionSnapshotLimitError, type SnapshotRecord } from './SessionSnapshotReader';
 
 export interface SessionRepositorySource {
   /** `includeSearchText` is intentionally opt-in: normal sidebar loading must not scan every transcript. */
@@ -19,12 +22,18 @@ export interface SessionRepositorySource {
   remove?(path: string): Promise<void>;
 }
 
+export type ColdTeamRead =
+  | { state: 'ok'; teams: ReadonlyMap<string, AgentTeam | null> }
+  | { state: 'unknown'; reason: 'missing' | 'oversized' | 'partial-tail' | 'corrupt' | 'unavailable' };
+
 export interface SessionSnapshot {
   summary: SessionSummary;
-  /** All valid non-header JSONL entries, in append order. */
+  /** Valid non-header JSONL entries: full for ordinary files, bounded projections for large files. */
   entries: readonly Record<string, unknown>[];
-  /** The active leaf-to-root path, ordered from root to leaf. */
+  /** The active root-to-leaf path: recent records are full; older records are projections. */
   branch: readonly Record<string, unknown>[];
+  /** Non-destructive clipping notice for the cold UI, if any. */
+  previewNotice?: string;
 }
 
 const sdkMutationSource: Omit<SessionRepositorySource, 'list'> = {
@@ -86,10 +95,16 @@ const MAX_PROJECT_CACHE_ENTRIES = 4;
 const SESSION_BRANCH_REWRITE_RETRIES = 2;
 const MAX_SESSION_METADATA_PREFIX_BYTES = 256 * 1024;
 const MAX_SESSION_METADATA_TAIL_BYTES = 128 * 1024;
+// Legacy export until HomeOwnership no longer conflates preview with resume.
+// This is NOT a preview limit: destructive rewrites have a separate, lower cap.
 export const MAX_SESSION_SNAPSHOT_BYTES = 128 * 1024 * 1024;
-const MAX_SESSION_SNAPSHOT_ENTRIES = 100_000;
+const MAX_SESSION_BRANCH_REWRITE_BYTES = 32 * 1024 * 1024;
 const MAX_SESSION_DISCOVERY_CONCURRENCY = 8;
-const sessionEntryTypes = new Set(['message', 'thinking_level_change', 'model_change', 'compaction', 'branch_summary', 'custom', 'custom_message', 'label', 'session_info']);
+const sessionEntryTypes = new Set(['message', 'thinking_level_change', 'model_change', 'usage', 'compaction', 'branch_summary', 'custom', 'custom_message', 'context_edit', 'label', 'session_info']);
+const hiddenHistoryEntryTypes = new Set(['thinking_level_change', 'model_change', 'usage', 'branch_summary', 'custom', 'context_edit', 'label', 'session_info']);
+// Keep the record buffer below 128 KiB while the bounded streaming field
+// validator is live. The shared 64 KiB read chunk is not retained per record.
+const MAX_HISTORY_RECORD_BUFFER_BYTES = 96 * 1024;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -247,9 +262,14 @@ async function mapWithConcurrency<T, R>(values: readonly T[], limit: number, ope
 
 async function listSessionMetadata(cwd: string, sessionsRoot: string, includeSearchText = false): Promise<SessionInfo[]> {
   const directory = projectSessionDirectory(cwd, sessionsRoot);
-  let entries: Array<{ name: string; isFile(): boolean }>;
+  const entries: Array<{ name: string; isFile(): boolean }> = [];
   try {
-    entries = await readdir(directory, { withFileTypes: true });
+    const handle = await opendir(directory);
+    let count = 0;
+    for await (const entry of handle) {
+      if (++count > MAX_CACHED_SESSIONS * 2) break; // Keep bounded sidebar history; cold reader checks overflow separately.
+      entries.push(entry);
+    }
   } catch {
     return [];
   }
@@ -260,30 +280,6 @@ async function listSessionMetadata(cwd: string, sessionsRoot: string, includeSea
   const sessions = await mapWithConcurrency(paths, MAX_SESSION_DISCOVERY_CONCURRENCY, (filePath) => readSessionMetadata(filePath, includeSearchText));
   return sessions.filter((session): session is SessionInfo => session !== null)
     .sort((left, right) => right.modified.getTime() - left.modified.getTime());
-}
-
-function isSnapshotEntry(value: JsonRecord): boolean {
-  return typeof value.type === 'string'
-    && sessionEntryTypes.has(value.type)
-    && typeof value.id === 'string'
-    && value.id.length > 0
-    && (typeof value.parentId === 'string' || value.parentId === null);
-}
-
-function activeSnapshotBranch(entries: readonly JsonRecord[]): JsonRecord[] {
-  const byId = new Map(entries.map((entry) => [entry.id as string, entry]));
-  const leaf = entries.at(-1);
-  const branch: JsonRecord[] = [];
-  const visited = new Set<string>();
-  let current = leaf;
-  while (current && branch.length < MAX_SESSION_SNAPSHOT_ENTRIES) {
-    const id = current.id as string;
-    if (visited.has(id)) break;
-    visited.add(id);
-    branch.push(current);
-    current = typeof current.parentId === 'string' ? byId.get(current.parentId) : undefined;
-  }
-  return branch.reverse();
 }
 
 function isSessionEntry(value: FileEntry): value is SessionEntry {
@@ -324,6 +320,30 @@ function referencedRemovedEntry(entry: SessionEntry, removedIds: ReadonlySet<str
 
 function serializeEntries(entries: readonly FileEntry[]): string {
   return entries.map((entry) => JSON.stringify(entry)).join('\n').concat(entries.length ? '\n' : '');
+}
+
+/** A separate cap for destructive operations. Never use the streaming preview
+ * reader to authorize a rewrite: that projection intentionally omits payload. */
+async function readBoundedBranchRewriteSource(filePath: string): Promise<string> {
+  const handle = await open(filePath, 'r');
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile() || stats.size > MAX_SESSION_BRANCH_REWRITE_BYTES || !Number.isSafeInteger(stats.size)) {
+      throw new Error('This session is too large to safely rewrite a conversation fork. Its history was not changed.');
+    }
+    const buffer = Buffer.allocUnsafe(stats.size);
+    let received = 0;
+    while (received < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, received, buffer.length - received, received);
+      if (bytesRead === 0) throw new Error('The saved session changed while its fork was being deleted. Try again.');
+      received += bytesRead;
+    }
+    // A concurrent append or truncation must not be silently overwritten.
+    if ((await handle.stat()).size !== stats.size) throw new Error('The saved session changed while its fork was being deleted. Try again.');
+    return buffer.toString('utf8');
+  } finally {
+    await handle.close();
+  }
 }
 
 async function replaceFileAtomically(temporaryPath: string, destinationPath: string): Promise<void> {
@@ -496,47 +516,277 @@ export class PiSessionRepository {
       }));
   }
 
+  /** Side-effect-free cold Team lookup. SDK getBranch follows parentId from the last
+   * complete entry; never infer the selected branch from a tail alone. Refuse large
+   * transcripts rather than loading a user's multi-GB conversation into memory. */
+  async readColdTeams(cwd: string, sessionId: string): Promise<ColdTeamRead> {
+    try {
+      // A partial sidebar list is useful but cannot prove a cold Team identity.
+      const directory = await opendir(projectSessionDirectory(cwd, this.sessionsRoot));
+      let count = 0;
+      for await (const _entry of directory) {
+        if (++count > MAX_CACHED_SESSIONS * 2) return { state: 'unknown', reason: 'oversized' };
+      }
+      const summary = await this.resolve(cwd, sessionId);
+      if (!summary || !isSafeSessionPath(this.sessionsRoot, summary.path)
+        || dirname(resolve(summary.path)) !== projectSessionDirectory(cwd, this.sessionsRoot)) return { state: 'unknown', reason: 'missing' };
+      const [file, canonicalRoot, canonicalDir, canonicalFile] = await Promise.all([
+        lstat(summary.path), realpath(this.sessionsRoot), realpath(dirname(summary.path)), realpath(summary.path),
+      ]);
+      if (!file.isFile() || canonicalDir !== join(canonicalRoot, basename(dirname(summary.path)))
+        || canonicalFile !== resolve(summary.path)) return { state: 'unknown', reason: 'unavailable' };
+      const limit = 8 * 1024 * 1024;
+      if (file.size < 1 || file.size > limit) return { state: 'unknown', reason: 'oversized' };
+      const handle = await open(summary.path, 'r');
+      let text: string;
+      try {
+        const live = await handle.stat();
+        if (!live.isFile() || live.size !== file.size || live.mtimeMs !== file.mtimeMs || live.size > limit) return { state: 'unknown', reason: 'unavailable' };
+        const bytes = Buffer.alloc(live.size + 1);
+        const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+        const after = await handle.stat();
+        if (bytesRead !== live.size || after.size !== file.size || after.mtimeMs !== live.mtimeMs) return { state: 'unknown', reason: 'unavailable' };
+        text = bytes.toString('utf8', 0, bytesRead);
+      } finally { await handle.close(); }
+      if (!text.endsWith('\n')) return { state: 'unknown', reason: 'partial-tail' };
+      const lines = text.trimEnd().split('\n');
+      let header: unknown;
+      try { header = JSON.parse(lines.shift() ?? ''); }
+      catch { return { state: 'unknown', reason: 'corrupt' }; }
+      if (!isRecord(header) || header.type !== 'session' || header.id !== sessionId || header.cwd !== resolve(cwd)) return { state: 'unknown', reason: 'corrupt' };
+      const entries = new Map<string, { parentId: string | null; team: AgentTeam | null | undefined; teamId?: string; sequence?: number }>();
+      let leaf: string | null = null;
+      for (const line of lines) {
+        let entry: unknown;
+        try { entry = JSON.parse(line); }
+        catch { return { state: 'unknown', reason: 'corrupt' }; }
+        if (!isRecord(entry) || typeof entry.id !== 'string' || !entry.id || entries.has(entry.id)
+          || (entry.parentId !== null && typeof entry.parentId !== 'string')) return { state: 'unknown', reason: 'corrupt' };
+        let team: AgentTeam | null | undefined;
+        let teamId: string | undefined;
+        let sequence: number | undefined;
+        if (entry.type === 'custom' && entry.customType === 'fate-agent-team-event') {
+          const event = entry.data;
+          if (!isRecord(event) || event.kind !== 'fate-agent-team-event' || event.version !== 1
+            || typeof event.teamId !== 'string' || !Number.isSafeInteger(event.sequence) || !isRecord(event.payload)) return { state: 'unknown', reason: 'corrupt' };
+          teamId = event.teamId;
+          sequence = event.sequence as number;
+          if (event.type === 'team.deleted') team = null;
+          else {
+            const parsed = agentTeamSchema.safeParse(event.payload.team);
+            if (!parsed.success || parsed.data.id !== teamId || parsed.data.rootSessionId !== sessionId) return { state: 'unknown', reason: 'corrupt' };
+            team = parsed.data;
+          }
+        }
+        entries.set(entry.id, { parentId: entry.parentId, team, ...(teamId ? { teamId } : {}), ...(sequence !== undefined ? { sequence } : {}) });
+        leaf = entry.id;
+      }
+      const branch = new Set<string>();
+      const teams = new Map<string, AgentTeam | null>();
+      const sequences = new Map<string, number>();
+      while (leaf !== null) {
+        if (branch.has(leaf)) return { state: 'unknown', reason: 'corrupt' };
+        branch.add(leaf);
+        const entry = entries.get(leaf);
+        if (!entry) return { state: 'unknown', reason: 'corrupt' };
+        if (entry.teamId) {
+          const last = sequences.get(entry.teamId);
+          if (last !== undefined && entry.sequence! > last) return { state: 'unknown', reason: 'corrupt' };
+          sequences.set(entry.teamId, entry.sequence!);
+          if (!teams.has(entry.teamId)) teams.set(entry.teamId, entry.team ?? null);
+        }
+        leaf = entry.parentId;
+      }
+      return { state: 'ok', teams };
+    } catch { return { state: 'unknown', reason: 'unavailable' }; }
+  }
+
   async resolve(cwd: string, sessionId: string): Promise<SessionSummary | undefined> {
     return (await this.list(cwd, null)).find((session) => session.id === sessionId);
   }
 
-  /**
-   * Loads one selected JSONL file for the read-only session view. This is the
-   * only full transcript read on the normal navigation path; list/sidebar reads
-   * remain bounded metadata work and never initialize a Pi runtime.
-   */
+  /** Stream only the selected saved JSONL. No whole-file string is allocated;
+   * the cold view keeps bounded recent content plus compact tree/usage metadata. */
   async snapshot(cwd: string, sessionId: string, knownSummary?: SessionSummary): Promise<SessionSnapshot | undefined> {
     const summary = knownSummary?.id === sessionId ? knownSummary : await this.resolve(cwd, sessionId);
-    if (!summary || !isSafeSessionPath(this.sessionsRoot, summary.path)) return undefined;
+    if (!summary || !isSafeSessionPath(this.sessionsRoot, summary.path)
+      || dirname(resolve(summary.path)) !== projectSessionDirectory(cwd, this.sessionsRoot)) return undefined;
     try {
       const stats = await lstat(summary.path);
       if (!stats.isFile() || stats.isSymbolicLink()) return undefined;
-      if (stats.size > MAX_SESSION_SNAPSHOT_BYTES) {
-        throw new Error(`The saved session is larger than ${Math.floor(MAX_SESSION_SNAPSHOT_BYTES / 1024 / 1024)} MiB and cannot be previewed safely.`);
-      }
-      const source = await readFile(summary.path, 'utf8');
-      const entries: JsonRecord[] = [];
-      let header: JsonRecord | null = null;
-      for (const line of source.split(/\r?\n/gu)) {
-        const parsed = parseJsonRecord(line);
-        if (!parsed) continue;
-        if (!header) {
-          if (parsed.type !== 'session' || typeof parsed.id !== 'string' || !parsed.id) return undefined;
-          header = parsed;
-          continue;
-        }
-        if (!isSnapshotEntry(parsed)) continue;
-        entries.push(parsed);
-        if (entries.length > MAX_SESSION_SNAPSHOT_ENTRIES) {
-          throw new Error(`The saved session has more than ${MAX_SESSION_SNAPSHOT_ENTRIES.toLocaleString()} entries and cannot be previewed safely.`);
-        }
-      }
-      if (!header || header.id !== sessionId) return undefined;
-      return { summary, entries, branch: activeSnapshotBranch(entries) };
+      const read = await readSessionSnapshot(summary.path, sessionId);
+      if (!read) return undefined;
+      const firstMessage = read.firstMessage ?? summary.firstMessage;
+      const title = read.name !== undefined ? sessionDisplayTitle(read.name ?? undefined, firstMessage) : summary.title;
+      return {
+        summary: {
+          ...summary, title, firstMessage,
+          messageCount: read.messageCount,
+          ...(read.lastActivityTime === undefined ? {} : { modifiedAt: new Date(read.lastActivityTime).toISOString() }),
+        },
+        entries: read.entries,
+        branch: read.branch,
+        ...(read.previewNotice === undefined ? {} : { previewNotice: read.previewNotice }),
+      };
     } catch (error) {
-      if (error instanceof Error && /cannot be previewed safely/u.test(error.message)) throw error;
+      if (error instanceof SessionSnapshotLimitError) throw error;
       return undefined;
     }
+  }
+
+  /** Read one bounded display page directly from the saved JSONL. Never constructs
+   * a SessionManager or changes selection. Cursor offsets are internal to the
+   * caller's server-side token table, never accepted from a renderer. */
+  async readHistoryPage(cwd: string, sessionId: string, offset = 0, expectedStamp?: string): Promise<{ items: SnapshotItem[]; nextOffset: number | null; stamp: string; oversizedItems: number; mediaOmitted: boolean } | undefined> {
+    const summary = await this.resolve(cwd, sessionId);
+    if (!summary || !isSafeSessionPath(this.sessionsRoot, summary.path)
+      || dirname(resolve(summary.path)) !== projectSessionDirectory(cwd, this.sessionsRoot)) return undefined;
+    // Refuse symlinked session files or redirected project directories. A
+    // listed ID is not authority to read an arbitrary path outside Pi storage.
+    const directory = projectSessionDirectory(cwd, this.sessionsRoot);
+    const [fileLink, canonicalRoot, canonicalDir, canonicalFile] = await Promise.all([
+      lstat(summary.path), realpath(this.sessionsRoot), realpath(directory), realpath(summary.path),
+    ]).catch(() => [null, '', '', ''] as const);
+    if (!fileLink?.isFile() || fileLink.isSymbolicLink() || canonicalDir !== join(canonicalRoot, basename(directory))
+      || dirname(canonicalFile) !== canonicalDir) return undefined;
+    const handle = await open(summary.path, 'r').catch(() => null);
+    if (!handle) return undefined;
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) return undefined;
+      const finalPath = await realpath(summary.path).catch(() => null);
+      const finalStat = finalPath ? await lstat(summary.path).catch(() => null) : null;
+      if (finalPath !== canonicalFile || !finalStat?.isFile() || finalStat.isSymbolicLink()
+        || stat.dev !== finalStat.dev || stat.ino !== finalStat.ino) return undefined;
+      const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+      if (expectedStamp && stamp !== expectedStamp) throw new Error('RESYNC_REQUIRED');
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset >= stat.size) throw new Error('RESYNC_REQUIRED');
+      // Verify the session header on every read; a replaced file cannot borrow an old listing.
+      const headerBuffer = Buffer.alloc(Math.min(64 * 1024, stat.size));
+      const headerRead = await handle.read(headerBuffer, 0, headerBuffer.length, 0);
+      const headerEnd = headerBuffer.subarray(0, headerRead.bytesRead).indexOf(10);
+      if (headerEnd < 0) throw new Error('The saved session header is unavailable.');
+      const header = parseJsonRecord(headerBuffer.subarray(0, headerEnd).toString('utf8'));
+      if (header?.type !== 'session' || header.id !== sessionId) throw new Error('The saved session header does not match its identity.');
+      const items: SnapshotItem[] = [];
+      let mediaOmitted = false;
+      let oversizedItems = 0;
+      let position = offset === 0 ? headerEnd + 1 : offset;
+      let lineStart = position;
+      let nextOffset: number | null = null;
+      let pageFull = false;
+      let pageBytes = 1024;
+      const addItem = (item: SnapshotItem): boolean => {
+        const size = Buffer.byteLength(JSON.stringify(item), 'utf8') + 2;
+        if (items.length && pageBytes + size > 768 * 1024) {
+          nextOffset = lineStart; // Retry this whole line on the next page.
+          pageFull = true;
+          return false;
+        }
+        items.push(item);
+        pageBytes += size;
+        return true;
+      };
+      const pushLine = (line: Buffer, oversized: SnapshotRecord | null | undefined, lineEnd: number): void => {
+        if (oversized !== undefined) {
+          // A malformed/ambiguous large record cannot be declared a visible
+          // message OR silently skipped. Refuse this history page explicitly.
+          if (!oversized || typeof oversized.type !== 'string' || typeof oversized.id !== 'string' || !oversized.id
+            || !(typeof oversized.parentId === 'string' || oversized.parentId === null)) {
+            throw new Error('Oversized saved record cannot be classified safely.');
+          }
+          if (hiddenHistoryEntryTypes.has(oversized.type) || oversized.type === 'custom_message' && oversized.display !== true) return;
+          if (oversized.type === 'message' && !['user', 'assistant', 'toolResult'].includes(String(oversized.messageRole))) {
+            throw new Error('Oversized saved message cannot be classified safely.');
+          }
+          if (oversized.type === 'compaction') {
+            addItem({ kind: 'message', id: oversized.id.slice(0, 500), role: 'system', text: 'Context compacted',
+              timestamp: typeof oversized.timestamp === 'string' && Number.isFinite(Date.parse(oversized.timestamp)) ? Date.parse(oversized.timestamp) : 0,
+              clipped: false, mediaOmitted: false });
+            return;
+          }
+          if (oversized.type !== 'message' && oversized.type !== 'custom_message') {
+            throw new Error('Oversized saved record cannot be classified safely.');
+          }
+          if (addItem({ kind: 'message', id: `oversized:${lineEnd}`, role: 'system', text: 'Saved item exceeds the display read limit; original JSONL is unchanged.', timestamp: 0, clipped: true, mediaOmitted: true })) {
+            oversizedItems++;
+            mediaOmitted = true; // Displayable content might include unsupported media.
+          }
+          return;
+        }
+        const entry = parseJsonRecord(line.toString('utf8'));
+        // Match PiRuntimeService's saved-branch display projection: custom
+        // messages marked display=true and compaction boundaries are transcript
+        // rows, not disposable ledger metadata. Do not serialize raw records.
+        const message = entry?.type === 'message' && isRecord(entry.message) ? entry.message : null;
+        const displayedCustom = entry?.type === 'custom_message' && entry.display === true;
+        const compaction = entry?.type === 'compaction';
+        if (message || displayedCustom || compaction) {
+          const contentSource = message ?? entry!;
+          const isTool = message?.role === 'toolResult';
+          const role = message?.role === 'user' || message?.role === 'assistant' ? message.role : 'system';
+          // Compaction summaries can include private context. Pi's timeline
+          // shows only this fixed marker, so the history page does the same.
+          const content = compaction ? 'Context compacted' : messageText(contentSource);
+          const encoded = Buffer.from(content, 'utf8');
+          let limit = Math.min(4096, encoded.length);
+          if (limit < encoded.length) while (limit > 0 && (encoded[limit]! & 0xc0) === 0x80) limit--;
+          const hasMedia = !compaction && Array.isArray(contentSource.content)
+            && contentSource.content.some((part) => isRecord(part) && part.type === 'image');
+          const entryTime = typeof entry?.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+          const timestamp = typeof message?.timestamp === 'number' && Number.isFinite(message.timestamp) ? message.timestamp
+            : Number.isFinite(entryTime) ? entryTime : 0;
+          const added = addItem({ kind: isTool ? 'tool' : 'message', id: typeof entry?.id === 'string' ? entry.id.slice(0, 500) : `entry:${lineEnd}`,
+            ...(isTool ? { name: typeof message?.toolName === 'string' ? message.toolName.slice(0, 200) : 'Tool', status: message?.isError === true ? 'error' : 'succeeded' } : { role }),
+            text: encoded.subarray(0, limit).toString('utf8'), timestamp,
+            clipped: limit < encoded.length, mediaOmitted: hasMedia });
+          if (added && hasMedia) mediaOmitted = true;
+        } else if (!entry || entry.type === 'message') {
+          if (addItem({ kind: 'message', id: `unreadable:${lineEnd}`, role: 'system', text: 'Saved item cannot be displayed; original JSONL is unchanged.',
+            timestamp: 0, clipped: true, mediaOmitted: true })) mediaOmitted = true;
+        }
+      };
+      let consumed = 0;
+      let carry = Buffer.alloc(0);
+      let oversized: OversizedRecordFields | null = null;
+      const chunk = Buffer.alloc(64 * 1024);
+      // Finish any partially consumed line before paging. An offset inside a
+      // JSONL record would silently lose that message on the next page.
+      while (position < stat.size && items.length < 128 && (consumed < 768 * 1024 || carry.length > 0 || oversized !== null)) {
+        const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, stat.size - position), position);
+        if (!bytesRead) break;
+        let start = 0;
+        while (start < bytesRead) {
+          const newline = chunk.subarray(start, bytesRead).indexOf(10);
+          const end = newline < 0 ? bytesRead : start + newline;
+          const part = chunk.subarray(start, end);
+          if (!oversized && carry.length + part.length <= MAX_HISTORY_RECORD_BUFFER_BYTES) carry = Buffer.concat([carry, part]);
+          else {
+            if (!oversized) {
+              oversized = new OversizedRecordFields();
+              oversized.write(carry);
+              carry = Buffer.alloc(0);
+            }
+            oversized.write(part);
+          }
+          consumed += part.length + Number(newline >= 0);
+          if (newline < 0) { position += bytesRead - start; break; }
+          position += end - start + 1;
+          pushLine(carry, oversized?.finish(), position);
+          carry = Buffer.alloc(0); oversized = null;
+          start = end + 1;
+          if (pageFull) break;
+          lineStart = position;
+          if (items.length >= 128 || consumed >= 768 * 1024) { nextOffset = position < stat.size ? position : null; break; }
+        }
+        if (nextOffset !== null) break;
+      }
+      if (!pageFull && position === stat.size && (carry.length || oversized)) pushLine(carry, oversized?.finish(), position);
+      if (nextOffset === null && position < stat.size) nextOffset = position;
+      const after = await handle.stat();
+      if (`${after.dev}:${after.ino}:${after.size}:${after.mtimeMs}:${after.ctimeMs}` !== stamp) throw new Error('RESYNC_REQUIRED');
+      return { items, nextOffset, stamp, oversizedItems, mediaOmitted };
+    } finally { await handle.close(); }
   }
 
   async rename(cwd: string, sessionId: string, name: string): Promise<void> {
@@ -576,8 +826,11 @@ export class PiSessionRepository {
     if (!resolvedPath) throw new Error('The selected session path is unavailable.');
     const stats = await lstat(resolvedPath);
     if (!stats.isFile() || stats.isSymbolicLink()) throw new Error('The selected session is not a regular saved session file.');
+    if (stats.size > MAX_SESSION_BRANCH_REWRITE_BYTES) {
+      throw new Error('This session is too large to safely rewrite a conversation fork. Its history was not changed.');
+    }
     for (let attempt = 0; attempt < SESSION_BRANCH_REWRITE_RETRIES; attempt += 1) {
-      const before = await readFile(resolvedPath, 'utf8');
+      const before = await readBoundedBranchRewriteSource(resolvedPath);
       const parsed = parseEntriesForBranchRewrite(before);
       const header = parsed.find((entry) => entry.type === 'session');
       if (!header || header.id !== sessionId) throw new Error('The saved session header is invalid.');
@@ -625,12 +878,12 @@ export class PiSessionRepository {
       }
       if (!removedIds.size || (activeLeafId && removedIds.has(activeLeafId))) throw new Error('Switch to a different conversation path before deleting this fork.');
       const next = parsed.filter((entry) => !isValidSessionEntry(entry) || (!removedIds.has(entry.id) && !referencedRemovedEntry(entry, removedIds)));
-      const latest = await readFile(resolvedPath, 'utf8');
+      const latest = await readBoundedBranchRewriteSource(resolvedPath);
       if (latest !== before) continue;
       const temporaryPath = `${resolvedPath}.${process.pid}.${Date.now()}.branch-delete.tmp`;
       try {
         await writeFile(temporaryPath, serializeEntries(next), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-        if (await readFile(resolvedPath, 'utf8') !== before) continue;
+        if (await readBoundedBranchRewriteSource(resolvedPath) !== before) continue;
         await replaceFileAtomically(temporaryPath, resolvedPath);
         this.invalidate(cwd);
         return;

@@ -1,0 +1,68 @@
+.connection-status,
+.workspace-control-panel {
+  min-width: 0;
+  color: var(--theme-text, #ededed);
+  background: var(--theme-raised, #151515);
+  border: 1px solid var(--theme-border, #555);
+  font-family: var(--font-interface, monospace);
+  font-size: var(--skin-composer-font-size, 11px);
+  line-height: 1.5;
+}
+.connection-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 4px 8px;
+}
+.connection-status-copy {
+  display: flex;
+  flex: 1 1 20ch;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  overflow-wrap: anywhere;
+}
+.connection-status-copy strong { font-weight: 600; }
+.connection-status time { font: inherit; }
+.connection-warning { flex-basis: 100%; margin: 0; }
+.workspace-control-panel { padding: 8px; }
+.workspace-control-panel h2,
+.workspace-control-panel h3 { margin: 0 0 4px; font-size: inherit; }
+.workspace-control-panel p { margin: 4px 0; overflow-wrap: anywhere; }
+.workspace-control-panel fieldset { min-width: 0; margin: 8px 0; padding: 8px; border: 1px solid var(--theme-border, #555); }
+.workspace-control-panel legend { padding: 0 4px; }
+.connection-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.connection-status button,
+.workspace-control-panel button,
+.workspace-control-panel select,
+.workspace-control-panel input {
+  min-height: 28px;
+  max-width: 100%;
+  border: 1px solid var(--theme-border, #555);
+  border-radius: 0;
+  padding: 3px 8px;
+  background: var(--theme-background, #0c0c0c);
+  color: inherit;
+  font: inherit;
+}
+.workspace-control-panel label { display: block; margin: 4px 0; }
+.workspace-control-panel input { width: 100%; }
+.connection-status button,
+.workspace-control-panel button { cursor: pointer; }
+.connection-status button:focus-visible,
+.workspace-control-panel :is(button, input, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--theme-text, #ededed);
+  outline-offset: 2px;
+}
+.workspace-control-panel button:disabled { opacity: 0.6; cursor: not-allowed; }
+.connection-inline-review { border-left: 2px solid var(--theme-text, #ededed); padding: 4px 8px; margin: 8px 0; }
+.connection-error { border-left: 2px solid var(--theme-text, #ededed); padding-left: 8px; }
+.connection-command-list { list-style: none; margin: 0; padding: 0; }
+.connection-command-list > li { border-top: 1px solid var(--theme-border, #555); padding: 6px 0; overflow-wrap: anywhere; }
+@media (forced-colors: active) {
+  .connection-status,
+  .workspace-control-panel,
+  .workspace-control-panel fieldset { border-color: CanvasText; }
+  .connection-status button:focus-visible,
+  .workspace-control-panel :is(button, input, select, [tabindex]):focus-visible { outline-color: Highlight; }
+}

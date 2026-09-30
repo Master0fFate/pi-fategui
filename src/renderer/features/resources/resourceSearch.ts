@@ -1,3 +1,4 @@
+import { getFateApi, getFateApiOptional, getDesktopApi } from '../../platform/api';
 import { useEffect, useMemo, useState } from 'react';
 import type { FileEntry, RuntimeState } from '../../../shared/contracts/ipc';
 import { useBrowserStore } from '../../stores/browserStore';
@@ -48,14 +49,14 @@ export function useResourceSearch(query: string, enabled = true): ResourceSearch
   const needle = query.trim().toLocaleLowerCase();
 
   useEffect(() => {
-    if (!enabled || !needle || !projectPath || !('piDesktop' in window) || typeof window.piDesktop.searchFiles !== 'function') {
+    if (!enabled || !needle || !projectPath || !getFateApiOptional() || typeof getFateApiOptional()?.searchFiles !== 'function') {
       setFileState({ entries: [], searching: false, truncated: false, error: null });
       return undefined;
     }
     let active = true;
     setFileState({ entries: [], searching: true, truncated: false, error: null });
     const timer = window.setTimeout(() => {
-      void window.piDesktop.searchFiles(query.trim(), 40).then((result) => {
+      void getFateApi().searchFiles(query.trim(), 40).then((result) => {
         const currentProject = useRuntimeStore.getState().runtime.project;
         if (active && currentProject?.path === projectPath) setFileState({
           entries: result.entries,
@@ -157,8 +158,8 @@ export async function openResource(item: ResourceSearchItem): Promise<void> {
       return;
     }
     if (item.kind === 'browser-tab') {
-      if (!('piDesktop' in window)) throw new Error('The Browser bridge is unavailable.');
-      const state = await window.piDesktop.activateBrowserTab(item.tabId);
+      if (!getFateApiOptional()) throw new Error('The Browser bridge is unavailable.');
+      const state = await getDesktopApi().activateBrowserTab(item.tabId);
       useBrowserStore.getState().hydrate(state, runtime.project?.path ?? null);
       ui.setBrowserOpen(true);
       return;
@@ -209,13 +210,13 @@ export function piSearchItems(
 }
 
 async function switchSession(sessionId: string): Promise<void> {
-  if (!('piDesktop' in window)) throw new Error('The session bridge is unavailable.');
+  if (!getFateApiOptional()) throw new Error('The session bridge is unavailable.');
   const store = useRuntimeStore.getState();
   const origin = store.runtime;
   const generation = store.beginSessionSwitch(sessionId);
   if (generation === null) return;
   try {
-    const state = await window.piDesktop.switchSession(sessionId);
+    const state = await getFateApi().switchSession(sessionId);
     const latest = useRuntimeStore.getState();
     if (!latest.completeSessionSwitch(generation, state)) latest.cancelSessionSwitch(generation, state);
   } catch (error) {

@@ -30,16 +30,20 @@ describe('restricted production Agent executor', () => {
     const home = await new HomeOwnership(path.join(root, 'sessions')).open({ agentId: preset.agentId, revision: 1, instructions: preset.instructions, projectPath, preset });
     const context = () => ({ trusted: true, permission: 'edit' as const, binding: { runId: 'manual:test', definitionRevision: 1, taskRevision: 1, permissionRevision: 0, projectPath } });
     const repository = new AgentRepository(path.join(root, 'data'));
-    const session = await createAgentExecution({ preset, sessionFile: home.file, modelRuntime, context, approvals: new ApprovalGate(repository.approvalJournal(projectPath), context, () => undefined), contextPrompts: ['Approved bounded project context.'] });
+    const readMonitorDashboard = vi.fn(async () => { throw new Error('No read was requested.'); });
+    const session = await createAgentExecution({ preset, sessionFile: home.file, modelRuntime, context, approvals: new ApprovalGate(repository.approvalJournal(projectPath), context, () => undefined), contextPrompts: ['Approved bounded project context.'], readMonitorDashboard });
     try {
       expect(memory).toHaveBeenCalledWith(expect.objectContaining({ packages: [], extensions: [], skills: [], prompts: [], themes: [] }));
       expect(install).not.toHaveBeenCalled();
-      expect(session.getActiveToolNames().sort()).toEqual(['edit', 'find', 'grep', 'ls', 'read', 'write']);
+      expect(session.getActiveToolNames().sort()).toEqual(['edit', 'find', 'grep', 'ls', 'read', 'read_monitor_dashboard', 'write']);
+      expect(readMonitorDashboard).not.toHaveBeenCalled();
       expect(session.resourceLoader.getExtensions().extensions).toEqual([]);
-      expect(session.agent.state.systemPrompt).toContain('Canonical Agent persona.');
-      expect(session.agent.state.systemPrompt).toContain('Approved bounded project context.');
-      expect(session.agent.state.systemPrompt).not.toContain('UNAPPROVED_SYSTEM_FILE');
-      expect(session.agent.state.systemPrompt).not.toContain('UNAPPROVED_CONTEXT_DISCOVERY');
+      // The SDK now materializes the provider system message when a turn starts.
+      const systemPrompt = session.resourceLoader.getAppendSystemPrompt().join('\n');
+      expect(systemPrompt).toContain('Canonical Agent persona.');
+      expect(systemPrompt).toContain('Approved bounded project context.');
+      expect(systemPrompt).not.toContain('UNAPPROVED_SYSTEM_FILE');
+      expect(systemPrompt).not.toContain('UNAPPROVED_CONTEXT_DISCOVERY');
     } finally { session.dispose(); }
   });
 });

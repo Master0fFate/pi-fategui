@@ -1,3 +1,4 @@
+import { getFateApiOptional, getDesktopApi, getDesktopApiOptional } from '../../platform/api';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Check, Copy, Download, Expand, Image as ImageIcon, ImageOff, X } from 'lucide-react';
 import { Children, createContext, isValidElement, memo, useCallback, useContext, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
@@ -175,7 +176,7 @@ function CinematicImageViewer({ image, onClose }: { image: OpenImage | null; onC
     setSaving(true);
     setSaved(false);
     try {
-      const result = await window.piDesktop.saveImageAs({ ...downloadable, suggestedName: image.label });
+      const result = await getDesktopApi().saveImageAs({ ...downloadable, suggestedName: image.label });
       setSaved(result.saved);
     } catch {
       // Keep the action available so the user can retry.
@@ -191,12 +192,16 @@ function CinematicImageViewer({ image, onClose }: { image: OpenImage | null; onC
         {image ? (
           <Dialog.Content
             className="cinematic-image-viewer"
+            aria-modal="true"
             aria-describedby={undefined}
             onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+            onPointerDownOutside={onClose}
           >
             <Dialog.Title className="visually-hidden">{image.label}</Dialog.Title>
             <img src={image.src} alt={image.label} referrerPolicy="no-referrer" />
             <footer><span>{image.label}</span><small>Click outside or press Esc to close</small></footer>
+            {/* Focus Close first; auto-focusing Save opens a tooltip that consumes Escape. */}
+            <Dialog.Close className="cinematic-image-close" type="button" aria-label="Close image viewer" onClick={onClose}><X size={18} /></Dialog.Close>
             {downloadable ? (
               <AppTooltip content={saved ? 'Image saved' : 'Save image as…'}>
                 <button
@@ -210,7 +215,6 @@ function CinematicImageViewer({ image, onClose }: { image: OpenImage | null; onC
                 </button>
               </AppTooltip>
             ) : null}
-            <Dialog.Close className="cinematic-image-close" aria-label="Close image viewer"><X size={18} /></Dialog.Close>
           </Dialog.Content>
         ) : null}
       </Dialog.Portal>
@@ -245,11 +249,11 @@ function ChatImage({ src, alt = '' }: { src?: string | undefined; alt?: string |
     setFailed(false);
     setLocalSource(null);
     if (!localReference) return () => { cancelled = true; };
-    if (!src || !('piDesktop' in window) || typeof window.piDesktop.readLocalImage !== 'function') {
+    if (!src || !getFateApiOptional() || typeof getDesktopApiOptional()?.readLocalImage !== 'function') {
       setFailed(true);
       return () => { cancelled = true; };
     }
-    void window.piDesktop.readLocalImage(src).then((image) => {
+    void getDesktopApi().readLocalImage(src).then((image) => {
       if (!cancelled) setLocalSource(`data:${image.mimeType};base64,${image.data}`);
     }).catch(() => {
       if (!cancelled) setFailed(true);

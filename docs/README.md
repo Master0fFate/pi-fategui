@@ -12,6 +12,7 @@ This directory holds the focused guides referenced by the [project README](../RE
 - **Save Agents, tasks, and routines or copy old Automations** — [Agents library and upgrade](agents.md).
 - **Drive multi-agent work** — [Agent orchestration](agent-orchestration.md) (one executor for direct agents and dependency-based workflows).
 - **Manage longer objectives** — [GoalMax and durable work](goalmax.md).
+- **Connect external tools** — [MCP in Fate UI](mcp.md).
 - **Understand the embedded runtime** — [Pi SDK compatibility](sdk-compatibility.md).
 - **Review trust, permissions, and isolation** — [Architecture and security](architecture.md) and [SECURITY.md](../SECURITY.md).
 - **Build, package, or cut a release** — [Development and release](development.md).

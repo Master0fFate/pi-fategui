@@ -1,3 +1,5 @@
+import { getDesktopApi, getDesktopApiOptional, hasCapability } from '../../platform/api';
+import { unavailableExplanation } from '../../platform/capabilityPolicy';
 import '@xterm/xterm/css/xterm.css';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
@@ -12,7 +14,7 @@ export function TerminalPanel() {
   const setOpen = useUiStore((state) => state.setTerminalOpen);
 
   useEffect(() => {
-    if (!host.current || !('piDesktop' in window)) return;
+    if (!host.current || !hasCapability('manualTerminal') || !getDesktopApiOptional()) return;
     const terminalTheme = () => {
       const style = getComputedStyle(document.documentElement);
       return {
@@ -62,24 +64,24 @@ export function TerminalPanel() {
       if (!terminalId || (terminal.cols === lastSentColumns && terminal.rows === lastSentRows)) return;
       lastSentColumns = terminal.cols;
       lastSentRows = terminal.rows;
-      void window.piDesktop.resizeTerminal(terminalId, terminal.cols, terminal.rows).catch(() => undefined);
+      void getDesktopApi().resizeTerminal(terminalId, terminal.cols, terminal.rows).catch(() => undefined);
     };
     const scheduleFit = () => {
       if (resizeFrame !== null) return;
       resizeFrame = requestAnimationFrame(fitAndSync);
     };
-    const unsubscribe = window.piDesktop.onTerminalEvent((event) => {
+    const unsubscribe = getDesktopApi().onTerminalEvent((event) => {
       if (event.id !== terminalId) return;
       if (event.type === 'data') {
         terminal.write(event.data, () => {
-          if (terminalId && typeof window.piDesktop.acknowledgeTerminal === 'function') {
-            void window.piDesktop.acknowledgeTerminal(terminalId, event.data.length).catch(() => undefined);
+          if (terminalId && typeof getDesktopApiOptional()?.acknowledgeTerminal === 'function') {
+            void getDesktopApi().acknowledgeTerminal(terminalId, event.data.length).catch(() => undefined);
           }
         });
       } else terminal.writeln(`\r\n[manual terminal exited: ${event.exitCode}]`);
     });
     const input = terminal.onData((data) => {
-      if (terminalId) void window.piDesktop.writeTerminal(terminalId, data);
+      if (terminalId) void getDesktopApi().writeTerminal(terminalId, data);
     });
     const resize = new ResizeObserver(scheduleFit);
     resize.observe(host.current);
@@ -91,9 +93,9 @@ export function TerminalPanel() {
     window.addEventListener('fate-theme-change', syncTheme);
     window.addEventListener('fate-font-change', syncFont);
 
-    void window.piDesktop.createTerminal(terminal.cols, terminal.rows).then((created) => {
+    void getDesktopApi().createTerminal(terminal.cols, terminal.rows).then((created) => {
       if (disposed) {
-        void window.piDesktop.closeTerminal(created.id);
+        void getDesktopApi().closeTerminal(created.id);
         return;
       }
       terminalId = created.id;
@@ -114,14 +116,15 @@ export function TerminalPanel() {
       input.dispose();
       unsubscribe();
       terminal.dispose();
-      if (terminalId) void window.piDesktop.closeTerminal(terminalId).catch(() => undefined);
+      if (terminalId) void getDesktopApi().closeTerminal(terminalId).catch(() => undefined);
     };
   }, []);
 
   return (
     <section className="terminal-panel" aria-label="Manual integrated terminal">
       <header><span><TerminalSquare size={14} /><span className="icon-label">Terminal</span></span><em>Separate from Pi tools</em><button type="button" aria-label="Close terminal" onClick={() => setOpen(false)}><X size={14} /></button></header>
-      {error ? <div className="terminal-error" role="alert">{error}</div> : <div ref={host} className="terminal-host" />}
+      {!hasCapability('manualTerminal') || !getDesktopApiOptional() ? <div className="terminal-error">{unavailableExplanation.manualTerminal}</div>
+        : error ? <div className="terminal-error" role="alert">{error}</div> : <div ref={host} className="terminal-host" />}
     </section>
   );
 }

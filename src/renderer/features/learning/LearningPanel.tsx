@@ -1,3 +1,4 @@
+import { getDesktopApi, getDesktopApiOptional } from '../../platform/api';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Brain, X } from 'lucide-react';
@@ -49,10 +50,10 @@ export function LearningPanel() {
   stateRef.current = state;
   captureRef.current = capture;
   const refresh = useCallback(async () => {
-    if (!window.piDesktop?.getLearningState) return;
+    if (!getDesktopApiOptional()?.getLearningState) return;
     const current = generation.current;
     try {
-      const next = await window.piDesktop.getLearningState(editScope);
+      const next = await getDesktopApi().getLearningState(editScope);
       if (current !== generation.current) return;
       if (stateRef.current?.binding && next.binding && stateRef.current.binding.scope !== next.binding.scope) { setEditor(null); setCapture(null); setExcerpts([]); }
       setState(next);
@@ -69,13 +70,13 @@ export function LearningPanel() {
     setState(null); setEditor(null);
     setManual(correction ?? ''); setIntent(''); setCapture(null); setExcerpts([]); setSelectedSources([]); setFilePath(''); setError(null); setNotice(null); setBusy(false);
     void refresh();
-    const unsubscribe = window.piDesktop?.onLearningChanged?.(() => { void refresh(); });
+    const unsubscribe = getDesktopApiOptional()?.onLearningChanged?.(() => { void refresh(); });
     return () => {
       ++generation.current; unsubscribe?.();
       const binding = stateRef.current?.binding;
       if (binding) {
-        if (request.current) void window.piDesktop.cancelLearning({ binding, id: request.current }).catch(() => undefined);
-        if (captureRef.current) void window.piDesktop.cancelLearning({ binding, id: captureRef.current.id }).catch(() => undefined);
+        if (request.current) void getDesktopApi().cancelLearning({ binding, id: request.current }).catch(() => undefined);
+        if (captureRef.current) void getDesktopApi().cancelLearning({ binding, id: captureRef.current.id }).catch(() => undefined);
       }
       request.current = null;
     };
@@ -89,7 +90,7 @@ export function LearningPanel() {
   const mutate = async (action: MutationAction, review?: Editor['review']) => {
     if (!state?.binding || !snapshot) return;
     const current = generation.current;
-    const result = await window.piDesktop.mutateLearning({ binding: state.binding, epoch: review?.epoch ?? snapshot.epoch, expectedRevision: review?.expectedRevision ?? snapshot.revision, ...action } as LearningMutation);
+    const result = await getDesktopApi().mutateLearning({ binding: state.binding, epoch: review?.epoch ?? snapshot.epoch, expectedRevision: review?.expectedRevision ?? snapshot.revision, ...action } as LearningMutation);
     if (current === generation.current) { setState(result); setEditor(null); setCapture(null); }
   };
   const preview = () => run(async () => {
@@ -101,10 +102,10 @@ export function LearningPanel() {
     if (manual.trim()) sources.push({ kind: 'manual', text: manual });
     if (filePath.trim()) sources.push({ kind: 'file', path: filePath.trim(), startLine, endLine });
     const current = generation.current;
-    if (capture) await window.piDesktop.cancelLearning({ binding: state.binding, id: capture.id });
+    if (capture) await getDesktopApi().cancelLearning({ binding: state.binding, id: capture.id });
     const requestId = crypto.randomUUID(); request.current = requestId;
     try {
-      const next = await window.piDesktop.previewLearningEvidence({ binding: state.binding, requestId, sources });
+      const next = await getDesktopApi().previewLearningEvidence({ binding: state.binding, requestId, sources });
       if (current !== generation.current) return;
       setCapture(next); setExcerpts(next.evidence.map(({ id, text }) => ({ id, text })));
     } finally { if (request.current === requestId) request.current = null; }
@@ -115,7 +116,7 @@ export function LearningPanel() {
     const id = crypto.randomUUID(); request.current = id;
     const current = generation.current;
     try {
-      const result = await window.piDesktop.generateLearningDraft({ binding: state.binding, epoch: snapshot.epoch, expectedRevision: snapshot.revision, captureId: capture.id, captureDigest: capture.digest, requestId: id, ...(editor ? { kind: editor.content.kind } : {}), correction: intent, ...state.provider, consent: true });
+      const result = await getDesktopApi().generateLearningDraft({ binding: state.binding, epoch: snapshot.epoch, expectedRevision: snapshot.revision, captureId: capture.id, captureDigest: capture.digest, requestId: id, ...(editor ? { kind: editor.content.kind } : {}), correction: intent, ...state.provider, consent: true });
       if (current !== generation.current) return;
       setState(result.state); setNotice(result.reason ?? 'Pending draft created. Review and approve it separately.'); setView('drafts'); setEditor(null);
     } finally { if (request.current === id) request.current = null; }
@@ -142,7 +143,7 @@ export function LearningPanel() {
       <header><div><Dialog.Title><Brain size={18} /> Memory Learning</Dialog.Title><Dialog.Description id="learning-description">{state?.binding?.scope.toUpperCase() ?? 'PROJECT'} · {state?.projectName || 'No trusted project'} · reviewed knowledge, not model training.</Dialog.Description></div><Dialog.Close aria-label="Close Memory Learning"><X size={18} /></Dialog.Close></header>
       <div className="learning-body">
         {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
-        {busy && <div role="status">Working… <button type="button" onClick={() => { const binding = stateRef.current?.binding; if (binding && request.current) void window.piDesktop.cancelLearning({ binding, id: request.current }).catch(() => undefined); }}>Cancel capture or generation</button></div>}
+        {busy && <div role="status">Working… <button type="button" onClick={() => { const binding = stateRef.current?.binding; if (binding && request.current) void getDesktopApi().cancelLearning({ binding, id: request.current }).catch(() => undefined); }}>Cancel capture or generation</button></div>}
         {!enabled && <p role="status">Learning is off. Existing data remains manageable. Enable Memory Learning in Settings → Memory Learning; choose GLOBAL or PROJECT and save.</p>}
         {state?.binding?.scope === 'global' ? <p className="learning-warning">GLOBAL is your coding profile: communication, workflow, design taste, likes and dislikes. Only explicit reviewed preferences—not guessed psychology or repository state. Automatic mode reuses it across trusted projects.</p> : <p>PROJECT holds this repository’s purpose, architecture, decisions, current work and next steps. A reviewed briefing prevents repeating orientation in every session; it does not replace checking current code.</p>}
         {state?.contextModes && <p>Context layers: GLOBAL {state.contextModes.global ?? 'unavailable'} + PROJECT {state.contextModes.project ?? 'unavailable'}. The scope selector chooses what you edit, not an exclusive context source. Current instructions always win.</p>}
@@ -190,11 +191,11 @@ export function LearningPanel() {
               <button type="button" disabled={!enabled || busy} onClick={() => void preview()}>Preview selected evidence</button>
             </details>
             {capture && <section aria-label="Exact provider source preview"><h4>Exact redacted sources to send</h4><p>Review every excerpt. Secret filtering is not exhaustive. Only this accepted preview is retained.</p>{excerpts.map((excerpt) => <label key={excerpt.id}>Source {excerpt.id}<textarea value={excerpt.text} onChange={(event) => setExcerpts((previous) => previous.map((item) => item.id === excerpt.id ? { ...item, text: event.target.value } : item))} /><button type="button" onClick={() => setExcerpts((previous) => previous.filter((item) => item.id !== excerpt.id))}>Remove source</button></label>)}
-              <button type="button" disabled={busy || !excerpts.length} onClick={() => void run(async () => { if (!state.binding) return; const current = generation.current; const next = await window.piDesktop.reviewLearningCapture({ binding: state.binding, captureId: capture.id, excerpts }); if (current === generation.current) { setCapture(next); setExcerpts(next.evidence.map(({ id, text }) => ({ id, text }))); } })}>Accept redacted preview</button>
+              <button type="button" disabled={busy || !excerpts.length} onClick={() => void run(async () => { if (!state.binding) return; const current = generation.current; const next = await getDesktopApi().reviewLearningCapture({ binding: state.binding, captureId: capture.id, excerpts }); if (current === generation.current) { setCapture(next); setExcerpts(next.evidence.map(({ id, text }) => ({ id, text }))); } })}>Accept redacted preview</button>
               <label>Intended lesson / correction<textarea value={intent} maxLength={4000} onChange={(event) => setIntent(event.target.value)} /></label>
               <p>{state.provider ? `Provider: ${state.provider.provider} · Model: ${state.provider.model}. Generate sends these sources and your correction in one tool-free request and may incur provider cost.` : 'Provider unavailable. Save and edit manually instead.'}</p>
               <button type="button" disabled={!enabled || busy || !state.provider || !previewUnchanged} onClick={() => void generate()}>Generate draft — send reviewed sources</button>
-              {request.current && <button type="button" onClick={() => { if (state.binding && request.current) void window.piDesktop.cancelLearning({ binding: state.binding, id: request.current }); }}>Cancel generation</button>}
+              {request.current && <button type="button" onClick={() => { if (state.binding && request.current) void getDesktopApi().cancelLearning({ binding: state.binding, id: request.current }); }}>Cancel generation</button>}
             </section>}
             <div className="learning-actions"><button type="button" disabled={!enabled || busy || Boolean(capture && !previewUnchanged)} onClick={() => void run(async () => {
               const candidate: unknown = JSON.parse(JSON.stringify(editor.content), (_key, value: unknown) => Array.isArray(value) && value.every((item) => typeof item === 'string') ? value.map((item: string) => item.trim()).filter(Boolean) : value);
@@ -213,10 +214,10 @@ export function LearningPanel() {
         <details><summary>Deletion limits and recovery</summary><p>Disable stops future use. Deletion cannot retract provider requests or remove text from existing Pi sessions, exported copies, or OS backups. Use a fresh session to avoid historical context. This is not secure erasure.</p><label>Type DELETE LEARNING to reset the selected scope<input aria-label="Reset learning confirmation" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button type="button" disabled={busy || confirmation !== 'DELETE LEARNING' || !state?.binding} onClick={() => void run(async () => {
           if (!state?.binding) return;
           if (snapshot) await mutate({ action: 'reset', confirmation: 'DELETE LEARNING' });
-          else if (state.recoveryDigest) setState(await window.piDesktop.recoverLearning({ binding: state.binding, action: 'reset-store', digest: state.recoveryDigest, confirmation: 'DELETE LEARNING' }));
+          else if (state.recoveryDigest) setState(await getDesktopApi().recoverLearning({ binding: state.binding, action: 'reset-store', digest: state.recoveryDigest, confirmation: 'DELETE LEARNING' }));
           else throw new Error('Unsafe or oversized store requires manual recovery; no automatic reset is offered.');
           setConfirmation('');
-        })}>Reset selected learning scope</button>{state?.recoveryDigest && snapshot && <button type="button" disabled={busy} onClick={() => void run(async () => { if (state.binding && state.recoveryDigest) setState(await window.piDesktop.recoverLearning({ binding: state.binding, action: 'recover-lock', digest: state.recoveryDigest })); })}>Recover dead writer lock</button>}</details>
+        })}>Reset selected learning scope</button>{state?.recoveryDigest && snapshot && <button type="button" disabled={busy} onClick={() => void run(async () => { if (state.binding && state.recoveryDigest) setState(await getDesktopApi().recoverLearning({ binding: state.binding, action: 'recover-lock', digest: state.recoveryDigest })); })}>Recover dead writer lock</button>}</details>
         <button type="button" onClick={() => { useLearningStore.getState().close(); useUiStore.getState().setSettingsOpen(true); }}>Open Settings</button>
       </div>
     </Dialog.Content></Dialog.Portal>

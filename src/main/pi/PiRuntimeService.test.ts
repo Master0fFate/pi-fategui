@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, promises as fs, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -11,20 +11,24 @@ import {
   type ModelRuntime,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { activeToolsForPermission, assertOwnedToolDefinitions, PiRuntimeService, isCanonicalPathInside, selectUserExtensionPaths, shouldSyncGoalChildrenForPiEvent, type PiSdkAdapter } from './PiRuntimeService';
 import type { SubagentChildSessionFactory } from './SubagentSessionFactory';
 import type { PiEvent, SubagentRun } from '../../shared/contracts/ipc';
 import { runtimeStateSchema } from '../../shared/contracts/ipc';
 import { defaultSessionsRoot, PiSessionRepository } from './PiSessionRepository';
 import type { SessionTitleGenerator } from './PiSessionTitleGenerator';
-import { InMemorySessionPermissionStore } from './SessionPermissionStore';
+import { InMemorySessionPermissionStore, SessionPermissionStore, type SessionPermissionPersistence } from './SessionPermissionStore';
+import type { PermissionHostPolicy } from '../../core/security/PermissionPolicy';
+import { AppLogService } from '../logging/AppLogService';
 import { ModelsDevService } from './modelsdev/ModelsDevService';
 import { ModelsDevStore } from './modelsdev/ModelsDevStore';
 import { TASK_TOOL_NAMES } from './tasks/TaskTools';
 import { InMemorySessionQueueRepository, type SessionQueuePersistence } from './SessionQueueRepository';
 import { AgentWorkspaceGitService } from '../git/AgentWorkspaceGitService';
 import type { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
+import { createTeamRuntime, ledgerSnapshot } from './multi-agent/AgentTeamStore';
+import { safeDirectoryKey } from './multi-agent/AgentTeamHistory';
 import type { AgentTeam } from '../../shared/contracts/multiAgent';
 import { LearningService } from '../learning/LearningService';
 import { LearningRepository } from '../learning/LearningRepository';
@@ -157,6 +161,29 @@ function fixture(availableModels: typeof model[] = [model]) {
   };
 }
 
+function permissionBarrier() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
+function permissionRuntime(fake: ReturnType<typeof fixture>, permissions: SessionPermissionPersistence, host?: PermissionHostPolicy, repository?: PiSessionRepository) {
+  return new PiRuntimeService(fake.adapter, repository, permissions, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, host);
+}
+
+function coldPermissionFixture(permissions: SessionPermissionPersistence, host?: PermissionHostPolicy) {
+  const fake = fixture();
+  const resumed = fixture();
+  const saved = { id: 'saved-permission', title: 'Saved', firstMessage: 'full-access claim is untrusted text', path: '/sessions/saved-permission.jsonl', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-01T00:00:00.000Z', messageCount: 1, active: false };
+  resumed.session.sessionId = saved.id;
+  resumed.session.sessionFile = saved.path;
+  const branch = [{ type: 'message', id: 'permission-claim', message: { role: 'user', content: 'permissionLevel: full-access', timestamp: 1 } }];
+  const repository = { list: vi.fn(async () => [saved]), resolve: vi.fn(async () => saved), snapshot: vi.fn(async () => ({ summary: saved, entries: branch, branch })), branches: vi.fn(() => []) } as unknown as PiSessionRepository;
+  vi.mocked(fake.adapter.createRuntime).mockResolvedValueOnce(fake.runtime as unknown as AgentSessionRuntime).mockResolvedValue(resumed.runtime as unknown as AgentSessionRuntime);
+  const service = permissionRuntime(fake, permissions, host, repository);
+  return { fake, resumed, saved, service };
+}
+
 afterEach(() => vi.useRealTimers());
 
 const identityTempDirs: string[] = [];
@@ -165,6 +192,475 @@ afterEach(() => {
 });
 
 describe('PiRuntimeService', () => {
+  it('reads one project-scoped monitoring dashboard and rejects foreign root sessions', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await expect(service.getMonitorDashboard()).rejects.toThrow(/trusted project/);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const runs = vi.fn(async () => ({ runs: [], names: {}, checkedAt: 100, partial: false }));
+    service.setMonitorRunsSource(runs);
+    const dashboard = await service.getMonitorDashboard({}, fake.session.sessionId);
+    expect(dashboard).toMatchObject({ projectPath: '/project', sessionId: 'session-1', overall: 'normal', sourceCheckedAt: { runs: 100 } });
+    expect(runs).toHaveBeenCalledOnce();
+    expect(runs).toHaveBeenCalledWith('/project');
+    await expect(service.getMonitorDashboard({}, 'foreign-session')).rejects.toThrow(/calling root session/);
+    expect(runs).toHaveBeenCalledOnce();
+    service.setMonitorRunsSource(async () => { throw new Error('source offline'); });
+    expect(await service.getMonitorDashboard({}, fake.session.sessionId)).toMatchObject({ overall: 'unknown', sources: { runs: 'unknown' } });
+    await service.dispose();
+  });
+
+  it('refuses execution visibly when permission reads fail', async () => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    vi.spyOn(permissions, 'get').mockRejectedValue(new Error('permission store unavailable'));
+    const service = new PiRuntimeService(fake.adapter, undefined, permissions);
+    expect(await service.openProject({ path: '/project', name: 'project', trusted: true })).toMatchObject({ status: 'error', permissionLevel: 'read-only', error: { message: expect.stringMatching(/permission storage/) } });
+    expect(fake.session.getActiveToolNames()).not.toContain('bash');
+    await expect(service.prompt({ text: 'continue', behavior: 'prompt' })).rejects.toThrow();
+    expect(fake.session.prompt).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  it('failed escalation persistence retains edit authority and blocks further execution', async () => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    await permissions.set('/project', 'session-1', 'edit');
+    vi.spyOn(permissions, 'set').mockRejectedValue(new Error('disk full'));
+    const service = new PiRuntimeService(fake.adapter, undefined, permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await expect(service.setPermissionLevel('full-access')).rejects.toThrow(/could not be changed safely/);
+    expect(service.getState(false)).toMatchObject({ permissionLevel: 'edit', error: { message: expect.stringMatching(/blocked/) } });
+    expect(fake.session.getActiveToolNames()).not.toContain('bash');
+    await expect(service.prompt({ text: 'continue', behavior: 'prompt' })).rejects.toThrow(/blocked/);
+    expect(fake.session.prompt).not.toHaveBeenCalled();
+    await expect(permissions.get('/project', 'session-1')).resolves.toBe('edit');
+    await service.dispose();
+  });
+
+  it('fences another live project when their shared disk permission store fails', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'fate-shared-permission-failure-'));
+    identityTempDirs.push(root);
+    const permissions = new SessionPermissionStore(new AppLogService(), root);
+    await permissions.set('/project-a', 'session-1', 'full-access');
+    await permissions.set('/project-b', 'session-1', 'edit');
+    const first = fixture();
+    const second = fixture();
+    const a = permissionRuntime(first, permissions);
+    const b = permissionRuntime(second, permissions);
+    try {
+      expect((await a.openProject({ path: '/project-a', name: 'A', trusted: true })).permissionLevel).toBe('full-access');
+      await b.openProject({ path: '/project-b', name: 'B', trusted: true });
+      vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('disk unavailable'));
+      await expect(b.setPermissionLevel('full-access')).rejects.toThrow(/could not be changed safely/);
+      await expect(permissions.get('/project-a', 'session-1')).rejects.toThrow(/storage failed/);
+      expect(a.agentAuthority('session-1')).toBeNull();
+      expect(a.getState(false)).toMatchObject({ permissionLevel: 'read-only', error: { message: expect.stringMatching(/permission storage|permission store/) } });
+      await expect(a.prompt({ text: 'must not continue', behavior: 'prompt' })).rejects.toThrow();
+      expect(first.session.prompt).not.toHaveBeenCalled();
+      await expect(a.abort()).resolves.toBeDefined();
+    } finally {
+      await Promise.all([a.dispose(), b.dispose()]);
+    }
+  });
+
+  it('keeps the old model stream guard while abort is blocked and after a failed stop', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'fate-permission-abort-race-'));
+    identityTempDirs.push(root);
+    const permissions = new SessionPermissionStore(new AppLogService(), root);
+    await permissions.set('/project-a', 'session-1', 'full-access');
+    await permissions.set('/project-b', 'session-1', 'edit');
+    const first = fixture();
+    const second = fixture();
+    const providerStream = first.agent.streamFunction;
+    const a = permissionRuntime(first, permissions);
+    const b = permissionRuntime(second, permissions);
+    const barrier = permissionBarrier();
+    let entered!: () => void;
+    const pending = new Promise<void>((resolve) => { entered = resolve; });
+    try {
+      await a.openProject({ path: '/project-a', name: 'A', trusted: true });
+      await b.openProject({ path: '/project-b', name: 'B', trusted: true });
+      first.setStreaming(true);
+      first.session.abort.mockImplementationOnce(async () => { entered(); await barrier.promise; throw new Error('abort failed'); });
+      const stopping = a.dispose();
+      await pending;
+      vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('disk unavailable'));
+      await expect(b.setPermissionLevel('full-access')).rejects.toThrow(/blocked/);
+      expect(() => first.agent.streamFunction(model, { messages: [] })).toThrow();
+      expect(providerStream).not.toHaveBeenCalled();
+      barrier.release();
+      await expect(stopping).rejects.toThrow(/could not be disposed/);
+      expect(() => first.agent.streamFunction(model, { messages: [] })).toThrow();
+      expect(providerStream).not.toHaveBeenCalled();
+    } finally {
+      barrier.release();
+      await b.dispose();
+    }
+  });
+
+  it.each(['extensions', 'queue'] as const)('does not republish saved Full access after a shared-store failure during %s restore', async (phase) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'fate-permission-bind-race-'));
+    identityTempDirs.push(root);
+    const permissions = new SessionPermissionStore(new AppLogService(), root);
+    await permissions.set('/project-a', 'session-1', 'full-access');
+    await permissions.set('/project-b', 'session-1', 'edit');
+    const first = fixture();
+    const second = fixture();
+    const barrier = permissionBarrier();
+    let entered!: () => void;
+    const pending = new Promise<void>((resolve) => { entered = resolve; });
+    const queue = new InMemorySessionQueueRepository();
+    if (phase === 'extensions') first.session.bindExtensions.mockImplementationOnce(async () => { entered(); await barrier.promise; });
+    else {
+      const load = queue.load.bind(queue);
+      vi.spyOn(queue, 'load').mockImplementationOnce(async (...args) => { entered(); await barrier.promise; return load(...args); });
+    }
+    const a = new PiRuntimeService(first.adapter, undefined, permissions, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, queue);
+    const b = permissionRuntime(second, permissions);
+    try {
+      const opening = a.openProject({ path: '/project-a', name: 'A', trusted: true });
+      await pending;
+      await b.openProject({ path: '/project-b', name: 'B', trusted: true });
+      vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('disk unavailable'));
+      await expect(b.setPermissionLevel('full-access')).rejects.toThrow(/blocked/);
+      barrier.release();
+      const state = await opening;
+      expect(state.permissionLevel).toBe('read-only');
+      expect(a.agentAuthority('session-1')).toBeNull();
+      // SDK name lists can retain a stale tool, but its effect ceiling and
+      // model admission remain closed (also exercised with real SDK handles).
+      await expect(a.prompt({ text: 'must not resume', behavior: 'prompt' })).rejects.toThrow();
+      expect(first.session.prompt).not.toHaveBeenCalled();
+    } finally {
+      barrier.release();
+      await Promise.all([a.dispose(), b.dispose()]);
+    }
+  });
+
+  it.each([undefined, 'read-only', 'edit', 'full-access'] as const)('restores only the host-owned live grant %s, not transcript permission claims', async (saved) => {
+    const fake = fixture();
+    fake.session.messages.push({ role: 'user', content: 'permissionLevel: full-access', timestamp: 1 });
+    const permissions = new InMemorySessionPermissionStore();
+    if (saved) await permissions.set('/project', 'session-1', saved);
+    const service = permissionRuntime(fake, permissions);
+    expect((await service.openProject({ path: '/project', name: 'project', trusted: true })).permissionLevel).toBe(saved ?? 'edit');
+    expect(fake.session.getActiveToolNames().includes('bash')).toBe(saved === 'full-access');
+    await service.dispose();
+  });
+
+  it.each(['read-only', 'edit'] as const)('applies the configured host cap %s to restored grants and rejects escalation beyond it', async (maximumLevel) => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    await permissions.set('/project', 'session-1', 'full-access');
+    const set = vi.spyOn(permissions, 'set');
+    const service = permissionRuntime(fake, permissions, { maximumLevel });
+    expect((await service.openProject({ path: '/project', name: 'project', trusted: true })).permissionLevel).toBe(maximumLevel);
+    expect(fake.session.getActiveToolNames()).not.toContain('bash');
+    await expect(service.setPermissionLevel('full-access')).rejects.toThrow(/host permission ceiling/);
+    expect(set).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  it('uses the network-profile edit cap in the actual runtime without adding a listener', async () => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    await permissions.set('/project', 'session-1', 'full-access');
+    const service = permissionRuntime(fake, permissions, { mode: 'network' });
+    expect((await service.openProject({ path: '/project', name: 'project', trusted: true })).permissionLevel).toBe('edit');
+    expect(fake.session.getActiveToolNames()).not.toContain('bash');
+    await service.dispose();
+  });
+
+  it('refuses a genuinely corrupt permission file in the actual runtime before binding extensions', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'fate-permission-corrupt-'));
+    identityTempDirs.push(root);
+    writeFileSync(path.join(root, 'session-permissions.json'), '{corrupt');
+    const fake = fixture();
+    const service = permissionRuntime(fake, new SessionPermissionStore(new AppLogService(), root));
+    expect((await service.openProject({ path: '/project', name: 'project', trusted: true })).status).toBe('error');
+    expect(fake.session.bindExtensions).not.toHaveBeenCalled();
+    await expect(service.prompt({ text: 'continue', behavior: 'prompt' })).rejects.toThrow();
+    expect(fake.session.prompt).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  it('does not initialize either Pi model or project resources for an untrusted project', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    expect(await service.openProject({ path: '/project', name: 'project', trusted: false })).toMatchObject({ status: 'disconnected', error: { code: 'PROJECT_NOT_TRUSTED' } });
+    expect(fake.adapter.createModelRuntime).not.toHaveBeenCalled();
+    expect(fake.adapter.createRuntime).not.toHaveBeenCalled();
+    await expect(service.prompt({ text: 'run', behavior: 'prompt' })).rejects.toThrow();
+    await expect(service.setPermissionLevel('full-access')).rejects.toThrow(/trust/);
+    await service.dispose();
+  });
+
+  it('keeps authority and admissions fenced while higher tool names are staged until persistence completes', async () => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    const service = permissionRuntime(fake, permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const save = permissions.set.bind(permissions);
+    const entered = permissionBarrier();
+    const finish = permissionBarrier();
+    vi.spyOn(permissions, 'set').mockImplementationOnce(async (...args) => { entered.release(); await finish.promise; await save(...args); });
+    const change = service.setPermissionLevel('full-access');
+    await entered.promise;
+    expect(service.getState(false).permissionLevel).toBe('edit');
+    expect(fake.session.getActiveToolNames()).toContain('bash');
+    expect(service.agentAuthority('session-1')).toBeNull();
+    await expect(service.prompt({ text: 'not yet', behavior: 'prompt' })).rejects.toThrow(/permissions are being saved/);
+    const stagedCalls = fake.session.setActiveToolsByName.mock.calls.length;
+    finish.release();
+    expect((await change).permissionLevel).toBe('full-access');
+    expect(fake.session.getActiveToolNames()).toContain('bash');
+    expect(fake.session.setActiveToolsByName).toHaveBeenCalledTimes(stagedCalls);
+    await expect(permissions.get('/project', 'session-1')).resolves.toBe('full-access');
+    await service.dispose();
+  });
+
+  it('fences an active root and descendants immediately on reduction even when persistence fails', async () => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    await permissions.set('/project', 'session-1', 'full-access');
+    const service = permissionRuntime(fake, permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const teams = (service as unknown as { agentTeams: AgentTeamCoordinator }).agentTeams;
+    const lower = vi.spyOn(teams, 'lowerRootPermission');
+    fake.setStreaming(true);
+    const entered = permissionBarrier();
+    const finish = permissionBarrier();
+    vi.spyOn(permissions, 'set').mockImplementationOnce(async () => { entered.release(); await finish.promise; throw new Error('disk full'); });
+    const change = service.setPermissionLevel('read-only');
+    const rejected = expect(change).rejects.toThrow(/blocked/);
+    await entered.promise;
+    expect(service.getState(false)).toMatchObject({ permissionLevel: 'read-only', streaming: true });
+    expect(fake.session.getActiveToolNames()).not.toEqual(expect.arrayContaining(['bash', 'write', 'edit']));
+    expect(lower).toHaveBeenCalledWith('session-1', 'read-only');
+    finish.release();
+    await rejected;
+    expect(service.getState(false).permissionLevel).toBe('read-only');
+    // The stream boundary also inhibits automatic SDK continuation, not just UI prompts.
+    expect(() => fake.agent.streamFunction()).toThrow(/blocked/);
+    await expect(service.abort()).resolves.toEqual({ aborted: true });
+    expect(fake.session.abort).toHaveBeenCalledOnce();
+    await service.setPermissionLevel('read-only');
+    expect(service.getState(false).error).toBeNull();
+    await service.dispose();
+  });
+
+  it('a later reduction supersedes a pending escalation and is the last durable grant', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'fate-permission-race-'));
+    identityTempDirs.push(root);
+    const fake = fixture();
+    const permissions = new SessionPermissionStore(new AppLogService(), root);
+    const service = permissionRuntime(fake, permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const entered = permissionBarrier();
+    const finish = permissionBarrier();
+    const rename = fs.rename.bind(fs);
+    vi.spyOn(fs, 'rename').mockImplementationOnce(async (...args) => { entered.release(); await finish.promise; await rename(...args); });
+    const increase = service.setPermissionLevel('full-access');
+    const superseded = expect(increase).rejects.toThrow(/superseded/);
+    await entered.promise;
+    const decrease = service.setPermissionLevel('read-only');
+    expect(service.getState(false).permissionLevel).toBe('read-only');
+    expect(fake.session.getActiveToolNames()).not.toContain('bash');
+    finish.release();
+    await superseded;
+    await decrease;
+    await expect(new SessionPermissionStore(new AppLogService(), root).get('/project', 'session-1')).resolves.toBe('read-only');
+    expect(fake.session.getActiveToolNames()).not.toContain('write');
+    await service.dispose();
+  });
+
+  it.each(['new', 'fork', 'clone', 'import'] as const)('%s session replacement does not inherit a previous full-access grant', async (operation) => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    await permissions.set('/project', 'session-1', 'full-access');
+    const service = permissionRuntime(fake, permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as (session: typeof fake.session) => Promise<void>;
+    const replace = async () => {
+      fake.runtime.session = { ...fake.session, sessionId: `session-${operation}` };
+      await rebind(fake.runtime.session);
+      return { cancelled: false, selectedText: 'original prompt' };
+    };
+    fake.runtime.newSession.mockImplementation(replace);
+    fake.runtime.fork.mockImplementation(replace);
+    fake.runtime.importFromJsonl.mockImplementation(replace);
+    if (operation === 'new') await service.newSession();
+    else if (operation === 'fork') await service.forkSession('entry-1');
+    else if (operation === 'clone') await service.cloneSession();
+    else await service.importSession('/sessions/import.jsonl');
+    expect(service.getState(false)).toMatchObject({ sessionId: `session-${operation}`, permissionLevel: 'edit' });
+    expect(fake.session.getActiveToolNames()).not.toContain('bash');
+    await service.dispose();
+  });
+
+  it('provider reconnection cannot erase a storage-error execution fence', async () => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    const service = permissionRuntime(fake, permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    vi.spyOn(permissions, 'set').mockRejectedValueOnce(new Error('disk full'));
+    await expect(service.setPermissionLevel('full-access')).rejects.toThrow(/blocked/);
+    await service.initializeProviderLogin();
+    expect(service.getState(false).error?.message).toMatch(/blocked/);
+    await expect(service.prompt({ text: 'must still refuse', behavior: 'prompt' })).rejects.toThrow(/blocked/);
+    expect(fake.session.prompt).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  it('does not publish an escalation into a project selected while its save awaited', async () => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    const service = permissionRuntime(fake, permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const entered = permissionBarrier();
+    const finish = permissionBarrier();
+    vi.spyOn(permissions, 'set').mockImplementationOnce(async () => { entered.release(); await finish.promise; });
+    const change = service.setPermissionLevel('full-access');
+    const rejected = expect(change).rejects.toThrow(/superseded/);
+    await entered.promise;
+    await service.openProject({ path: '/other', name: 'other', trusted: false });
+    const callsAfterReplacement = fake.session.setActiveToolsByName.mock.calls.length;
+    finish.release();
+    await rejected;
+    expect(service.getState(false)).toMatchObject({ project: { path: '/other' }, permissionLevel: 'edit', error: { code: 'PROJECT_NOT_TRUSTED' } });
+    expect(service.agentAuthority('session-1')).toBeNull();
+    expect(fake.session.setActiveToolsByName).toHaveBeenCalledTimes(callsAfterReplacement);
+    await service.dispose();
+  });
+
+  it('does not assign a stale restored full-access grant to a rebound session after an await', async () => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    const service = permissionRuntime(fake, permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const entered = permissionBarrier();
+    const finish = permissionBarrier();
+    vi.spyOn(permissions, 'get').mockImplementationOnce(async () => { entered.release(); await finish.promise; return 'full-access'; });
+    const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as (session: typeof fake.session) => Promise<void>;
+    const stale = { ...fake.session, sessionId: 'stale' };
+    fake.runtime.session = stale;
+    const restoring = rebind(stale);
+    await entered.promise;
+    const fresh = { ...fake.session, sessionId: 'fresh' };
+    fake.runtime.session = fresh;
+    await rebind(fresh);
+    finish.release();
+    await restoring;
+    expect(service.getState(false)).toMatchObject({ sessionId: 'fresh', permissionLevel: 'edit' });
+    expect(fake.session.getActiveToolNames()).not.toContain('bash');
+    await service.dispose();
+  });
+
+  it.each([undefined, 'read-only', 'edit', 'full-access'] as const)('restores cold and background sessions with grant %s, ignoring transcript claims', async (saved) => {
+    const permissions = new InMemorySessionPermissionStore();
+    const { service, fake, resumed, saved: summary } = coldPermissionFixture(permissions);
+    if (saved) await permissions.set('/project', summary.id, saved);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    expect((await service.switchSession(summary.id)).permissionLevel).toBe(saved ?? 'edit');
+    expect(fake.adapter.createRuntime).toHaveBeenCalledTimes(1);
+    await service.prompt({ text: 'continue', behavior: 'prompt' });
+    expect(service.getState(false).permissionLevel).toBe(saved ?? 'edit');
+    expect(resumed.session.getActiveToolNames().includes('bash')).toBe(saved === 'full-access');
+    resumed.settle();
+    await service.dispose();
+  });
+
+  it('clamps cold and materialized grants to the same host cap', async () => {
+    const permissions = new InMemorySessionPermissionStore();
+    const { service, saved, resumed } = coldPermissionFixture(permissions, { maximumLevel: 'read-only' });
+    await permissions.set('/project', saved.id, 'full-access');
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    expect((await service.switchSession(saved.id)).permissionLevel).toBe('read-only');
+    await expect(service.setPermissionLevel('full-access')).rejects.toThrow(/host permission ceiling/);
+    await service.prompt({ text: 'continue', behavior: 'prompt' });
+    expect(resumed.session.getActiveToolNames()).not.toContain('write');
+    resumed.settle();
+    await service.dispose();
+  });
+
+  it('refuses cold selection and background wake when storage fails, without dispatching a turn', async () => {
+    const permissions = new InMemorySessionPermissionStore();
+    const { service, saved, resumed } = coldPermissionFixture(permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    vi.spyOn(permissions, 'get').mockRejectedValue(new Error('permission storage unreadable'));
+    await expect(service.switchSession(saved.id)).rejects.toThrow(/permission storage/);
+    expect(service.getState(false).error?.message).toMatch(/permission storage/);
+    await expect(service.sendSessionMessage(saved.id, 'do not continue')).rejects.toThrow(/permission storage/);
+    expect(resumed.session.prompt).not.toHaveBeenCalled();
+    expect(resumed.session.sendCustomMessage).not.toHaveBeenCalled();
+    await service.dispose();
+  });
+
+  it('refuses a second execution owner for the selected cold transcript', async () => {
+    const permissions = new InMemorySessionPermissionStore();
+    const { service, saved, fake } = coldPermissionFixture(permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.switchSession(saved.id);
+    await expect(service.sendSessionMessage(saved.id, 'duplicate owner')).rejects.toThrow(/active saved session/);
+    expect(fake.adapter.createRuntime).toHaveBeenCalledTimes(1);
+    await service.dispose();
+  });
+
+  it('keeps a cold escalation fenced until durable save and never starts Pi just to change permissions', async () => {
+    const permissions = new InMemorySessionPermissionStore();
+    const { service, saved, fake } = coldPermissionFixture(permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.switchSession(saved.id);
+    const save = permissions.set.bind(permissions);
+    const entered = permissionBarrier();
+    const finish = permissionBarrier();
+    vi.spyOn(permissions, 'set').mockImplementationOnce(async (...args) => { entered.release(); await finish.promise; await save(...args); });
+    const change = service.setPermissionLevel('full-access');
+    await entered.promise;
+    expect(service.getState(false).permissionLevel).toBe('edit');
+    await expect(service.prompt({ text: 'not yet', behavior: 'prompt' })).rejects.toThrow(/permissions are being saved/);
+    expect(fake.adapter.createRuntime).toHaveBeenCalledTimes(1);
+    finish.release();
+    expect((await change).permissionLevel).toBe('full-access');
+    await expect(permissions.get('/project', saved.id)).resolves.toBe('full-access');
+    expect(fake.adapter.createRuntime).toHaveBeenCalledTimes(1);
+    await service.dispose();
+  });
+
+  it('blocks a cold escalation save failure and permits only a successful retry to clear it', async () => {
+    const permissions = new InMemorySessionPermissionStore();
+    const { service, saved, fake } = coldPermissionFixture(permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.switchSession(saved.id);
+    vi.spyOn(permissions, 'set').mockRejectedValueOnce(new Error('disk full'));
+    await expect(service.setPermissionLevel('full-access')).rejects.toThrow(/blocked/);
+    expect(service.getState(false).permissionLevel).toBe('edit');
+    await expect(service.prompt({ text: 'no automatic wake', behavior: 'prompt' })).rejects.toThrow(/blocked/);
+    expect(fake.adapter.createRuntime).toHaveBeenCalledTimes(1);
+    await service.setPermissionLevel('edit');
+    expect(service.getState(false).error).toBeNull();
+    await service.dispose();
+  });
+
+  it('fences a stale cold escalation save when selection changes before completion', async () => {
+    const permissions = new InMemorySessionPermissionStore();
+    const { service, saved } = coldPermissionFixture(permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.switchSession(saved.id);
+    const entered = permissionBarrier();
+    const finish = permissionBarrier();
+    vi.spyOn(permissions, 'set').mockImplementationOnce(async () => { entered.release(); await finish.promise; });
+    const change = service.setPermissionLevel('full-access');
+    const rejected = expect(change).rejects.toThrow(/superseded/);
+    await entered.promise;
+    await service.closeProject();
+    finish.release();
+    await rejected;
+    expect(service.getState(false)).toMatchObject({ project: null, permissionLevel: 'edit', error: null });
+    await service.dispose();
+  });
+
   it('keeps a restored saved Agent ceiling through root tool/default activation', async () => {
     const fake = fixture();
     const preset: SavedAgentSession = { schemaVersion: 1, agentId: 'a392d8b9-76cc-4158-a381-1151ccf818fb', revision: 1, name: 'Saved', instructions: 'Persona', skillRefs: [], defaults: { model: { provider: 'test', id: 'model' }, thinkingLevel: 'high', permission: 'read-only', workspace: 'shared' }, background: false, runId: null, projectPath: '/project' };
@@ -1105,7 +1601,12 @@ describe('PiRuntimeService', () => {
       rename: vi.fn(),
     };
     const fake = fixture();
-    const service = new PiRuntimeService(fake.adapter, new PiSessionRepository(source));
+    const browserIntegration = {
+      createTools: vi.fn(() => []), appendAnnotationContext: vi.fn(),
+      currentRoot: vi.fn(() => null), setActiveRoot: vi.fn(),
+      readTaggedBrowserContext: vi.fn(async () => '<tagged-session-browser>Read-only source page</tagged-session-browser>'),
+    };
+    const service = new PiRuntimeService(fake.adapter, new PiSessionRepository(source), undefined, undefined, undefined, undefined, browserIntegration as never);
     try {
       await service.openProject({ path: '/project', name: 'project', trusted: true });
       await expect(service.prompt({
@@ -1114,6 +1615,10 @@ describe('PiRuntimeService', () => {
       })).resolves.toMatchObject({ accepted: true });
       expect(fake.session.prompt).toHaveBeenCalledWith(expect.stringContaining('Latest assistant response:\nThe boundary needs a CSRF check.'), expect.any(Object));
       expect(fake.session.prompt.mock.calls[0]?.[0]).toContain('untrusted reference material');
+      expect(fake.session.prompt.mock.calls[0]?.[0]).toContain('Read-only source page');
+      expect(browserIntegration.readTaggedBrowserContext).toHaveBeenCalledWith({
+        projectPath: '/project', sessionId: referenced.getSessionId(),
+      });
       fake.settle();
     } finally {
       await service.dispose();
@@ -1148,6 +1653,40 @@ describe('PiRuntimeService', () => {
       await service.dispose();
     }
     await expect(call('create_task', { title: 'Disposed root' })).rejects.toThrow(/live root/);
+  });
+
+  it('exposes ordered questions in runtime state and stops a pending questionnaire', async () => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const tools = (fake.adapter.createRuntime as ReturnType<typeof vi.fn>).mock.calls[0]?.[3] as ToolDefinition[];
+    const questionTool = tools.find((tool) => tool.name === 'ask_user_question')!;
+    expect(questionTool).toBeDefined();
+    const ctx = { sessionManager: { getSessionId: () => 'session-1' } } as never;
+    try {
+      const pending = questionTool.execute('call', { questions: [
+        { question: 'Pick a database?', options: [{ label: 'SQLite' }, { label: 'Postgres' }] },
+        { question: 'Pick a theme?', options: [{ label: 'Dark' }, { label: 'Light' }] },
+      ] }, new AbortController().signal, undefined, ctx);
+      const first = service.getState(false).questionnaire!;
+      expect(first).toMatchObject({ index: 0, total: 2, question: 'Pick a database?' });
+      expect(() => service.answerQuestion({ id: first.id, index: 0, answer: 'Not an option', source: 'option' })).toThrow(/Select one/);
+      service.answerQuestion({ id: first.id, index: 0, answer: 'SQLite', source: 'option' });
+      await vi.waitFor(() => expect(service.getState(false).questionnaire).toMatchObject({ index: 1, question: 'Pick a theme?' }));
+      const second = service.getState(false).questionnaire!;
+      service.answerQuestion({ id: second.id, index: 1, answer: '  My theme ', source: 'custom' });
+      await expect(pending).resolves.toMatchObject({ details: { status: 'answered', answers: [
+        { index: 0, answer: 'SQLite' }, { index: 1, answer: 'My theme' },
+      ] } });
+      expect(service.getState(false).questionnaire).toBeNull();
+      const stopping = questionTool.execute('call-2', { questions: [{ question: 'Again?', options: [{ label: 'Yes' }, { label: 'No' }] }] }, undefined, undefined, ctx);
+      expect(service.getState(false).questionnaire).toMatchObject({ index: 0 });
+      await expect(service.abort()).resolves.toMatchObject({ aborted: true });
+      await expect(stopping).resolves.toMatchObject({ details: { status: 'cancelled', answers: [] } });
+      expect(service.getState(false).questionnaire).toBeNull();
+    } finally {
+      await service.dispose();
+    }
   });
 
   it('keeps background root task calls bound to their caller instead of the selected tab', async () => {
@@ -1314,24 +1853,13 @@ describe('PiRuntimeService', () => {
     } as unknown as PiSessionRepository;
     const service = new PiRuntimeService(fake.adapter, repository);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
-    const rebind = fake.runtime.setRebindSession.mock.calls[0]?.[0] as ((session: typeof fake.session) => Promise<void>) | undefined;
-    // The original slot keeps streaming in the background while a second slot
-    // opens the saved session: switching while streaming creates a new slot.
+    // The original live slot streams in the background while the saved
+    // transcript is rendered cold. Target that original session, not a second
+    // runtime for the currently selected cold transcript.
     fake.setStreaming(true);
-    fake.runtime.switchSession.mockImplementationOnce(async () => {
-      fake.session.sessionId = saved.id;
-      fake.session.sessionFile = saved.path;
-      fake.session.messages = [];
-      fake.agent.state.messages = fake.session.messages;
-      await rebind?.(fake.session);
-      return { cancelled: false };
-    });
     await service.switchSession(saved.id);
-    // Both slots share the fixture session object; the first (original) slot is
-    // the background one and the added slot is selected. Drive its turn phase
-    // to 'active' so the steer is delivered instead of deferred.
     fake.emitSession({ type: 'agent_start', message: { role: 'user', content: 'x' } });
-    const state = await service.sendSessionMessage(saved.id, 'keep going', 'steer');
+    const state = await service.sendSessionMessage('session-1', 'keep going', 'steer');
     expect(state.sessionId).toBe(saved.id);
     expect(fake.session.sendCustomMessage).toHaveBeenCalledWith(
       expect.objectContaining({ customType: 'fate-direct-session-message', display: true }),
@@ -2144,29 +2672,29 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
-  it('switches between default full access, read-only, and project edit tool sets', async () => {
+  it('switches between default edit, read-only, and explicit full-access tool sets', async () => {
     const fake = fixture();
     const service = new PiRuntimeService(fake.adapter);
     const initial = await service.openProject({ path: '/project', name: 'project', trusted: true });
 
-    expect(initial.permissionLevel).toBe('full-access');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, ...AGENT_ORCHESTRATION_TOOL_NAMES]);
+    expect(initial.permissionLevel).toBe('edit');
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'edit', 'write', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'read_monitor_dashboard', ...AGENT_ORCHESTRATION_TOOL_NAMES]);
 
     const readOnly = await service.setPermissionLevel('read-only');
     expect(readOnly.permissionLevel).toBe('read-only');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, ...AGENT_ORCHESTRATION_TOOL_NAMES]);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'read_monitor_dashboard', ...AGENT_ORCHESTRATION_TOOL_NAMES]);
 
     const fullAccess = await service.setPermissionLevel('full-access');
     expect(fullAccess.permissionLevel).toBe('full-access');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, ...AGENT_ORCHESTRATION_TOOL_NAMES, 'write', 'edit', 'bash']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'read_monitor_dashboard', ...AGENT_ORCHESTRATION_TOOL_NAMES, 'write', 'edit', 'bash']);
 
     const editable = await service.setPermissionLevel('edit');
     expect(editable.permissionLevel).toBe('edit');
-    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, ...AGENT_ORCHESTRATION_TOOL_NAMES, 'write', 'edit']);
+    expect(fake.session.setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'generate_image', 'imagegen', ...TASK_TOOL_NAMES, 'read_monitor_dashboard', ...AGENT_ORCHESTRATION_TOOL_NAMES, 'write', 'edit']);
     await service.dispose();
   });
 
-  it('restores host-owned permissions per session and defaults unseen sessions to Full access', async () => {
+  it('restores host-owned permissions per session and defaults unseen sessions to edit', async () => {
     const fake = fixture();
     const permissions = new InMemorySessionPermissionStore();
     await permissions.set('/project', 'session-2', 'read-only');
@@ -2174,7 +2702,7 @@ describe('PiRuntimeService', () => {
     const service = new PiRuntimeService(fake.adapter, undefined, permissions);
 
     const initial = await service.openProject({ path: '/project', name: 'project', trusted: true });
-    expect(initial.permissionLevel).toBe('full-access');
+    expect(initial.permissionLevel).toBe('edit');
     expect(fake.adapter.createRuntime).toHaveBeenCalledWith(
       '/project', fake.modelRuntime, true,
       expect.arrayContaining([
@@ -2199,25 +2727,45 @@ describe('PiRuntimeService', () => {
     const newSession = { ...fake.session, sessionId: 'session-new' };
     fake.runtime.session = newSession;
     await rebind?.(newSession);
-    expect(service.getState(false).permissionLevel).toBe('full-access');
+    expect(service.getState(false).permissionLevel).toBe('edit');
 
     fake.runtime.session = fake.session;
     await rebind?.(fake.session);
-    expect(service.getState(false).permissionLevel).toBe('full-access');
+    expect(service.getState(false).permissionLevel).toBe('edit');
     await service.setPermissionLevel('read-only');
     await expect(permissions.get('/project', 'session-1')).resolves.toBe('read-only');
     await service.dispose();
   });
 
-  it('keeps the previous permission when the SDK rejects a privileged tool set', async () => {
+  it.each(['read-only', 'edit'] as const)('keeps durable %s after SDK staging and cleanup failures without a rollback save', async (previous) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'fate-permission-sdk-rejection-'));
+    identityTempDirs.push(root);
+    const permissions = new SessionPermissionStore(new AppLogService(), root);
+    await permissions.set('/project', 'session-1', previous);
+    const persist = permissions.set.bind(permissions);
+    const save = vi.spyOn(permissions, 'set').mockImplementation(async (...args) => {
+      if (args[2] !== 'full-access') throw new Error('A rollback save would also fail');
+      await persist(...args);
+    });
     const fake = fixture();
-    const service = new PiRuntimeService(fake.adapter);
-    await service.openProject({ path: '/project', name: 'project', trusted: true });
-    fake.session.setActiveToolsByName.mockImplementationOnce(() => { throw new Error('bash unavailable'); });
+    const service = permissionRuntime(fake, permissions);
+    try {
+      await service.openProject({ path: '/project', name: 'project', trusted: true });
+      fake.session.setActiveToolsByName
+        .mockImplementationOnce(() => { throw new Error('bash unavailable'); })
+        .mockImplementationOnce(() => { throw new Error('SDK name cleanup also failed'); });
+      await expect(service.setPermissionLevel('full-access')).rejects.toThrow('bash unavailable');
+      expect(service.getState(false)).toMatchObject({ permissionLevel: previous, error: { message: expect.stringMatching(/blocked/) } });
+      expect(save).not.toHaveBeenCalled(); // Neither a higher grant nor a rollback write is needed.
+      await expect(service.prompt({ text: 'must remain blocked', behavior: 'prompt' })).rejects.toThrow(/blocked/);
+    } finally { await service.dispose(); }
 
-    await expect(service.setPermissionLevel('full-access')).rejects.toThrow('bash unavailable');
-    expect(service.getState().permissionLevel).toBe('full-access');
-    await service.dispose();
+    const reloadedStore = new SessionPermissionStore(new AppLogService(), root);
+    await expect(reloadedStore.get('/project', 'session-1')).resolves.toBe(previous);
+    const recovered = permissionRuntime(fixture(), reloadedStore);
+    try {
+      expect(await recovered.openProject({ path: '/project', name: 'project', trusted: true })).toMatchObject({ permissionLevel: previous, status: 'ready' });
+    } finally { await recovered.dispose(); }
   });
 
   it('exposes a deterministic built-in goal command and persists goal control outside prompt text', async () => {
@@ -2276,6 +2824,7 @@ describe('PiRuntimeService', () => {
 
     await service.createGoalMax({ objective: 'Complete this without delegation', verificationLevel: 'normal', agentStrategy: 'off', tokenLimit: null, timeLimitMs: null });
     expect(fake.session.getActiveToolNames().some((name) => [...LEGACY_LAUNCH_TOOL_NAMES, ...AGENT_ORCHESTRATION_TOOL_NAMES].includes(name as never))).toBe(false);
+    expect(fake.session.getActiveToolNames()).toContain('read_monitor_dashboard');
 
     await service.controlGoalMax({ action: 'cancel' });
     await service.clearGoalMax();
@@ -2438,6 +2987,9 @@ describe('PiRuntimeService', () => {
 
     expect(service.getState(false).sessionId).toBe('session-2');
     expect(service.getState(false).error).toBeNull();
+    // The synthetic successor copied the streaming flag; settle both fixtures before teardown.
+    fake.setStreaming(false);
+    successor.isStreaming = false;
     await service.dispose();
   });
 
@@ -2493,9 +3045,10 @@ describe('PiRuntimeService', () => {
       agentWorkflows: { hasActive: (sessionId: string) => boolean };
       goalRuntimeSnapshot: (sessionId: string) => { activeChildren: number; activeWorkflows?: number } | null;
     };
-    vi.spyOn(internals.agentWorkflows, 'hasActive').mockReturnValue(true);
+    const active = vi.spyOn(internals.agentWorkflows, 'hasActive').mockReturnValue(true);
 
     expect(internals.goalRuntimeSnapshot('session-1')).toMatchObject({ activeChildren: 0, activeWorkflows: 1 });
+    active.mockRestore(); // Synthetic ownership has ended; do not fake an unkillable writer at teardown.
     await service.dispose();
   });
 
@@ -2806,7 +3359,6 @@ describe('PiRuntimeService', () => {
   it('keeps browser OAuth sign-in non-blocking while the manual code fallback stays answerable', async () => {
     const fake = fixture();
     const shellOpenExternal = vi.fn();
-    vi.doMock('electron', () => ({ shell: { openExternal: shellOpenExternal } }));
     let resolveLogin: (() => void) | undefined;
     const login = vi.fn(async (_providerId: string, _method: string, interaction: {
       prompt: (request: { type: 'select' | 'manual_code'; message: string; placeholder?: string }) => Promise<string>;
@@ -2829,7 +3381,11 @@ describe('PiRuntimeService', () => {
       hasConfiguredAuth: (providerId: string) => providerId === 'openai-codex',
       login,
     });
-    const service = new PiRuntimeService(fake.adapter);
+    const service = new PiRuntimeService(
+      fake.adapter, undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { present: shellOpenExternal },
+    );
     await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     await service.startProviderLogin({ providerId: 'openai-codex', method: 'oauth' });
@@ -2841,7 +3397,7 @@ describe('PiRuntimeService', () => {
     // the browser message stays primary while the prompt remains answerable.
     await vi.waitFor(() => {
       const state = service.getState(false).providerLogin;
-      expect(state).toMatchObject({ status: 'working', prompt: { type: 'manual_code' }, message: 'A secure browser window opened. Complete sign-in there, then return to Fate UI.' });
+      expect(state).toMatchObject({ status: 'working', prompt: { type: 'manual_code' }, message: 'https://auth.openai.com/oauth/authorize' });
     });
     await vi.waitFor(() => expect(shellOpenExternal).toHaveBeenCalledWith('https://auth.openai.com/oauth/authorize'));
 
@@ -3016,9 +3572,14 @@ describe('PiRuntimeService', () => {
       branches: vi.fn(() => []),
     } as unknown as PiSessionRepository;
     const service = new PiRuntimeService({ ...initial.adapter, createRuntime }, repository);
+    const scoped = vi.fn();
+    service.setScopedPiSink(scoped);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
 
     const cold = await service.switchSession(saved.id);
+    service.setThinkingLevel('off');
+    expect(scoped.mock.calls.some(([event, origin]) => event.type === 'state.changed'
+      && event.state.sessionId === saved.id && origin === saved.id)).toBe(true);
 
     expect(cold).toMatchObject({ sessionId: saved.id, sessionFile: saved.path, sessionCapabilities: { fork: false } });
     expect(cold.messages?.map((message) => message.text)).toEqual(['Saved prompt', 'Saved answer']);
@@ -3163,6 +3724,76 @@ describe('PiRuntimeService', () => {
       input: 13, output: 10, cacheRead: 18, cacheWrite: 1, totalTokens: 42, cost: 0.03, turns: 3,
     });
     await service.dispose();
+  });
+
+  it('keeps deleted teams out of cold history and usage even after an older snapshot', async () => {
+    const fake = fixture();
+    const saved = {
+      id: 'saved-team-deletion', title: 'Saved teams', firstMessage: 'Review teams', path: '/sessions/saved-team-deletion.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 1, active: false,
+    };
+    const teamModel = { provider: model.provider, id: model.id, name: model.name, reasoning: model.reasoning, contextWindow: model.contextWindow };
+    const deleted = createTeamRuntime(saved.id, '/project', teamModel, 'medium', 'read-only');
+    deleted.state.usage = { input: 11, output: 7, cacheRead: 0, cacheWrite: 0, cost: 0.02, contextTokens: 18, turns: 1 };
+    const kept = createTeamRuntime(saved.id, '/project', teamModel, 'medium', 'read-only');
+    const snapshot = ledgerSnapshot(deleted, 'team.closed');
+    const events = [snapshot, ledgerSnapshot(kept, 'team.created'), {
+      kind: 'fate-agent-team-event', version: 1, teamId: deleted.state.id, sequence: snapshot.sequence + 1,
+      timestamp: Date.now(), type: 'team.deleted', payload: {},
+    }, snapshot];
+    const branch = events.map((data, index) => ({
+      type: 'custom', customType: 'fate-agent-team-event', id: `team-event-${index}`,
+      parentId: index === 0 ? null : `team-event-${index - 1}`, timestamp: saved.createdAt, data,
+    }));
+    const repository = {
+      list: vi.fn(async () => [saved]), resolve: vi.fn(async () => saved),
+      snapshot: vi.fn(async () => ({ summary: saved, entries: branch, branch })), branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const service = new PiRuntimeService(fake.adapter, repository);
+    try {
+      await service.openProject({ path: '/project', name: 'project', trusted: true });
+      const state = await service.switchSession(saved.id);
+      expect(state.agentTeams?.map((team) => team.id)).toEqual([kept.state.id]);
+      expect(state.tokenTelemetry?.session).toMatchObject({ input: 0, output: 0, cost: 0, turns: 0 });
+      expect(fake.adapter.createRuntime).toHaveBeenCalledTimes(1);
+    } finally { await service.dispose(); }
+  });
+
+  it('does not show an inactive Agent Team child after its saved transcript is removed', async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), 'fate-missing-agent-history-'));
+    vi.stubEnv('FATE_GUI_DATA_DIR', dataDir);
+    const fake = fixture();
+    const saved = {
+      id: 'saved-missing-agent', title: 'Saved agent', firstMessage: 'Inspect', path: '/sessions/saved-missing-agent.jsonl',
+      createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-02T00:00:00.000Z', messageCount: 1, active: false,
+    };
+    const team = createTeamRuntime(saved.id, '/project', { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 1000 }, 'medium', 'read-only');
+    const root = team.nodes.get(team.state.rootNodeId)!;
+    const child = { ...root, id: 'node-saved-child', parentNodeId: root.id, path: '/root/worker', handle: 'worker', displayName: 'Worker', depth: 1, role: 'worker', agentName: 'direct', status: 'ready' as const, childIds: [], writer: false };
+    root.childIds = [child.id];
+    team.nodes.set(child.id, child);
+    const branch = [{ type: 'custom', customType: 'fate-agent-team-event', data: ledgerSnapshot(team, 'node.updated') }];
+    const repository = {
+      list: vi.fn(async () => [saved]), resolve: vi.fn(async () => saved),
+      snapshot: vi.fn(async () => ({ summary: saved, entries: branch, branch })), branches: vi.fn(() => []),
+    } as unknown as PiSessionRepository;
+    const directory = path.join(dataDir, 'agent-teams', safeDirectoryKey(saved.id), safeDirectoryKey(team.state.id), safeDirectoryKey(child.id));
+    const service = new PiRuntimeService(fake.adapter, repository);
+    try {
+      await fs.mkdir(directory, { recursive: true });
+      await fs.writeFile(path.join(directory, 'child.jsonl'), '');
+      await service.openProject({ path: '/project', name: 'project', trusted: true });
+      const present = await service.switchSession(saved.id);
+      expect(present.agentTeams?.[0]?.nodes.map((node) => node.id)).toContain(child.id);
+      await fs.rm(directory, { recursive: true });
+      await service.switchSession('session-1');
+      const missing = await service.switchSession(saved.id);
+      expect(missing.agentTeams).toEqual([]);
+    } finally {
+      await service.dispose();
+      vi.unstubAllEnvs();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it('matches Pi’s persisted all-entry ledger for cold sessions', async () => {
@@ -3417,7 +4048,7 @@ describe('PiRuntimeService', () => {
     const service = new PiRuntimeService({ ...first.adapter, createRuntime });
     await service.openProject({ path: '/project', name: 'project', trusted: true });
     const workflows = (service as unknown as { agentWorkflows: { hasActive: (sessionId: string) => boolean } }).agentWorkflows;
-    vi.spyOn(workflows, 'hasActive').mockImplementation((sessionId) => sessionId === 'session-1');
+    const activeWorkflow = vi.spyOn(workflows, 'hasActive').mockImplementation((sessionId) => sessionId === 'session-1');
 
     await expect(service.compact()).rejects.toThrow(/child sessions or Agent Team nodes are live/u);
     const state = await service.newSession();
@@ -3428,6 +4059,7 @@ describe('PiRuntimeService', () => {
     expect(state.sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'session-1', attention: 'running', active: false }),
     ]));
+    activeWorkflow.mockRestore(); // The pending-workflow projection is synthetic, not a live workflow to stop.
     await service.dispose();
   });
 
@@ -4476,6 +5108,16 @@ describe('PiRuntimeService', () => {
 });
 
 describe('models.dev managed providers', () => {
+  beforeEach(() => {
+    // These cases inject their catalog fetch; exercise it even in the offline
+    // suite, while refusing any accidental fallback to a real network request.
+    vi.stubEnv('PI_OFFLINE', '0');
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('Unexpected real fetch in the mocked catalog fixture'); }));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
   const crofModel = { provider: 'crof', id: 'kimi-k3', name: 'CrofAI: Kimi K3', reasoning: true, contextWindow: 1_000_000, input: ['text'] as const };
   const catalogPayload = () => ({
     crof: {

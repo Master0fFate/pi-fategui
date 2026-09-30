@@ -1,7 +1,17 @@
 import { create } from 'zustand';
+import type { WireResultOf } from '../../shared/protocol/methods';
+import { currentNetworkScope, type NetworkWorkspaceApi, type ReadView } from './runtimeStore';
+export type TaskListView = TaskList | NonNullable<WireResultOf<'task.list'>['list']>;
+export function selectTaskView(state: TaskStore, source: 'desktop' | 'network'): TaskListView | null {
+  if (source === 'desktop') return state.list;
+  return state.networkScopeKey === currentNetworkScope()?.key && state.network.status === 'ready' ? state.network.value.list : null;
+}
 import { taskListSchema, type TaskEvent, type TaskList } from '../../shared/contracts/tasks';
 
 interface TaskStore {
+  networkScopeKey: string | null;
+  network: ReadView<WireResultOf<'task.list'>>;
+  loadNetwork: (api: NetworkWorkspaceApi) => Promise<void>;
   projectPath: string | null;
   sessionId: string | null;
   list: TaskList | null;
@@ -14,6 +24,18 @@ interface TaskStore {
 }
 
 export const useTaskStore = create<TaskStore>((set) => ({
+  networkScopeKey: null, network: { status: 'unavailable' },
+  loadNetwork: async (api) => {
+    const captured = currentNetworkScope();
+    if (!captured || !api.isConnected) { set({ networkScopeKey: null, network: { status: 'unavailable' } }); return; }
+    set({ networkScopeKey: captured.key, network: { status: api.supports('task.read') ? 'loading' : 'unavailable' } });
+    if (!api.supports('task.read')) return;
+    try {
+      const value = await api.readTasks(captured.scope);
+      if (value.sessionId !== captured.sessionId || value.selectionRevision !== captured.header.selectionRevision) throw new Error('Task selection changed.');
+      if (api.isConnected && currentNetworkScope()?.key === captured.key) set({ network: { status: 'ready', value } });
+    } catch { if (currentNetworkScope()?.key === captured.key) set({ network: { status: 'error' } }); }
+  },
   projectPath: null,
   sessionId: null,
   list: null,

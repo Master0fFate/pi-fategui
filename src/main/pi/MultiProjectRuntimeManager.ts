@@ -47,7 +47,8 @@ export class MultiProjectRuntimeManager<R> {
     this.coordinator = new ProjectRuntimeCoordinator<R>(
       {
         createRuntime: async (projectPath, projectName) => {
-          const project = this.projectStates.get(projectPath) ?? { path: projectPath, name: projectName, trusted: true };
+          const project = this.projectStates.get(projectPath);
+          if (!project || project.name !== projectName) throw new Error('A known project registration is required before runtime creation.');
           return this.hooks.createRuntime(project);
         },
         disposeRuntime: (runtime) => this.hooks.disposeRuntime(runtime),
@@ -88,10 +89,27 @@ export class MultiProjectRuntimeManager<R> {
     this.coordinator.forEach(handler);
   }
 
-  /**
-   * Open (or re-focus) a project. Keeps all other live projects running.
-   * Returns the focused runtime handle and the latest runtime state.
-   */
+  /** Host-only registration step. The network adapter must never call this with a request path. */
+  registerKnownProject(project: ProjectState): void {
+    if (!project.trusted || !project.path || !project.name) throw new Error('A trusted, known project is required.');
+    const previous = this.projectStates.get(project.path);
+    if (previous && (previous.name !== project.name || !previous.trusted) && this.coordinator.has(project.path)) {
+      throw new Error('Close the previous project runtime before replacing its registration.');
+    }
+    this.projectStates.set(project.path, project);
+  }
+
+  /** Acquire a host-registered project without changing desktop focus. */
+  async acquireKnownProject(projectPath: string, readState: (runtime: R) => RuntimeState): Promise<{ runtime: R; state: RuntimeState }> {
+    const project = this.projectStates.get(projectPath);
+    if (!project?.trusted) throw new Error('An unknown or untrusted project cannot start Pi.');
+    const ctx = await this.coordinator.acquire({ path: project.path, name: project.name }, false);
+    const state = readState(ctx.runtime);
+    if (state.status === 'error' && this.coordinator.get(projectPath) === ctx) await this.close(projectPath);
+    return { runtime: ctx.runtime, state };
+  }
+
+  /** Open (or re-focus) a project for the existing desktop compatibility path. */
   async openProject(project: ProjectState, readState: (runtime: R) => RuntimeState): Promise<{ runtime: R; state: RuntimeState }> {
     const existing = this.coordinator.get(project.path);
     const previous = this.projectStates.get(project.path);
@@ -142,8 +160,9 @@ export class MultiProjectRuntimeManager<R> {
 
   /** Explicitly close + dispose a project's runtime (e.g. user "forgets" the folder). */
   async close(projectPath: string): Promise<void> {
+    const registered = this.projectStates.get(projectPath);
     await this.coordinator.close(projectPath);
-    this.projectStates.delete(projectPath);
+    if (this.projectStates.get(projectPath) === registered) this.projectStates.delete(projectPath);
     if (this.focusedPath === projectPath) {
       this.focusedPath = null;
       this.focusedRuntime = null;
@@ -160,6 +179,9 @@ export class MultiProjectRuntimeManager<R> {
   start(): void {
     if (this.evictionEnabled) this.coordinator.start();
   }
+
+  /** Fence new acquisitions before any asynchronous cancellation starts. */
+  beginShutdown(): void { this.coordinator.beginShutdown(); }
 
   /** Stop eviction and dispose every live runtime. Call at shutdown. */
   async stop(): Promise<void> {

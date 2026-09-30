@@ -1,3 +1,4 @@
+import { getFateApi, getFateApiOptional, getDesktopApi, getDesktopApiOptional } from '../../platform/api';
 import * as Dialog from '@radix-ui/react-dialog';
 import {
   Bot,
@@ -106,11 +107,11 @@ export function CommandPalette() {
     const thinkingReason = modelReason ?? (!effectiveModel?.reasoning ? 'The model selected for the next message does not support reasoning.' : undefined);
     const terminalReason = runtime.project?.trusted ? undefined : 'Open and trust a project before opening the terminal.';
     const base: Command[] = [
-      { id: 'open-project', label: 'Open project', hint: 'Ctrl/⌘ O', icon: FolderOpen, run: () => { if ('piDesktop' in window) invoke('Open project', () => window.piDesktop.selectProject(), true); } },
-      { id: 'new-session', label: 'New session', hint: 'Ctrl/⌘ N', icon: Bot, disabled: Boolean(newSessionReason), ...(newSessionReason ? { disabledReason: newSessionReason } : {}), run: () => { if ('piDesktop' in window) invoke('New session', () => window.piDesktop.newSession(), true); } },
+      { id: 'open-project', label: 'Open project', hint: 'Ctrl/⌘ O', icon: FolderOpen, run: () => { if (Boolean(getFateApiOptional())) invoke('Open project', () => getDesktopApi().selectProject(), true); } },
+      { id: 'new-session', label: 'New session', hint: 'Ctrl/⌘ N', icon: Bot, disabled: Boolean(newSessionReason), ...(newSessionReason ? { disabledReason: newSessionReason } : {}), run: () => { if (Boolean(getFateApiOptional())) invoke('New session', () => getFateApi().newSession(), true); } },
       { id: 'resources', label: 'Open resources', icon: Library, run: () => { actions.setSidebarCollapsed(false); actions.setSidebarTab('resources'); } },
       { id: 'focus-composer', label: 'Focus composer', icon: Search, disabled: Boolean(focusReason), ...(focusReason ? { disabledReason: focusReason } : {}), run: () => document.querySelector<HTMLTextAreaElement>('#pi-composer')?.focus() },
-      { id: 'stop', label: 'Stop generation', hint: 'Esc', icon: Square, disabled: !runtime.streaming, ...(!runtime.streaming ? { disabledReason: 'Nothing is currently generating.' } : {}), run: () => { if ('piDesktop' in window) void window.piDesktop.abort().catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Stop generation failed', message: commandErrorMessage(error) })); } },
+      { id: 'stop', label: 'Stop generation', hint: 'Esc', icon: Square, disabled: !runtime.streaming, ...(!runtime.streaming ? { disabledReason: 'Nothing is currently generating.' } : {}), run: () => { if (Boolean(getFateApiOptional())) void getFateApi().abort().catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Stop generation failed', message: commandErrorMessage(error) })); } },
       { id: 'sidebar', label: 'Toggle sidebar', hint: 'Ctrl/⌘ B', icon: PanelLeft, run: actions.toggleSidebar },
       { id: 'inspector', label: 'Toggle inspector', icon: PanelRight, run: actions.toggleInspector },
       { id: 'terminal', label: 'Toggle manual terminal', hint: 'Ctrl/⌘ `', icon: TerminalSquare, disabled: Boolean(terminalReason), ...(terminalReason ? { disabledReason: terminalReason } : {}), run: actions.toggleTerminal },
@@ -122,8 +123,8 @@ export function CommandPalette() {
         disabled: !runtime.sessionId,
         ...(!runtime.sessionId ? { disabledReason: 'Open a session before exporting it.' } : {}),
         run: () => {
-          if (!('piDesktop' in window) || typeof window.piDesktop.exportSession !== 'function') return;
-          void window.piDesktop.exportSession().then((result) => {
+          if (!getFateApiOptional() || typeof getDesktopApiOptional()?.exportSession !== 'function') return;
+          void getDesktopApi().exportSession().then((result) => {
             if (result.saved) actions.showToast({ kind: 'success', title: 'Session exported', message: result.path ?? 'Saved locally.' });
           }).catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Export failed', message: commandErrorMessage(error) }));
         },
@@ -131,12 +132,12 @@ export function CommandPalette() {
       {
         id: 'git-fetch', label: 'Git fetch', icon: GitBranch,
         disabled: !runtime.project, ...(!runtime.project ? { disabledReason: 'Open a project first.' } : {}),
-        run: () => { if ('piDesktop' in window) void window.piDesktop.runGitOperation('fetch').catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Git fetch failed', message: commandErrorMessage(error) })); },
+        run: () => { if (Boolean(getFateApiOptional())) void getFateApi().runGitOperation('fetch').catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Git fetch failed', message: commandErrorMessage(error) })); },
       },
       {
         id: 'git-pull', label: 'Git pull', icon: GitBranch,
         disabled: !runtime.project, ...(!runtime.project ? { disabledReason: 'Open a project first.' } : {}),
-        run: () => { if ('piDesktop' in window) void window.piDesktop.runGitOperation('pull').catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Git pull failed', message: commandErrorMessage(error) })); },
+        run: () => { if (Boolean(getFateApiOptional())) void getFateApi().runGitOperation('pull').catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Git pull failed', message: commandErrorMessage(error) })); },
       },
       {
         id: 'review-runway', label: 'Open Review Runway', icon: FileCode2,
@@ -155,7 +156,7 @@ export function CommandPalette() {
       {
         id: 'git-push', label: 'Git push', icon: GitBranch,
         disabled: !runtime.project, ...(!runtime.project ? { disabledReason: 'Open a project first.' } : {}),
-        run: () => { if ('piDesktop' in window) void window.piDesktop.runGitOperation('push').catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Git push failed', message: commandErrorMessage(error) })); },
+        run: () => { if (Boolean(getFateApiOptional())) void getFateApi().runGitOperation('push').catch((error: unknown) => actions.showToast({ kind: 'error', title: 'Git push failed', message: commandErrorMessage(error) })); },
       },
     ];
     for (const model of visibleModels(runtime.models, disabledModels)) base.push({
@@ -164,7 +165,7 @@ export function CommandPalette() {
       icon: Bot,
       disabled: Boolean(modelReason),
       ...(modelReason ? { disabledReason: modelReason } : {}),
-      run: () => { if ('piDesktop' in window) invoke('Model change', () => window.piDesktop.setModel(model.provider, model.id)); },
+      run: () => { if (Boolean(getFateApiOptional())) invoke('Model change', () => getFateApi().setModel(model.provider, model.id)); },
     });
     for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const) base.push({
       id: `thinking:${level}`,
@@ -172,7 +173,7 @@ export function CommandPalette() {
       icon: Brain,
       disabled: Boolean(thinkingReason),
       ...(thinkingReason ? { disabledReason: thinkingReason } : {}),
-      run: () => { if ('piDesktop' in window) invoke('Thinking level change', () => window.piDesktop.setThinkingLevel(level)); },
+      run: () => { if (Boolean(getFateApiOptional())) invoke('Thinking level change', () => getFateApi().setThinkingLevel(level)); },
     });
     return base;
   }, [actions, disabledModels, runtime, setRuntime]);
@@ -197,6 +198,20 @@ export function CommandPalette() {
     if (!open || entries.length === 0) return;
     document.getElementById(`palette-option-${activeIndex}`)?.scrollIntoView({ block: 'nearest' });
   }, [activeIndex, entries.length, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    // A previously opened Radix image dialog can own Escape even when the
+    // command center opens later. The last-opened palette owns this key first.
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape, true);
+    return () => window.removeEventListener('keydown', closeOnEscape, true);
+  }, [open, setOpen]);
 
   const runEntry = (entry: PaletteEntry | undefined) => {
     if (!entry || (entry.kind === 'command' && entry.command.disabled)) return;
@@ -246,7 +261,7 @@ export function CommandPalette() {
       if (!next) { setQuery(''); setSelectedIndex(0); }
     }}>
       <Dialog.Portal>
-        <Dialog.Overlay className="dialog-overlay" />
+        <Dialog.Overlay className="dialog-overlay command-palette-overlay" />
         <Dialog.Content className="command-palette" aria-describedby="command-description">
           <Dialog.Title className="visually-hidden">Command center</Dialog.Title>
           <Dialog.Description id="command-description" className="visually-hidden">Search commands and resources across Fate UI</Dialog.Description>

@@ -126,6 +126,7 @@ The only supported `appearance` keys are `interfaceFont`, `codeFont`, `compactMo
 | --- | --- |
 | `shell`, `sidebar` | Workspace chrome, navigation, project/session rows, compact sessions |
 | `conversation`, `composer`, `queue` | Transcript, input, tools menu, queued/held messages, goal steering |
+| `questionnaire` | Current question card, answer options, and custom answer field |
 | `tasks`, `goal` | Ordinary tasks, GoalMax criteria, flight deck, goal editor and confirmation |
 | `agents` | Agent library/editor, teams, child sessions, controls, transcripts, workspace review dialog |
 | `tools`, `activity`, `notifications` | Tool cards/output chrome, activity filters/timeline, toasts/notices/error banners |
@@ -140,6 +141,21 @@ The only supported `appearance` keys are `interfaceFont`, `codeFont`, `compactMo
 Allowed properties are `controlRadius` (0–12 px), `surfaceRadius` (0–16 px), `padding` (4–24 px), `rowHeight` (24–48 px minimum), `fontSize` (11–16 px base), `surface` (`canvas`, `panel`, `raised`), and `border` (`border`, `borderStrong`, `textSoft`). Colors always come from the selected palette. Controls and metadata retain their no-wrap/truncation rules; compact action labels may stay smaller than body text. Long messages, code, descriptions, and warnings remain readable rather than being forced onto one line.
 
 The composer keeps Memory, its tools menu, model selection, and send/stop controls on one line. Secondary actions move into the tools menu and labels shorten as space shrinks. Skin options cannot disable these layout protections or remove controls.
+
+### Questionnaire field
+
+The questionnaire uses one `.question-card` at a time, anchored above the composer without moving the main input. Its scoped hooks are `.question-card-progress`, `.question-card-question`, `.question-card-options`, `.question-card-option`, `.question-card-custom` (the fourth-row input), and `.question-card-error`. Option buttons submit immediately; the custom field submits a nonempty answer with Enter. Long questions and choices wrap; excessive height scrolls inside the card. Keyboard focus and disabled states remain visible.
+
+Use `styles.normal.questionnaire` to override global surface defaults for this field. Use `styles.compact.questionnaire` for Compact mode overrides. For example:
+
+```json
+"styles": {
+  "normal": { "questionnaire": { "surface": "panel", "padding": 10, "controlRadius": 4 } },
+  "compact": { "questionnaire": { "padding": 6, "rowHeight": 26 } }
+}
+```
+
+The field inherits the active palette and interface font. The `questionnaire` surface supplies its `--surface-*` spacing, radius, row-height, background, and border variables, with global and theme fallbacks. These selectors document application-owned styling; packs still cannot inject arbitrary CSS.
 
 ### Embedded image
 

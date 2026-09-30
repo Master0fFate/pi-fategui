@@ -1,0 +1,82 @@
+import type { PiDesktopApi } from '../shared/contracts/ipc';
+
+// T02 shared-core inventory, plus the scoped Monitor read added after that
+// inventory. This is a compile-time list of named operations, not an IPC
+// channel map or a promise that a future server implements native features.
+export const sharedFateMethods = [
+  'abort', 'clearGoalMax', 'clearTasks', 'cloneSession', 'closeProjectRuntime', 'compact',
+  'controlAgentTeam', 'controlGoalMax', 'controlSubagent', 'createGoalMax', 'createTask',
+  'createWorktreeSession', 'deleteProjectSessions', 'deleteSession', 'deleteSessionBranch',
+  'deleteTask', 'editGoalMaxSteering', 'forkSession', 'getGitCombinedDiff',
+  'getGitCommitDetails', 'getGitDiff', 'getGitHistory', 'getGitStatus', 'getGoalMax',
+  'getMonitorDashboard', 'getRuntimeState', 'getTaskList', 'listFiles', 'listGitWorktrees',
+  'listProjectSessions', 'listSessions', 'mutateQueuedMessage', 'navigateSessionBranch',
+  'newSession', 'onEvents', 'onGoalMaxEvents', 'onTaskEvents', 'optimizePrompt', 'prompt',
+  'queryAttestations', 'readFile', 'removeGoalMaxSteering', 'renameSession', 'reorderTasks',
+  'revertGitPath', 'runGitOperation', 'searchFiles', 'sendSessionMessage', 'setModel',
+  'setPermissionLevel', 'setThinkingLevel', 'switchGitWorktree', 'switchSession',
+  'updateGoalMax', 'updateTask',
+] as const satisfies readonly (keyof PiDesktopApi)[];
+
+export type FateApi = Pick<PiDesktopApi, typeof sharedFateMethods[number]>;
+
+/** Project named operations only. Never copy extra bridge or injected keys. */
+export function selectFateMethods(api: FateApi): FateApi {
+  return {
+    abort: api.abort,
+    clearGoalMax: api.clearGoalMax,
+    clearTasks: api.clearTasks,
+    cloneSession: api.cloneSession,
+    closeProjectRuntime: api.closeProjectRuntime,
+    compact: api.compact,
+    controlAgentTeam: api.controlAgentTeam,
+    controlGoalMax: api.controlGoalMax,
+    controlSubagent: api.controlSubagent,
+    createGoalMax: api.createGoalMax,
+    createTask: api.createTask,
+    createWorktreeSession: api.createWorktreeSession,
+    deleteProjectSessions: api.deleteProjectSessions,
+    deleteSession: api.deleteSession,
+    deleteSessionBranch: api.deleteSessionBranch,
+    deleteTask: api.deleteTask,
+    editGoalMaxSteering: api.editGoalMaxSteering,
+    forkSession: api.forkSession,
+    getGitCombinedDiff: api.getGitCombinedDiff,
+    getGitCommitDetails: api.getGitCommitDetails,
+    getGitDiff: api.getGitDiff,
+    getGitHistory: api.getGitHistory,
+    getGitStatus: api.getGitStatus,
+    getGoalMax: api.getGoalMax,
+    getMonitorDashboard: api.getMonitorDashboard,
+    getRuntimeState: api.getRuntimeState,
+    getTaskList: api.getTaskList,
+    listFiles: api.listFiles,
+    listGitWorktrees: api.listGitWorktrees,
+    listProjectSessions: api.listProjectSessions,
+    listSessions: api.listSessions,
+    mutateQueuedMessage: api.mutateQueuedMessage,
+    navigateSessionBranch: api.navigateSessionBranch,
+    newSession: api.newSession,
+    onEvents: api.onEvents,
+    onGoalMaxEvents: api.onGoalMaxEvents,
+    onTaskEvents: api.onTaskEvents,
+    optimizePrompt: api.optimizePrompt,
+    prompt: api.prompt,
+    queryAttestations: api.queryAttestations,
+    readFile: api.readFile,
+    removeGoalMaxSteering: api.removeGoalMaxSteering,
+    renameSession: api.renameSession,
+    reorderTasks: api.reorderTasks,
+    revertGitPath: api.revertGitPath,
+    runGitOperation: api.runGitOperation,
+    searchFiles: api.searchFiles,
+    sendSessionMessage: api.sendSessionMessage,
+    setModel: api.setModel,
+    setPermissionLevel: api.setPermissionLevel,
+    setThinkingLevel: api.setThinkingLevel,
+    switchGitWorktree: api.switchGitWorktree,
+    switchSession: api.switchSession,
+    updateGoalMax: api.updateGoalMax,
+    updateTask: api.updateTask,
+  };
+}

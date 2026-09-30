@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { promises as fs } from 'node:fs';
+import { promises as fs, type Dir, type Dirent } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,6 +10,7 @@ const electronMocks = vi.hoisted(() => ({ openPath: vi.fn(), showItemInFolder: v
 vi.mock('electron', () => ({ shell: electronMocks }));
 
 import { FilesystemService, MAX_FILE_PREVIEW_BYTES } from './FilesystemService';
+import { DesktopFileActions } from './DesktopFileActions';
 
 const temporary: string[] = [];
 
@@ -19,6 +20,40 @@ async function tempDirectory(): Promise<string> {
   return directory;
 }
 
+// The runtime property is an accessor, although TypeScript declares compare as a method.
+const collatorAccessors: { readonly compare: unknown } = Intl.Collator.prototype;
+
+function legacyCompareNames(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+async function sortingFixture(names: readonly string[]): Promise<FilesystemService> {
+  const root = await tempDirectory();
+  const fixture = path.join(root, 'fixture.txt');
+  await fs.writeFile(fixture, '');
+  const directoryStat = await fs.stat(root);
+  const fileStat = await fs.stat(fixture);
+  const service = new FilesystemService();
+  await service.setRoot(root);
+
+  // In-memory entries allow case/normalization ties even on case-insensitive filesystems.
+  vi.spyOn(service, 'resolvePath').mockImplementation(async (relative = '') => path.join(root, relative));
+  vi.spyOn(fs, 'stat').mockImplementation(async (target) => target === root ? directoryStat : fileStat);
+  vi.spyOn(fs, 'opendir').mockImplementation(async () => ({
+    async *[Symbol.asyncIterator]() {
+      for (const name of names) {
+        yield {
+          name,
+          isDirectory: () => false,
+          isFile: () => true,
+          isSymbolicLink: () => false,
+        } as Dirent;
+      }
+    },
+  }) as Dir);
+  return service;
+}
+
 afterEach(async () => {
   vi.useRealTimers();
   electronMocks.openPath.mockReset();
@@ -26,7 +61,97 @@ afterEach(async () => {
   await Promise.all(temporary.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
 
+describe('FilesystemService sorting', () => {
+  it('shares one collator and exactly matches legacy numeric, mixed-case, and Unicode comparisons', async () => {
+    const names = [
+      'file-10.ts', 'File-2.ts', 'FILE-02.ts', 'file-1.ts', 'file-001.ts',
+      'A.ts', 'a.ts', 'á.ts', 'a\u0301.ts', 'ä.ts', 'Å.ts', 'ß.ts', 'ss.ts',
+      'Σ.ts', 'σ.ts', 'ς.ts', 'İ.ts', 'I.ts', 'ı.ts',
+      '東京-10.ts', '東京-2.ts', 'image-٢.png', 'image-2.png',
+      '🚀-10.md', '🚀-2.md', 'a-b.ts', 'a_b.ts',
+    ];
+    const service = await sortingFixture(names);
+    type CompareNames = (left: string, right: string) => number;
+    const comparisons = new Set<CompareNames>();
+    const getCompare = Object.getOwnPropertyDescriptor(Intl.Collator.prototype, 'compare')!.get!;
+    // Capture the production collator rather than re-declaring its options in the test.
+    vi.spyOn(collatorAccessors, 'compare', 'get').mockImplementation(function (this: Intl.Collator) {
+      const compare = getCompare.call(this) as CompareNames;
+      comparisons.add(compare);
+      return compare;
+    });
+
+    await service.list();
+    await service.search('file');
+    expect(comparisons.size).toBe(1);
+    const compare = [...comparisons][0]!;
+    const values = [...names, ...names.map((name) => `src/${name}`)];
+    for (const left of values) {
+      for (const right of values) expect(compare(left, right)).toBe(legacyCompareNames(left, right));
+    }
+    expect(compare('File-2.ts', 'FILE-02.ts')).toBe(0);
+    expect(compare('á.ts', 'a\u0301.ts')).toBe(0);
+    await service.clearRoot();
+  });
+
+  it('preserves directory heap selection, exact tie order, and the 2,000-entry cap', async () => {
+    const names = Array.from({ length: 2_205 }, (_, index) => {
+      const prefix = ['file', 'FILE', 'fíle'][index % 3]!;
+      const number = String(Math.floor(index / 3));
+      return `${prefix}-${index % 3 === 1 ? number.padStart(5, '0') : number}.ts`;
+    }).reverse();
+    const service = await sortingFixture(names);
+    // Use the unchanged production heap with its original comparison as the oracle.
+    // A global stable sort would not reproduce the heap's existing tie order.
+    const legacy = vi.spyOn(collatorAccessors, 'compare', 'get').mockReturnValue(legacyCompareNames);
+    const expected = await service.list();
+    legacy.mockRestore();
+
+    const actual = await service.list();
+    expect(actual).toEqual(expected);
+    expect(actual.entries).toHaveLength(2_000);
+    expect(actual.truncated).toBe(true);
+    expect(actual.entries[0]?.name).toMatch(/-0+\.ts$/u);
+  });
+
+  it('preserves score priority, tied search paths, and clamped result limits', async () => {
+    const names = Array.from({ length: 621 }, (_, index) => {
+      const prefix = ['target', 'TARGET', 'tárget'][index % 3]!;
+      const number = String(Math.floor(index / 3));
+      return `${prefix}-${index % 3 === 1 ? number.padStart(5, '0') : number}.ts`;
+    }).reverse();
+    names.push('target.ts'); // The best score arrives after the bounded heap has filled.
+    const service = await sortingFixture(names);
+
+    for (const limit of [1, 7, 300, 500, 5_000, 0]) {
+      const legacy = vi.spyOn(collatorAccessors, 'compare', 'get').mockReturnValue(legacyCompareNames);
+      const expected = await service.search('target', limit);
+      legacy.mockRestore();
+
+      const actual = await service.search('target', limit);
+      expect(actual).toEqual(expected);
+      expect(actual.entries).toHaveLength(Math.max(1, Math.min(500, limit)));
+      expect(actual.entries[0]?.path).toBe('target.ts');
+      expect(actual.truncated).toBe(true);
+    }
+    await service.clearRoot();
+  });
+});
+
 describe('FilesystemService confinement', () => {
+  it('rejects remote-tagged actions before they can reach the desktop shell', async () => {
+    const root = await tempDirectory();
+    await fs.writeFile(path.join(root, 'notes.txt'), 'local file');
+    const actions = new DesktopFileActions();
+    const service = await FilesystemService.forRoot(root, { localFileActions: actions });
+    await expect(service.open('notes.txt', 'remote')).rejects.toMatchObject({ code: 'UNSUPPORTED_CAPABILITY' });
+    await expect(service.revealLink('notes.txt', 'remote')).rejects.toMatchObject({ code: 'UNSUPPORTED_CAPABILITY' });
+    await expect(actions.openPath({ origin: 'remote', path: path.join(root, 'notes.txt') })).rejects.toMatchObject({ code: 'UNSUPPORTED_CAPABILITY' });
+    expect(() => actions.showItemInFolder({ origin: 'remote', path: path.join(root, 'notes.txt') })).toThrow('Unsupported host capability');
+    expect(electronMocks.openPath).not.toHaveBeenCalled();
+    expect(electronMocks.showItemInFolder).not.toHaveBeenCalled();
+  });
+
   it('reveals Markdown artifacts without executing them, confined to the active project', async () => {
     const root = await tempDirectory();
     const outside = await tempDirectory();
@@ -34,7 +159,7 @@ describe('FilesystemService confinement', () => {
     await fs.writeFile(artifact, 'archive');
     await fs.writeFile(path.join(outside, 'secret.zip'), 'private');
     await fs.symlink(outside, path.join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
-    const service = new FilesystemService();
+    const service = new FilesystemService(undefined, new DesktopFileActions());
     await service.setRoot(root);
 
     for (const reference of ['handoff%20bundle.zip', artifact, pathToFileURL(artifact).href, `sandbox:${artifact.replaceAll('\\', '/')}`]) {
@@ -55,7 +180,7 @@ describe('FilesystemService confinement', () => {
     const artifact = path.join(root, 'handoff.zip');
     await fs.writeFile(artifact, 'archive');
     await fs.symlink(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
-    const service = new FilesystemService();
+    const service = new FilesystemService(undefined, new DesktopFileActions());
     await service.setRoot(root);
     for (const reference of [path.join(alias, 'handoff.zip'), pathToFileURL(path.join(alias, 'handoff.zip')).href]) {
       await expect(service.revealLink(reference)).resolves.toEqual({ opened: true });
@@ -71,7 +196,7 @@ describe('FilesystemService confinement', () => {
     const outside = await tempDirectory();
     await fs.writeFile(path.join(outside, 'secret.txt'), 'secret');
     await fs.symlink(outside, path.join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
-    const service = new FilesystemService();
+    const service = new FilesystemService(undefined, new DesktopFileActions());
     await service.setRoot(root);
 
     await expect(service.read(path.join(root, 'absolute.txt'))).rejects.toThrow('outside the active project');
@@ -229,7 +354,7 @@ describe('FilesystemService confinement', () => {
     const secondRoot = await tempDirectory();
     await fs.writeFile(path.join(firstRoot, 'notes.txt'), 'first');
     await fs.writeFile(path.join(secondRoot, 'notes.txt'), 'second');
-    const service = new FilesystemService();
+    const service = new FilesystemService(undefined, new DesktopFileActions());
     await service.setRoot(firstRoot);
     let releaseShell: (() => void) | undefined;
     let shellStarted: (() => void) | undefined;

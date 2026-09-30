@@ -42,10 +42,11 @@ export async function buildSubagentCatalog(
   modelRuntime: ModelRuntime,
   params: { section?: 'all' | 'models' | 'agents' | 'skills' | 'capabilities'; query?: string; provider?: string; limit?: number },
   disabledModels: readonly string[] = [],
+  agentDir?: string,
 ) {
   const [available, profiles, skillCatalog] = await Promise.all([
     modelRuntime.getAvailable(),
-    discoverSubagentProfiles(projectPath),
+    discoverSubagentProfiles(projectPath, agentDir),
     catalogSubagentSkills(session),
   ]);
   const section = params.section ?? 'all';

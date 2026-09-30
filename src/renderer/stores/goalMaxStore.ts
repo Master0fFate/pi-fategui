@@ -1,4 +1,11 @@
 import { create } from 'zustand';
+import type { WireResultOf } from '../../shared/protocol/methods';
+import { currentNetworkScope, type NetworkWorkspaceApi, type ReadView } from './runtimeStore';
+export type GoalView = GoalMaxState | NonNullable<WireResultOf<'goal.get'>['goal']>;
+export function selectGoalView(state: GoalMaxStore, source: 'desktop' | 'network'): GoalView | null {
+  if (source === 'desktop') return state.goal;
+  return state.networkScopeKey === currentNetworkScope()?.key && state.network.status === 'ready' ? state.network.value.goal : null;
+}
 import { GOALMAX_MAX_ASSIGNMENTS, GOALMAX_MAX_EVIDENCE, goalMaxStateSchema, type GoalMaxEvent, type GoalMaxState } from '../../shared/contracts/goalmaxxing';
 
 function evidenceOperationKey(evidence: GoalMaxState['evidence'][number]): string | null {
@@ -8,6 +15,9 @@ function evidenceOperationKey(evidence: GoalMaxState['evidence'][number]): strin
 }
 
 interface GoalMaxStore {
+  networkScopeKey: string | null;
+  network: ReadView<WireResultOf<'goal.get'>>;
+  loadNetwork: (api: NetworkWorkspaceApi) => Promise<void>;
   projectPath: string | null;
   sessionId: string | null;
   goal: GoalMaxState | null;
@@ -20,6 +30,18 @@ interface GoalMaxStore {
 }
 
 export const useGoalMaxStore = create<GoalMaxStore>((set) => ({
+  networkScopeKey: null, network: { status: 'unavailable' },
+  loadNetwork: async (api) => {
+    const captured = currentNetworkScope();
+    if (!captured || !api.isConnected) { set({ networkScopeKey: null, network: { status: 'unavailable' } }); return; }
+    set({ networkScopeKey: captured.key, network: { status: api.supports('goal.read') ? 'loading' : 'unavailable' } });
+    if (!api.supports('goal.read')) return;
+    try {
+      const value = await api.readGoal(captured.scope);
+      if (value.sessionId !== captured.sessionId || value.selectionRevision !== captured.header.selectionRevision) throw new Error('Goal selection changed.');
+      if (api.isConnected && currentNetworkScope()?.key === captured.key) set({ network: { status: 'ready', value } });
+    } catch { if (currentNetworkScope()?.key === captured.key) set({ network: { status: 'error' } }); }
+  },
   projectPath: null,
   sessionId: null,
   goal: null,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, defaultSpeechSettings, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicDurationsEventSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, openUpdateDownloadResultSchema, piEventBatchSchema, piEventSchema, promptInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, runtimeTokenTelemetrySchema, runtimeToolSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, speechStreamFeedInputSchema, subagentControlInputSchema, subagentRunSchema, subagentToolDetailsSchema, subagentWorkflowSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, updateCheckResultSchema, windowStateSchema } from './ipc';
+import { appInfoSchema, appSettingsSchema, clipboardTextInputSchema, clipboardWriteResultSchema, contextUsageSchema, defaultSpeechSettings, emptyInputSchema, extensionUiStateSchema, filePreviewSchema, getAppInfoInputSchema, gitCombinedDiffSchema, gitCommitDetailsSchema, gitCommitInputSchema, gitDiffSchema, gitHistorySchema, gitOperationInputSchema, gitWorktreeInputSchema, gitWorktreeListSchema, imageSaveInputSchema, imageSaveResultSchema, ipcChannels, musicClearResultSchema, musicDurationsEventSchema, musicLoadInputSchema, musicQueueResultSchema, musicQueueSchema, musicStreamResultSchema, musicStreamSchema, openUpdateDownloadResultSchema, piEventBatchSchema, piEventSchema, pendingQuestionnaireSchema, promptInputSchema, questionnaireAnswerInputSchema, queueMutationInputSchema, queuedMessageSchema, revealProjectResultSchema, runtimeStateSchema, runtimeTokenTelemetrySchema, runtimeToolSchema, sessionRenameInputSchema, sessionSummarySchema, setPermissionInputSchema, speechModelInputSchema, speechStreamFeedInputSchema, subagentControlInputSchema, subagentRunSchema, subagentToolDetailsSchema, subagentWorkflowSchema, speechTranscribeInputSchema, terminalCreateInputSchema, terminalWriteInputSchema, updateCheckResultSchema, windowStateSchema } from './ipc';
 
 describe('IPC contracts', () => {
   it('accepts only an empty object for system info input', () => {
@@ -35,6 +35,7 @@ describe('IPC contracts', () => {
     expect(ipcChannels.browserShowLinkContextMenu).toBe('browser:show-link-context-menu');
     expect(ipcChannels.browserOpenLink).toBe('browser:open-link');
     expect(ipcChannels.runtimePrompt).toBe('runtime:prompt');
+    expect(ipcChannels.runtimeAnswerQuestion).toBe('runtime:answer-question');
     expect(ipcChannels.projectReveal).toBe('project:reveal');
     expect(ipcChannels.imageReadLocal).toBe('image:read-local');
     expect(ipcChannels.imageSaveAs).toBe('image:save-as');
@@ -65,6 +66,16 @@ describe('IPC contracts', () => {
     expect(() => emptyInputSchema.parse({ path: 'C:/project' })).toThrow();
     expect(revealProjectResultSchema.parse({ opened: true })).toEqual({ opened: true });
     expect(() => revealProjectResultSchema.parse({ opened: false })).toThrow();
+  });
+
+  it('bounds one active question and its exact answer request', () => {
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const view = { id, sessionId: 'session-1', index: 1, total: 3, question: 'Choose a theme?', options: [{ label: 'Dark' }, { label: 'Light' }] };
+    expect(pendingQuestionnaireSchema.parse(view)).toEqual(view);
+    expect(questionnaireAnswerInputSchema.parse({ id, index: 1, answer: '  My own  ', source: 'custom' }).answer).toBe('My own');
+    expect(() => questionnaireAnswerInputSchema.parse({ id, index: 1, answer: ' ', source: 'custom' })).toThrow();
+    expect(() => pendingQuestionnaireSchema.parse({ ...view, options: Array.from({ length: 5 }, (_, i) => ({ label: `Choice ${i}` })) })).toThrow();
+    expect(() => questionnaireAnswerInputSchema.parse({ id, index: 1, answer: 'Dark', source: 'option', sessionId: 'other' })).toThrow();
   });
 
   it('bounds and normalizes session names', () => {

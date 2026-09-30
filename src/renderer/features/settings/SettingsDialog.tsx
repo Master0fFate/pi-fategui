@@ -1,3 +1,5 @@
+import { getFateApiOptional, getDesktopApi, getDesktopApiOptional, hasCapability } from '../../platform/api';
+import { unavailableExplanation } from '../../platform/capabilityPolicy';
 import * as Dialog from '@radix-ui/react-dialog';
 import {
   Activity,
@@ -31,6 +33,7 @@ import '../learning/learning.css';
 import { builtInSkins, builtInSkinName, skinPackThemeId, type SkinId, type SkinCatalog } from '../../../shared/skins';
 import { getSkinDefinitions, persistAppliedSkin, setSkinDefinitions } from '../../skin';
 import { SkinPackSettings, type RemovedSkin } from './SkinPackSettings';
+import { McpSettings } from './McpSettings';
 import type { ThemeDefinition } from '../../../shared/themes';
 import {
   defaultImageGenerationModel,
@@ -66,7 +69,7 @@ const fallback: AppSettings = {
   memoryLearning: defaultMemoryLearning,
 };
 
-type SettingsSection = 'general' | 'skins' | 'compaction' | 'agent' | 'learning' | 'voice' | 'workspace' | 'system';
+type SettingsSection = 'general' | 'skins' | 'compaction' | 'agent' | 'mcp' | 'learning' | 'voice' | 'workspace' | 'system';
 type SettingsToast = { kind: 'success' | 'error'; title: string; message: string };
 
 const sections = [
@@ -74,6 +77,7 @@ const sections = [
   { id: 'skins', label: 'Skins', detail: 'Style, color & type', icon: Palette },
   { id: 'compaction', label: 'Compaction', detail: 'Density controls', icon: Rows3 },
   { id: 'agent', label: 'Agent', detail: 'Models & workspaces', icon: Bot },
+  { id: 'mcp', label: 'MCP', detail: 'External tools', icon: GitBranch },
   { id: 'learning', label: 'Memory Learning', detail: 'Reviewed knowledge', icon: Brain },
   { id: 'voice', label: 'Voice', detail: 'Local speech-to-text', icon: Mic2 },
   { id: 'workspace', label: 'Workspace', detail: 'Trust & terminal', icon: ShieldCheck },
@@ -130,6 +134,9 @@ function acceleratorFromEvent(event: KeyboardEvent): string | null {
 export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThemes }: { themeCatalog?: ThemeDefinition[] }) {
   const { ActionContent, Symbol } = useSkinComponents();
   const open = useUiStore((state) => state.settingsOpen);
+  const desktopSettingsAvailable = typeof getDesktopApiOptional()?.getSettings === 'function';
+  const voiceSupported = hasCapability('microphone');
+  const voiceHotkeysSupported = voiceSupported && hasCapability('hotkeys');
   const setOpen = useUiStore((state) => state.setSettingsOpen);
   const setMusicPlayerEnabled = useUiStore((state) => state.setMusicPlayerEnabled);
   const setSendMessageWithModifier = useUiStore((state) => state.setSendMessageWithModifier);
@@ -174,15 +181,15 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
   const [learningStorage, setLearningStorage] = useState<LearningStorage | null>(null);
   const learningProjectPath = useRuntimeStore((state) => state.runtime.project?.path);
   useEffect(() => {
-    if (!open || activeSection !== 'learning' || !window.piDesktop?.getLearningStorage) return;
+    if (!open || activeSection !== 'learning' || !getDesktopApiOptional()?.getLearningStorage) return;
     let current = true;
     setLearningStorage(null);
-    void window.piDesktop.getLearningStorage().then((storage) => { if (current) setLearningStorage(storage); }).catch(() => { if (current) setLearningStorage(null); });
+    void getDesktopApi().getLearningStorage().then((storage) => { if (current) setLearningStorage(storage); }).catch(() => { if (current) setLearningStorage(null); });
     return () => { current = false; };
   }, [open, activeSection, learningProjectPath]);
   const [releaseLabel, setReleaseLabel] = useState<string | null>(null);
   useEffect(() => {
-    const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
+    const desktop = getDesktopApiOptional();
     if (typeof desktop?.getAppInfo !== 'function') return;
     let current = true;
     void desktop.getAppInfo().then((info) => {
@@ -217,7 +224,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
   const updateCheckPending = useRef(false);
 
   useEffect(() => {
-    if (!open || !('piDesktop' in window)) return;
+    if (!open || !desktopSettingsAvailable) return;
     let active = true;
     setSettingsLoaded(false);
     setDiagnostics(null); setDiagnosticsError(null);
@@ -230,10 +237,10 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
     const activeDownload = useUiStore.getState().speechDownload;
     setSpeechBusy(activeDownload?.modelId ?? null);
     setSpeechProgress(activeDownload);
-    const skinPromise = typeof window.piDesktop.getSkins === 'function'
-      ? window.piDesktop.getSkins().catch(() => ({ skins: [...builtInSkins], storagePath: '', diagnostics: ['Skin packs could not load. Built-in skins remain available.'] }))
+    const skinPromise = typeof getDesktopApiOptional()?.getSkins === 'function'
+      ? getDesktopApi().getSkins().catch(() => ({ skins: [...builtInSkins], storagePath: '', diagnostics: ['Skin packs could not load. Built-in skins remain available.'] }))
       : Promise.resolve({ skins: [...builtInSkins], storagePath: '', diagnostics: [] });
-    void Promise.all([window.piDesktop.getSettings(), skinPromise])
+    void Promise.all([getDesktopApi().getSettings(), skinPromise])
       .then(([nextSettings, catalog]) => {
         if (!active) return;
         setSkinCatalog(catalog);
@@ -247,8 +254,8 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
         setSettingsLoaded(true);
       })
       .catch((error: unknown) => { if (active) setStatus(error instanceof Error ? error.message : 'Settings could not load.'); });
-    const speechAvailable = typeof window.piDesktop.getSpeechStatus === 'function' && typeof window.piDesktop.onSpeechDownload === 'function';
-    const removeSpeechListener = speechAvailable ? window.piDesktop.onSpeechDownload((progress) => {
+    const speechAvailable = hasCapability('microphone') && typeof getDesktopApiOptional()?.getSpeechStatus === 'function' && typeof getDesktopApiOptional()?.onSpeechDownload === 'function';
+    const removeSpeechListener = speechAvailable ? getDesktopApi().onSpeechDownload((progress) => {
       if (!active) return;
       setSpeechProgress(progress);
       setSpeechBusy((current) => progress.state === 'downloading' || progress.state === 'verifying'
@@ -264,13 +271,13 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
       } : current);
     }) : () => undefined;
     return () => { active = false; removeSpeechListener(); };
-  }, [open]);
+  }, [open, desktopSettingsAvailable]);
 
   useEffect(() => {
-    if (!open || activeSection !== 'voice' || !('piDesktop' in window) || typeof window.piDesktop.getSpeechStatus !== 'function') return;
+    if (!open || activeSection !== 'voice' || !voiceSupported || typeof getDesktopApiOptional()?.getSpeechStatus !== 'function') return;
     let active = true;
     setSpeechStatusError(null);
-    void window.piDesktop.getSpeechStatus()
+    void getDesktopApi().getSpeechStatus()
       .then((value) => { if (active) setSpeechStatus(value); })
       .catch((error: unknown) => {
         if (!active) return;
@@ -278,17 +285,17 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
         setSpeechStatusError(error instanceof Error ? error.message : 'Voice model status could not be loaded.');
       });
     return () => { active = false; };
-  }, [activeSection, open]);
+  }, [activeSection, open, voiceSupported]);
 
   useEffect(() => {
-    if (!open || activeSection !== 'voice' || !('piDesktop' in window) || typeof window.piDesktop.getSpeechHotkeyStatus !== 'function') return;
+    if (!open || activeSection !== 'voice' || !voiceHotkeysSupported || typeof getDesktopApiOptional()?.getSpeechHotkeyStatus !== 'function') return;
     let active = true;
-    window.piDesktop.getSpeechHotkeyStatus().then((status) => { if (active) setHotkeyStatus(status); }).catch(() => undefined);
+    getDesktopApi().getSpeechHotkeyStatus().then((status) => { if (active) setHotkeyStatus(status); }).catch(() => undefined);
     return () => { active = false; };
-  }, [activeSection, open]);
+  }, [activeSection, open, voiceHotkeysSupported]);
 
   useEffect(() => {
-    if (!capturingHotkey) return;
+    if (!capturingHotkey || !voiceHotkeysSupported) return;
     const onKeyDown = (event: KeyboardEvent) => {
       event.preventDefault();
       event.stopPropagation();
@@ -299,25 +306,25 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [capturingHotkey]);
+  }, [capturingHotkey, voiceHotkeysSupported]);
 
   useEffect(() => {
-    if (!open || activeSection !== 'system' || systemLoadStarted.current || !('piDesktop' in window)) return;
+    if (!open || !desktopSettingsAvailable || activeSection !== 'system' || systemLoadStarted.current) return;
     let active = true;
     systemLoadStarted.current = true;
     setSystemLoading(true);
-    const diagnosticsRequest = window.piDesktop.getDiagnostics()
+    const diagnosticsRequest = getDesktopApi().getDiagnostics()
       .then((value) => { if (active) setDiagnostics(value); })
       .catch((error: unknown) => { if (active) setDiagnosticsError(error instanceof Error ? error.message : 'Diagnostics could not load.'); });
-    const logsRequest = window.piDesktop.getLogs()
+    const logsRequest = getDesktopApi().getLogs()
       .then((value) => { if (active) setLogs(value); })
       .catch((error: unknown) => { if (active) setLogsError(error instanceof Error ? error.message : 'Application logs could not load.'); });
     void Promise.allSettled([diagnosticsRequest, logsRequest]).then(() => { if (active) setSystemLoading(false); });
     return () => { active = false; };
-  }, [activeSection, open]);
+  }, [activeSection, open, desktopSettingsAvailable]);
 
   useEffect(() => {
-    if (!open || activeSection !== 'voice') return undefined;
+    if (!open || activeSection !== 'voice' || !voiceSupported) return undefined;
     const mediaDevices = navigator.mediaDevices;
     if (!mediaDevices?.enumerateDevices || !mediaDevices.getUserMedia) {
       setInputDevices([]);
@@ -353,7 +360,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
       mediaDevices.removeEventListener?.('devicechange', handleDeviceChange);
       window.removeEventListener('focus', handleFocus);
     };
-  }, [activeSection, open]);
+  }, [activeSection, open, voiceSupported]);
 
   useEffect(() => {
     if (!open || !settingsLoaded) return;
@@ -385,12 +392,12 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
   }, [toast]);
 
   const save = async () => {
-    if (!('piDesktop' in window) || !settingsLoaded || saving) return;
+    if (!desktopSettingsAvailable || !settingsLoaded || saving) return;
     setSaving(true);
     setStatus('Saving changes…');
     setToast(null);
     try {
-      const saved = await window.piDesktop.setSettings(settings);
+      const saved = await getDesktopApi().setSettings(settings);
       setSettings(saved);
       setPersistedSettings(saved);
       applyVisualSettings(saved, themeCatalog);
@@ -416,12 +423,12 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
   };
 
   const checkForUpdates = async () => {
-    if (!('piDesktop' in window) || updateCheckPending.current || typeof window.piDesktop.checkForUpdates !== 'function') return;
+    if (!hasCapability('updater') || updateCheckPending.current || typeof getDesktopApiOptional()?.checkForUpdates !== 'function') return;
     updateCheckPending.current = true;
     setCheckingForUpdates(true);
     setUpdateResult(null);
     try {
-      setUpdateResult(await window.piDesktop.checkForUpdates());
+      setUpdateResult(await getDesktopApi().checkForUpdates());
     } catch {
       setUpdateResult({
         status: 'remote-unavailable',
@@ -434,9 +441,9 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
   };
 
   const openUpdateDownload = async () => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.openUpdateDownload !== 'function') return;
+    if (!hasCapability('updater') || typeof getDesktopApiOptional()?.openUpdateDownload !== 'function') return;
     try {
-      await window.piDesktop.openUpdateDownload();
+      await getDesktopApi().openUpdateDownload();
     } catch (error) {
       setToast({
         kind: 'error',
@@ -447,8 +454,8 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
   };
 
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.onUpdatesProgress !== 'function') return;
-    const unsubscribe = window.piDesktop.onUpdatesProgress((progress) => {
+    if (!hasCapability('updater') || typeof getDesktopApiOptional()?.onUpdatesProgress !== 'function') return;
+    const unsubscribe = getDesktopApi().onUpdatesProgress((progress) => {
       setUpdateProgress({ percent: progress.percent, version: progress.version });
     });
     return unsubscribe;
@@ -456,12 +463,12 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
 
   const downloadAndInstallUpdate = async () => {
     const version = updateResult?.productionVersion;
-    if (!version || !('piDesktop' in window) || typeof window.piDesktop.downloadAndInstallUpdate !== 'function' || updateProgressPending.current) return;
+    if (!version || !hasCapability('updater') || typeof getDesktopApiOptional()?.downloadAndInstallUpdate !== 'function' || updateProgressPending.current) return;
     updateProgressPending.current = true;
     setUpdateInstalling(true);
     setUpdateProgress({ percent: 0, version });
     try {
-      await window.piDesktop.downloadAndInstallUpdate(version);
+      await getDesktopApi().downloadAndInstallUpdate(version);
       // The installer launches and the app quits; this line runs only if the
       // download finished but the launcher deferred the quit.
       setUpdateProgress({ percent: 1, version });
@@ -518,7 +525,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
     });
   };
   const removeManagedProvider = (providerId: string) => {
-    void window.piDesktop.removeModelsDevProvider(providerId)
+    void getDesktopApi().removeModelsDevProvider(providerId)
       .then((result) => setToast({ kind: 'success', title: `${result.providerName} removed`, message: 'The provider and its models were removed from Fate UI provider storage.' }))
       .catch((error: unknown) => setToast({ kind: 'error', title: 'Provider not removed', message: ipcErrorMessage(error, 'The provider could not be removed. Try again.') }));
   };
@@ -549,16 +556,16 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
   };
 
   const refreshSpeech = async () => {
-    if (!('piDesktop' in window)) return;
-    setSpeechStatus(await window.piDesktop.getSpeechStatus());
+    if (!voiceSupported || !getDesktopApiOptional()) return;
+    setSpeechStatus(await getDesktopApi().getSpeechStatus());
   };
 
   const downloadSpeechModel = async (modelId: SpeechModelId) => {
-    if (!('piDesktop' in window) || speechBusy) return;
+    if (!voiceSupported || speechBusy) return;
     setSpeechBusy(modelId);
     setSpeechProgress(null);
     try {
-      setSpeechStatus(await window.piDesktop.downloadSpeechModel(modelId));
+      setSpeechStatus(await getDesktopApi().downloadSpeechModel(modelId));
       setToast({ kind: 'success', title: 'Voice model ready', message: 'The verified model is available for local transcription.' });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The model could not be downloaded.';
@@ -570,19 +577,19 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
   };
 
   const cancelSpeechDownload = async (modelId: SpeechModelId) => {
-    if (!('piDesktop' in window)) return;
+    if (!voiceSupported || !getDesktopApiOptional()) return;
     try {
-      await window.piDesktop.cancelSpeechModelDownload(modelId);
+      await getDesktopApi().cancelSpeechModelDownload(modelId);
     } catch (error) {
       setToast({ kind: 'error', title: 'Could not cancel download', message: error instanceof Error ? error.message : 'The model download could not be cancelled.' });
     }
   };
 
   const removeSpeechModel = async (modelId: SpeechModelId) => {
-    if (!('piDesktop' in window) || speechBusy) return;
+    if (!voiceSupported || speechBusy) return;
     setSpeechBusy(modelId);
     try {
-      setSpeechStatus(await window.piDesktop.removeSpeechModel(modelId));
+      setSpeechStatus(await getDesktopApi().removeSpeechModel(modelId));
     } catch (error) {
       setToast({ kind: 'error', title: 'Could not remove model', message: error instanceof Error ? error.message : 'The model could not be removed.' });
     } finally {
@@ -625,8 +632,8 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
     const removedThemeId = removed ? skinPackThemeId(removed.id) : null;
     const fallbackCatalog = [...themeCatalog.filter((theme) => theme.id !== removedThemeId)];
     for (const skin of catalog.skins) { if (skin.palette && !fallbackCatalog.some((theme) => theme.id === skin.palette?.id)) fallbackCatalog.push(skin.palette); }
-    const themes = typeof window.piDesktop.getThemes === 'function'
-      ? await window.piDesktop.getThemes().catch(() => fallbackCatalog) : fallbackCatalog;
+    const themes = typeof getDesktopApiOptional()?.getThemes === 'function'
+      ? await getDesktopApi().getThemes().catch(() => fallbackCatalog) : fallbackCatalog;
     setThemeCatalog(themes);
     const normalize = (current: AppSettings): AppSettings => ({
       ...(removed ? removePackFontPreferences(current, removed.id) : current),
@@ -651,6 +658,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
             <Dialog.Close className="settings-close" aria-label="Close settings"><ActionContent text="close"><X size={17} /></ActionContent></Dialog.Close>
           </header>
 
+          {desktopSettingsAvailable ? <>
           <div className="settings-layout">
             <nav className="settings-nav" aria-label="Settings categories" role="tablist" aria-orientation="vertical">
               {sections.map(({ id, label, detail, icon: Icon }) => (
@@ -823,7 +831,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
                 </div>
               )}
 
-              {activeSection === 'voice' && (
+              {activeSection === 'voice' && (voiceSupported ? (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-voice" aria-labelledby="settings-tab-voice">
                   <div className="settings-title"><div><h3>Voice input</h3><p>Private, on-device speech-to-text for the message composer.</p></div></div>
                   <div className="settings-group">
@@ -890,7 +898,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
                     <div className="voice-model-error" role="alert"><CircleAlert size={15} /><span className="icon-label">{hotkeyStatus.reason ?? 'Push-to-talk is unavailable on this platform. Toggle mode still works.'}</span></div>
                   )}
                 </div>
-              )}
+              ) : <div className="settings-panel" role="tabpanel" id="settings-panel-voice" aria-labelledby="settings-tab-voice"><p className="settings-empty">{unavailableExplanation.microphone}</p></div>)}
 
               {activeSection === 'workspace' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-workspace" aria-labelledby="settings-tab-workspace">
@@ -909,6 +917,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
                 </div>
               )}
 
+              {activeSection === 'mcp' && <McpSettings />}
               {activeSection === 'system' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-system" aria-labelledby="settings-tab-system">
                   <div className="settings-title"><div><h3>Pi diagnostics</h3><p>Local runtime details for troubleshooting.</p></div></div>
@@ -961,10 +970,11 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
                 : <span className="update-check-result" role="status">{updateResult.message}</span>)}
             </div>
             <div className="settings-footer-actions">
-              <button type="button" className="update-check-link" aria-busy={checkingForUpdates} disabled={checkingForUpdates} onClick={() => void checkForUpdates()}>{checkingForUpdates ? 'Checking for updates…' : 'Check for Updates'}</button>
+              <button type="button" className="update-check-link" aria-busy={checkingForUpdates} disabled={checkingForUpdates || !hasCapability('updater')} title={!hasCapability('updater') ? unavailableExplanation.updater : undefined} onClick={() => void checkForUpdates()}>{checkingForUpdates ? 'Checking for updates…' : 'Check for Updates'}</button>
               <button type="button" className="primary-button" aria-busy={saving} disabled={!settingsLoaded || saving} onClick={() => void save()}><Save size={14} /><span className="icon-label">Save changes</span></button>
             </div>
           </footer>
+          </> : <div className="settings-empty" role="status">Settings are unavailable on this client. Use the local desktop for host settings.</div>}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

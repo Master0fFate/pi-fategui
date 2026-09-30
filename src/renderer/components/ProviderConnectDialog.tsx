@@ -1,3 +1,4 @@
+import { getDesktopApi, getDesktopApiOptional } from '../platform/api';
 import * as Dialog from '@radix-ui/react-dialog';
 import { ArrowLeft, Check, ExternalLink, KeyRound, LoaderCircle, LogOut, RefreshCw, Search, ShieldCheck, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -104,7 +105,7 @@ export function ProviderConnectDialog({ open, onOpenChange, onNotice, onAdded }:
     // refresh is skipped when a list is already present (for example the
     // /login trigger just fetched it) to avoid a redundant round-trip.
     if ((useRuntimeStore.getState().runtime.providerLogin?.providers?.length ?? 0) === 0) {
-      void window.piDesktop?.initializeProviderLogin().catch(() => undefined);
+      void getDesktopApiOptional()?.initializeProviderLogin().catch(() => undefined);
     }
     loadCatalog();
     return () => {
@@ -133,12 +134,12 @@ export function ProviderConnectDialog({ open, onOpenChange, onNotice, onAdded }:
   const loadCatalog = () => {
     setCatalogLoading(true); setCatalogError(null);
     // Older bridges without the models.dev surface still serve sign-in rows.
-    if (typeof window.piDesktop?.listModelsDevProviders !== 'function') {
+    if (typeof getDesktopApiOptional()?.listModelsDevProviders !== 'function') {
       setCatalog(null);
       setCatalogLoading(false);
       return;
     }
-    window.piDesktop.listModelsDevProviders()
+    getDesktopApi().listModelsDevProviders()
       .then((result: ModelsDevListResult) => { setCatalog(result.providers); setCatalogLoading(false); })
       .catch((error: unknown) => {
         setCatalogError(ipcErrorMessage(error, 'The models.dev catalog could not load. Check your connection and try again.'));
@@ -188,8 +189,8 @@ export function ProviderConnectDialog({ open, onOpenChange, onNotice, onAdded }:
     setSelectedId(row.id);
     setDetail(null); setDetailError(null); setApiKey(''); setAddError(null);
     setValue(''); setStartError(null);
-    if (row.kind === 'catalog' && typeof window.piDesktop?.getModelsDevProvider === 'function') {
-      window.piDesktop.getModelsDevProvider(row.id)
+    if (row.kind === 'catalog' && typeof getDesktopApiOptional()?.getModelsDevProvider === 'function') {
+      getDesktopApi().getModelsDevProvider(row.id)
         .then((result: ModelsDevProviderDetail) => setDetail(result))
         .catch((error: unknown) => setDetailError(ipcErrorMessage(error, 'This provider could not load. Try again.')));
     }
@@ -199,7 +200,7 @@ export function ProviderConnectDialog({ open, onOpenChange, onNotice, onAdded }:
     if (!selectedId || adding) return;
     setAdding(true); setAddError(null);
     const trimmedKey = apiKey.trim();
-    window.piDesktop?.addModelsDevProvider(trimmedKey ? { providerId: selectedId, apiKey: trimmedKey } : { providerId: selectedId })
+    getDesktopApiOptional()?.addModelsDevProvider(trimmedKey ? { providerId: selectedId, apiKey: trimmedKey } : { providerId: selectedId })
       .then((result: ModelsDevMutationResult) => {
         onNotice?.('success', `${result.providerName} added`, `${result.modelCount} models are now available in Fate UI.`);
         onAdded?.();
@@ -212,7 +213,7 @@ export function ProviderConnectDialog({ open, onOpenChange, onNotice, onAdded }:
   const removeManaged = () => {
     if (!selectedId || removing) return;
     setRemoving(true);
-    window.piDesktop?.removeModelsDevProvider(selectedId)
+    getDesktopApiOptional()?.removeModelsDevProvider(selectedId)
       .then((result: ModelsDevMutationResult) => {
         onNotice?.('success', `${result.providerName} removed`, 'The provider and its models were removed from Fate UI provider storage.');
         setSelectedId(null);
@@ -222,25 +223,25 @@ export function ProviderConnectDialog({ open, onOpenChange, onNotice, onAdded }:
   };
 
   const start = (method: 'oauth' | 'api_key') => {
-    if (!selectedBuiltin || !window.piDesktop) return;
+    if (!selectedBuiltin || !getDesktopApiOptional()) return;
     setStarted(true);
     setValue('');
     setStartError(null);
     setPendingStart(true);
-    void window.piDesktop.startProviderLogin({ providerId: selectedBuiltin.id, method })
+    void getDesktopApi().startProviderLogin({ providerId: selectedBuiltin.id, method })
       .catch((error: unknown) => setStartError(ipcErrorMessage(error, 'Provider sign-in could not start. Try again.')))
       .finally(() => setPendingStart(false));
   };
 
   const respond = () => {
-    if (!login.prompt || !window.piDesktop) return;
+    if (!login.prompt || !getDesktopApiOptional()) return;
     const answer = value;
     setValue('');
-    void window.piDesktop.respondProviderLogin({ promptId: login.prompt.id, value: answer }).catch(() => undefined);
+    void getDesktopApi().respondProviderLogin({ promptId: login.prompt.id, value: answer }).catch(() => undefined);
   };
 
   const cancelLogin = () => {
-    if (loginActive || pendingStart) void window.piDesktop?.cancelProviderLogin();
+    if (loginActive || pendingStart) void getDesktopApiOptional()?.cancelProviderLogin();
   };
 
   const close = () => {
@@ -378,7 +379,7 @@ export function ProviderConnectDialog({ open, onOpenChange, onNotice, onAdded }:
                     </button>
                   ))}
                   {selected.configured && (
-                    <button type="button" className="provider-dialog-signout" onClick={() => void window.piDesktop?.logoutProvider(selected.id).catch(() => undefined)}>
+                    <button type="button" className="provider-dialog-signout" onClick={() => void getDesktopApiOptional()?.logoutProvider(selected.id).catch(() => undefined)}>
                       <LogOut size={14} /> Sign out of {selected.name}
                     </button>
                   )}

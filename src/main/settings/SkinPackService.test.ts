@@ -5,7 +5,6 @@ import path from 'node:path';
 import { SkinPackService, validatePackFont } from './SkinPackService';
 import { builtInSkins, MAX_SKIN_PACKS, MAX_SKIN_MANIFEST_BYTES } from '../../shared/skins';
 
-vi.mock('electron', () => ({ nativeImage: {} }));
 let root: string;
 const manifest = { schemaVersion: 1, id: 'test-pack', name: 'Test pack', version: '1.0.0', description: 'A validated pack.', base: 'dreamcore', layout: { contentWidth: 840 } };
 beforeEach(async () => { root = await mkdtemp(path.join(os.tmpdir(), 'fate-skin-pack-')); });

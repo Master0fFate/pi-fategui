@@ -1,3 +1,8 @@
+import { getFateApi, getFateApiOptional, getDesktopApi, getDesktopApiOptional, getWebApiOptional, hasCapability } from '../../platform/api';
+import { UnconfirmedCommand } from '../../../client/HttpCommandTransport';
+import type { WebWorkspace } from '../../../client/WebFateApi';
+import { useWebWorkspaceStore } from '../../stores/webWorkspaceStore';
+import { unavailableExplanation } from '../../platform/capabilityPolicy';
 import * as Dialog from '@radix-ui/react-dialog';
 import { LearningIndicator } from '../learning/LearningIndicator';
 import { learningDraftKey, useLearningStore } from '../learning/learningStore';
@@ -19,6 +24,8 @@ import { GoalMaxRail } from '../goalmaxxing/GoalMaxRail';
 import { GoalMaxTaskStrip } from '../goalmaxxing/GoalMaxTaskStrip';
 import { parseGoalMaxCommand } from '../goalmaxxing/parseGoalMaxCommand';
 import { ContextWheel } from './ContextWheel';
+import { ComposerPresentation } from './ComposerInput';
+import { QuestionCard } from './QuestionCard';
 import { agentMentionContext, findLiveAgentMentions, parseAgentStopCommand, sessionMentionHandle, type LiveAgentMention } from './agentMentions';
 import { fileTagContext, fileTagText, findFileTags } from './fileTags';
 import { findSlashCommands, slashCommandContext, slashCommandDescription, slashCommandLabel, type SlashCommand } from './slashCommands';
@@ -93,6 +100,7 @@ function cacheSessionDraft(key: string, draft: SessionDraft, notify = true): voi
 
 export function clearComposerSessionDrafts(): void {
   sessionDraftsByIdentity.clear();
+  webDrafts.clear();
   cachedDraftImageBytes = 0;
 }
 
@@ -216,7 +224,380 @@ export async function resampleVoiceAudioOptimized(buffer: AudioBuffer, targetRat
   }
 }
 
-export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject: () => void; connectRequest?: number }) {
+type WebTextAttachment = { name: string; attachmentId: string; byteLength: number; expiresAt: number };
+type WebSubmission = {
+  scopeKey: string; text: string; textRevision: number;
+  attachmentIds: string[]; projectFiles: string[]; requestId?: string;
+};
+type WebDraft = {
+  text: string; textRevision: number; uncertainId: string | null;
+  attachments: WebTextAttachment[]; projectFiles: string[];
+  submission?: WebSubmission | undefined;
+};
+const webDrafts = new Map<string, WebDraft>();
+const webDraftListeners = new Set<(key: string, draft: WebDraft) => void>();
+function cacheWebDraft(key: string, draft: WebDraft): void {
+  webDrafts.delete(key);
+  webDrafts.set(key, draft);
+  while (webDrafts.size > 32) webDrafts.delete(webDrafts.keys().next().value!);
+  for (const listener of webDraftListeners) listener(key, draft);
+}
+const MAX_WEB_TEXT_BYTES = 256 * 1024;
+const MAX_WEB_TEXT_COUNT = 8;
+const plainTextExtensions = /\.(?:txt|md|markdown|csv|tsv|json|jsonl|yaml|yml|toml|ini|log|ts|tsx|js|jsx|py|rs|go|java|c|h|cpp|css|sql|sh)$/iu;
+
+/** No browser File.path, URL fetch, raster decoding, archive extraction or HTML execution. */
+export async function readComposerTextFile(file: File): Promise<{ name: string; text: string }> {
+  if (!file.name || /[\\/:\u0000-\u001f\u007f]/u.test(file.name) || !plainTextExtensions.test(file.name)
+    || /(?:html|svg|image|audio|video|zip|archive|octet-stream)/iu.test(file.type)) {
+    throw new Error('Only supported plain text files can be attached. Media, HTML and archives are unavailable.');
+  }
+  if (file.size < 1 || file.size > MAX_WEB_TEXT_BYTES) throw new Error('Text files must be between 1 byte and 256 KiB.');
+  const bytes = await file.arrayBuffer();
+  if (bytes.byteLength !== file.size || bytes.byteLength > MAX_WEB_TEXT_BYTES) throw new Error('Text file size changed.');
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  if (text.includes('\0')) throw new Error('Binary text files are unavailable.');
+  return { name: file.name, text };
+}
+
+export function isComposerProjectReference(value: string): boolean {
+  return value.length > 0 && value.length <= 1024 && !/[\\:\u0000-\u001f\u007f]/u.test(value)
+    && !value.startsWith('/') && value.split('/').every((part) => part !== '' && part !== '.' && part !== '..');
+}
+
+/** The shared conversation keeps one composer slot; browser input is plain text only. */
+export function Composer(props: { onOpenProject: () => void; connectRequest?: number; connectionControlsMounted?: boolean }) {
+  const web = getWebApiOptional();
+  const selected = useWebWorkspaceStore((state) => state.selected);
+  // Subscribe to the header, not only sessionId: an epoch-only transition must remount the scoped draft.
+  const header = useWebWorkspaceStore((state) => state.snapshot?.header);
+  // Connection invalidation can change the live API epoch before the replacement snapshot arrives.
+  useWebWorkspaceStore((state) => state.phase);
+  const sessionId = header?.sessionId;
+  if (!web) return <DesktopComposer {...props} />;
+  const scopeKey = JSON.stringify([web.authenticatedSessionId, web.origin, web.serverEpoch, selected?.workspaceId,
+    selected?.workspaceGeneration, sessionId]);
+  return <BoundedComposer key={scopeKey} scopeKey={scopeKey} workspace={selected} sessionId={sessionId ?? null}
+    connectionControlsMounted={props.connectionControlsMounted ?? false} />;
+}
+
+function BoundedComposer({ scopeKey, workspace, sessionId, connectionControlsMounted }: {
+  scopeKey: string; workspace: WebWorkspace | null; sessionId: string | null; connectionControlsMounted: boolean;
+}) {
+  const web = getWebApiOptional()!;
+  const snapshot = useWebWorkspaceStore((state) => state.snapshot);
+  const phase = useWebWorkspaceStore((state) => state.phase);
+  const refresh = useWebWorkspaceStore((state) => state.refresh);
+  const sendMessageWithModifier = useUiStore((state) => state.sendMessageWithModifier);
+  const initialPendingReview = workspace ? web.pendingPromptReview(workspace, sessionId ?? '') : { kind: 'none' as const };
+  const pendingValue = initialPendingReview.kind === 'match' || initialPendingReview.kind === 'blocked'
+    ? initialPendingReview.value : undefined;
+  const epoch = web.serverEpoch;
+  const pendingScopeChanged = Boolean(pendingValue && (pendingValue.sessionId !== sessionId
+    || pendingValue.workspaceGeneration !== workspace?.workspaceGeneration || pendingValue.serverEpoch !== epoch));
+  const [draft, setDraft] = useState(() => webDrafts.get(scopeKey)?.text ?? '');
+  const [attachments, setAttachments] = useState(() => webDrafts.get(scopeKey)?.attachments ?? []);
+  const [projectFiles, setProjectFiles] = useState(() => webDrafts.get(scopeKey)?.projectFiles ?? []);
+  const [projectReference, setProjectReference] = useState('');
+  // Host pending metadata stays live. Do not cache a non-prompt command here:
+  // its shared review can clear a terminal record without leaving Composer stuck.
+  const [cachedUncertainId, setUncertainId] = useState(() => webDrafts.get(scopeKey)?.uncertainId ?? null);
+  const nonPromptPending = pendingValue !== undefined && pendingValue.method !== 'runtime.prompt';
+  const uncertainId = nonPromptPending ? null : pendingValue?.requestId ?? cachedUncertainId;
+  const [storedRecoveryBlocked, setRecoveryBlocked] = useState(false);
+  const recoveryBlocked = storedRecoveryBlocked || initialPendingReview.kind === 'blocked'
+    || Boolean(pendingValue && pendingValue.method !== 'runtime.prompt');
+  const [message, setMessage] = useState<string | null>(() => initialPendingReview.kind === 'blocked'
+    ? `Pending command recovery is blocked (${initialPendingReview.reason}). Review the original request without replaying it. Do not send another prompt.`
+    : initialPendingReview.kind === 'match' ? `Recovered original request ${initialPendingReview.value.requestId}. Review its status before any new prompt.` : null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const synchronize = (key: string, next: WebDraft) => {
+      if (key !== scopeKey) return;
+      setDraft(next.text); setUncertainId(next.uncertainId);
+      setAttachments(next.attachments); setProjectFiles(next.projectFiles);
+    };
+    webDraftListeners.add(synchronize);
+    return () => { webDraftListeners.delete(synchronize); };
+  }, [scopeKey]);
+  const [, setClock] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock((tick) => tick + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const save = (text: string, requestId: string | null) => {
+    setDraft(text); setUncertainId(requestId);
+    const current = webDrafts.get(scopeKey);
+    cacheWebDraft(scopeKey, { ...current, text,
+      textRevision: (current?.textRevision ?? 0) + (text !== (current?.text ?? draft) ? 1 : 0), uncertainId: requestId,
+      attachments: current?.attachments ?? attachments, projectFiles: current?.projectFiles ?? projectFiles });
+  };
+  const ready = phase === 'observing' && web.isConnected && workspace !== null && sessionId !== null
+    && snapshot?.header.sessionId === sessionId && snapshot.header.selectionRevision !== undefined
+    && snapshot.header.serverEpoch === epoch && snapshot.header.workspaceId === workspace.workspaceId
+    && snapshot.header.workspaceGeneration === workspace.workspaceGeneration;
+  // expiresAt bounds snapshot page assembly, not an already acknowledged live view.
+  // The adapter rejects incomplete/expired assembly before publishing this snapshot.
+  const controlling = ready && web.control !== null;
+  const sameSelection = () => {
+    const current = useWebWorkspaceStore.getState();
+    return current.phase === 'observing' && current.selected?.workspaceId === workspace?.workspaceId
+      && current.selected?.workspaceGeneration === workspace?.workspaceGeneration
+      && current.snapshot?.header.sessionId === sessionId && current.snapshot?.header.snapshotId === snapshot?.header.snapshotId
+      && current.snapshot?.header.serverEpoch === epoch
+      && current.snapshot?.header.workspaceId === workspace?.workspaceId
+      && current.snapshot?.header.workspaceGeneration === workspace?.workspaceGeneration
+      && web.isConnected && web.serverEpoch === epoch && getWebApiOptional() === web;
+  };
+  const livePromptRecord = (requestId: string) => {
+    if (!workspace) return undefined;
+    const lookup = web.pendingPromptReview(workspace, sessionId ?? '');
+    const value = lookup.kind === 'match' || lookup.kind === 'blocked' && lookup.reason === 'mismatch' ? lookup.value : undefined;
+    return value?.method === 'runtime.prompt' && value.requestId === requestId ? value : undefined;
+  };
+  const clearPromptRecord = (requestId: string) => {
+    // Composer owns only prompt records. Shared controls own every other command's settlement.
+    if (!livePromptRecord(requestId)) return;
+    web.clearPendingPromptReview();
+  };
+  const updateContext = (nextAttachments: WebTextAttachment[], nextFiles: string[]) => {
+    setAttachments(nextAttachments); setProjectFiles(nextFiles);
+    const current = webDrafts.get(scopeKey);
+    cacheWebDraft(scopeKey, { ...current, text: current?.text ?? draft, textRevision: current?.textRevision ?? 0,
+      uncertainId: current ? current.uncertainId : uncertainId, attachments: nextAttachments, projectFiles: nextFiles });
+  };
+  const captureSubmission = (): WebSubmission => {
+    const current = webDrafts.get(scopeKey);
+    return { scopeKey, text: current?.text ?? draft, textRevision: current?.textRevision ?? 0,
+      attachmentIds: (current?.attachments ?? attachments).map((item) => item.attachmentId),
+      projectFiles: [...(current?.projectFiles ?? projectFiles)] };
+  };
+  const settleAcceptedDraft = (submission: WebSubmission | undefined, requestId: string) => {
+    const current = webDrafts.get(scopeKey);
+    // A host receipt owns the submitted revision, not whatever the editor now contains.
+    // Read the scope cache (also updated by remounts), never an old render's draft.
+    if (!current) return;
+    const owned = submission?.scopeKey === scopeKey;
+    const clearText = owned && current.submission === submission
+      && current.textRevision === submission.textRevision && current.text === submission.text;
+    cacheWebDraft(scopeKey, { ...current, text: clearText ? '' : current.text,
+      textRevision: current.textRevision + (clearText && current.text !== '' ? 1 : 0),
+      uncertainId: current.uncertainId === requestId ? null : current.uncertainId,
+      attachments: owned ? current.attachments.filter((item) => !submission.attachmentIds.includes(item.attachmentId)) : current.attachments,
+      projectFiles: owned ? current.projectFiles.filter((file) => !submission.projectFiles.includes(file)) : current.projectFiles,
+      submission: current.submission === submission ? undefined : current.submission });
+  };
+  const preserveCurrentDraft = (requestId: string | null) => {
+    const current = webDrafts.get(scopeKey);
+    save(current?.text ?? draft, requestId);
+  };
+  const attachText = async (files: readonly File[]) => {
+    if (!files.length || !workspace || !controlling || busy || uncertainId || recoveryBlocked || !sameSelection()) return;
+    if (files.length + attachments.length + projectFiles.length > MAX_WEB_TEXT_COUNT) {
+      setMessage('At most eight text context items can be attached.'); return;
+    }
+    setBusy(true); setMessage(null);
+    try {
+      for (const file of files) {
+        const input = await readComposerTextFile(file);
+        if (!sameSelection()) throw new Error('Selection changed. Text was not retargeted.');
+        const receipt = await web.uploadText(workspace, input);
+        // Keep late receipts under their original scope, never attach to a new selection.
+        const current = webDrafts.get(scopeKey);
+        const previous = current?.attachments ?? attachments;
+        updateContext([...previous.filter((item) => item.attachmentId !== receipt.attachmentId), { name: input.name, ...receipt }],
+          current?.projectFiles ?? projectFiles);
+        if (!sameSelection()) throw new Error('Selection changed. Text remains with its original draft.');
+      }
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Text attachment could not be confirmed.'); }
+    finally { setBusy(false); }
+  };
+  const removeText = async (id: string) => {
+    if (!workspace || !controlling || busy || uncertainId || recoveryBlocked || !sameSelection()) return;
+    setBusy(true);
+    try {
+      const before = webDrafts.get(scopeKey);
+      const attachment = (before?.attachments ?? attachments).find((item) => item.attachmentId === id);
+      // An expired ID is already unavailable on the host. Drop its local reference;
+      // the host sweeper owns temporary-file expiry cleanup, not project deletion.
+      if (attachment && attachment.expiresAt > web.estimatedHostTime) await web.cancelTextAttachment(workspace, id);
+      const current = webDrafts.get(scopeKey);
+      updateContext((current?.attachments ?? attachments).filter((item) => item.attachmentId !== id), current?.projectFiles ?? projectFiles);
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Cancellation was not confirmed. Keep the original draft.'); }
+    finally { setBusy(false); }
+  };
+  const addProjectReference = () => {
+    if (!controlling || busy || uncertainId || recoveryBlocked || !sameSelection()) return;
+    if (!isComposerProjectReference(projectReference)) { setMessage('Use a registered-workspace relative file path, not an absolute path or URL.'); return; }
+    if (attachments.length + projectFiles.length >= MAX_WEB_TEXT_COUNT) { setMessage('At most eight text context items can be attached.'); return; }
+    updateContext(attachments, [...new Set([...projectFiles, projectReference])]);
+    setProjectReference('');
+  };
+  const claim = async () => {
+    if (!ready || !workspace || busy) return;
+    setBusy(true); setMessage(null);
+    try {
+      await web.claimControl(workspace);
+      if (sameSelection()) { setMessage('Control claimed. The host still checks each command.'); }
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not claim control.'); }
+    finally { setBusy(false); }
+  };
+  const release = async () => {
+    if (!workspace || busy) return;
+    setBusy(true);
+    try { await web.releaseControl(workspace); setMessage('Control released.'); }
+    catch (error) { setMessage(error instanceof Error ? error.message : 'Release was not confirmed. Refresh before claiming again.'); }
+    finally { setBusy(false); }
+  };
+  const send = async () => {
+    if (!workspace || !controlling || recoveryBlocked || !draft.trim() || uncertainId || busy || !sameSelection()) return;
+    setBusy(true); setMessage(null);
+    const submission = captureSubmission();
+    const text = submission.text.trim();
+    const current = webDrafts.get(scopeKey);
+    cacheWebDraft(scopeKey, { text: submission.text, textRevision: submission.textRevision, uncertainId,
+      attachments: current?.attachments ?? attachments, projectFiles: current?.projectFiles ?? projectFiles, submission });
+    try {
+      web.assertPendingReviewStorageAvailable();
+      if (attachments.some((item) => item.expiresAt <= web.estimatedHostTime)) throw new Error('Attached text expired. Remove it and attach again before sending.');
+      const receipt = submission.attachmentIds.length || submission.projectFiles.length
+        ? await web.sendPrompt(workspace, text, { attachments: submission.attachmentIds, projectFiles: submission.projectFiles })
+        : await web.sendPrompt(workspace, text);
+      if (receipt.outcome === 'accepted') {
+        clearPromptRecord(receipt.requestId);
+        setRecoveryBlocked(false);
+        settleAcceptedDraft(submission, receipt.requestId);
+        setMessage(`Prompt admitted for this session (request ${receipt.requestId}). This does not mean the run finished.`);
+      } else { clearPromptRecord(receipt.requestId); setRecoveryBlocked(false); setMessage('The host did not accept this prompt. Your draft remains.'); }
+      await refresh(web);
+    } catch (error) {
+      if (error instanceof UnconfirmedCommand) {
+        const latest = webDrafts.get(scopeKey);
+        if (latest?.submission === submission) {
+          cacheWebDraft(scopeKey, { ...latest, submission: { ...submission, requestId: error.requestId } });
+        }
+        preserveCurrentDraft(error.requestId);
+        try {
+          const recorded = web.pendingPromptReview(workspace, sessionId!);
+          if (recorded.kind === 'none') {
+            // A compatibility adapter may not pre-save. The ID embeds its original epoch.
+            web.rememberPendingPromptReview(workspace, sessionId!, error.requestId);
+          } else if (recorded.value?.method !== 'runtime.prompt' || recorded.value.requestId !== error.requestId) {
+            // Never replace an existing original record with a new host/session identity.
+            throw new Error('The saved original request identity could not be verified.');
+          }
+          setRecoveryBlocked(false);
+          setMessage(`Outcome unknown for request ${error.requestId}. Do not resend. Review its original status and refresh the snapshot.`);
+        } catch {
+          setRecoveryBlocked(true);
+          setMessage(`Outcome unknown for request ${error.requestId}, but safe recovery identity could not be saved. Do not resend; sign out only after resolving this with the host.`);
+        }
+      } else setMessage(error instanceof Error ? error.message : 'The prompt was not confirmed. Keep your draft and review the host state before retrying.');
+    } finally { setBusy(false); }
+  };
+  const review = async () => {
+    if (!workspace || !uncertainId || nonPromptPending || busy || !ready || !sameSelection()) return;
+    const before = web.pendingPromptReview(workspace, sessionId ?? '');
+    const beforeValue = before.kind === 'match' || before.kind === 'blocked' ? before.value : undefined;
+    if (beforeValue && (beforeValue.method !== 'runtime.prompt' || beforeValue.requestId !== uncertainId)) return;
+    const originalSessionId = pendingValue?.sessionId ?? sessionId;
+    const originalGeneration = pendingValue?.workspaceGeneration ?? workspace.workspaceGeneration;
+    const originalEpoch = pendingValue?.serverEpoch ?? epoch;
+    const capturedPromptOwned = (before.kind === 'match' || before.kind === 'blocked' && before.reason === 'mismatch')
+      && beforeValue?.method === 'runtime.prompt' && beforeValue.requestId === uncertainId
+      && beforeValue.sessionId === originalSessionId && beforeValue.workspaceGeneration === originalGeneration
+      && beforeValue.serverEpoch === originalEpoch
+      || before.kind === 'none' && cachedUncertainId === uncertainId;
+    const cachedSubmission = webDrafts.get(scopeKey)?.submission;
+    const submission = cachedSubmission?.requestId === uncertainId ? cachedSubmission : undefined;
+    setBusy(true);
+    try {
+      const status = await web.reviewPromptStatus(workspace, uncertainId);
+      if (!sameSelection()) return;
+      const after = web.pendingPromptReview(workspace, sessionId ?? '');
+      const live = after.kind === 'match' || after.kind === 'blocked' ? after.value : undefined;
+      // Native review settles its owned record before returning the correlated status.
+      // None is not corruption: resolve only our captured prompt draft on terminal proof.
+      const terminalNativeSettlement = after.kind === 'none' && capturedPromptOwned
+        && !pendingScopeChanged && originalSessionId === sessionId
+        && originalGeneration === workspace.workspaceGeneration && originalEpoch === epoch
+        && originalEpoch !== null && uncertainId.split('.')[0] === originalEpoch
+        && (status.state === 'rejected' || status.state === 'settled' && status.receipt?.kind === 'prompt'
+          && status.receipt.requestId === uncertainId && status.receipt.sessionId === originalSessionId);
+      const matchingLivePrompt = (after.kind === 'match' || after.kind === 'blocked' && after.reason === 'mismatch')
+        && live?.method === 'runtime.prompt' && live.requestId === uncertainId
+        && live.sessionId === originalSessionId && live.workspaceGeneration === originalGeneration && live.serverEpoch === originalEpoch;
+      if (!matchingLivePrompt && !terminalNativeSettlement) {
+        if (after.kind === 'none' && capturedPromptOwned) preserveCurrentDraft(uncertainId);
+        // An absent/unknown status never becomes terminal merely because lookup is none.
+        setMessage('Original prompt review identity changed or is unavailable. No record was cleared. Use the shared Review original command control for any non-prompt command.');
+        return;
+      }
+      if (pendingScopeChanged) {
+        setMessage(`Original request ${uncertainId} status: ${status.state}. Its original session/generation/epoch differs; the identity is retained. No replay or retargeting.`);
+      } else if (status.state === 'settled' && status.receipt?.kind === 'prompt'
+        && status.receipt.requestId === uncertainId && status.receipt.sessionId === originalSessionId) {
+        if (status.receipt.outcome === 'accepted') {
+          clearPromptRecord(uncertainId); setRecoveryBlocked(false);
+          settleAcceptedDraft(submission, uncertainId);
+          setMessage(`Original request ${uncertainId} was admitted. The run may still be active.`);
+        } else { clearPromptRecord(uncertainId); setRecoveryBlocked(false); preserveCurrentDraft(null); setMessage('Original request was not accepted. Review your draft before a new send.'); }
+      } else if (status.state === 'rejected') {
+        clearPromptRecord(uncertainId); setRecoveryBlocked(false);
+        preserveCurrentDraft(null); setMessage(`Original request was rejected (${status.rejectionCode ?? 'reason unknown'}). Review your draft before a new send.`);
+      } else setMessage(`Original request status: ${status.state}. Outcome is not confirmed. Do not resend.`);
+      await refresh(web);
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Review failed. Do not resend.'); }
+    finally { setBusy(false); }
+  };
+  return <div className="composer-wrap"><ComposerPresentation source="network"
+    formProps={{ 'aria-label': 'Browser prompt composer' }}
+    input={{ id: 'web-prompt', 'aria-label': 'Message to selected host session', value: draft, maxLength: 16_384, rows: 2,
+      onChange: (event) => save(event.target.value, uncertainId), disabled: !ready || busy || Boolean(uncertainId) || recoveryBlocked }}
+    action={{ label: 'Send prompt', content: 'Send prompt',
+      disabled: !controlling || recoveryBlocked || busy || !draft.trim() || Boolean(uncertainId) || !web.supports('runtime.prompt') }}
+    submitKey={sendMessageWithModifier ? 'modifier-enter' : 'enter'} onAction={() => void send()}>
+    {({ input, sendAction }) => <>
+    <p className="bounded-note">Text context only (256 KiB per file). Media, HTML, archives, URL fetching and native tools are unavailable.
+      Context is untrusted text, not a permission grant.</p>
+    {!connectionControlsMounted && <>
+      <p className="bounded-note">Host: {new URL(web.origin).host} · Workspace: {workspace?.label ?? 'none'} · Session: {sessionId ?? 'none'}.</p>
+      <div className="bounded-note" role="status">{controlling ? 'Control lease appears active. The host verifies control for every command.' : 'Observer. Claim control explicitly to send.'}</div>
+      <div><button type="button" disabled={!ready || busy || controlling || !web.supports('workspace.control')} onClick={() => void claim()}>Claim control</button>
+        <button type="button" disabled={!ready || busy || !controlling} onClick={() => void release()}>Release control</button></div>
+    </>}
+    <fieldset disabled={!controlling || busy || Boolean(uncertainId) || recoveryBlocked}>
+      <legend>Text context</legend>
+      <label>Attach plain text file<input aria-label="Attach plain text file" type="file" accept=".txt,.md,.csv,.tsv,.json,.jsonl,.yaml,.yml,.toml,.ini,.log,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.c,.h,.cpp,.css,.sql,.sh" multiple
+        onChange={(event) => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ''; void attachText(files); }} /></label>
+      <label>Registered project file<input aria-label="Registered project file" placeholder="src/example.ts" value={projectReference}
+        onChange={(event) => setProjectReference(event.target.value)} /></label>
+      <button type="button" onClick={addProjectReference}>Attach project file</button>
+      <p className="bounded-note">Project references resolve only within this host's registered workspace. The host checks paths and text at admission.</p>
+      <ul aria-label="Attached text context">
+        {attachments.map((item) => <li key={item.attachmentId}>{item.name} · {item.byteLength} bytes {item.expiresAt <= web.estimatedHostTime ? '· expired' : ''}
+          <button type="button" onClick={() => void removeText(item.attachmentId)}>Remove {item.name}</button></li>)}
+        {projectFiles.map((file) => <li key={file}>{file}<button type="button" onClick={() => updateContext(attachments, projectFiles.filter((item) => item !== file))}>Remove {file}</button></li>)}
+      </ul>
+    </fieldset>
+    <label htmlFor="web-prompt">Message to selected host session</label>
+    {input}
+    {sendAction}
+    {nonPromptPending && pendingValue && <p className="bounded-note" role="status">
+      Original command: {pendingValue.requestId} · {pendingValue.method}. Use the shared “Review original command” control.
+      This Composer cannot review or clear that command. Your draft is preserved; new prompts and context remain disabled.
+    </p>}
+    {uncertainId && !nonPromptPending && <>
+      <p className="bounded-note">Original request: {uncertainId}{pendingValue ? ` · ${pendingValue.method} · session ${pendingValue.sessionId} · generation ${pendingValue.workspaceGeneration} · epoch ${pendingValue.serverEpoch}` : ''}.
+        {pendingScopeChanged ? ' Selection changed. This request is not retargeted.' : ''}</p>
+      <button type="button" disabled={!ready || busy} onClick={() => void review()}>Review original request</button>
+    </>}
+    {message && <p role="status" className="bounded-note">{message}</p>}
+    </>}
+  </ComposerPresentation></div>;
+}
+
+function DesktopComposer({ onOpenProject, connectRequest = 0 }: { onOpenProject: () => void; connectRequest?: number }) {
   const { ActionContent, Symbol, PromptHeading, PromptPrefix, toolbarBreakpoint } = useSkinComponents();
   const [draft, setDraft] = useState('');
   const [images, setImages] = useState<Attachment[]>([]);
@@ -318,6 +699,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     pendingThinkingLevel: state.runtime.pendingThinkingLevel,
     permissionLevel: state.runtime.permissionLevel,
     providerLogin: state.runtime.providerLogin,
+    questionnaire: state.runtime.questionnaire,
     commands: state.runtime.commands,
     contextUsage: state.runtime.contextUsage,
     forkPoints: state.runtime.forkPoints,
@@ -401,7 +783,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     ? speechDownload.state === 'verifying' ? 100 : Math.min(100, Math.round(speechDownload.downloadedBytes / speechDownload.totalBytes * 100))
     : 0;
   const openProviderLogin = useCallback(async () => {
-    const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
+    const desktop = getDesktopApiOptional();
     if (typeof desktop?.initializeProviderLogin !== 'function') {
       setComposerError('Provider sign-in is unavailable in this build. Update Fate UI and try again.');
       return;
@@ -636,7 +1018,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   }, []);
 
   useEffect(() => {
-    if (!resourceTagContext || !runtime.project?.path || !('piDesktop' in window)) {
+    if (!resourceTagContext || !runtime.project?.path || !getFateApiOptional()) {
       setFileSuggestionResult(null);
       return;
     }
@@ -645,7 +1027,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     let cancelled = false;
     const load = async () => {
       try {
-        const result = query ? await window.piDesktop.searchFiles(query, 100) : await window.piDesktop.listFiles('');
+        const result = query ? await getFateApi().searchFiles(query, 100) : await getFateApi().listFiles('');
         if (!cancelled && useRuntimeStore.getState().runtime.project?.path === projectPath) {
           setFileSuggestionResult({ projectPath, query, entries: result.entries });
         }
@@ -848,11 +1230,11 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
         recording.chunks.length = 0;
         activeRecording.current = null;
       }
-      if ('piDesktop' in window && typeof window.piDesktop.cancelSpeechTranscription === 'function') {
-        void window.piDesktop.cancelSpeechTranscription().catch(() => undefined);
+      if (Boolean(getFateApiOptional()) && typeof getDesktopApiOptional()?.cancelSpeechTranscription === 'function') {
+        void getDesktopApi().cancelSpeechTranscription().catch(() => undefined);
       }
-      if ('piDesktop' in window && typeof window.piDesktop.cancelSpeechStream === 'function') {
-        void window.piDesktop.cancelSpeechStream().catch(() => undefined);
+      if (Boolean(getFateApiOptional()) && typeof getDesktopApiOptional()?.cancelSpeechStream === 'function') {
+        void getDesktopApi().cancelSpeechStream().catch(() => undefined);
       }
     };
   }, []);
@@ -878,18 +1260,18 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       recording.chunks.length = 0;
     }
     updateVoiceState('idle');
-    if ('piDesktop' in window && typeof window.piDesktop.cancelSpeechTranscription === 'function') {
-      void window.piDesktop.cancelSpeechTranscription().catch(() => undefined);
+    if (Boolean(getFateApiOptional()) && typeof getDesktopApiOptional()?.cancelSpeechTranscription === 'function') {
+      void getDesktopApi().cancelSpeechTranscription().catch(() => undefined);
     }
-    if ('piDesktop' in window && typeof window.piDesktop.cancelSpeechStream === 'function') {
-      void window.piDesktop.cancelSpeechStream().catch(() => undefined);
+    if (Boolean(getFateApiOptional()) && typeof getDesktopApiOptional()?.cancelSpeechStream === 'function') {
+      void getDesktopApi().cancelSpeechStream().catch(() => undefined);
     }
   }, [runtime.project?.path, runtime.sessionId, updateVoiceState]);
 
   // Live transcription updates: committed text writes straight into the input box.
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.onSpeechStreamUpdate !== 'function') return;
-    return window.piDesktop.onSpeechStreamUpdate((update: SpeechStreamUpdate) => {
+    if (!hasCapability('microphone') || typeof getDesktopApiOptional()?.onSpeechStreamUpdate !== 'function') return;
+    return getDesktopApi().onSpeechStreamUpdate((update: SpeechStreamUpdate) => {
       if (update.state === 'active' || update.state === 'final') {
         if (update.state === 'active' && !update.committed.trim() && liveSpanLenRef.current > 0) {
           setVoiceLag((update.backlogSeconds ?? 0) >= VOICE_LAG_WARN_SECONDS);
@@ -923,8 +1305,8 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
 
   // Global voice hotkey (registered by the main process): start/stop from anywhere.
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.onVoiceHotkey !== 'function') return;
-    return window.piDesktop.onVoiceHotkey((event) => {
+    if (!hasCapability('hotkeys') || !hasCapability('microphone') || typeof getDesktopApiOptional()?.onVoiceHotkey !== 'function') return;
+    return getDesktopApi().onVoiceHotkey((event) => {
       if (event.source !== 'hotkey') return;
       if (event.action === 'start') { if (voiceStateRef.current === 'idle') void startVoiceRecording(); }
       else { if (voiceStateRef.current === 'recording') stopVoiceRecording(); }
@@ -975,9 +1357,9 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     optimizingPromptRef.current = false;
     if (mounted.current) setOptimizingPrompt(false);
     if (alreadyCancelling) return;
-    if (!('piDesktop' in window) || typeof window.piDesktop.abort !== 'function') return;
+    if (!getFateApiOptional() || typeof getFateApiOptional()?.abort !== 'function') return;
     try {
-      await window.piDesktop.abort();
+      await getFateApi().abort();
     } catch {
       // Send still proceeds. Main also cancels leftover improvement on prompt().
     }
@@ -1004,10 +1386,10 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       return;
     }
     const logout = /^\/logout\s+([^\s/]+)\s*$/iu.exec(text);
-    if (logout && 'piDesktop' in window) {
+    if (logout && Boolean(getFateApiOptional())) {
       if (optimizingPromptRef.current) await flushPromptOptimizationForSend();
       updateDraft('');
-      void window.piDesktop.logoutProvider(logout[1]!).then((state) => useRuntimeStore.getState().setRuntime(state)).catch((error: unknown) => {
+      void getDesktopApi().logoutProvider(logout[1]!).then((state) => useRuntimeStore.getState().setRuntime(state)).catch((error: unknown) => {
         if (mounted.current) setComposerError(error instanceof Error ? error.message : 'The provider could not be signed out.');
       });
       return;
@@ -1018,7 +1400,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       updateDraft('');
       return;
     }
-    if (!text || runtimeNow.status !== 'ready' || submittingRef.current || !('piDesktop' in window)) return;
+    if (!text || runtimeNow.status !== 'ready' || submittingRef.current || !getFateApiOptional()) return;
     submittingRef.current = true;
     if (mounted.current) {
       setSubmitting(true);
@@ -1064,16 +1446,16 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
           useUiStore.getState().openGoalMax();
         } else if (goalCommand.kind === 'clear') {
           if (!currentGoal) throw new Error('This thread has no GoalMax objective to clear.');
-          if (typeof window.piDesktop.clearGoalMax !== 'function') throw new Error('Restart Fate UI to clear persistent goals.');
-          await window.piDesktop.clearGoalMax();
+          if (typeof getFateApiOptional()?.clearGoalMax !== 'function') throw new Error('Restart Fate UI to clear persistent goals.');
+          await getFateApi().clearGoalMax();
           setActiveGoal(null);
         } else if (goalCommand.kind === 'pause' || goalCommand.kind === 'resume') {
           if (!currentGoal) throw new Error(`This thread has no GoalMax objective to ${goalCommand.kind}.`);
-          if (typeof window.piDesktop.controlGoalMax !== 'function') throw new Error('Restart Fate UI to control persistent goals.');
-          setActiveGoal(await window.piDesktop.controlGoalMax({ action: goalCommand.kind }));
+          if (typeof getFateApiOptional()?.controlGoalMax !== 'function') throw new Error('Restart Fate UI to control persistent goals.');
+          setActiveGoal(await getFateApi().controlGoalMax({ action: goalCommand.kind }));
         } else {
-          if (typeof window.piDesktop.createGoalMax !== 'function') throw new Error('Restart Fate UI to create persistent goals.');
-          setActiveGoal(await window.piDesktop.createGoalMax({
+          if (typeof getFateApiOptional()?.createGoalMax !== 'function') throw new Error('Restart Fate UI to create persistent goals.');
+          setActiveGoal(await getFateApi().createGoalMax({
             objective: goalCommand.objective,
             verificationLevel: 'normal',
             agentStrategy: 'auto',
@@ -1086,8 +1468,8 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       }
       const stopCommand = submittedImages.length === 0 && submittedBrowserAnnotationIds.length === 0 && submittedSessionReferences.length === 0 ? parseAgentStopCommand(text) : null;
       if (stopCommand) {
-        if (typeof window.piDesktop.controlSubagent !== 'function') throw new Error('Restart Fate UI to use direct agent controls.');
-        const state = await window.piDesktop.controlSubagent({ action: 'cancel', target: stopCommand.target });
+        if (typeof getFateApiOptional()?.controlSubagent !== 'function') throw new Error('Restart Fate UI to use direct agent controls.');
+        const state = await getFateApi().controlSubagent({ action: 'cancel', target: stopCommand.target });
         const current = useRuntimeStore.getState().runtime;
         const selectionIsOrigin = current.sessionId === runtimeNow.sessionId && current.project?.path === runtimeNow.project?.path;
         const resultIsCurrent = current.sessionId === state.sessionId && current.project?.path === state.project?.path;
@@ -1100,7 +1482,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       const promptSessionReferences = submittedSessionReferences.map(({ id, title, projectPath }) => ({ id, title, projectPath }));
       const learningKey = learningDraftKey(runtimeNow.project?.path, runtimeNow.sessionId);
       const learning = useLearningStore.getState().turns[learningKey];
-      const acceptance = await window.piDesktop.prompt({
+      const acceptance = await getFateApi().prompt({
         text,
         behavior,
         ...(promptImages.length ? { images: promptImages } : {}),
@@ -1110,9 +1492,9 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       });
       if (!acceptance.accepted) return;
       useLearningStore.getState().clearTurn(learningKey, learning);
-      if (submittedBrowserAnnotationIds.length > 0 && typeof window.piDesktop.dismissBrowserAnnotations === 'function') {
+      if (submittedBrowserAnnotationIds.length > 0 && typeof getDesktopApiOptional()?.dismissBrowserAnnotations === 'function') {
         try {
-          await window.piDesktop.dismissBrowserAnnotations(submittedBrowserAnnotationIds);
+          await getDesktopApi().dismissBrowserAnnotations(submittedBrowserAnnotationIds);
         } catch (error) {
           useBrowserStore.getState().setError(error instanceof Error ? error.message : 'Sent page markers could not be cleared.');
         }
@@ -1143,14 +1525,14 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     if (
       runtimeNow.status !== 'ready'
       || (!runtimeNow.streaming && !runtimeNow.activeSessionRunning && !cancellableGoal && !hasStoppableChildWork(runtimeNow))
-      || !('piDesktop' in window)
+      || !getFateApiOptional()
     ) return;
     try {
-      if (cancellableGoal && typeof window.piDesktop.controlGoalMax === 'function') {
-        const goal = await window.piDesktop.controlGoalMax({ action: 'cancel', reason: 'Cancelled from the composer stop button.' });
+      if (cancellableGoal && typeof getFateApiOptional()?.controlGoalMax === 'function') {
+        const goal = await getFateApi().controlGoalMax({ action: 'cancel', reason: 'Cancelled from the composer stop button.' });
         if (mounted.current) setActiveGoal(goal);
       } else {
-        await window.piDesktop.abort();
+        await getFateApi().abort();
       }
     } catch (error) {
       if (mounted.current) setComposerError(error instanceof Error ? error.message : 'Pi could not be stopped.');
@@ -1226,7 +1608,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   const sendLiveAgentMessage = async () => {
     const target = liveAgentTarget;
     const message = draftRef.current.trim();
-    if (!target || !message || liveAgentBusy || !('piDesktop' in window)) return;
+    if (!target || !message || liveAgentBusy || !getFateApiOptional()) return;
     const steerActiveTurn = target.active && liveAgentDelivery === 'steer';
     const maximum = target.kind === 'team-node' ? 32_768 : target.active ? 20_000 : 200_000;
     if (new TextEncoder().encode(message).byteLength > maximum) {
@@ -1240,8 +1622,8 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       if (optimizingPromptRef.current) await flushPromptOptimizationForSend();
       let state;
       if (target.kind === 'team-node') {
-        if (typeof window.piDesktop.controlAgentTeam !== 'function') throw new Error('Restart Fate UI to message Agent Team sessions.');
-        state = await window.piDesktop.controlAgentTeam({
+        if (typeof getFateApiOptional()?.controlAgentTeam !== 'function') throw new Error('Restart Fate UI to message Agent Team sessions.');
+        state = await getFateApi().controlAgentTeam({
           action: steerActiveTurn ? 'message' : 'followUp',
           teamId: target.teamId,
           target: target.id,
@@ -1251,11 +1633,11 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
           operationId: crypto.randomUUID(),
         });
       } else {
-        if (typeof window.piDesktop.controlSubagent !== 'function') throw new Error('Restart Fate UI to message live agent sessions.');
+        if (typeof getFateApiOptional()?.controlSubagent !== 'function') throw new Error('Restart Fate UI to message live agent sessions.');
         if (target.active) {
-          state = await window.piDesktop.controlSubagent({ action: 'steer', target: `@${target.handle}`, message });
+          state = await getFateApi().controlSubagent({ action: 'steer', target: `@${target.handle}`, message });
         } else {
-          state = await window.piDesktop.controlSubagent({ action: 'followUp', target: `@${target.handle}`, message });
+          state = await getFateApi().controlSubagent({ action: 'followUp', target: `@${target.handle}`, message });
         }
       }
       const current = useRuntimeStore.getState().runtime;
@@ -1397,10 +1779,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
         return;
       }
     }
-    if (event.key === 'Enter' && shouldSend) {
-      event.preventDefault();
-      void submit(runtime.streaming || runtime.activeSessionRunning ? 'followUp' : 'prompt');
-    }
+    // Unhandled Enter is dispatched by the shared ComposerPresentation entry.
   };
 
   const startComposerResize = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -1590,7 +1969,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
 
   const startLiveRecording = async () => {
     const runtimeNow = useRuntimeStore.getState().runtime;
-    if (!speech.enabled || speechDownload || voiceStateRef.current !== 'idle' || runtimeNow.status !== 'ready' || !('piDesktop' in window)) return;
+    if (!hasCapability('microphone') || !speech.enabled || speechDownload || voiceStateRef.current !== 'idle' || runtimeNow.status !== 'ready' || !getFateApiOptional()) return;
     const attempt = voiceAttempt.current + 1;
     voiceAttempt.current = attempt;
     const input = textarea.current;
@@ -1600,22 +1979,22 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     setComposerError(null);
     let feedQueue: VoiceStreamFeedQueue | null = null;
     try {
-      if (typeof window.piDesktop.startSpeechStream !== 'function') throw new Error('Restart Fate UI to activate live transcription.');
+      if (typeof getDesktopApiOptional()?.startSpeechStream !== 'function') throw new Error('Restart Fate UI to activate live transcription.');
       await afterNextPaint();
       if (!isCurrentVoiceAttempt(attempt)) return;
       updateVoiceState('downloading');
-      await window.piDesktop.ensureSpeechModel(speech.modelId);
+      await getDesktopApi().ensureSpeechModel(speech.modelId);
       if (!isCurrentVoiceAttempt(attempt)) return;
       updateVoiceState('preparing');
-      await window.piDesktop.startSpeechStream(speech.modelId, speech.language === 'auto' ? undefined : speech.language, speech.finalAccuracyPass);
-      if (!isCurrentVoiceAttempt(attempt)) { await window.piDesktop.cancelSpeechStream().catch(() => undefined); return; }
+      await getDesktopApi().startSpeechStream(speech.modelId, speech.language === 'auto' ? undefined : speech.language, speech.finalAccuracyPass);
+      if (!isCurrentVoiceAttempt(attempt)) { await getDesktopApi().cancelSpeechStream().catch(() => undefined); return; }
       feedQueue = new VoiceStreamFeedQueue(
-        (audio) => window.piDesktop.feedSpeechStream(audio),
+        (audio) => getDesktopApi().feedSpeechStream(audio),
         (error) => {
           if (!isCurrentVoiceAttempt(attempt)) return;
           feedQueue?.cancel();
           teardownLiveRecording();
-          void window.piDesktop.cancelSpeechStream().catch(() => undefined);
+          void getDesktopApi().cancelSpeechStream().catch(() => undefined);
           setComposerError(error instanceof Error ? error.message : 'Live transcription failed.');
           updateVoiceState('idle');
         },
@@ -1629,7 +2008,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       if (!isCurrentVoiceAttempt(attempt)) {
         feedQueue.cancel();
         void Promise.resolve(controller.stop()).catch(() => undefined);
-        await window.piDesktop.cancelSpeechStream().catch(() => undefined);
+        await getDesktopApi().cancelSpeechStream().catch(() => undefined);
         return;
       }
       liveRecording.current = { controller, feedQueue, attempt };
@@ -1637,7 +2016,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     } catch (error) {
       feedQueue?.cancel();
       teardownLiveRecording();
-      await window.piDesktop.cancelSpeechStream().catch(() => undefined);
+      await getDesktopApi().cancelSpeechStream().catch(() => undefined);
       if (isCurrentVoiceAttempt(attempt)) {
         setComposerError(error instanceof Error ? error.message : 'Could not start live transcription.');
         updateVoiceState('idle');
@@ -1653,7 +2032,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     try { await recording.controller.stop(); } catch { /* best-effort teardown */ }
     try {
       await recording.feedQueue.closeAndDrain();
-      await window.piDesktop.stopSpeechStream();
+      await getDesktopApi().stopSpeechStream();
     } catch (error) {
       if (isCurrentVoiceAttempt(recording.attempt)) setComposerError(error instanceof Error ? error.message : 'Live transcription failed to finalize.');
     } finally {
@@ -1746,8 +2125,8 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       const spoken = trimSpeechPcm(pcm);
       if (spoken.length === 0) throw new Error('No speech was detected. Try again closer to the microphone.');
       const audio = spoken.buffer.slice(spoken.byteOffset, spoken.byteOffset + spoken.byteLength) as ArrayBuffer;
-      if (!('piDesktop' in window) || typeof window.piDesktop.transcribeSpeech !== 'function') throw new Error('Voice transcription is unavailable.');
-      const result = await window.piDesktop.transcribeSpeech(speech.modelId, audio, speech.language === 'auto' ? undefined : speech.language);
+      if (!getFateApiOptional() || typeof getDesktopApiOptional()?.transcribeSpeech !== 'function') throw new Error('Voice transcription is unavailable.');
+      const result = await getDesktopApi().transcribeSpeech(speech.modelId, audio, speech.language === 'auto' ? undefined : speech.language);
       if (recording.cancelled || !isCurrentVoiceAttempt(recording.attempt) || !targetSelectionIsCurrent()) return;
       insertTranscript(result.text, recording.insertion);
     } catch (error) {
@@ -1768,9 +2147,10 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   };
 
   const startVoiceRecording = async () => {
+    if (!hasCapability('microphone')) return;
     if (isLiveModel) return startLiveRecording();
     const runtimeNow = useRuntimeStore.getState().runtime;
-    if (!speech.enabled || speechDownload || voiceStateRef.current !== 'idle' || runtimeNow.status !== 'ready' || !('piDesktop' in window)) return;
+    if (!speech.enabled || speechDownload || voiceStateRef.current !== 'idle' || runtimeNow.status !== 'ready' || !getFateApiOptional()) return;
     const attempt = voiceAttempt.current + 1;
     voiceAttempt.current = attempt;
     const input = textarea.current;
@@ -1787,12 +2167,12 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     let acquiredStream: MediaStream | null = null;
     try {
       if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw new Error('Microphone recording is not supported on this system.');
-      if (typeof window.piDesktop.ensureSpeechModel !== 'function') throw new Error('Restart Fate UI to activate voice model preparation.');
+      if (typeof getDesktopApiOptional()?.ensureSpeechModel !== 'function') throw new Error('Restart Fate UI to activate voice model preparation.');
       // Paint the pressed state before native/filesystem work without delaying by an arbitrary timeout.
       await afterNextPaint();
       if (!isCurrentVoiceAttempt(attempt)) return;
       updateVoiceState('downloading');
-      await window.piDesktop.ensureSpeechModel(speech.modelId);
+      await getDesktopApi().ensureSpeechModel(speech.modelId);
       if (!isCurrentVoiceAttempt(attempt)) return;
       updateVoiceState('preparing');
       // Keep the device's native format so capture does not reconfigure shared audio hardware.
@@ -1866,13 +2246,13 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   };
 
   const mutateQueuedMessage = async (id: string, action: QueueMutationInput['action']) => {
-    if (!('piDesktop' in window) || queueBusyRef.current) return;
+    if (!getFateApiOptional() || queueBusyRef.current) return;
     if (action === 'edit' && (draftRef.current.trim() || imagesRef.current.length > 0 || browserAnnotationIdsRef.current.length > 0 || sessionReferencesRef.current.length > 0)) {
       setComposerError('Finish or clear the current draft and attachments before editing a queued message.');
       textarea.current?.focus({ preventScroll: true });
       return;
     }
-    if (typeof window.piDesktop.mutateQueuedMessage !== 'function') {
+    if (typeof getFateApiOptional()?.mutateQueuedMessage !== 'function') {
       setComposerError('Restart Fate UI to edit queued messages.');
       return;
     }
@@ -1883,7 +2263,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     setQueueBusyId(id);
     setComposerError(null);
     try {
-      const result = await window.piDesktop.mutateQueuedMessage({ id, action });
+      const result = await getFateApi().mutateQueuedMessage({ id, action });
       if (!mounted.current) return;
       const current = useRuntimeStore.getState().runtime;
       const selectionIsOrigin = current.sessionId === originSessionId && current.project?.path === originProjectPath;
@@ -1919,7 +2299,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   };
 
   const mutateGoalUpdate = async (id: string, action: 'edit' | 'cancel') => {
-    if (!('piDesktop' in window) || goalUpdateBusyRef.current) return;
+    if (!getFateApiOptional() || goalUpdateBusyRef.current) return;
     const goalNow = useGoalMaxStore.getState().goal;
     const item = goalNow?.steering.find((entry) => entry.id === id);
     if (!item) return;
@@ -1929,7 +2309,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       textarea.current?.focus({ preventScroll: true });
       return;
     }
-    if (typeof window.piDesktop.removeGoalMaxSteering !== 'function') {
+    if (typeof getFateApiOptional()?.removeGoalMaxSteering !== 'function') {
       setComposerError('Restart Fate UI to edit goal updates.');
       return;
     }
@@ -1937,7 +2317,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     setGoalUpdateBusyId(id);
     setComposerError(null);
     try {
-      const goal = await window.piDesktop.removeGoalMaxSteering({ steeringId: id });
+      const goal = await getFateApi().removeGoalMaxSteering({ steeringId: id });
       if (mounted.current) setActiveGoal(goal);
       if (action === 'edit' && originDraftKey !== null) {
         updateDraftForKey(originDraftKey, item.text);
@@ -1957,10 +2337,10 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   };
 
   const cancelOptimizePrompt = async () => {
-    if (!optimizingPromptRef.current || !('piDesktop' in window) || typeof window.piDesktop.abort !== 'function') return;
+    if (!optimizingPromptRef.current || !getFateApiOptional() || typeof getFateApiOptional()?.abort !== 'function') return;
     promptOptimizationCancelled.current = true;
     try {
-      await window.piDesktop.abort();
+      await getFateApi().abort();
     } catch (error) {
       promptOptimizationCancelled.current = false;
       if (mounted.current) setComposerError(error instanceof Error ? error.message : 'Prompt improvement could not be cancelled.');
@@ -1968,12 +2348,12 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   };
 
   const optimizePrompt = async () => {
-    if (!('piDesktop' in window) || optimizingPromptRef.current) return;
+    if (!getFateApiOptional() || optimizingPromptRef.current) return;
     const origin = useRuntimeStore.getState().runtime;
     const originalDraft = draftRef.current;
     if (!originalDraft.trim() || origin.status !== 'ready' || origin.streaming || origin.activeSessionRunning || origin.sessionOperation) return;
     if (voiceStateRef.current !== 'idle') return;
-    if (typeof window.piDesktop.optimizePrompt !== 'function') {
+    if (typeof getFateApiOptional()?.optimizePrompt !== 'function') {
       setComposerError('Restart Fate UI to activate prompt improvement.');
       return;
     }
@@ -1983,7 +2363,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     setOptimizingPrompt(true);
     setComposerError(null);
     try {
-      const result = await window.piDesktop.optimizePrompt(originalDraft, { advanced: advancedPromptImprovement });
+      const result = await getFateApi().optimizePrompt(originalDraft, { advanced: advancedPromptImprovement });
       if (!mounted.current || promptOptimizationCancelled.current || epoch !== promptOptimizationEpoch.current) return;
       const current = useRuntimeStore.getState().runtime;
       const selectionIsOrigin = current.sessionId === origin.sessionId && current.project?.path === origin.project?.path;
@@ -2009,7 +2389,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   };
 
   const forkConversation = async () => {
-    if (!('piDesktop' in window) || forkingRef.current) return;
+    if (!getFateApiOptional() || forkingRef.current) return;
     const origin = useRuntimeStore.getState().runtime;
     const point = origin.forkPoints?.at(-1);
     const running = origin.activeSessionRunning ?? origin.streaming;
@@ -2018,7 +2398,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     setForking(true);
     setComposerError(null);
     try {
-      const result = await window.piDesktop.forkSession(point.entryId);
+      const result = await getFateApi().forkSession(point.entryId);
       if (!mounted.current) return;
       const current = useRuntimeStore.getState().runtime;
       const selectionIsOrigin = current.sessionId === origin.sessionId && current.project?.path === origin.project?.path;
@@ -2041,7 +2421,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   };
 
   const changeModel = async (value: string) => {
-    if (!('piDesktop' in window) || modelBusyRef.current) return;
+    if (!getFateApiOptional() || modelBusyRef.current) return;
     const origin = useRuntimeStore.getState().runtime;
     const model = origin.models.find((candidate) => `${candidate.provider}/${candidate.id}` === value);
     if (!model) return;
@@ -2049,7 +2429,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     setModelBusy(true);
     setComposerError(null);
     try {
-      const state = await window.piDesktop.setModel(model.provider, model.id);
+      const state = await getFateApi().setModel(model.provider, model.id);
       if (!mounted.current) return;
       const current = useRuntimeStore.getState().runtime;
       const selectionIsOrigin = current.sessionId === origin.sessionId && current.project?.path === origin.project?.path;
@@ -2064,7 +2444,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   };
 
   const changeThinking = async (level: typeof thinkingLevels[number]) => {
-    if (!('piDesktop' in window) || modelBusyRef.current) return;
+    if (!getFateApiOptional() || modelBusyRef.current) return;
     const origin = useRuntimeStore.getState().runtime;
     const selectedModel = origin.pendingModel ?? origin.model;
     if (!selectedModel?.reasoning && level !== 'off') return;
@@ -2072,7 +2452,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     setModelBusy(true);
     setComposerError(null);
     try {
-      const state = await window.piDesktop.setThinkingLevel(level);
+      const state = await getFateApi().setThinkingLevel(level);
       if (!mounted.current) return;
       const current = useRuntimeStore.getState().runtime;
       const selectionIsOrigin = current.sessionId === origin.sessionId && current.project?.path === origin.project?.path;
@@ -2087,7 +2467,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
   };
 
   const changePermissionLevel = async (level: 'read-only' | 'edit' | 'full-access') => {
-    if (!('piDesktop' in window) || permissionBusyRef.current) return;
+    if (!getFateApiOptional() || permissionBusyRef.current) return;
     const origin = useRuntimeStore.getState().runtime;
     const originLevel = origin.permissionLevel ?? 'edit';
     if (origin.status !== 'ready' || origin.streaming || origin.sessionOperation) return;
@@ -2096,7 +2476,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       setConfirmFullAccess(false);
       return;
     }
-    if (typeof window.piDesktop.setPermissionLevel !== 'function') {
+    if (typeof getFateApiOptional()?.setPermissionLevel !== 'function') {
       setComposerError('Restart Fate UI to activate permission controls.');
       return;
     }
@@ -2104,7 +2484,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
     setPermissionBusy(true);
     setComposerError(null);
     try {
-      const state = await window.piDesktop.setPermissionLevel(level);
+      const state = await getFateApi().setPermissionLevel(level);
       if (!mounted.current) return;
       const current = useRuntimeStore.getState().runtime;
       const selectionIsOrigin = current.sessionId === origin.sessionId && current.project?.path === origin.project?.path;
@@ -2208,6 +2588,12 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
         </div>
       )}
       <div className="composer-rails">
+      {runtime.questionnaire && runtime.questionnaire.sessionId === runtime.sessionId && (
+        <QuestionCard questionnaire={runtime.questionnaire} onAnswer={async (input) => {
+          if (typeof getDesktopApiOptional()?.answerQuestion !== 'function') throw new Error('Restart Fate UI to answer questions.');
+          await getDesktopApi().answerQuestion(input);
+        }} />
+      )}
       {goalUpdates.length > 0 && (
         <details className="goalmax-saved-instructions">
           <summary className="composer-rail-header"><span className="composer-rail-mark"><Symbol text="[s]"><CornerUpLeft size={13} aria-hidden="true" /></Symbol></span><span className="composer-rail-copy">Saved goal instructions · {goalUpdates.length}</span><ChevronDown size={12} aria-hidden="true" /></summary>
@@ -2280,40 +2666,81 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
       <GoalMaxRail />
       <GoalMaxTaskStrip />
       </div>
-      <form
-        ref={composer}
-        className="composer"
-        data-compact-toolbar={compactToolbar ? 'true' : 'false'}
-        data-session-drop={sessionDropActive || undefined}
-        style={{ '--composer-input-height': `${inputHeight}px` } as CSSProperties}
-        onDragEnter={(event) => {
-          if (!readSessionReference(event.dataTransfer)) return;
-          event.preventDefault();
-          setSessionDropActive(true);
+      <ComposerPresentation source="desktop" formRef={composer}
+        formProps={{
+          className: 'composer', 'data-compact-toolbar': compactToolbar ? 'true' : 'false',
+          'data-session-drop': sessionDropActive || undefined,
+          style: { '--composer-input-height': `${inputHeight}px` } as CSSProperties,
+          onDragEnter: (event) => {
+            if (!readSessionReference(event.dataTransfer)) return;
+            event.preventDefault(); setSessionDropActive(true);
+          },
+          onDragOver: (event) => {
+            if (!readSessionReference(event.dataTransfer)) return;
+            event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setSessionDropActive(true);
+          },
+          onDragLeave: (event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setSessionDropActive(false);
+          },
+          onDrop: (event) => {
+            const reference = readSessionReference(event.dataTransfer);
+            if (!reference) return;
+            event.preventDefault(); setSessionDropActive(false); attachSessionReference(reference);
+          },
         }}
-        onDragOver={(event) => {
-          if (!readSessionReference(event.dataTransfer)) return;
-          event.preventDefault();
-          event.dataTransfer.dropEffect = 'copy';
-          setSessionDropActive(true);
+        inputRef={textarea} inputShellRef={inputShell} inputPrefix={<PromptPrefix />}
+        input={{
+          id: 'pi-composer', 'aria-label': 'Message Pi',
+          'aria-controls': resourceMenuOpen ? 'file-tag-suggestions' : mentionMenuOpen ? 'agent-suggestions' : slashMenuOpen ? 'slash-suggestions' : undefined,
+          'aria-expanded': resourceMenuOpen || mentionMenuOpen || slashMenuOpen, 'aria-autocomplete': 'list',
+          'aria-activedescendant': resourceMenuOpen && resourceSuggestions.length > 0
+            ? `file-tag-option-${activeFileIndex}`
+            : mentionMenuOpen && agentSuggestions.length > 0
+              ? `agent-option-${activeAgentIndex}`
+              : slashMenuOpen && commandSuggestions.length > 0 ? `slash-option-${activeCommandIndex}` : undefined,
+          value: editorDraft, readOnly: optimizingPrompt,
+          onChange: (event) => {
+            if (optimizingPromptRef.current) return;
+            if (liveAgentTarget && !event.target.value.trim()) setLiveAgentTarget(null);
+            updateDraft(event.target.value);
+            caretPositionRef.current = event.target.selectionStart;
+            selectionEndRef.current = event.target.selectionEnd;
+            draftScrollTopRef.current = Math.max(0, event.target.scrollTop);
+            setCaretPosition(event.target.selectionStart);
+            setSlashDismissed(false); setMentionDismissed(false); setFileTagDismissed(false);
+          },
+          onSelect: (event) => {
+            caretPositionRef.current = event.currentTarget.selectionStart;
+            selectionEndRef.current = event.currentTarget.selectionEnd;
+            setCaretPosition(event.currentTarget.selectionStart);
+          },
+          onScroll: (event) => {
+            draftScrollTopRef.current = Math.max(0, event.currentTarget.scrollTop); syncInputFades();
+          },
+          onKeyDown,
+          onPaste: (event) => {
+            if (optimizingPromptRef.current) { event.preventDefault(); return; }
+            pasteImages(event);
+          },
+          placeholder: connected ? runtime.streaming ? 'Ask for follow-up changes…' : 'Ask Pi about your project…' : runtime.status === 'auth-required' ? 'Type /login to connect a provider…' : 'Open and trust a project to begin…',
+          rows: 2, disabled: !connected && runtime.status !== 'auth-required',
         }}
-        onDragLeave={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setSessionDropActive(false);
+        action={{
+          label: liveAgentMessageTarget ? 'Send message to live agent' : sendButtonStops ? goalCancelable ? 'Cancel goal' : 'Stop Pi' : runtime.streaming || runtime.activeSessionRunning ? 'Queue follow-up message' : 'Send message',
+          disabled: (!connected && runtime.status !== 'auth-required') || liveAgentBusy || (!runtime.streaming && submitting) || (!liveAgentMessageTarget && !runtime.streaming && !activeSessionRunning && !goalCancelable && !childWorkActive && !hasPendingPrompt),
+          attributes: { className: 'send-button', 'data-mode': sendButtonStops ? 'stop' : 'send',
+            'aria-describedby': sendButtonStops ? 'streaming-send-instructions' : undefined, 'aria-busy': submitting || liveAgentBusy },
+          content: <ActionContent text={submitting && !runtime.streaming ? 'sending' : liveAgentMessageTarget ? 'send' : sendButtonStops ? 'stop' : activeSessionRunning ? 'queue' : 'send'}>{submitting && !runtime.streaming ? <LoaderCircle className="tool-spinner" size={16} /> : sendButtonStops ? <Square size={16} strokeWidth={2.5} aria-hidden="true" /> : <ArrowUp size={18} aria-hidden="true" />}</ActionContent>,
         }}
-        onDrop={(event) => {
-          const reference = readSessionReference(event.dataTransfer);
-          if (!reference) return;
-          event.preventDefault();
-          setSessionDropActive(false);
-          attachSessionReference(reference);
-        }}
-        onSubmit={(event) => {
-          event.preventDefault();
+        submitKey={sendMessageWithModifier ? 'modifier-enter' : 'enter'}
+        onAction={() => {
           if (liveAgentMessageTarget) void sendLiveAgentMessage();
           else if (sendButtonStops) void stopActiveRun();
           else void submit(runtime.streaming || runtime.activeSessionRunning ? 'followUp' : 'prompt');
         }}
+        onKeyboardAction={() => void submit(runtime.streaming || runtime.activeSessionRunning ? 'followUp' : 'prompt')}
       >
+        {({ input, sendAction }) => <>
         <AppTooltip content={'Drag upward to enlarge the message input\nUse ↑ or ↓ while focused'}>
           <div
             className="composer-resize-handle"
@@ -2374,56 +2801,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
           <span key={`${image.name}-${index}`}><button type="button" className="composer-attachment-preview" aria-label={`Expand image: ${image.name}`} onClick={() => setPreviewImage(image)}><img alt="" src={`data:${image.mimeType};base64,${image.data}`} /></button><em>{image.name}</em><button type="button" aria-label={`Remove ${image.name}`} onClick={() => updateImages((current) => current.filter((_item, itemIndex) => itemIndex !== index))}><X size={12} /></button></span>
         ))}</div>}
         <PromptHeading target={liveAgentTarget ? `@${liveAgentTarget.handle}` : 'Pi'} hint={sendMessageWithModifier ? 'Ctrl/Cmd+Enter to send' : 'Enter to send'} />
-        <div ref={inputShell} className="composer-input-shell" data-overflow-top="false" data-overflow-bottom="false">
-          <PromptPrefix />
-          <textarea
-            ref={textarea}
-            id="pi-composer"
-            aria-label="Message Pi"
-            aria-controls={resourceMenuOpen ? 'file-tag-suggestions' : mentionMenuOpen ? 'agent-suggestions' : slashMenuOpen ? 'slash-suggestions' : undefined}
-            aria-expanded={resourceMenuOpen || mentionMenuOpen || slashMenuOpen}
-            aria-autocomplete="list"
-            aria-activedescendant={resourceMenuOpen && resourceSuggestions.length > 0
-              ? `file-tag-option-${activeFileIndex}`
-              : mentionMenuOpen && agentSuggestions.length > 0
-                ? `agent-option-${activeAgentIndex}`
-                : slashMenuOpen && commandSuggestions.length > 0 ? `slash-option-${activeCommandIndex}` : undefined}
-            value={editorDraft}
-            readOnly={optimizingPrompt}
-            onChange={(event) => {
-              if (optimizingPromptRef.current) return;
-              if (liveAgentTarget && !event.target.value.trim()) setLiveAgentTarget(null);
-              updateDraft(event.target.value);
-              caretPositionRef.current = event.target.selectionStart;
-              selectionEndRef.current = event.target.selectionEnd;
-              draftScrollTopRef.current = Math.max(0, event.target.scrollTop);
-              setCaretPosition(event.target.selectionStart);
-              setSlashDismissed(false);
-              setMentionDismissed(false);
-              setFileTagDismissed(false);
-            }}
-            onSelect={(event) => {
-              caretPositionRef.current = event.currentTarget.selectionStart;
-              selectionEndRef.current = event.currentTarget.selectionEnd;
-              setCaretPosition(event.currentTarget.selectionStart);
-            }}
-            onScroll={(event) => {
-              draftScrollTopRef.current = Math.max(0, event.currentTarget.scrollTop);
-              syncInputFades();
-            }}
-            onKeyDown={onKeyDown}
-            onPaste={(event) => {
-              if (optimizingPromptRef.current) {
-                event.preventDefault();
-                return;
-              }
-              pasteImages(event);
-            }}
-            placeholder={connected ? runtime.streaming ? 'Ask for follow-up changes…' : 'Ask Pi about your project…' : runtime.status === 'auth-required' ? 'Type /login to connect a provider…' : 'Open and trust a project to begin…'}
-            rows={2}
-            disabled={!connected && runtime.status !== 'auth-required'}
-          />
-        </div>
+        {input}
         <div className="composer-toolbar">
           {(voiceState === 'recording' || voiceState === 'transcribing') && (
             <div className="composer-voice-meter" aria-hidden="true" data-live={isLiveModel || undefined} data-lag={voiceLag || undefined}><i /><i /><i /><i /><i /></div>
@@ -2673,7 +3051,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
               </AppTooltip>
               {speech.enabled && (
                 <AppTooltip
-                  content={voiceState === 'recording' ? (voiceLag ? 'Transcription is falling behind — stop soon to keep your text' : 'Stop and transcribe') : voiceState === 'downloading' ? `Downloading local model… ${voiceDownloadProgress}%` : speechDownload ? 'Wait for the voice model download to finish or cancel it in Settings.' : voiceState === 'preparing' ? 'Preparing microphone…' : voiceState === 'transcribing' ? 'Transcribing locally…' : 'Voice input'}
+                  content={!hasCapability('microphone') ? unavailableExplanation.microphone : voiceState === 'recording' ? (voiceLag ? 'Transcription is falling behind — stop soon to keep your text' : 'Stop and transcribe') : voiceState === 'downloading' ? `Downloading local model… ${voiceDownloadProgress}%` : speechDownload ? 'Wait for the voice model download to finish or cancel it in Settings.' : voiceState === 'preparing' ? 'Preparing microphone…' : voiceState === 'transcribing' ? 'Transcribing locally…' : 'Voice input'}
                   wrapTrigger
                 >
                   <button
@@ -2682,7 +3060,7 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
                     data-state={voiceState}
                     aria-label={voiceState === 'recording' ? 'Stop voice recording' : voiceState === 'downloading' || speechDownload ? 'Voice unavailable while a model downloads' : voiceState === 'transcribing' ? 'Transcribing voice' : 'Start voice recording'}
                     aria-pressed={voiceState === 'recording'}
-                    disabled={!connected || Boolean(speechDownload) || voiceState === 'preparing' || voiceState === 'downloading' || voiceState === 'transcribing'}
+                    disabled={!hasCapability('microphone') || !connected || Boolean(speechDownload) || voiceState === 'preparing' || voiceState === 'downloading' || voiceState === 'transcribing'}
                     onClick={() => voiceState === 'recording' ? stopVoiceRecording() : void startVoiceRecording()}
                     aria-busy={voiceState === 'preparing' || voiceState === 'downloading' || voiceState === 'transcribing'}
                   >
@@ -2693,28 +3071,19 @@ export function Composer({ onOpenProject, connectRequest = 0 }: { onOpenProject:
               {sendButtonStops && <span id="streaming-send-instructions" className="visually-hidden">Click to {goalCancelable ? 'cancel the persistent goal and stop its work' : 'stop Pi'}.</span>}
               <AppTooltip content={liveAgentMessageTarget ? `Send directly to @${liveAgentTarget.handle}` : sendButtonStops ? goalCancelable ? 'Click to cancel goal' : 'Click to stop Pi' : runtime.streaming || runtime.activeSessionRunning ? 'Click queues the follow-up message' : sendMessageWithModifier ? 'Send · Ctrl/⌘ Enter' : 'Send · Enter'}>
                 <span className="send-tooltip-trigger">
-                  <button
-                    className="send-button"
-                    type="submit"
-                    data-mode={sendButtonStops ? 'stop' : 'send'}
-                    aria-label={liveAgentMessageTarget ? 'Send message to live agent' : sendButtonStops ? goalCancelable ? 'Cancel goal' : 'Stop Pi' : runtime.streaming || runtime.activeSessionRunning ? 'Queue follow-up message' : 'Send message'}
-                    aria-describedby={sendButtonStops ? 'streaming-send-instructions' : undefined}
-                    aria-busy={submitting || liveAgentBusy}
-                    disabled={(!connected && runtime.status !== 'auth-required') || liveAgentBusy || (!runtime.streaming && submitting) || (!liveAgentMessageTarget && !runtime.streaming && !activeSessionRunning && !goalCancelable && !childWorkActive && !hasPendingPrompt)}
-                  >
-                    <ActionContent text={submitting && !runtime.streaming ? 'sending' : liveAgentMessageTarget ? 'send' : sendButtonStops ? 'stop' : activeSessionRunning ? 'queue' : 'send'}>{submitting && !runtime.streaming ? <LoaderCircle className="tool-spinner" size={16} /> : sendButtonStops ? <Square size={16} strokeWidth={2.5} aria-hidden="true" /> : <ArrowUp size={18} aria-hidden="true" />}</ActionContent>
-                  </button>
+                  {sendAction}
                 </span>
               </AppTooltip>
           </div>
         </div>
-      </form>
+        </>}
+      </ComposerPresentation>
       {composerError && <p className="composer-error" role="alert">{composerError}</p>}
       <ProviderConnectDialog open={providerLoginOpen} onOpenChange={setProviderLoginOpen} />
       <Dialog.Root open={Boolean(previewImage)} onOpenChange={(open) => { if (!open) setPreviewImage(null); }}>
         <Dialog.Portal>
           <Dialog.Overlay className="cinematic-image-overlay" />
-          {previewImage && <Dialog.Content className="cinematic-image-viewer" aria-describedby={undefined} onClick={(event) => { if (event.target === event.currentTarget) setPreviewImage(null); }}>
+          {previewImage && <Dialog.Content className="cinematic-image-viewer" aria-modal="true" aria-describedby={undefined} onClick={(event) => { if (event.target === event.currentTarget) setPreviewImage(null); }}>
             <Dialog.Title className="visually-hidden">{previewImage.name}</Dialog.Title>
             <img src={`data:${previewImage.mimeType};base64,${previewImage.data}`} alt={previewImage.name} />
             <footer><span>{previewImage.name}</span><small>Click outside or press Esc to close</small></footer>
@@ -2747,10 +3116,10 @@ function BrowserAnnotationAttachment({
 
   const saveComment = async () => {
     const next = comment.trim();
-    if (next === annotation.comment || !('piDesktop' in window)) return;
+    if (next === annotation.comment || !getFateApiOptional()) return;
     setBusy(true);
     try {
-      const updated = await window.piDesktop.updateBrowserAnnotation(annotation.id, next);
+      const updated = await getDesktopApi().updateBrowserAnnotation(annotation.id, next);
       useBrowserStore.getState().replaceAnnotation(updated);
     } catch (error) {
       useBrowserStore.getState().setError(error instanceof Error ? error.message : 'The browser note could not be saved.');
@@ -2761,10 +3130,10 @@ function BrowserAnnotationAttachment({
   };
 
   const remove = async () => {
-    if (!('piDesktop' in window) || busy) return;
+    if (!getFateApiOptional() || busy) return;
     setBusy(true);
     try {
-      const removed = await window.piDesktop.removeBrowserAnnotation(annotation.id);
+      const removed = await getDesktopApi().removeBrowserAnnotation(annotation.id);
       if (!removed) throw new Error('That browser annotation no longer exists.');
       useBrowserStore.getState().removeAnnotation(annotation.id);
       onRemove();
@@ -2781,7 +3150,7 @@ function BrowserAnnotationAttachment({
         type="button"
         className="composer-browser-annotation-preview"
         aria-label={`Show browser annotation ${index}: ${target}`}
-        onClick={() => { if ('piDesktop' in window) void window.piDesktop.highlightBrowserAnnotation(annotation.id); }}
+        onClick={() => { if (Boolean(getFateApiOptional())) void getDesktopApi().highlightBrowserAnnotation(annotation.id); }}
       >
         <span><Globe2 size={12} aria-hidden="true" /><em>{index}</em><strong>{target}</strong><code>{element}</code></span>
         <pre><code>{excerpt}</code></pre>

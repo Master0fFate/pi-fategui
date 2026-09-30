@@ -20,8 +20,18 @@ async function expectHoverTooltip(page: Page, trigger: Locator, content: string)
 }
 
 async function openInspectorView(page: Page, destination: 'Work' | 'Run' | 'System', view: string | RegExp): Promise<void> {
-  await page.locator('.inspector-primary-nav').getByRole('button', { name: new RegExp(`^${destination}(?:,|$)`, 'u') }).click();
-  await page.getByRole('tab', { name: view }).click();
+  const inspector = page.getByRole('complementary', { name: 'Project inspector', exact: true });
+  const trigger = inspector.getByRole('navigation', { name: 'Inspector destinations', exact: true })
+    .getByRole('button', { name: new RegExp(`^${destination}(?:,|$)`, 'u') });
+  await trigger.click();
+  // A destination render failure is not a slow/missing secondary control.
+  // Assert the actual click result before waiting for its scoped view.
+  await expect(trigger).toHaveAttribute('aria-current', 'page');
+  const views = inspector.getByRole('tablist', { name: `${destination} views`, exact: true });
+  await expect(views).toBeVisible();
+  const tab = views.getByRole('tab', { name: view });
+  await tab.click();
+  await expect(tab).toHaveAttribute('data-state', 'active');
 }
 
 async function sidebarSearchVisual(input: Locator): Promise<Record<string, string>> {
@@ -212,6 +222,32 @@ test('left sidebar unifies real resources and the Agents library', async () => {
     await expect(page.locator('.preview-heading')).toContainText('src/example.ts');
 
 
+  } finally {
+    await application.close();
+    await rm(fixture.root, { recursive: true, force: true });
+    await rm(fixture.worktree, { recursive: true, force: true });
+    await rm(userData, { recursive: true, force: true });
+  }
+});
+
+test('the Monitor tab reads the same compact dashboard through desktop IPC', async () => {
+  const fixture = await fixtureRepository();
+  const userData = await mkdtemp(path.join(tmpdir(), 'pi-desktop-monitor-profile-'));
+  const application = await electron.launch({
+    args: [path.resolve('.test-dist/main/index.js')],
+    env: { ...process.env, PI_DESKTOP_E2E_PROJECT: fixture.root, PI_DESKTOP_E2E_USER_DATA: userData, FATE_GUI_DATA_DIR: path.join(userData, 'fateGUI'), PI_OFFLINE: '1' },
+  });
+  try {
+    const page = await application.firstWindow();
+    await page.getByRole('button', { name: /Open project/u }).first().click();
+    await openInspectorView(page, 'Run', 'Monitor');
+    const monitor = page.getByRole('region', { name: 'Monitoring dashboard' });
+    await expect(monitor.getByText('normal', { exact: true })).toBeVisible();
+    await expect(monitor.getByLabel('Source check times')).toContainText('runs');
+    await monitor.getByRole('button', { name: 'Teams 0' }).click();
+    await expect(monitor.getByText('No teams.')).toBeVisible();
+    await monitor.getByRole('button', { name: 'Refresh' }).click();
+    await expect(monitor.getByText('No teams.')).toBeVisible();
   } finally {
     await application.close();
     await rm(fixture.root, { recursive: true, force: true });
@@ -609,7 +645,12 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
     await addressInput.fill(privateOrigin);
     await addressInput.press('Enter');
     await expect(page.getByRole('tab', { name: 'Private live update ready' })).toBeVisible();
+    // New sessions use Edit files, so site access needs its own explicit grant.
+    await expect(page.getByText('Let Pi use this site?')).toBeVisible();
+    await page.locator('.browser-grant-strip').getByRole('button', { name: 'Read only', exact: true }).click();
     await expect(page.getByText('Let Pi use this site?')).toHaveCount(0);
+    await expect.poll(async () => (await page.evaluate(() => window.piDesktop.getBrowserState())).grants)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ origin: new URL(privateOrigin).origin, read: true, interact: false })]));
 
     await page.locator('.workspace-browser-toggle').click();
     await expect(page.getByTestId('browser-workspace')).toHaveCount(0);
@@ -778,12 +819,16 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(activityPulse).toBeVisible();
     await expect(activityPulse).toContainText('changed');
     await expect(activityPulse).not.toContainText('Completed with changes');
-    await page.getByRole('button', { name: 'Permission level: Full access' }).click();
+    await expect(page.getByRole('button', { name: 'Permission level: Edit files' })).toBeVisible();
+    await page.getByRole('button', { name: 'Permission level: Edit files' }).click();
     await page.getByRole('button', { name: 'Read only' }).click();
     await expect(page.getByRole('button', { name: 'Permission level: Read only' })).toBeVisible();
     await page.getByRole('button', { name: 'Permission level: Read only' }).click();
     await page.getByRole('button', { name: 'Full access' }).click();
     await expect(page.getByText('Enable Full access?')).toBeVisible();
+    await page.getByRole('dialog', { name: 'Permission level' }).getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Permission level: Read only' })).toBeVisible();
+    await page.getByRole('button', { name: 'Full access', exact: true }).click();
     await page.getByRole('button', { name: 'Enable full access' }).click();
     await expect(page.getByRole('button', { name: 'Permission level: Full access' })).toBeVisible();
     await page.getByRole('button', { name: 'Permission level: Full access' }).click();
@@ -1675,7 +1720,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
 
     await composerInput.fill('First session draft');
     await page.locator('.session-open').filter({ hasText: 'Second session' }).click();
-    await expect(page.getByRole('button', { name: 'Permission level: Full access' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Permission level: Edit files' })).toBeVisible();
     await expect(composerInput).toHaveValue('');
     await composerInput.fill('Second session draft');
     await page.locator('.session-open').filter({ hasText: 'First session' }).click();

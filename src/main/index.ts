@@ -1,4 +1,9 @@
 import { app, BrowserWindow, dialog, protocol, session, shell, systemPreferences } from 'electron';
+import { getAgentDir } from '@earendil-works/pi-coding-agent';
+import { createFateCore } from '../core/createFateCore';
+import { hostCheckoutOwnership } from '../core/ownership/CheckoutOwnership';
+import { createDesktopFatePaths } from '../core/FatePaths';
+import type { FateCore } from '../core/FateCore';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,31 +16,28 @@ import { BrowserHistoryRepository } from './browser/BrowserHistoryRepository';
 import { BrowserHost } from './browser/BrowserHost';
 import { LOCAL_PAGE_SCHEME } from './browser/LocalPageRegistry';
 import { FilesystemService } from './files/FilesystemService';
+import { DesktopFileActions } from './files/DesktopFileActions';
 import { GitService } from './git/GitService';
 import { registerIpc } from './ipc/registerIpc';
-import { parseLaunchProjectPath, hasNewInstanceFlag } from './launchProject';
+import { parseLaunchProjectPath, parseForwardedProjectPath, hasNewInstanceFlag } from './launchProject';
 import { acquireInstanceProfile } from './instanceProfile';
 import { AppLogService } from './logging/AppLogService';
 import { CrashTelemetryService } from './logging/CrashTelemetry';
 import { LegacyAutomations } from './automations/LegacyAutomations';
-import { AgentsService } from './agents/AgentsService';
-import { AgentRepository } from './agents/AgentRepository';
 import { notifyAgentRun } from './agents/AgentNotifications';
 import { MEDIA_SCHEME, MusicService, PublicHttpsProxy } from './music/MusicService';
 import { BrowserRuntimeBridge } from './pi/BrowserRuntimeBridge';
-import { MultiProjectPiRuntime } from './pi/MultiProjectPiRuntime';
-import { PiRuntimeService } from './pi/PiRuntimeService';
-import { prepareFateProviderStorage } from './pi/FateProviderStorage';
-import { SessionPermissionStore } from './pi/SessionPermissionStore';
-import { GoalMaxRepository } from './pi/goalmaxxing/GoalMaxRepository';
-import { SessionQueueRepository } from './pi/SessionQueueRepository';
-import { MutationAttestationLedger } from './pi/provenance/MutationAttestationLedger';
-import { createMutationRecorder } from './pi/provenance/mutationRecorder';
-import { ProjectService } from './projects/ProjectService';
+import type { PiRuntimeService } from './pi/PiRuntimeService';
+import { ConnectionProfileStore } from './connections/ConnectionProfileStore';
+import { ConnectionSelectionStore } from './connections/ConnectionSelectionStore';
+import { DesktopConnectionRouter } from './connections/DesktopConnectionRouter';
+import { TargetProjectService } from './connections/TargetProjectService';
+import { RemoteOutcomeStore } from './connections/RemoteOutcomeStore';
+import type { PendingRemoteOutcome } from './connections/RemoteCoreClient';
+import type { ConnectionSelection } from '../shared/contracts/connections';
 import { createTrustedRendererPolicy, isTrustedAudioPermissionRequest } from './security/trustedRenderer';
-import { SettingsService } from './settings/SettingsService';
-import { LearningService } from './learning/LearningService';
-import { LearningRepository } from './learning/LearningRepository';
+import { createDesktopSettingsService } from './settings/DesktopSettingsService';
+
 import { SpeechService } from './speech/SpeechService';
 import { configurePackagedSpeechLibrary } from './speech/packagedSpeechLibrary';
 import { GlobalHotkeyService } from './speech/GlobalHotkeyService';
@@ -48,7 +50,7 @@ import { LaunchDispatcher } from './windows/launchDispatcher';
 import { createAppWindowFactory, rememberWindowPlacement } from './windows/appWindows';
 import { appCommandSchema, ipcChannels } from '../shared/contracts/ipc';
 import { browserEventBatchSchema } from '../shared/contracts/browser';
-import { enabledModelIdentity } from '../shared/modelVisibility';
+
 
 protocol.registerSchemesAsPrivileged([{
   scheme: LOCAL_PAGE_SCHEME,
@@ -63,6 +65,9 @@ protocol.registerSchemesAsPrivileged([{
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const developmentUrl = process.env.VITE_DEV_SERVER_URL;
+// Rollback only on a fresh process, after the prior core owner has stopped.
+// This selects one IPC route per command; it never creates a second Pi runtime.
+const useCoreIpcAdapter = process.env.FATE_DESKTOP_CORE_ADAPTER !== '0';
 
 let initialProjectPath: string | null = null;
 let initialLaunchError: unknown = null;
@@ -77,7 +82,7 @@ try {
 // persistent Chromium profile slot. Pi sessions stay shared; Fate UI provider
 // credentials and model configuration stay in its own SDK-owned store.
 const newInstanceRequested = process.env.FATE_NEW_INSTANCE === '1' || hasNewInstanceFlag(process.argv);
-const instanceProfile = acquireInstanceProfile(app, newInstanceRequested ? 'multi' : 'single');
+const instanceProfile = acquireInstanceProfile(app, newInstanceRequested ? 'multi' : 'single', undefined, initialProjectPath);
 // True for the running app (the primary single-instance lock holder, or any
 // multi-instance process). A secondary single-instance launch is false and must
 // never create a window — its project path was forwarded to the primary.
@@ -100,8 +105,7 @@ configurePackagedSpeechLibrary({
 
 const logs = new AppLogService();
 const recovery = new RecoverySnapshotService(RecoverySnapshotService.defaultFilePath(instanceProfile.slot));
-const settings = new SettingsService(logs);
-const learning = new LearningService(new LearningRepository(), () => settings.get().memoryLearning);
+const settings = createDesktopSettingsService(logs);
 const crashTelemetry = new CrashTelemetryService(
   path.join(process.env.FATE_GUI_DATA_DIR ? path.resolve(process.env.FATE_GUI_DATA_DIR) : path.join(os.homedir(), '.pi', 'fateGUI'), 'crash-reports'),
   () => settings.get().crashTelemetryEnabled === true,
@@ -128,41 +132,26 @@ const browserBridge = new BrowserRuntimeBridge(
     service.setMode('agent');
     return service;
   },
+  (root) => browserHost?.currentForSession(root.projectPath, root.sessionId) ?? null,
+  async (root) => {
+    const owner = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find((window) => !window.isDestroyed()) ?? null;
+    if (!browserHost || !owner) throw new Error('Open a Fate UI window before using browser tools.');
+    const service = await browserHost.ensureForSession(owner, root.projectPath, root.sessionId);
+    service.setMode('agent');
+    return service;
+  },
+  () => browserHost?.onRootChanged(),
 );
-const attestationLedger = new MutationAttestationLedger(logs, undefined, { instanceSlot: instanceProfile.slot });
-const recordAttestation = createMutationRecorder(attestationLedger, logs);
-const piRuntime = new MultiProjectPiRuntime({
-  learning,
-  sessionPermissions: new SessionPermissionStore(logs),
-  getImageGenerationSettings: () => settings.get().imageGeneration,
-  getDisabledModels: () => settings.get().disabledModels ?? [],
-  getAgentWorkspacePolicy: () => settings.get().agentWorkspace,
-  createGoalPersistence: () => new GoalMaxRepository(logs),
-  createQueuePersistence: () => new SessionQueueRepository(undefined, instanceProfile.slot),
-  browserIntegration: browserBridge,
-  recordAttestation,
-  notifySessionSettled: () => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed() && !window.isFocused()) window.flashFrame(true);
-    }
-  },
-  defaults: async () => {
-    const loaded = await settings.load();
-    return {
-      thinkingLevel: loaded.thinkingLevel,
-      defaultModel: enabledModelIdentity(loaded.disabledModels, loaded.defaultModel),
-      ...(loaded.agentTeamMode ? { agentTeamMode: loaded.agentTeamMode } : {}),
-    };
-  },
-});
-const runtime = piRuntime.asRouter();
-const agents = new AgentsService({
-  runtime, workspacePolicy: () => settings.get().agentWorkspace, disabledModels: () => settings.get().disabledModels ?? [],
-  notify: (change, osNotification) => { notifyAgentRun(change, osNotification); },
-}, new AgentRepository(), legacyAutomations);
-const projects = new ProjectService();
-const files = new FilesystemService();
-const git = new GitService(files);
+// Initialized once after Electron is ready; the factory owns all Pi and saved-Agent lifetimes.
+let core: FateCore | null = null;
+let coreStartup: Promise<FateCore> | null = null;
+let hostStopping = false;
+let runtime: PiRuntimeService;
+let connections: DesktopConnectionRouter | null = null;
+let remoteOutcomes: RemoteOutcomeStore | null = null;
+const projects = new TargetProjectService(() => connections?.isLocal !== false);
+const files = new FilesystemService(undefined, new DesktopFileActions());
+const git = new GitService(files, undefined, undefined, hostCheckoutOwnership());
 const updateInstaller = createUpdateInstaller(createProductionUpdateInstallerAdapters({
   quit: () => app.quit(),
   warn: (message) => logs.write('warn', 'updates', message),
@@ -187,7 +176,7 @@ const emitVoiceHotkey = (action: 'start' | 'stop') => {
   }
 };
 const hotkey = new GlobalHotkeyService(logs, () => emitVoiceHotkey('start'), () => emitVoiceHotkey('stop'));
-const terminal = new TerminalService(files, runtime, settings, logs);
+let terminal: TerminalService;
 
 const rendererPath = path.join(currentDirectory, '../renderer/index.html');
 const rendererPolicy = createTrustedRendererPolicy(rendererPath, developmentUrl);
@@ -228,17 +217,28 @@ function reportLaunchError(error: unknown): void {
 }
 
 const shutdown = new ShutdownCoordinator({
-  onBeforeDispose: () => rememberWindowPlacement(dispatcher.activeHandle(), windowState),
-  disposeSync: () => { learning.dispose(); terminal.dispose(); music.dispose(); rendererNetworkProxy.dispose(); },
+  onBeforeDispose: () => {
+    // The desktop coordinator stays the sole exit owner. Fence the core now,
+    // before terminal teardown or any asynchronous host cleanup.
+    hostStopping = true;
+    core?.shutdownCore();
+    rememberWindowPlacement(dispatcher.activeHandle(), windowState);
+  },
+  disposeSync: () => { connections?.close(); terminal?.dispose(); music.dispose(); rendererNetworkProxy.dispose(); },
   disposeAsync: () => [
-    agents.dispose().finally(() => runtime.dispose()).finally(() => learning.repository.flush()).finally(() => attestationLedger.flush()).finally(() => recovery.markClean()),
+    core?.shutdownCore() ?? coreStartup?.then((created) => created.shutdownCore()) ?? Promise.resolve({ status: 'settled' as const }),
     speech.dispose(),
     hotkey.dispose(),
     windowState.flush(),
+    remoteOutcomes?.flush() ?? Promise.resolve(),
     browserHost ? browserHost.reset() : Promise.resolve(),
   ],
+  onClean: () => core ? recovery.markClean() : undefined,
   onError: (error) => logs.write('warn', 'app', `Application shutdown failed: ${error instanceof Error ? error.message : String(error)}`),
-  onExit: () => app.exit(0),
+  onExit: (status) => {
+    if (status === 'incomplete') logs.write('error', 'app', 'Shutdown incomplete; recovery status is uncertain.');
+    app.exit(status === 'settled' ? 0 : 1);
+  },
 });
 
 function wireSmoke(window: BrowserWindow): void {
@@ -288,33 +288,20 @@ function wireSmoke(window: BrowserWindow): void {
   });
 }
 
-const windows = createAppWindowFactory({
-  logs,
-  windowState,
-  terminal,
-  projects,
-  dispatcher,
-  reportLaunchError,
-  consumeLaunchError,
-  rendererPolicy,
-  preloadPath: path.join(currentDirectory, '../preload/index.cjs'),
-  rendererPath,
-  ...(process.env.PI_DESKTOP_SMOKE === '1' ? { installSmoke: wireSmoke } : {}),
-  ...(developmentUrl ? { developmentUrl } : {}),
-});
+let windows: ReturnType<typeof createAppWindowFactory>;
 
 // Register this before app readiness work begins. A second launch can arrive
 // while the proxy, settings, or first window is still starting; the dispatcher
 // keeps the latest project pending until the renderer can accept it.
 if (instanceProfile.mode === 'single' && instancePrimaryApp) {
-  app.on('second-instance', (_event, commandLine, workingDirectory) => {
+  app.on('second-instance', (_event, commandLine, workingDirectory, additionalData) => {
     const window = dispatcher.activeHandle();
     if (window) {
       if (window.isMinimized()) window.restore();
       window.focus();
     }
     try {
-      const forwardedProjectPath = parseLaunchProjectPath(commandLine, workingDirectory);
+      const forwardedProjectPath = parseForwardedProjectPath(commandLine, workingDirectory, additionalData);
       if (forwardedProjectPath) dispatcher.dispatch(forwardedProjectPath);
     } catch (error) {
       reportLaunchError(error);
@@ -324,22 +311,77 @@ if (instanceProfile.mode === 'single' && instancePrimaryApp) {
 
 app.whenReady().then(async () => {
   if (!instancePrimaryApp) return;
-  const providerStorage = await prepareFateProviderStorage();
-  if (providerStorage.imported.length > 0) {
-    logs.write('info', 'providers', `Imported Pi provider ${providerStorage.imported.join(' and ')} into Fate UI storage.`);
+  const nativeConnectionRoot = path.join(process.env.FATE_GUI_DATA_DIR ? path.resolve(process.env.FATE_GUI_DATA_DIR)
+    : path.join(os.homedir(), '.pi', 'fateGUI'), 'connections', 'v1');
+  const targetStore = new ConnectionSelectionStore(path.join(nativeConnectionRoot, 'target.json'));
+  let selectedTarget: ConnectionSelection;
+  try { selectedTarget = await targetStore.load(); }
+  catch {
+    // Unreadable/corrupt selection is NOT proof of a local target. Explicit local selection clears this fence.
+    selectedTarget = { kind: 'remote', profileId: '00000000-0000-4000-8000-000000000003' };
+    logs.write('warn', 'connections', 'Saved desktop target unavailable; explicit target selection is required.');
   }
+  let approvedProfiles: ConnectionProfileStore;
+  try { approvedProfiles = await ConnectionProfileStore.fromFile(process.env.FATE_DESKTOP_CONNECTION_PROFILES
+    ? path.resolve(process.env.FATE_DESKTOP_CONNECTION_PROFILES) : path.join(nativeConnectionRoot, 'profiles.json')); }
+  catch {
+    approvedProfiles = new ConnectionProfileStore();
+    logs.write('warn', 'connections', 'Approved desktop connection profiles unavailable.');
+  }
+  remoteOutcomes = new RemoteOutcomeStore(path.join(nativeConnectionRoot, 'outcomes.json'));
+  let initialOutcomes: PendingRemoteOutcome[] = [], outcomeStorage = true;
+  try { initialOutcomes = await remoteOutcomes.load(); }
+  catch { outcomeStorage = false; logs.write('warn', 'connections', 'Remote command recovery state unavailable; remote mutations are disabled.'); }
+  const outcomeStore = remoteOutcomes;
+  connections = new DesktopConnectionRouter(approvedProfiles, { outcomeStorage, saveOutcomes: (outcomes) => outcomeStore.save(outcomes) }, {
+    initialSelection: selectedTarget, initialOutcomes, persistSelection: (selection) => targetStore.save(selection),
+  });
+  if (!connections.isLocal) dispatcher.setPendingProjectPath(null);
+  coreStartup = createFateCore({
+    paths: createDesktopFatePaths({ piAgentDir: getAgentDir() }),
+    instanceSlot: instanceProfile.slot,
+    logs,
+    settings,
+    // Desktop trust is committed only by ProjectService after the native decision.
+    // The registry never accepts a renderer-supplied registration or path authority.
+    workspaceRegistration: { isRegistered: (root) => {
+      const active = projects.getCurrent();
+      return active?.trusted === true && active.path === root;
+    } },
+    workspaceMembership: (identity) => identity.adapter === 'local-ipc',
+    browserIntegration: browserBridge,
+    providerAuthUrlPresenter: { present: (url) => shell.openExternal(url) },
+    attention: { sessionSettled: () => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed() && !window.isFocused()) window.flashFrame(true);
+      }
+    } },
+    savedAgents: { scheduleRoutines: false, legacy: legacyAutomations,
+      notify: (change, osNotification) => { notifyAgentRun(change, osNotification); } },
+  });
+  core = await coreStartup;
+  if (hostStopping) { core.shutdownCore(); return; }
+  runtime = core.runtime.asRouter();
+  terminal = new TerminalService(files, runtime, settings, logs);
+  windows = createAppWindowFactory({
+    logs, windowState, terminal, projects, dispatcher, reportLaunchError, consumeLaunchError, rendererPolicy,
+    preloadPath: path.join(currentDirectory, '../preload/index.cjs'), rendererPath,
+    ...(process.env.PI_DESKTOP_SMOKE === '1' ? { installSmoke: wireSmoke } : {}),
+    ...(developmentUrl ? { developmentUrl } : {}),
+  });
   const proxyUrl = await rendererNetworkProxy.start();
   const browserHistory = new BrowserHistoryRepository();
   browserHost = new BrowserHost({
-    currentProject: () => runtime.getState(false).project,
-    currentPermissionLevel: () => runtime.getState(false).permissionLevel ?? 'full-access',
+    currentProject: () => connections?.isLocal === false ? null : runtime.getState(false).project,
+    currentPermissionLevel: () => connections?.isLocal === false ? 'read-only' : runtime.getState(false).permissionLevel ?? 'read-only',
+    sessionPermissionLevel: (projectPath, sessionId) => browserBridge.permissionForSession({ projectPath, sessionId }) ?? 'read-only',
     bridge: browserBridge,
     history: browserHistory,
     emit: (owner, event) => {
-      if (!owner.isDestroyed()) owner.webContents.send(ipcChannels.browserEvents, browserEventBatchSchema.parse([event]));
+      if (connections?.isLocal !== false && !owner.isDestroyed()) owner.webContents.send(ipcChannels.browserEvents, browserEventBatchSchema.parse([event]));
     },
     command: (owner, command) => {
-      if (!owner.isDestroyed()) owner.webContents.send(ipcChannels.appCommand, appCommandSchema.parse(command));
+      if (connections?.isLocal !== false && !owner.isDestroyed()) owner.webContents.send(ipcChannels.appCommand, appCommandSchema.parse(command));
     },
   });
   const developmentBypass = developmentUrl ? new URL(developmentUrl).host : null;
@@ -399,12 +441,21 @@ app.whenReady().then(async () => {
     }
   }
   await recovery.load();
-  const mainCommands = registerIpc({ runtime, projects, files, git, settings, learning, agents, terminal, logs, music, speech, hotkey, updates, recovery, browser: browserHost, attestations: attestationLedger, newWindow: () => windows.createWindow(), rendererPolicy });
+  const mainCommands = registerIpc({ runtime, ...(useCoreIpcAdapter ? { core } : {}), connections, projects, files, git, settings, learning: core.learning, ...(core.savedAgents ? { agents: core.savedAgents } : {}), terminal, logs, music, speech, hotkey, updates, recovery, browser: browserHost, attestations: core.attestations, newWindow: () => windows.createWindow(), rendererPolicy });
   // Refresh every models.dev-managed provider's model list once per Fate GUI
   // start. Runs beside startup, never blocking it; offline keeps the cache.
-  agents.start();
-  void runtime.refreshManagedModelsDevProviders().catch((error) => {
-    logs.write('warn', 'providers', `models.dev catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  // A saved remote target never starts local scheduled work or an automatic provider refresh.
+  // Returning to local is explicit; there is no failure handler that invokes either startup path.
+  if (connections.isLocal) {
+    core.savedAgents?.start();
+    void runtime.refreshManagedModelsDevProviders().catch((error) => {
+      logs.write('warn', 'providers', `models.dev catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+  connections.subscribe((state) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed() && state.kind === 'remote') browserHost?.setAppOverlay(window, true);
+    }
   });
   dispatcher.setOpener(mainCommands.openProjectPath);
   void hotkey.applySpeechSettings((await settings.load()).speech).then((status) => {

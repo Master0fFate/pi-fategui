@@ -1,4 +1,5 @@
 import { BrowserWindow, ipcMain } from 'electron';
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({
@@ -159,8 +160,9 @@ describe('project cleanup IPC', () => {
       hotkey: {}, updates: {}, browser: {}, automations: {}, attestations: {},
       rendererPolicy: { documentUrl: 'file:///fate/index.html', developmentOrigin: null },
     } as never);
-    const frame = { url: 'file:///fate/index.html' } as Electron.WebFrameMain;
-    const event = { sender: { mainFrame: frame }, senderFrame: frame } as Electron.IpcMainInvokeEvent;
+    const frame = { url: 'file:///fate/index.html', isDestroyed: () => false } as Electron.WebFrameMain;
+    const sender = Object.assign(new EventEmitter(), { mainFrame: frame, isDestroyed: () => false });
+    const event = { sender, senderFrame: frame } as unknown as Electron.IpcMainInvokeEvent;
     vi.mocked(BrowserWindow.fromWebContents).mockReturnValue({ isDestroyed: () => false } as Electron.BrowserWindow);
 
     await expect(handlers.get(ipcChannels.projectCloseRuntime)!(event, { projectPath: '/deleted-trusted-project' })).resolves.toBeUndefined();
@@ -169,6 +171,100 @@ describe('project cleanup IPC', () => {
     expect(closeProjectPath).toHaveBeenCalledWith('/deleted-trusted-project');
     expect(deleteSessionsForPath).toHaveBeenCalledWith('/deleted-trusted-project');
     expect(sessionListPath).not.toHaveBeenCalled();
+  });
+});
+
+describe('monitor dashboard IPC', () => {
+  it('validates the one shared snapshot and rejects non-app frames', async () => {
+    const handlers = new Map<string, (event: Electron.IpcMainInvokeEvent, input: unknown) => Promise<unknown>>();
+    vi.mocked(ipcMain.handle).mockImplementation((channel, handler) => {
+      handlers.set(channel, handler as (event: Electron.IpcMainInvokeEvent, input: unknown) => Promise<unknown>);
+    });
+    const snapshot = {
+      projectPath: '/project', sessionId: 'session', checkedAt: 100, revision: 'abc', overall: 'normal',
+      sources: { runs: 'ready', teams: 'ready', tasks: 'ready', activity: 'ready' },
+      sourceCheckedAt: { runs: 100, teams: 100, tasks: 100, activity: 100 },
+      counts: { active: 0, attention: 0, runs: 0, teams: 0, tasks: 0, activity: 0 },
+      section: 'overview', total: 0, offset: 0, limit: 10, unchanged: false, items: [],
+    };
+    const getMonitorDashboard = vi.fn(async () => snapshot);
+    registerIpc({ runtime: { getMonitorDashboard, setEventSink: vi.fn(), setGoalEventSink: vi.fn(), setTaskEventSink: vi.fn() },
+      projects: {}, files: {}, git: {}, settings: {}, terminal: { setEventSink: vi.fn() }, logs: { write: vi.fn() },
+      music: { setDurationSink: vi.fn() }, speech: { setEventSink: vi.fn(), setStreamSink: vi.fn() },
+      hotkey: {}, updates: {}, browser: {}, automations: {}, attestations: {},
+      rendererPolicy: { documentUrl: 'file:///fate/index.html', developmentOrigin: null },
+    } as never);
+    const frame = { url: 'file:///fate/index.html', isDestroyed: () => false } as Electron.WebFrameMain;
+    const sender = Object.assign(new EventEmitter(), { mainFrame: frame, isDestroyed: () => false });
+    const event = { sender, senderFrame: frame } as unknown as Electron.IpcMainInvokeEvent;
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue({ isDestroyed: () => false } as Electron.BrowserWindow);
+    await expect(handlers.get(ipcChannels.runtimeMonitorDashboard)!(event, { section: 'overview' })).resolves.toEqual(snapshot);
+    expect(getMonitorDashboard).toHaveBeenCalledWith({ section: 'overview', offset: 0, limit: 10 });
+    await expect(handlers.get(ipcChannels.runtimeMonitorDashboard)!({ ...event, senderFrame: { url: 'https://untrusted.invalid/' } as Electron.WebFrameMain }, {})).rejects.toThrow(/main frame/);
+    expect(getMonitorDashboard).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('core-backed named IPC', () => {
+  it('rejects an iframe before the shared dispatcher or captured monitor owner can execute', async () => {
+    const handlers = new Map<string, (event: Electron.IpcMainInvokeEvent, input: unknown) => Promise<unknown>>();
+    vi.mocked(ipcMain.handle).mockImplementation((channel, handler) => {
+      handlers.set(channel, handler as (event: Electron.IpcMainInvokeEvent, input: unknown) => Promise<unknown>);
+    });
+    const root = '/temporary-project';
+    const sessionId = 'e794c8f0-1823-4ad3-bf2c-bad0c12e4321';
+    const workspaceId = '4d887eba-06f1-4c42-92c1-c9b8ef487b8d';
+    const abort = vi.fn(async () => ({ aborted: true }));
+    const getMonitorDashboard = vi.fn();
+    const owner = { abort, getMonitorDashboard, getState: () => ({ project: { path: root, trusted: true }, sessionId }) };
+    const runtime = { ...owner, setEventSink: vi.fn(), setGoalEventSink: vi.fn(), setTaskEventSink: vi.fn() };
+    const core = { runtime: { asRouter: () => runtime, workspaceOrigin: () => ({ workspaceId, workspaceGeneration: 1 }), peekWorkspace: () => owner } };
+    registerIpc({ runtime, core, projects: {}, files: {}, git: {}, settings: {}, terminal: { setEventSink: vi.fn() }, logs: { write: vi.fn() },
+      music: { setDurationSink: vi.fn() }, speech: { setEventSink: vi.fn(), setStreamSink: vi.fn() },
+      hotkey: {}, updates: {}, browser: {}, attestations: {},
+      rendererPolicy: { documentUrl: 'file:///fate/index.html', developmentOrigin: null },
+    } as never);
+    const frame = { url: 'file:///fate/index.html' } as Electron.WebFrameMain;
+    const iframe = { url: 'file:///fate/index.html' } as Electron.WebFrameMain;
+    const event = { sender: { mainFrame: frame }, senderFrame: iframe } as Electron.IpcMainInvokeEvent;
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue({ isDestroyed: () => false } as Electron.BrowserWindow);
+    await expect(handlers.get(ipcChannels.runtimeAbort)!(event, {})).rejects.toThrow(/main frame/);
+    await expect(handlers.get(ipcChannels.runtimeMonitorDashboard)!(event, {})).rejects.toThrow(/main frame/);
+    expect(abort).not.toHaveBeenCalled();
+    expect(getMonitorDashboard).not.toHaveBeenCalled();
+  });
+
+  it('refuses a pending command after its main document reloads to the same trusted URL', async () => {
+    const handlers = new Map<string, (event: Electron.IpcMainInvokeEvent, input: unknown) => Promise<unknown>>();
+    vi.mocked(ipcMain.handle).mockImplementation((channel, handler) => {
+      handlers.set(channel, handler as (event: Electron.IpcMainInvokeEvent, input: unknown) => Promise<unknown>);
+    });
+    const root = '/temporary-project';
+    const sessionId = 'e794c8f0-1823-4ad3-bf2c-bad0c12e4321';
+    let entered!: () => void;
+    let release!: () => void;
+    const atBarrier = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const abort = vi.fn(async () => ({ aborted: true }));
+    const owner = { abort, getState: () => ({ project: { path: root, trusted: true }, sessionId }) };
+    const runtime = { ...owner, setEventSink: vi.fn(), setGoalEventSink: vi.fn(), setTaskEventSink: vi.fn() };
+    const core = { runtime: { asRouter: () => runtime, workspaceSelectionRevision: () => 0 },
+      workspaces: { registerHostPath: async () => { entered(); await gate; return {}; } } };
+    registerIpc({ runtime, core, projects: {}, files: {}, git: {}, settings: {}, terminal: { setEventSink: vi.fn() }, logs: { write: vi.fn() },
+      music: { setDurationSink: vi.fn() }, speech: { setEventSink: vi.fn(), setStreamSink: vi.fn() },
+      hotkey: {}, updates: {}, browser: {}, attestations: {},
+      rendererPolicy: { documentUrl: 'file:///fate/index.html', developmentOrigin: null },
+    } as never);
+    const frame = { url: 'file:///fate/index.html', isDestroyed: () => false } as Electron.WebFrameMain;
+    const sender = Object.assign(new EventEmitter(), { mainFrame: frame, isDestroyed: () => false });
+    const event = { sender, senderFrame: frame } as unknown as Electron.IpcMainInvokeEvent;
+    vi.mocked(BrowserWindow.fromWebContents).mockReturnValue({ isDestroyed: () => false } as Electron.BrowserWindow);
+    const pending = handlers.get(ipcChannels.runtimeAbort)!(event, {});
+    await atBarrier;
+    sender.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false, frame, url: frame.url });
+    release();
+    await expect(pending).rejects.toThrow(/project or session changed/);
+    expect(abort).not.toHaveBeenCalled();
   });
 });
 

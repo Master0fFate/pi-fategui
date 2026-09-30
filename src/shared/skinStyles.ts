@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { builtInCodeFontSchema, builtInInterfaceFontSchema, codeFontSchema, interfaceFontSchema, localFontReferenceSchema } from './skinFonts';
 
-export const skinSurfaceNames = ['global', 'shell', 'sidebar', 'conversation', 'composer', 'queue', 'tasks', 'goal', 'agents', 'tools', 'activity', 'notifications', 'context', 'resources', 'music', 'settings', 'dialogs', 'modelPicker', 'tooltips', 'files', 'changes', 'browser', 'learning', 'automations'] as const;
+export const skinSurfaceNames = ['global', 'shell', 'sidebar', 'conversation', 'composer', 'questionnaire', 'queue', 'tasks', 'goal', 'agents', 'tools', 'activity', 'notifications', 'context', 'resources', 'music', 'settings', 'dialogs', 'modelPicker', 'tooltips', 'files', 'changes', 'browser', 'learning', 'automations'] as const;
 export type SkinSurfaceName = typeof skinSurfaceNames[number];
 export const skinSurfaceStyleSchema = z.object({
   controlRadius: z.number().int().min(0).max(12).optional(),

@@ -1,7 +1,8 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { AgentWorkspaceGitService } from '../../git/AgentWorkspaceGitService';
+import { CheckoutOwnership } from '../../../core/ownership/CheckoutOwnership';
+import { OwnerLock } from '../../../core/ownership/OwnerLock';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { AgentSession, AgentSessionEvent, ModelRuntime, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
@@ -19,6 +20,7 @@ import { disabledModelMessage, isModelDisabled, visibleModels } from '../../../s
 import { createAgentCollaborationTools } from './AgentCollaborationTools';
 import { sanitizedRecentTurns } from './AgentContextForker';
 import { reserveAgentPath } from './AgentPath';
+import { agentTeamStorageRoots, reconcileAgentTeamHistory, safeDirectoryKey } from './AgentTeamHistory';
 import { AgentTeamScheduler, type TurnLease } from './AgentTeamScheduler';
 import {
   addEnvelope,
@@ -54,19 +56,6 @@ function childToolsForPermission(permission: PermissionLevel): ChildToolName[] {
   return base.filter((name): name is ChildToolName => (childToolNames as readonly string[]).includes(name));
 }
 
-function safeDirectoryKey(value: string): string {
-  return createHash('sha256').update(value).digest('hex').slice(0, 32);
-}
-
-function legacyAgentTeamDataRoot(): string {
-  return path.join(os.homedir(), '.pi', 'fateGUI', 'agent-teams');
-}
-
-function configuredAgentTeamDataRoot(): string | null {
-  const configured = process.env.FATE_GUI_DATA_DIR?.trim();
-  return configured ? path.join(path.resolve(configured), 'agent-teams') : null;
-}
-
 function operationKey(callerNodeId: string, operationId: string): string { return `${callerNodeId}\0${operationId}`; }
 
 function taskSummary(content: string): string { return content.trim().replace(/\s+/gu, ' ').slice(0, 2_000); }
@@ -80,6 +69,7 @@ export class AgentTeamCoordinator {
   /** Writer leases are keyed by canonical checkout, not a logical project/team. */
   private readonly projectWriter = new Map<string, { teamId: string; nodeId: string }>();
   private readonly workspaceOperationLocks = new Set<string>();
+  private readonly ownedWorktrees = new Map<string, OwnerLock>();
   private readonly lifecycleReceipts = new Map<string, string>();
   private readonly mutationQueues = new Map<string, Promise<void>>();
   private readonly listeners = new Map<string, Set<TeamListener>>();
@@ -92,12 +82,11 @@ export class AgentTeamCoordinator {
     dataRoot?: string,
     private readonly childSessionFactory: SubagentChildSessionFactory = createSdkChildSession,
     private readonly workspaceGit = new AgentWorkspaceGitService(),
+    private readonly piAgentDir?: string,
+    private readonly checkoutOwnership?: CheckoutOwnership,
   ) {
-    const configuredRoot = configuredAgentTeamDataRoot();
-    this.dataRoot = dataRoot ?? configuredRoot ?? legacyAgentTeamDataRoot();
-    this.storageRoots = dataRoot === undefined && configuredRoot
-      ? [...new Set([this.dataRoot, legacyAgentTeamDataRoot()])]
-      : [this.dataRoot];
+    this.storageRoots = agentTeamStorageRoots(dataRoot);
+    this.dataRoot = this.storageRoots[0]!;
   }
 
   createRootTools(modelRuntime: ModelRuntime): ToolDefinition[] {
@@ -244,6 +233,7 @@ export class AgentTeamCoordinator {
         const workspace = node.workspace;
         try {
           await this.workspaceGit.discardCreated(workspace.parentPath, { path: workspace.path, branch: workspace.branch!, baseCommit: workspace.baseCommit!, commonDirectory: workspace.commonDirectory! }, this.workspaceOwner(runtime, node));
+          await this.releaseWorktreeOwnership(workspace.path);
         } catch (failure) { cleanupError = failure; }
       }
       if (cleanupError) {
@@ -910,10 +900,24 @@ export class AgentTeamCoordinator {
 
   async deleteTeam(rootSessionId: string, teamId: string): Promise<void> {
     const runtime = this.requireTeam(rootSessionId, teamId);
-    if ([...runtime.nodes.values()].some((node) => node.workspace?.mode === 'worktree' && node.workspace.state === 'ready')) throw new Error('Clean up retained Agent Team worktrees before deleting team history.');
-    if (this.teamHasActiveWork(runtime) || (runtime.state.status !== 'closed' && runtime.state.status !== 'released')) throw new Error(`Team ${runtime.state.name} (${teamId}) must be safely closed or released before history deletion.`);
-    this.uninstallRuntime(runtime);
-    await Promise.all(this.storageRoots.map((dataRoot) => fs.rm(path.join(dataRoot, safeDirectoryKey(rootSessionId), safeDirectoryKey(teamId)), { recursive: true, force: true, maxRetries: 2, retryDelay: 50 })));
+    return this.serializeMutation(runtime, async () => {
+      // The root session may be streaming. Only descendant work blocks deletion;
+      // never force-abort a turn or clean a Git worktree on a history-only action.
+      if (this.teamHasActiveWork(runtime)) throw new Error(`Cannot delete team ${runtime.state.name} (${teamId}) while descendant work is active or creating.`);
+      await this.closeTeamRuntime(runtime, false);
+      for (const node of [...runtime.nodes.values()].filter((item) => item.depth === 1)) {
+        if (node.status !== 'released') await this.releaseNode(runtime, node, false, 'Released by team history deletion.');
+      }
+      if (this.teamHasActiveWork(runtime)) throw new Error(`Cannot delete team ${runtime.state.name} (${teamId}) while descendant work is active or creating.`);
+      // Keep the runtime installed until storage removal and the durable deletion
+      // marker succeed. A failed deletion can then be retried without losing state.
+      await Promise.all(this.storageRoots.map((dataRoot) => fs.rm(path.join(dataRoot, safeDirectoryKey(rootSessionId), safeDirectoryKey(teamId)), { recursive: true, force: true, maxRetries: 2, retryDelay: 50 })));
+      this.host.persist(rootSessionId, {
+        kind: TEAM_EVENT_CUSTOM_TYPE, version: 1, teamId, sequence: runtime.sequence + 1,
+        timestamp: Date.now(), type: 'team.deleted', payload: {},
+      });
+      this.uninstallRuntime(runtime);
+    });
   }
 
   private checkoutKey(checkout: string): string {
@@ -1014,6 +1018,7 @@ export class AgentTeamCoordinator {
         if (sharingDescendant) throw new Error('Cannot clean up a workspace while descendants retain reusable/active sessions or nested worktrees.');
         if (node.status !== 'closed' && node.status !== 'released') throw new Error('Close or release the child before explicitly cleaning up its worktree.');
         await this.workspaceGit.cleanup(targetPath, workspace.path);
+        await this.releaseWorktreeOwnership(workspace.path);
         for (const candidate of runtime.nodes.values()) {
           if (candidate.workspace?.path === workspace.path) {
             candidate.workspace.state = 'removed';
@@ -1064,7 +1069,7 @@ export class AgentTeamCoordinator {
     while (this.lifecycleReceipts.size > 2_048) this.lifecycleReceipts.delete(this.lifecycleReceipts.keys().next().value!);
   }
 
-  restoreRoot(session: AgentSession): void {
+  async restoreRoot(session: AgentSession, isCurrent: () => boolean = () => true): Promise<void> {
     if (this.teamIdsByRoot.has(session.sessionId)) return;
     const latest = new Map<string, AgentTeamLedgerEvent>();
     const projectPath = this.host.resolveRoot(session.sessionId)?.projectPath ?? 'unknown';
@@ -1076,8 +1081,36 @@ export class AgentTeamCoordinator {
       if (!previous || event.sequence >= previous.sequence) latest.set(event.teamId, event);
     }
     for (const event of latest.values()) {
-      const runtime = hydrateTeamRuntime(event.payload.team, projectPath);
+      // Root session branches are append-only. The last event for a deleted team
+      // must win over earlier snapshots, or reopening the root resurrects history.
+      if (event.type === 'team.deleted') continue;
+      const runtime = hydrateTeamRuntime(event.payload?.team, projectPath);
       if (!runtime || runtime.state.rootSessionId !== session.sessionId) continue;
+      const snapshot = projectTeam(runtime);
+      const history = await reconcileAgentTeamHistory(snapshot, this.storageRoots);
+      if (!isCurrent()) return;
+      if (!history) {
+        // A former team with no surviving child transcripts must not reappear
+        // from the parent's append-only snapshot on the next restart.
+        try {
+          this.host.persist(session.sessionId, {
+            kind: TEAM_EVENT_CUSTOM_TYPE, version: 1, teamId: runtime.state.id,
+            sequence: runtime.sequence + 1, timestamp: Date.now(), type: 'team.deleted', payload: {},
+          });
+        } catch {
+          // The missing files still make the team invisible this time. Retry
+          // the marker on the next restore instead of failing session startup.
+        }
+        continue;
+      }
+      if (history !== snapshot) {
+        runtime.nodes = new Map(history.nodes.map((node) => [node.id, node]));
+        runtime.tasks = new Map(history.tasks.map((task) => [task.id, task]));
+        runtime.envelopes = new Map(history.envelopes.map((envelope) => [envelope.id, envelope]));
+        runtime.operationReceipts = new Map(history.operationReceipts.map((receipt) => [receipt.key, receipt]));
+        runtime.state = history;
+        runtime.pathToNode = new Map(history.nodes.filter((node) => node.status !== 'released').map((node) => [node.path, node.id]));
+      }
       this.installRuntime(runtime);
       for (const node of runtime.nodes.values()) {
         if (node.status === 'ready' && node.idleReleaseMs) this.armIdleRelease(runtime, node, !node.idleReleaseAt);
@@ -1144,7 +1177,13 @@ export class AgentTeamCoordinator {
     const current = new Promise<void>((resolve) => { release = resolve; });
     const queued = previous.then(() => current);
     this.mutationQueues.set(runtime.state.id, queued);
-    return previous.then(operation, operation).finally(() => {
+    const guarded = () => {
+      // A queued mutation may outlive history deletion. Never run it against an
+      // uninstalled runtime, or it could persist a snapshot after the tombstone.
+      if (this.teamsById.get(runtime.state.id) !== runtime) throw new Error(`Agent team ${runtime.state.id} is no longer installed.`);
+      return operation();
+    };
+    return previous.then(guarded, guarded).finally(() => {
       release();
       if (this.mutationQueues.get(runtime.state.id) === queued) this.mutationQueues.delete(runtime.state.id);
     });
@@ -1284,6 +1323,9 @@ export class AgentTeamCoordinator {
       if (!node.workspace.branch || !node.workspace.baseCommit || !node.workspace.commonDirectory) throw new Error(`Workspace metadata for ${node.path} is incomplete.`);
       const duplicateOwner = [...this.teamsById.values()].some((team) => [...team.nodes.values()].some((candidate) => candidate.id !== node.id && candidate.workspace?.mode === 'worktree' && candidate.workspace.state === 'ready' && this.checkoutKey(candidate.workspace.path) === this.checkoutKey(canonical)));
       if (duplicateOwner) throw new Error('Multiple agent nodes claim ownership of this worktree. Resolve the retained metadata before reuse.');
+      if (this.checkoutOwnership && !this.ownedWorktrees.has(canonical)) {
+        this.ownedWorktrees.set(canonical, await this.checkoutOwnership.checkout(canonical));
+      }
       await this.workspaceGit.validate(canonical, parentCanonical, node.workspace.branch, node.workspace.baseCommit, node.workspace.commonDirectory, this.workspaceOwner(runtime, node));
     } else if (canonical !== expectedParent) throw new Error(`Shared workspace for ${node.path} no longer inherits its parent checkout.`);
     return canonical;
@@ -1341,11 +1383,27 @@ export class AgentTeamCoordinator {
     try {
       const created = await this.workspaceGit.create(parentPath, branch, choice.baseRef, this.workspaceOwner(runtime, node));
       node.workspace = { mode: 'worktree', path: created.path, parentPath, commonDirectory: created.commonDirectory, branch: created.branch, ...(choice.baseRef ? { baseRef: choice.baseRef } : {}), baseCommit: created.baseCommit, state: 'ready' };
+      if (this.checkoutOwnership) {
+        // Git mutation is settled before waiting for checkout ownership.
+        this.ownedWorktrees.set(created.path, await this.checkoutOwnership.checkout(created.path));
+      }
       return () => { this.workspaceOperationLocks.delete(parentKey); };
     } catch (error) {
       this.workspaceOperationLocks.delete(parentKey);
       throw error;
     }
+  }
+
+  /** Call only after the owning runtime has actually settled all child turns. */
+  async releaseSettledCheckoutOwnership(): Promise<void> {
+    for (const root of [...this.ownedWorktrees.keys()]) await this.releaseWorktreeOwnership(root);
+  }
+
+  private async releaseWorktreeOwnership(root: string): Promise<void> {
+    const lock = this.ownedWorktrees.get(root);
+    if (!lock) return;
+    await lock.release();
+    this.ownedWorktrees.delete(root);
   }
 
   private scheduler(runtime: AgentTeamRuntime): AgentTeamScheduler {
@@ -1437,7 +1495,7 @@ export class AgentTeamCoordinator {
   private async prepareRequest(runtime: AgentTeamRuntime, caller: AgentTeamNode, request: SpawnAgentRequest, modelRuntime: ModelRuntime, bypassGoalPolicy = false): Promise<PreparedAgentRequest> {
     const root = this.host.resolveRoot(runtime.state.rootSessionId);
     if (!root?.session.model) throw new Error('The root Pi session is unavailable.');
-    const profiles = await discoverSubagentProfiles(root.projectPath);
+    const profiles = await discoverSubagentProfiles(root.projectPath, this.piAgentDir);
     const profile = resolveSubagentProfile(profiles, request.agent);
     if (!profile) throw new Error(`Unknown Pi agent profile ${request.agent}. Use subagent_catalog for exact selectors.`);
     const callerPermission = !bypassGoalPolicy && root.agentStrategy === 'read-only' ? 'read-only' : caller.permissionLevel;
@@ -2321,7 +2379,7 @@ export class AgentTeamCoordinator {
     if (node.status !== 'closed') await this.closeNode(runtime, node, reason, force);
     for (const childId of [...node.childIds]) {
       const child = runtime.nodes.get(childId);
-      if (child && child.status !== 'released') await this.releaseNode(runtime, child, true, reason);
+      if (child && child.status !== 'released') await this.releaseNode(runtime, child, force, reason);
     }
     this.cancelIdleRelease(runtime, node);
     const nodeRuntime = runtime.nodeRuntime.get(node.id);
@@ -2364,6 +2422,7 @@ export class AgentTeamCoordinator {
   }
 
   private changed(runtime: AgentTeamRuntime, summary: string, persistenceType = summary): void {
+    if (this.teamsById.get(runtime.state.id) !== runtime) return;
     runtime.state.updatedAt = Date.now();
     this.syncScheduler(runtime);
     this.persist(runtime, persistenceType);
@@ -2373,6 +2432,7 @@ export class AgentTeamCoordinator {
   }
 
   private persist(runtime: AgentTeamRuntime, type: string): void {
+    if (this.teamsById.get(runtime.state.id) !== runtime) return;
     const event = ledgerSnapshot(runtime, type);
     this.host.persist(runtime.state.rootSessionId, event);
   }

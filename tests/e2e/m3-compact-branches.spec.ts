@@ -20,7 +20,8 @@ test('M3 compact conversation forks match cross-skin density without changing no
       const page = await app.firstWindow();
       await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1440, 900));
       await page.getByRole('button', { name: /Open project/u }).first().click();
-      await page.getByRole('button', { name: 'Expand project', exact: true }).click();
+      // Opening a project now expands its sessions automatically.
+      await expect(page.getByRole('button', { name: 'Collapse project', exact: true })).toBeVisible();
       await page.locator('.composer textarea').fill('__FATE_V2_AGENT_FIXTURE__');
       await page.getByRole('button', { name: 'Send message', exact: true }).click();
       const list = page.getByRole('list', { name: 'Conversation paths' });
@@ -42,8 +43,7 @@ test('M3 compact conversation forks match cross-skin density without changing no
         })).toEqual({ fits: true, singleLine: true, truncates: true, metadata: true });
       }
       if (skin === 'm3-expressive' && compact) {
-        await mkdir('screenshots/m3-expressive', { recursive: true });
-        await page.locator('.sidebar').screenshot({ path: 'screenshots/m3-expressive/compact-session-branches.png', animations: 'disabled' });
+        await page.locator('.sidebar').screenshot({ path: test.info().outputPath('compact-session-branches.png'), animations: 'disabled' });
         const open = row.locator('.session-path-open');
         await open.focus();
         await expect(row.getByRole('button', { name: /Actions for/u })).toBeVisible();

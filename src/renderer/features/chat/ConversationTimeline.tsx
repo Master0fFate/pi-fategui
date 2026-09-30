@@ -1,3 +1,4 @@
+import { getFateApi, getFateApiOptional } from '../../platform/api';
 import { Brain, Check, CircleAlert, Copy, GitFork, PackageCheck, PackageOpen, Plug, RotateCcw } from 'lucide-react';
 import { useLearningStore } from '../learning/learningStore';
 import { memo, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -113,19 +114,19 @@ export const MessageRow = memo(function MessageRow({ messageId }: { messageId: s
 
   const forkMessage = async (retry = false) => {
     if (!forkEntryId || !canFork || forking) return;
-    if (!('piDesktop' in window) || typeof window.piDesktop.forkSession !== 'function') {
+    if (!getFateApiOptional() || typeof getFateApiOptional()?.forkSession !== 'function') {
       useUiStore.getState().showToast({ kind: 'error', title: retry ? 'Could not try again' : 'Could not fork', message: 'The desktop session bridge is unavailable.' });
       return;
     }
     setForking(true);
     try {
-      const result = await window.piDesktop.forkSession(forkEntryId);
+      const result = await getFateApi().forkSession(forkEntryId);
       useRuntimeStore.getState().setRuntime(result.state);
       const promptText = result.selectedText ?? forkPoints?.find((point) => point.entryId === forkEntryId)?.text ?? '';
       if (retry) {
         if (!promptText) throw new Error('The prompt for this response is unavailable.');
-        if (typeof window.piDesktop.prompt !== 'function') throw new Error('The desktop prompt bridge is unavailable.');
-        await window.piDesktop.prompt({ text: promptText, behavior: 'prompt' });
+        if (typeof getFateApiOptional()?.prompt !== 'function') throw new Error('The desktop prompt bridge is unavailable.');
+        await getFateApi().prompt({ text: promptText, behavior: 'prompt' });
         useUiStore.getState().showToast({ kind: 'success', title: 'Trying again', message: 'Pi is generating a fresh response.' });
       } else {
         useUiStore.getState().requestComposerDraft(message.text, true, 'This is a new session branched from this message. Edit the selected message, then send it to continue.');
@@ -281,7 +282,27 @@ const TimelineRow = memo(function TimelineRow({ id, waitPollCount, expansionComm
   return <div className={`timeline-notice${entry.phase === 'failed' ? ' timeline-notice--error' : ''}`} role={entry.phase === 'failed' ? 'alert' : undefined}><Icon size={15} /><span>{text}{entry.error?.actionable && <small>{entry.error.actionable}</small>}</span></div>;
 });
 
-export const ConversationTimeline = memo(function ConversationTimeline({ expansionCommand: requestedExpansion }: { expansionCommand?: DetailExpansionCommand } = {}) {
+/** The same timeline surface accepts reviewed browser excerpts, never fake PiEvents. */
+export function ConversationTimeline(props: { expansionCommand?: DetailExpansionCommand } = {}) {
+  const source = useRuntimeStore((state) => state.source);
+  const snapshot = useRuntimeStore((state) => state.snapshot);
+  if (source === 'desktop') return <DesktopConversationTimeline {...props} />;
+  const items = snapshot?.items ?? [];
+  return <section className="conversation" aria-label="Conversation timeline" data-entry-count={items.length}>
+    {items.length === 0 ? <p className="conversation--empty">No retained items in this bounded snapshot. This does not prove that older history does not exist.</p> : null}
+    <Virtuoso className="conversation-virtuoso" data={items} computeItemKey={(index, item) => `${item.kind}:${item.id}:${index}`}
+      itemContent={(_index, item) => <div className="timeline-row" data-entry-kind={item.kind}>
+        <article className="chat-message" aria-label={item.kind === 'tool' ? 'Tool excerpt' : 'Message excerpt'}>
+          <strong>{item.kind === 'message' ? item.role ?? 'message' : item.name ?? 'tool'}{item.status ? ` · ${item.status}` : ''}</strong>
+          <p className="message-plain" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item.text}</p>
+          <small>{item.clipped && 'Text clipped in this display. '}{item.mediaOmitted && 'Media omitted. '}
+            {item.historyOmitted !== undefined && `${item.historyOmitted} earlier items omitted.`}</small>
+        </article>
+      </div>} />
+  </section>;
+}
+
+const DesktopConversationTimeline = memo(function DesktopConversationTimeline({ expansionCommand: requestedExpansion }: { expansionCommand?: DetailExpansionCommand } = {}) {
   const order = useRuntimeStore((state) => state.timelineOrder);
   const visibleOrder = useRuntimeStore((state) => state.visibleTimelineOrder);
   const timelineVersion = useRuntimeStore((state) => state.timelineVersion);

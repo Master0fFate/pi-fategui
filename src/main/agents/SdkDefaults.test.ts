@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, type AssistantMessage } from '@earendil-works/pi-ai';
 import { createAgentSession, createSyntheticSourceInfo, createWriteToolDefinition, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { activeToolsForPermission, createProjectConfinedTools } from '../pi/PiToolPolicy';
@@ -11,7 +11,7 @@ import { DefinitionJournal, type DefinitionSnapshot } from './DefinitionJournal'
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))); });
 
-describe('D0-02 real Pi SDK 0.85.1 feasibility (no provider requests)', () => {
+describe('D0-02 real Pi SDK feasibility (no provider requests)', () => {
   it('keeps Agent instructions in system context and the exact TaskTemplate as a user message', async () => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'agents-sdk-')));
     roots.push(root);
@@ -38,7 +38,7 @@ describe('D0-02 real Pi SDK 0.85.1 feasibility (no provider requests)', () => {
     let observedSystem = '';
     let observedUser: unknown;
     const stream = vi.fn<typeof session.agent.streamFunction>((requestedModel, context) => {
-      observedSystem = context.systemPrompt ?? '';
+      observedSystem = getCurrentSystemPrompt(context.messages);
       observedUser = context.messages.find((message) => message.role === 'user');
       const events = createAssistantMessageEventStream();
       const response: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: 'Local test response.' }], api: requestedModel.api, provider: requestedModel.provider, model: requestedModel.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop', timestamp: Date.now() };

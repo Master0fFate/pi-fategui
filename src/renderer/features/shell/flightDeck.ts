@@ -79,7 +79,8 @@ export function selectActivityPulse(input: PulseInput): ActivityPulseState {
   if (editingTool) return { label: editedPath ? `Editing ${editedPath}` : 'Editing', tone: 'active', evidence, context };
   const writerNode = input.teams.flatMap((team) => team.nodes).find((node) => input.teams.some((team) => team.writerNodeId === node.id));
   if (teamWriter) return { label: writerNode ? `${writerNode.displayName} is writing` : 'Writer active', tone: 'active', evidence, context };
-  if (runtime.streaming || runtime.activeSessionRunning || runningTools.length > 0 || activeAgents > 0) return { label: 'Thinking', tone: 'active', evidence, context };
+  if (runtime.streaming || runtime.activeSessionRunning || runningTools.length > 0) return { label: 'Thinking', tone: 'active', evidence, context };
+  if (activeAgents > 0) return { label: 'Agents running', tone: 'active', evidence, context };
   if (blockedAgents.length > 0 || waitingTeamTasks > 0) {
     const blockedActor = blockedAgents[0]?.displayName ?? blockedAgents[0]?.handle ?? blockedAgents[0]?.role;
     const waitingTask = input.teams.flatMap((team) => team.tasks.map((task) => ({ team, task }))).find(({ task }) => task.status === 'waiting-for-children');

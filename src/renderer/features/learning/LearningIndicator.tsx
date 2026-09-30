@@ -1,3 +1,4 @@
+import { getDesktopApi, getDesktopApiOptional } from '../../platform/api';
 import { useEffect, useState } from 'react';
 import './learning.css';
 import { Brain } from 'lucide-react';
@@ -12,13 +13,13 @@ export function LearningIndicator() {
   useEffect(() => {
     let current = true;
     const refresh = () => {
-      if (!window.piDesktop?.getSettings) return;
-      void window.piDesktop.getSettings().then((settings) => {
+      if (!getDesktopApiOptional()?.getSettings) return;
+      void getDesktopApi().getSettings().then((settings) => {
         if (current) setMemory(settings.memoryLearning ?? defaultMemoryLearning);
       }).catch(() => { if (current) setMemory(null); });
     };
     refresh();
-    const unsubscribe = window.piDesktop?.onLearningChanged?.(refresh);
+    const unsubscribe = getDesktopApiOptional()?.onLearningChanged?.(refresh);
     return () => { current = false; unsubscribe?.(); };
   }, []);
   if (!memory?.enabled) return null;

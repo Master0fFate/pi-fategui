@@ -108,9 +108,9 @@ async function loadProfiles(directory: string, source: 'user' | 'project', proje
   return profiles;
 }
 
-export async function discoverSubagentProfiles(projectPath: string): Promise<SubagentProfile[]> {
+export async function discoverSubagentProfiles(projectPath: string, agentDir = getAgentDir()): Promise<SubagentProfile[]> {
   const [user, project] = await Promise.all([
-    loadProfiles(path.join(getAgentDir(), 'agents'), 'user'),
+    loadProfiles(path.join(agentDir, 'agents'), 'user'),
     loadProfiles(path.join(projectPath, CONFIG_DIR_NAME, 'agents'), 'project', projectPath),
   ]);
   return [directSubagentProfile, ...user, ...project];

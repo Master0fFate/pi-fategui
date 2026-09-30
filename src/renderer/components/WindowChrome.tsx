@@ -1,3 +1,4 @@
+import { getDesktopApiOptional } from '../platform/api';
 import { Copy, Minus, Square, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { WindowControlAction, WindowState } from '../../shared/contracts/ipc';
@@ -11,7 +12,7 @@ export function WindowChrome() {
   const [platform, setPlatform] = useState<Platform>('win32');
   const [windowState, setWindowState] = useState<WindowState>(initialWindowState);
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>('connecting');
-  const bridge = 'piDesktop' in window ? window.piDesktop : null;
+  const bridge = getDesktopApiOptional();
 
   useEffect(() => {
     if (!bridge?.controlWindow || !bridge.getAppInfo) {

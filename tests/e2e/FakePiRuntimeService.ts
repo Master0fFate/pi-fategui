@@ -2,6 +2,8 @@ import type { GoalMaxClearResult, GoalMaxControlInput, GoalMaxCreateInput, GoalM
 import type { PermissionLevel, PiEvent, ProjectState, PromptAcceptance, PromptInput, PromptOptimizationResult, QueuedMessage, QueueMutationInput, QueueMutationResult, RuntimeState, SessionSummary, SubagentControlInput, SubagentRun, ThinkingLevel } from '../../src/shared/contracts/ipc';
 import type { AgentTeam, AgentTeamControlInput } from '../../src/shared/contracts/multiAgent';
 import type { TaskCreateInput, TaskDeleteInput, TaskEvent, TaskList, TaskReorderInput, TaskUpdateInput } from '../../src/shared/contracts/tasks';
+import type { MonitorDashboard, MonitorReadInput } from '../../src/shared/contracts/monitorDashboard';
+import { buildMonitorDashboard } from '../../src/main/pi/monitor/MonitorDashboard';
 
 const releaseShowcase = process.env.FATE_UI_SHOWCASE === '1';
 const model = { provider: 'test', id: 'deterministic', name: releaseShowcase ? 'Example model' : 'Deterministic Test Model', reasoning: true, contextWindow: 100_000, supportsImages: true };
@@ -52,7 +54,7 @@ function agentTeamFixture(): AgentTeam {
     id: teamId, rootSessionId: 'e2e-session-1', projectPath: '/e2e/project', name: 'E2E team', protocolVersion: 2, status: 'active', selected: true, rootNodeId: rootId,
     limits: { maxDepth: 2, maxNodes: 16, maxActiveTurns: 3, maxMessages: 256, maxMessageBytes: 32 * 1024 }, activeTurns: 1, writerNodeId: reviewerId, usage: { ...emptyUsage },
     nodes: [
-      { id: rootId, teamId, parentNodeId: null, path: '/root', handle: 'root', displayName: 'Main agent', depth: 0, role: 'root', agentName: 'direct', permissionLevel: 'full-access', enabledTools: ['read'], model, thinkingLevel: 'medium', status: 'active', childIds: [reviewerId], unreadMessages: 0, writer: false, usage: { ...emptyUsage }, createdAt: now, updatedAt: now },
+      { id: rootId, teamId, parentNodeId: null, path: '/root', handle: 'root', displayName: 'Main agent', depth: 0, role: 'root', agentName: 'direct', permissionLevel: 'edit', enabledTools: ['read'], model, thinkingLevel: 'medium', status: 'active', childIds: [reviewerId], unreadMessages: 0, writer: false, usage: { ...emptyUsage }, createdAt: now, updatedAt: now },
       { id: reviewerId, teamId, parentNodeId: rootId, path: '/root/reviewer', handle: 'reviewer', displayName: 'Reviewer', depth: 1, role: 'reviewer', agentName: 'direct', permissionLevel: 'edit', enabledTools: ['read', 'grep', 'edit'], workspace: { mode: 'worktree', path: '/e2e/worktrees/reviewer', parentPath: '/e2e/project', commonDirectory: '/e2e/project/.git', branch: 'agents/reviewer', baseRef: 'HEAD', baseCommit: 'b'.repeat(40), state: 'ready' }, model, thinkingLevel: 'high', status: 'active', currentTaskId: 'e2e-team-review-task', childIds: [verifierId], unreadMessages: 0, writer: true, usage: { ...emptyUsage, turns: 1 }, createdAt: now, updatedAt: now },
       { id: verifierId, teamId, parentNodeId: reviewerId, path: '/root/reviewer/verifier', handle: 'verifier', displayName: 'Verifier', depth: 2, role: 'verifier', agentName: 'direct', permissionLevel: 'read-only', enabledTools: ['read', 'grep'], workspace: { mode: 'shared', path: '/e2e/worktrees/reviewer', parentPath: '/e2e/worktrees/reviewer', state: 'ready' }, model, thinkingLevel: 'medium', status: 'ready', childIds: [], unreadMessages: 0, writer: false, usage: { ...emptyUsage, turns: 1 }, createdAt: now, updatedAt: now },
     ],
@@ -91,7 +93,7 @@ export class FakePiRuntimeService {
   private project: ProjectState | null = null;
   private activeSession = 'e2e-session-1';
   private streaming = false;
-  private permissionLevel: PermissionLevel = 'full-access';
+  private permissionLevel: PermissionLevel = 'edit';
   private queuedMessages: QueuedMessage[] = [];
   private queueSequence = 0;
   private profileSequence = 0;
@@ -101,6 +103,8 @@ export class FakePiRuntimeService {
   private activeConversationBranchId = 'e2e-path-current';
   private readonly sessionPermissions = new Map<string, PermissionLevel>();
   private readonly authorityRevisions = new Map<string, number>();
+  private createdSessionSequence = 0;
+  private permissionKey(sessionId: string): string { return `${this.project?.path ?? ''}\0${sessionId}`; }
   private sink: (events: PiEvent[]) => void = () => undefined;
   private goalSink: (event: GoalMaxEvent) => void = () => undefined;
   private taskSink: (event: TaskEvent) => void = () => undefined;
@@ -129,13 +133,32 @@ export class FakePiRuntimeService {
   setGoalEventSink(sink: (event: GoalMaxEvent) => void): void { this.goalSink = sink; }
   setTaskEventSink(sink: (event: TaskEvent) => void): void { this.taskSink = sink; }
   getHydrationState(): RuntimeState { return this.getState(); }
+  async getMonitorDashboard(input: MonitorReadInput = {}): Promise<MonitorDashboard> {
+    if (!this.project?.trusted) throw new Error('A trusted project is required.');
+    return buildMonitorDashboard({ projectPath: this.project.path, sessionId: this.activeSession,
+      runs: [], runsAvailable: true, sessionAvailable: true,
+      teams: this.activeSession === 'e2e-session-1' ? this.agentTeams : [],
+      tasks: this.taskList, goal: null }, input);
+  }
   getState(): RuntimeState {
     const historical = this.activeSession === 'e2e-session-2';
+    const showQuestionnaire = Boolean(process.env.PI_DESKTOP_E2E_QUESTIONNAIRE && this.project && !historical);
+    const longQuestionnaire = Boolean(process.env.PI_DESKTOP_E2E_QUESTIONNAIRE_LONG);
     return {
       status: this.project ? 'ready' : 'disconnected', project: this.project, sessionId: this.project ? this.activeSession : null,
-      sessionFile: null, streaming: this.streaming, activeSessionRunning: this.streaming, model: this.project ? model : null, models: this.project ? [model] : [],
+      sessionFile: null, streaming: this.streaming || showQuestionnaire, activeSessionRunning: this.streaming || showQuestionnaire, model: this.project ? model : null, models: this.project ? [model] : [],
+      ...(showQuestionnaire ? { questionnaire: {
+        id: 'aa000000-0000-4000-8000-000000000001', sessionId: this.activeSession, index: 0, total: 3,
+        question: longQuestionnaire
+          ? 'When several projects are active, where should the dashboard open?\nKeep the choice clear even when the question takes more than one line.'
+          : 'How should your dashboard open?',
+        options: longQuestionnaire
+          ? [{ label: 'Overview' }, { label: 'Show all projects by recent activity, with the last active session pinned so you can resume work.' }, { label: 'Last view' }]
+          : [{ label: 'Overview' }, { label: 'Recent work' }, { label: 'Last view' }],
+      } } : {}),
       thinkingLevel: 'medium', permissionLevel: this.permissionLevel,
-      messages: historical ? [{ id: 'history-assistant', role: 'assistant', text: '**Second session** history', timestamp: 1, timelinePosition: 0 }] : [],
+      messages: historical ? [{ id: 'history-assistant', role: 'assistant', text: '**Second session** history', timestamp: 1, timelinePosition: 0 }]
+        : showQuestionnaire ? [{ id: 'questionnaire-assistant', role: 'assistant', text: 'Let’s set up your dashboard.', timestamp: 1, timelinePosition: 0 }] : [],
       tools: historical ? [{ id: 'history-tool', name: 'read', input: '{"path":"README.md"}', output: 'historical output', outputTruncated: false, status: 'succeeded', startedAt: 2, updatedAt: 3, endedAt: 3, timelinePosition: 0.5 }] : [],
       commands: [
         { name: 'goalmax', description: 'Start a persistent, visible, evidence-verified engineering goal', source: 'builtin' },
@@ -172,7 +195,7 @@ export class FakePiRuntimeService {
       forkPoints: [], sessionCapabilities: { fork: true, navigate: true, clone: true, import: true, compact: true }, sessionOperation: false, error: null,
     };
   }
-  async openProject(project: ProjectState): Promise<RuntimeState> { this.project = project; this.emitState(); return this.getState(); }
+  async openProject(project: ProjectState): Promise<RuntimeState> { this.project = project; this.permissionLevel = this.sessionPermissions.get(this.permissionKey(this.activeSession)) ?? 'edit'; this.emitState(); return this.getState(); }
   async listSessionsForPath(_projectPath: string, query = ''): Promise<SessionSummary[]> {
     const normalizedQuery = query.trim().toLocaleLowerCase();
     return this.sessions
@@ -392,7 +415,7 @@ export class FakePiRuntimeService {
   }
   async setModel(): Promise<RuntimeState> { return this.getState(); }
   setThinkingLevel(_level: ThinkingLevel): RuntimeState { return this.getState(); }
-  async setPermissionLevel(level: PermissionLevel): Promise<RuntimeState> { this.permissionLevel = level; this.sessionPermissions.set(this.activeSession, level); this.authorityRevisions.set(this.activeSession, (this.authorityRevisions.get(this.activeSession) ?? 0) + 1); this.emitState(); return this.getState(); }
+  async setPermissionLevel(level: PermissionLevel): Promise<RuntimeState> { const key = this.permissionKey(this.activeSession); this.permissionLevel = level; this.sessionPermissions.set(key, level); this.authorityRevisions.set(key, (this.authorityRevisions.get(key) ?? 0) + 1); this.emitState(); return this.getState(); }
   async mutateQueuedMessage(input: QueueMutationInput): Promise<QueueMutationResult> {
     const target = this.queuedMessages.find((item) => item.id === input.id);
     if (!target) throw new Error('That queued message is no longer waiting.');
@@ -526,22 +549,31 @@ export class FakePiRuntimeService {
     this.goalSink({ type: 'goalmax.cleared', projectPath: goal.projectPath, sessionId: goal.sessionId, goalId: goal.id, timestamp: Date.now() });
     return { cleared: true, archivedGoalId: goal.id };
   }
-  async newSession(): Promise<RuntimeState> { this.activeSession = 'e2e-session-1'; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(this.activeSession) ?? 'full-access'; this.emitState(); return this.getState(); }
+  async newSession(): Promise<RuntimeState> {
+    const number = ++this.createdSessionSequence;
+    this.activeSession = `e2e-created-session-${number}`;
+    this.sessions.push({ id: this.activeSession, title: `New session ${number}`, firstMessage: '', path: `test://created-session-${number}`, createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString(), messageCount: 0, active: true });
+    this.queuedMessages = [];
+    this.permissionLevel = 'edit';
+    this.emitState();
+    return this.getState();
+  }
   registerAgentSession(summary: SessionSummary, permission: PermissionLevel): void {
     if (!this.sessions.some((session) => session.id === summary.id)) this.sessions.push(summary);
-    this.sessionPermissions.set(summary.id, permission);
+    this.sessionPermissions.set(this.permissionKey(summary.id), permission);
   }
   agentAuthority(sessionId: string): { level: PermissionLevel; revision: number } | null {
-    const level = sessionId === this.activeSession ? this.permissionLevel : this.sessionPermissions.get(sessionId);
-    return level ? { level, revision: this.authorityRevisions.get(sessionId) ?? 0 } : null;
+    const key = this.permissionKey(sessionId);
+    const level = sessionId === this.activeSession ? this.permissionLevel : this.sessionPermissions.get(key);
+    return level ? { level, revision: this.authorityRevisions.get(key) ?? 0 } : null;
   }
   async listSessions(query = ''): Promise<SessionSummary[]> { return this.getState().sessions!.filter((session) => session.title.toLowerCase().includes(query.toLowerCase())); }
-  async switchSession(sessionId: string): Promise<RuntimeState> { this.activeSession = sessionId; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(sessionId) ?? 'full-access'; this.emitState(true); return this.getState(); }
+  async switchSession(sessionId: string): Promise<RuntimeState> { this.activeSession = sessionId; this.queuedMessages = []; this.permissionLevel = this.sessionPermissions.get(this.permissionKey(sessionId)) ?? 'edit'; this.emitState(true); return this.getState(); }
   async renameSession(): Promise<RuntimeState> { return this.getState(); }
   async deleteSession(sessionId: string): Promise<RuntimeState> {
     const index = this.sessions.findIndex((session) => session.id === sessionId);
     if (index >= 0 && sessionId !== this.activeSession) this.sessions.splice(index, 1);
-    this.sessionPermissions.delete(sessionId);
+    this.sessionPermissions.delete(this.permissionKey(sessionId));
     this.goals.delete(sessionId);
     this.emitState();
     return this.getState();

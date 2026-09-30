@@ -1,3 +1,4 @@
+import { getDesktopApi, getDesktopApiOptional } from '../../platform/api';
 import { useState } from 'react';
 import type { AppSettings } from '../../../shared/contracts/ipc';
 import { builtInSkinName, type SkinCatalog } from '../../../shared/skins';
@@ -17,7 +18,7 @@ export function SkinPackSettings({ catalog, selectedId, disabled, onSelect, onCa
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [removeId, setRemoveId] = useState<string | null>(null);
-  const available = typeof window.piDesktop?.importSkinPack === 'function';
+  const available = typeof getDesktopApiOptional()?.importSkinPack === 'function';
   const perform = async (operation: () => Promise<void>) => {
     if (busy || disabled) return;
     setBusy(true); setError(null); setNotice(null);
@@ -29,13 +30,13 @@ export function SkinPackSettings({ catalog, selectedId, disabled, onSelect, onCa
   return <section aria-label="Installed skin packs">
     <div className="skin-pack-actions">
       <button className="settings-inline-action" type="button" disabled={!available || disabled || busy} onClick={() => void perform(async () => {
-        const result = await window.piDesktop.importSkinPack();
+        const result = await getDesktopApi().importSkinPack();
         if (!result) return;
         await onCatalog(result.catalog);
         setNotice('Skin imported. Select it above or preview it below, then Save changes to keep it.');
       })}>Import skin folder</button>
-      <button className="settings-inline-action" type="button" disabled={!available || disabled || busy} onClick={() => void perform(async () => { await window.piDesktop.openSkinsFolder(); })}>Open skins folder</button>
-      <button className="settings-inline-action" type="button" disabled={!available || disabled || busy} onClick={() => void perform(async () => { await onCatalog(await window.piDesktop.getSkins()); })}>Refresh packs</button>
+      <button className="settings-inline-action" type="button" disabled={!available || disabled || busy} onClick={() => void perform(async () => { await getDesktopApi().openSkinsFolder(); })}>Open skins folder</button>
+      <button className="settings-inline-action" type="button" disabled={!available || disabled || busy} onClick={() => void perform(async () => { await onCatalog(await getDesktopApi().getSkins()); })}>Refresh packs</button>
     </div>
     {catalog.storagePath && <code className="skin-pack-storage">{catalog.storagePath}</code>}
     <p className="skin-pack-help">Packs use existing components and approved styles. Version 2 adds local fonts, embedded PNGs, and per-surface density styles. No scripts, CSS, or remote assets. Import and removal take effect on disk immediately.</p>
@@ -45,13 +46,13 @@ export function SkinPackSettings({ catalog, selectedId, disabled, onSelect, onCa
       <div className="skin-pack-actions">
         <button className="settings-inline-action" type="button" disabled={disabled || busy || selectedId === skin.id} onClick={() => onSelect(skin.id)}>Preview {skin.name}</button>
         <button className="settings-inline-action" type="button" disabled={disabled || busy} onClick={() => void perform(async () => {
-          const result = await window.piDesktop.exportSkinPack(skin.id);
+          const result = await getDesktopApi().exportSkinPack(skin.id);
           if (result) setNotice(`Exported to ${result.path}`);
         })}>Export {skin.name}</button>
         <button className="settings-inline-action" type="button" disabled={disabled || busy} onClick={() => setRemoveId(skin.id)}>Remove {skin.name}</button>
       </div>
       {removeId === skin.id && <InlineConfirm title={`Remove ${skin.name}?`} message="Deletes this installed pack folder. Active users of this pack return to Default; its palette returns to the default palette if selected." confirmLabel="Remove skin pack" busy={busy} onCancel={() => setRemoveId(null)} onConfirm={() => void perform(async () => {
-        const result = await window.piDesktop.removeSkinPack(skin.id);
+        const result = await getDesktopApi().removeSkinPack(skin.id);
         await onCatalog(result.catalog, { id: skin.id, settings: result.settings });
         setRemoveId(null); setNotice('Skin pack removed.');
       })} />}

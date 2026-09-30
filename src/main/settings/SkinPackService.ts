@@ -1,8 +1,7 @@
-import { nativeImage } from 'electron';
+import { UnsupportedHostCapabilityError } from '../../core/ports';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { ditherMask } from '../../shared/dither';
 import {
   builtInSkins, MAX_SKIN_IMAGE_BYTES, MAX_SKIN_MANIFEST_BYTES, MAX_SKIN_V2_MANIFEST_BYTES, MAX_SKIN_MASK_BYTES, MAX_SKIN_PACKS,
   skinCatalogSchema, skinDefinitionSchema, skinPackFolderIdSchema, skinPackIdSchema, skinPackManifestSchema, skinPackThemeId,
@@ -41,7 +40,7 @@ async function boundedFile(filePath: string, limit: number): Promise<Buffer> {
   } finally { await file.close(); }
 }
 
-function pngDimensions(bytes: Buffer, maximumPixels: number): { width: number; height: number } {
+export function packPngDimensions(bytes: Buffer, maximumPixels: number): { width: number; height: number } {
   if (bytes.length < 33 || !bytes.subarray(0, 8).equals(pngSignature) || bytes.readUInt32BE(8) !== 13 || bytes.toString('ascii', 12, 16) !== 'IHDR') {
     throw new Error('background.png must contain a real PNG image. SVG and other formats are not supported in packs.');
   }
@@ -51,26 +50,7 @@ function pngDimensions(bytes: Buffer, maximumPixels: number): { width: number; h
   return { width, height };
 }
 
-export function preparePackBackground(bytes: Buffer): Buffer {
-  const size = pngDimensions(bytes, 8_000_000);
-  const source = nativeImage.createFromBuffer(bytes);
-  if (source.isEmpty()) throw new Error('The pack PNG could not be decoded.');
-  const scale = Math.min(1, 640 / Math.max(size.width, size.height));
-  const width = Math.max(1, Math.round(size.width * scale));
-  const height = Math.max(1, Math.round(size.height * scale));
-  const bitmap = source.resize({ width, height, quality: 'good' }).toBitmap();
-  if (bitmap.length !== width * height * 4) throw new Error('The pack PNG has an unsupported bitmap format.');
-  const rgba = new Uint8ClampedArray(bitmap.length);
-  for (let index = 0; index < bitmap.length; index += 4) {
-    rgba[index] = bitmap[index + 2]!;
-    rgba[index + 1] = bitmap[index + 1]!;
-    rgba[index + 2] = bitmap[index]!;
-    rgba[index + 3] = bitmap[index + 3]!;
-  }
-  const mask = nativeImage.createFromBitmap(Buffer.from(ditherMask(rgba, width, height)), { width, height, scaleFactor: 1 }).toPNG();
-  if (mask.length > MAX_SKIN_MASK_BYTES) throw new Error('The processed background is too large. Use a simpler or smaller image.');
-  return mask;
-}
+export type SkinImagePreparer = (source: Buffer) => Buffer;
 
 export function validatePackFont(bytes: Buffer, filename: string): void {
   const woff2 = filename.endsWith('.woff2');
@@ -84,7 +64,7 @@ export class SkinPackService {
   private queue: Promise<void> = Promise.resolve();
   private cache = new Map<string, { fingerprint: string; definition: SkinDefinition }>();
 
-  constructor(dataRoot: string, private readonly prepareImage: (source: Buffer) => Buffer = preparePackBackground) {
+  constructor(dataRoot: string, private readonly prepareImage?: SkinImagePreparer) {
     this.storagePath = path.resolve(dataRoot, 'skins');
   }
 
@@ -135,7 +115,7 @@ export class SkinPackService {
     }
     if (Boolean(manifest.background) !== files.has('background.png')) throw new Error('Declare background.png in the manifest, or remove the unused image.');
     const image = files.get('background.png');
-    if (image) pngDimensions(image, managed ? 640 * 640 : 8_000_000);
+    if (image) packPngDimensions(image, managed ? 640 * 640 : 8_000_000);
     return { manifest, files };
   }
 
@@ -190,6 +170,8 @@ export class SkinPackService {
 
   list(): Promise<SkinCatalog> { return this.run(() => this.catalog()); }
 
+  flush(): Promise<void> { return this.queue; }
+
   private async writePack(parent: string, pack: ReadPack): Promise<string> {
     const target = path.join(await directory(parent), pack.manifest.id);
     try { await fs.mkdir(target, { mode: 0o700 }); }
@@ -216,7 +198,10 @@ export class SkinPackService {
       if (current.skins.length - builtInSkins.length + current.diagnostics.length >= MAX_SKIN_PACKS) throw new Error(`At most ${MAX_SKIN_PACKS} skin packs can be installed.`);
       const pack = await this.readPack(source);
       const image = pack.files.get('background.png');
-      if (image) pack.files.set('background.png', this.prepareImage(image));
+      if (image) {
+        if (!this.prepareImage) throw new UnsupportedHostCapabilityError('skin-background-decoding');
+        pack.files.set('background.png', this.prepareImage(image));
+      }
       this.definition(pack);
       await this.writePack(await this.root(), pack);
       return { catalog: await this.catalog(), importedId: `pack:${pack.manifest.id}` };

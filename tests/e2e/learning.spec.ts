@@ -33,11 +33,27 @@ test('off-by-default scoped learning supports manual approval and an actual diff
     await learning.getByLabel('Title', { exact: true }).fill('Keep filesystem work in main');
     await learning.getByLabel('guidance', { exact: true }).fill('Filesystem work belongs in main behind named IPC, never renderer components.');
     await learning.getByRole('button', { name: 'Save draft', exact: true }).click();
+    // Do not open review while the save is still clearing its busy flag. The
+    // real backend draft and visible idle state, not a delay, identify the
+    // exact revision whose keyboard approval this journey exercises.
+    await expect.poll(() => page.evaluate(async () => (await window.piDesktop.getLearningState()).snapshot?.drafts
+      .filter((draft) => draft.state === 'pending' && draft.content.title === 'Keep filesystem work in main').length)).toBe(1);
+    await expect(learning.getByRole('status').filter({ hasText: /^Working/u })).toHaveCount(0);
     await learning.getByRole('button', { name: 'Review draft' }).click();
-    const approval = learning.getByRole('button', { name: 'Approve exact revision' });
+    await expect(learning.getByRole('region', { name: 'Lesson review', exact: true })).toContainText('Review exact draft');
+    // Opening review removes the focused Review draft button. Let Radix's
+    // focus scope finish returning focus to the dialog before targeting approval.
+    await expect(learning).toBeFocused();
+    const approval = learning.getByRole('button', { name: 'Approve exact revision', exact: true });
+    await expect(approval).toBeEnabled();
+    await approval.scrollIntoViewIfNeeded();
     await approval.focus();
-    await page.keyboard.press('Enter');
+    await expect(approval).toBeFocused();
+    // Locator.press focuses this exact button immediately before dispatching
+    // the real keyboard event, rather than relying on a prior focus assertion.
+    await approval.press('Enter');
     await expect.poll(() => page.evaluate(async () => (await window.piDesktop.getLearningState()).snapshot?.lessons.length)).toBe(1);
+    await expect(learning.getByRole('alert')).toHaveCount(0);
     await learning.getByRole('button', { name: 'Close Memory Learning' }).click();
     await page.evaluate(async () => { await window.piDesktop.switchSession('e2e-session-2'); });
     await page.getByRole('button', { name: /Memory Learning/u }).click();

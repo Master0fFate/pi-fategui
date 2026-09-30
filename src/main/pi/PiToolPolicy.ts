@@ -13,7 +13,7 @@ import {
 import type { PermissionLevel } from '../../shared/contracts/ipc';
 import { rasterImageMimeType } from '../files/FilesystemService';
 import { PiDesktopError } from './errors';
-import { createConfiguredImageGenerator, createGenerateImageTool, type ImageGenerationSettingsResolver } from './PiImageTool';
+import { createConfiguredImageGenerator, createGenerateImageTool, createGeneratedImageStore, type ImageGenerationSettingsResolver } from './PiImageTool';
 import {
   MAX_PRE_HASH_BYTES,
   type AttestationContext,
@@ -418,6 +418,7 @@ export function createSecureWriteFile(deps: SecureWriteDeps): (filePath: string,
 export interface ProjectConfinedToolsOptions {
   searchTools?: boolean;
   getImageGenerationSettings?: ImageGenerationSettingsResolver;
+  imageAgentDir?: string;
   /** When provided, successful controlled write/edit operations are attested. */
   attestations?: AttestationSink;
   /** Maximum prior-state bytes hashed in memory before recording oversize. */
@@ -534,7 +535,7 @@ export async function createProjectConfinedTools(
     createReadToolDefinition(canonicalCwd, { operations: readOperations }),
     createWriteToolDefinition(canonicalCwd, { operations: writeOperations }),
     createEditToolDefinition(canonicalCwd, { operations: { ...readOperations, writeFile: (filePath: string, content: string) => secureWriteFile(filePath, content, 'edit') } }),
-    createGenerateImageTool(createConfiguredImageGenerator(options.getImageGenerationSettings)),
+    createGenerateImageTool(createConfiguredImageGenerator(options.getImageGenerationSettings), options.imageAgentDir ? createGeneratedImageStore(options.imageAgentDir) : undefined),
     ...searchTools,
   ];
 }

@@ -41,8 +41,13 @@ export function isRestorableBrowserUrl(url: string): boolean {
   return isRestorableProtocol(url);
 }
 
-function hashKey(projectPath: string): string {
-  return createHash('sha256').update(projectPath).digest('hex');
+function hashKey(projectPath: string, sessionId?: string): string {
+  // The legacy project-only key remains available only to callers that omit
+  // sessionId. A named conversation never inherits another session's tabs.
+  if (sessionId === undefined) return createHash('sha256').update(projectPath).digest('hex');
+  const normalized = path.normalize(path.resolve(projectPath)).normalize('NFC');
+  const identity = process.platform === 'win32' ? normalized.toLocaleLowerCase('en-US') : normalized;
+  return createHash('sha256').update(JSON.stringify([identity, sessionId])).digest('hex');
 }
 
 function boundedSession(tabs: readonly string[], activeIndex: number): BrowserHistorySession | null {
@@ -58,8 +63,8 @@ function boundedSession(tabs: readonly string[], activeIndex: number): BrowserHi
 }
 
 /**
- * Per-project open-tab store for the built-in browser. Fate UI keeps the
- * restorable tab list for each canonical project path so reopening the
+ * Per-project, per-conversation open-tab store for the built-in browser. Fate
+ * UI keeps the restorable tab list for each named session so reopening the
  * browser (after closing it or restarting the app) restores those pages.
  *
  * Entries are bounded and written atomically; a corrupt or oversized file is
@@ -77,24 +82,24 @@ export class BrowserHistoryRepository {
     this.statePath = path.join(dataRoot, 'browser-history.json');
   }
 
-  async load(projectPath: string): Promise<string | null> {
-    const session = await this.loadSession(projectPath);
+  async load(projectPath: string, sessionId?: string): Promise<string | null> {
+    const session = await this.loadSession(projectPath, sessionId);
     if (!session) return null;
     return session.tabs[session.activeIndex] ?? session.tabs[0] ?? null;
   }
 
-  async loadSession(projectPath: string): Promise<BrowserHistorySession | null> {
-    if (!projectPath) return null;
-    const session = (await this.read()).sessions[hashKey(projectPath)];
+  async loadSession(projectPath: string, sessionId?: string): Promise<BrowserHistorySession | null> {
+    if (!projectPath || sessionId === '') return null;
+    const session = (await this.read()).sessions[hashKey(projectPath, sessionId)];
     return session ? { tabs: [...session.tabs], activeIndex: session.activeIndex } : null;
   }
 
-  /** Remember restorable tabs for a project. Pass null to forget. A lone
+  /** Remember restorable tabs for one session. Pass null to forget. A lone
    *  non-restorable URL is ignored so a stray about:blank never erases the
    *  last real pages. An empty tab list forgets the project. */
-  async save(projectPath: string, value: BrowserHistoryWrite): Promise<void> {
-    if (!projectPath) return;
-    const key = hashKey(projectPath);
+  async save(projectPath: string, value: BrowserHistoryWrite, sessionId?: string): Promise<void> {
+    if (!projectPath || sessionId === '') return;
+    const key = hashKey(projectPath, sessionId);
     this.saveChain = this.saveChain.then(async () => {
       const state = await this.read();
       if (value === null) delete state.sessions[key];

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SessionManager, type AgentSession, type SessionInfo } from '@earendil-works/pi-coding-agent';
@@ -12,7 +12,7 @@ import { isSafeSessionPath, PiSessionRepository, projectSessionDirectory, sessio
  */
 function sessionStore() {
   const sessionsRoot = mkdtempSync(path.join(tmpdir(), 'fate-sessions-'));
-  const sessionDir = path.join(sessionsRoot, '--project--');
+  const sessionDir = projectSessionDirectory('/project', sessionsRoot);
   mkdirSync(sessionDir, { recursive: true });
   return { sessionsRoot, sessionDir };
 }
@@ -67,6 +67,200 @@ describe('PiSessionRepository', () => {
       expect(snapshot?.branch.map((entry) => entry.id)).toEqual(['user', 'assistant', 'large', 'tail-assistant', 'name']);
     } finally {
       list.mockRestore();
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('streams a real >128 MiB JSONL session and preserves the active branch, recent history and metadata', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'large.jsonl');
+    const fd = openSync(sessionPath, 'w');
+    const append = (value: unknown) => writeSync(fd, `${JSON.stringify(value)}\n`);
+    const timestamp = '2025-01-01T00:00:00.000Z';
+    try {
+      append({ type: 'session', version: 3, id: 'large', timestamp, cwd: '/project' });
+      append({ type: 'message', id: 'root', parentId: null, timestamp, message: { role: 'user', content: 'First message from the saved file' } });
+      append({ type: 'model_change', id: 'model', parentId: 'root', timestamp, provider: 'openai', modelId: 'gpt-4.1' });
+      append({ type: 'thinking_level_change', id: 'thinking', parentId: 'model', timestamp, thinkingLevel: 'high' });
+      append({ type: 'compaction', id: 'compact', parentId: 'thinking', timestamp, firstKeptEntryId: 'root', summary: 'Remember the prior work', tokensBefore: 7 });
+      append({ type: 'custom', id: 'team-state', parentId: 'compact', timestamp, customType: 'fate-agent-team-event', data: { teamId: 'team-a', sequence: 1, payload: { team: { id: 'team-a', detail: 'y'.repeat(1_200_000) } } } });
+      // Reuse one modest string; never make the fixture itself a 128 MiB JS value.
+      const padding = 'x'.repeat(1024 * 1024);
+      for (let index = 0; index < 130; index += 1) {
+        append({ type: 'custom', id: `pad-${index}`, parentId: index ? `pad-${index - 1}` : 'team-state', timestamp, customType: 'unrelated-extension', data: padding });
+      }
+      append({ type: 'message', id: 'inactive', parentId: 'root', timestamp, message: { role: 'assistant', content: 'Do not show the wrong fork' } });
+      append({ type: 'message', id: 'recent-user', parentId: 'pad-129', timestamp, message: { role: 'user', content: 'Show my recent question' } });
+      append({ type: 'message', id: 'recent-assistant', parentId: 'recent-user', timestamp, message: { role: 'assistant', content: 'Show the recent answer', provider: 'openai', model: 'gpt-4.1', usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0.01 } } } });
+      append({ type: 'session_info', id: 'renamed', parentId: 'recent-assistant', timestamp, name: 'Title beyond 128 MiB' });
+      closeSync(fd);
+      expect(statSync(sessionPath).size).toBeGreaterThan(128 * 1024 * 1024);
+      const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => [info(sessionDir, { id: 'large', path: sessionPath, firstMessage: '(no messages)' })]) }, sessionsRoot);
+      const snapshot = await repository.snapshot('/project', 'large');
+      expect(snapshot?.summary).toEqual(expect.objectContaining({ title: 'Title beyond 128 MiB', firstMessage: 'First message from the saved file', messageCount: 4 }));
+      expect(snapshot?.entries).toHaveLength(139);
+      expect(snapshot?.branch.map((entry) => entry.id)).toEqual(['root', 'model', 'thinking', 'compact', 'team-state', ...Array.from({ length: 130 }, (_, index) => `pad-${index}`), 'recent-user', 'recent-assistant', 'renamed']);
+      expect(snapshot?.branch.find((entry) => entry.id === 'team-state')).toEqual(expect.objectContaining({ data: expect.objectContaining({ payload: expect.objectContaining({ team: expect.objectContaining({ id: 'team-a' }) }) }) }));
+      expect(snapshot?.previewNotice).toMatch(/compact previews/i);
+      expect(snapshot?.branch.some((entry) => entry.id === 'inactive')).toBe(false);
+      expect(snapshot?.branch.find((entry) => entry.id === 'model')).toEqual(expect.objectContaining({ provider: 'openai', modelId: 'gpt-4.1' }));
+      expect(snapshot?.branch.find((entry) => entry.id === 'thinking')).toEqual(expect.objectContaining({ thinkingLevel: 'high' }));
+      expect(snapshot?.branch.find((entry) => entry.id === 'compact')).toEqual(expect.objectContaining({ summary: 'Remember the prior work', firstKeptEntryId: 'root' }));
+      expect(snapshot?.branch.find((entry) => entry.id === 'recent-assistant')).toEqual(expect.objectContaining({ message: expect.objectContaining({ content: 'Show the recent answer' }) }));
+      expect(snapshot?.entries.find((entry) => entry.id === 'inactive')).toEqual(expect.objectContaining({ message: expect.objectContaining({ role: 'assistant' }) }));
+      // The preview may stream a huge file, but deleting a fork must still
+      // reject it independently instead of allocating/replacing that file.
+      const sizeBefore = statSync(sessionPath).size;
+      await expect(repository.deleteBranch('/project', 'large', 'inactive', 'renamed')).rejects.toThrow(/too large to safely rewrite/i);
+      expect(statSync(sessionPath).size).toBe(sizeBefore);
+    } finally {
+      try { closeSync(fd); } catch { /* Already closed after fixture generation. */ }
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it('does not let repeated hidden state evict the visible conversation from a large preview', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'hidden-state.jsonl');
+    const fd = openSync(sessionPath, 'w');
+    const timestamp = '2025-01-01T00:00:00.000Z';
+    const content = `Retain my actual question: ${'q'.repeat(2 * 1024 * 1024)}`;
+    try {
+      writeSync(fd, `${JSON.stringify({ type: 'session', version: 3, id: 'hidden-state', timestamp, cwd: '/project' })}\n`);
+      writeSync(fd, `${JSON.stringify({ type: 'message', id: 'question', parentId: null, timestamp, message: { role: 'user', content } })}\n`);
+      const padding = 'x'.repeat(1024 * 1024);
+      for (let index = 0; index < 30; index += 1) {
+        writeSync(fd, `${JSON.stringify({ type: 'custom', customType: 'hidden-state', id: `state-${index}`, parentId: index ? `state-${index - 1}` : 'question', timestamp, data: padding })}\n`);
+      }
+      closeSync(fd);
+      const repository = new PiSessionRepository(undefined, sessionsRoot);
+      const snapshot = await repository.snapshot('/project', 'hidden-state');
+      expect(snapshot?.branch.find((entry) => entry.id === 'question')).toEqual(expect.objectContaining({ message: expect.objectContaining({ content }) }));
+      expect(snapshot?.branch.filter((entry) => entry.type === 'custom').every((entry) => !('data' in entry))).toBe(true);
+    } finally {
+      try { closeSync(fd); } catch { /* Closed after fixture generation. */ }
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves tool-result identity and outcome when its output is clipped from a large preview', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'clipped-result.jsonl');
+    const fd = openSync(sessionPath, 'w');
+    const timestamp = '2025-01-01T00:00:00.000Z';
+    const padding = 'x'.repeat(2 * 1024 * 1024);
+    try {
+      writeSync(fd, `${JSON.stringify({ type: 'session', version: 3, id: 'clipped-result', timestamp, cwd: '/project' })}\n`);
+      writeSync(fd, `${JSON.stringify({ type: 'message', id: 'call', parentId: null, timestamp, message: { role: 'assistant', content: [{ type: 'toolCall', id: 'tool-1', name: 'bash', arguments: {} }] } })}\n`);
+      writeSync(fd, `${JSON.stringify({ type: 'message', id: 'result', parentId: 'call', timestamp, message: { role: 'toolResult', toolCallId: 'tool-1', toolName: 'bash', isError: true, content: [{ type: 'text', text: padding }] } })}\n`);
+      for (let index = 0; index < 13; index += 1) {
+        writeSync(fd, `${JSON.stringify({ type: 'message', id: `later-${index}`, parentId: index ? `later-${index - 1}` : 'result', timestamp, message: { role: 'user', content: padding } })}\n`);
+      }
+      closeSync(fd);
+      const snapshot = await new PiSessionRepository(undefined, sessionsRoot).snapshot('/project', 'clipped-result');
+      expect(snapshot?.branch.find((entry) => entry.id === 'result')).toEqual(expect.objectContaining({ message: expect.objectContaining({ role: 'toolResult', toolCallId: 'tool-1', toolName: 'bash', isError: true, content: expect.stringContaining('omitted') }) }));
+    } finally {
+      try { closeSync(fd); } catch { /* Closed after fixture generation. */ }
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a known summary from a different project even inside the sessions root', async () => {
+    const { sessionsRoot } = sessionStore();
+    const otherDirectory = projectSessionDirectory('/other-project', sessionsRoot);
+    const otherPath = path.join(otherDirectory, 'other.jsonl');
+    try {
+      mkdirSync(otherDirectory, { recursive: true });
+      writeFileSync(otherPath, `${JSON.stringify({ type: 'session', id: 'other', timestamp: '2025-01-01T00:00:00.000Z', cwd: '/other-project' })}\n`);
+      const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => []) }, sessionsRoot);
+      const summary = { id: 'other', path: otherPath, title: 'Other', firstMessage: '', createdAt: '2025-01-01T00:00:00.000Z', modifiedAt: '2025-01-01T00:00:00.000Z', messageCount: 0, active: false, attention: null };
+      await expect(repository.snapshot('/project', 'other', summary)).resolves.toBeUndefined();
+    } finally {
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps active branch state when a single valid entry exceeds the record budget', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'oversized-record.jsonl');
+    const timestamp = '2025-01-01T00:00:00.000Z';
+    try {
+      const entries = [
+        { type: 'session', id: 'oversized-record', version: 3, timestamp, cwd: '/project' },
+        { type: 'model_change', id: 'root', parentId: null, timestamp, provider: 'anthropic', modelId: 'claude-sonnet' },
+        // Deliberately put the ID *after* the giant content. A prefix-only
+        // parser would lose this node and break the active parent chain.
+        { type: 'message', message: { role: 'user', content: `very long ${'😀'.repeat(1_300_000)}` }, id: 'huge', parentId: 'root', timestamp },
+        { type: 'message', id: 'recent', parentId: 'huge', timestamp, message: { role: 'assistant', content: 'The real tail' } },
+      ];
+      const fd = openSync(sessionPath, 'w');
+      try {
+        for (const entry of entries) writeSync(fd, `${JSON.stringify(entry)}\n`);
+        // The invalid but structurally balanced giant line must not become
+        // the active leaf merely because its header fields look plausible.
+        writeSync(fd, `{"type":"message","id":"invalid-giant","parentId":"recent","message":{"role":"assistant","content":"${'x'.repeat(4 * 1024 * 1024)}"},"broken":nope}\n`);
+        // Metadata extraction must never keep an earlier string when a later
+        // duplicate routing key has JSON.parse's authoritative null value.
+        writeSync(fd, `{"type":"message","id":"invented-id","parentId":"recent","message":{"role":"assistant","content":"${'x'.repeat(4 * 1024 * 1024)}"},"id":null}\n`);
+        writeSync(fd, `{"type":"message","id":"invented-parent","parentId":"recent","message":{"role":"assistant","content":"${'x'.repeat(4 * 1024 * 1024)}"},"parentId":null}\n`);
+      } finally { closeSync(fd); }
+      const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => [info(sessionDir, { id: 'oversized-record', path: sessionPath })]) }, sessionsRoot);
+      const snapshot = await repository.snapshot('/project', 'oversized-record');
+      expect(snapshot?.branch.map((entry) => entry.id)).toEqual(['root', 'huge', 'recent']);
+      expect(snapshot?.branch[0]).toEqual(expect.objectContaining({ provider: 'anthropic', modelId: 'claude-sonnet' }));
+      expect(snapshot?.branch[1]).toEqual(expect.objectContaining({ message: expect.objectContaining({ role: 'user', content: expect.stringContaining('omitted') }) }));
+      expect(snapshot?.branch[2]).toEqual(expect.objectContaining({ message: expect.objectContaining({ content: 'The real tail' }) }));
+      expect(snapshot?.entries.some((entry) => entry.id === 'invalid-giant')).toBe(false);
+      expect(statSync(sessionPath).size).toBeGreaterThan(4 * 1024 * 1024);
+    } finally {
+      rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('does not present old running child state when its later state exceeds the record budget', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'child-state.jsonl');
+    const timestamp = '2025-01-01T00:00:00.000Z';
+    try {
+      const entries = [
+        { type: 'session', id: 'child-state', version: 3, timestamp, cwd: '/project' },
+        { type: 'custom', customType: 'fate-agent-team-event', id: 'running', parentId: null, timestamp, data: { teamId: 'team-a', sequence: 1, payload: { team: { id: 'team-a', status: 'running' } } } },
+        { type: 'custom', customType: 'fate-agent-team-event', id: 'completed', parentId: 'running', timestamp, data: { teamId: 'team-a', sequence: 2, payload: { team: { id: 'team-a', status: 'completed', detail: 'x'.repeat(4 * 1024 * 1024) } } } },
+      ];
+      writeFileSync(sessionPath, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+      const snapshot = await new PiSessionRepository(undefined, sessionsRoot).snapshot('/project', 'child-state');
+      expect(snapshot?.branch.map((entry) => entry.id)).toEqual(['running', 'completed']);
+      expect(snapshot?.branch.every((entry) => !('data' in entry))).toBe(true);
+      expect(snapshot?.previewNotice).toContain('child-agent state');
+    } finally { rmSync(sessionsRoot, { recursive: true, force: true }); }
+  });
+
+  it('follows the final metadata leaf rather than a newer sibling and retains settings on its own ancestry', async () => {
+    const { sessionsRoot, sessionDir } = sessionStore();
+    const sessionPath = path.join(sessionDir, 'branches.jsonl');
+    const timestamp = '2025-01-01T00:00:00.000Z';
+    try {
+      const entries = [
+        { type: 'session', id: 'branches', version: 3, timestamp, cwd: '/project' },
+        { type: 'message', id: 'root', parentId: null, timestamp, message: { role: 'user', content: 'Start' } },
+        { type: 'model_change', id: 'left-model', parentId: 'root', timestamp, provider: 'wrong', modelId: 'wrong' },
+        { type: 'message', id: 'left-tail', parentId: 'left-model', timestamp, message: { role: 'assistant', content: 'Old fork' } },
+        { type: 'model_change', id: 'right-model', parentId: 'root', timestamp, provider: 'right', modelId: 'right' },
+        { type: 'thinking_level_change', id: 'right-thinking', parentId: 'right-model', timestamp, thinkingLevel: 'xhigh' },
+        { type: 'compaction', id: 'right-compact', parentId: 'right-thinking', timestamp, summary: 'Keep this', firstKeptEntryId: 'root', tokensBefore: 100 },
+        { type: 'message', id: 'inactive-late', parentId: 'left-tail', timestamp, message: { role: 'assistant', content: 'Newer, but not active' } },
+        { type: 'session_info', id: 'active-leaf', parentId: 'right-compact', timestamp, name: 'Branch name' },
+      ];
+      writeFileSync(sessionPath, entries.map((entry) => JSON.stringify(entry)).join('\n').concat('\n'));
+      const repository = new PiSessionRepository({ rename: vi.fn(), list: vi.fn(async () => [info(sessionDir, { id: 'branches', path: sessionPath })]) }, sessionsRoot);
+      const snapshot = await repository.snapshot('/project', 'branches');
+      expect(snapshot?.branch.map((entry) => entry.id)).toEqual(['root', 'right-model', 'right-thinking', 'right-compact', 'active-leaf']);
+      expect(snapshot?.summary.title).toBe('Branch name');
+      expect(snapshot?.branch[1]).toEqual(expect.objectContaining({ provider: 'right', modelId: 'right' }));
+      expect(snapshot?.branch[3]).toEqual(expect.objectContaining({ summary: 'Keep this' }));
+      expect(snapshot?.entries.map((entry) => entry.id)).toEqual(entries.slice(1).map((entry) => entry.id));
+      expect(snapshot?.entries.find((entry) => entry.id === 'left-tail')).toEqual(entries[3]); // ordinary files stay exact
+    } finally {
       rmSync(sessionsRoot, { recursive: true, force: true });
     }
   });

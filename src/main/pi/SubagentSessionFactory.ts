@@ -32,6 +32,8 @@ export interface ChildSessionInput {
   projectPath: string;
   /** Settings are inherited from the approved parent checkout, never from a newly checked-out base ref. */
   settingsProjectPath?: string;
+  agentDir?: string;
+  serverProfile?: boolean;
   approvedSkills?: ReturnType<AgentSession['resourceLoader']['getSkills']>['skills'];
   modelRuntime: ModelRuntime;
   model: ParentModel;
@@ -62,8 +64,8 @@ export interface ChildSessionInput {
 
 export type SubagentChildSessionFactory = (input: ChildSessionInput) => Promise<AgentSession>;
 
-function isolatedSettingsManager(projectPath: string): SettingsManager {
-  const source = SettingsManager.create(projectPath, getAgentDir(), { projectTrusted: true });
+function isolatedSettingsManager(projectPath: string, agentDir = getAgentDir()): SettingsManager {
+  const source = SettingsManager.create(projectPath, agentDir, { projectTrusted: true });
   const snapshots: Record<'global' | 'project', string | undefined> = {
     global: JSON.stringify(source.getGlobalSettings()),
     project: JSON.stringify(source.getProjectSettings()),
@@ -100,7 +102,7 @@ export function subagentChildBoundary(
 }
 
 export async function createSdkChildSession(input: ChildSessionInput): Promise<AgentSession> {
-  const settingsManager = isolatedSettingsManager(input.settingsProjectPath ?? input.projectPath);
+  const settingsManager = isolatedSettingsManager(input.settingsProjectPath ?? input.projectPath, input.agentDir);
   const selectedNames = input.selectedSkills.map((skill) => skill.name);
   const appendSystemPrompt = [
     ...(input.profileSystemPrompt ? [input.profileSystemPrompt] : []),
@@ -112,13 +114,17 @@ export async function createSdkChildSession(input: ChildSessionInput): Promise<A
   ];
   const services = await createAgentSessionServices({
     cwd: input.projectPath,
+    ...(input.agentDir ? { agentDir: input.agentDir } : {}),
     modelRuntime: input.modelRuntime,
     settingsManager,
     resourceLoaderOptions: {
       noThemes: true,
+      includeHomeAgentSkills: !input.serverProfile,
       noExtensions: true,
       noPromptTemplates: true,
-      noContextFiles: input.settingsProjectPath !== undefined && input.settingsProjectPath !== input.projectPath,
+      // Server children inherit only host-bound resources, never context files
+      // from ancestors above their canonical checkout/project root.
+      noContextFiles: input.serverProfile === true || input.settingsProjectPath !== undefined && input.settingsProjectPath !== input.projectPath,
       appendSystemPrompt,
       skillsOverride: (base) => ({
         ...base,
@@ -151,7 +157,7 @@ export async function createSdkChildSession(input: ChildSessionInput): Promise<A
       getExamplesPath(),
       ...services.resourceLoader.getSkills().skills.map((skill) => skill.baseDir),
     ],
-    { searchTools: true, ...(input.attestationSink ? { attestations: input.attestationSink } : {}), ...(input.getImageGenerationSettings ? { getImageGenerationSettings: input.getImageGenerationSettings } : {}) },
+    { searchTools: true, ...(input.agentDir ? { imageAgentDir: input.agentDir } : {}), ...(input.attestationSink ? { attestations: input.attestationSink } : {}), ...(input.getImageGenerationSettings ? { getImageGenerationSettings: input.getImageGenerationSettings } : {}) },
   );
   const sessionManager = input.sessionFile
     ? SessionManager.open(input.sessionFile, input.sessionDirectory, input.projectPath)

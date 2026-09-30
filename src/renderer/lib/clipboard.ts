@@ -1,6 +1,7 @@
+import { getDesktopApi, getDesktopApiOptional, hasCapability } from '../platform/api';
 export async function writeClipboardText(text: string): Promise<void> {
-  if ('piDesktop' in window && typeof window.piDesktop.writeClipboardText === 'function') {
-    await window.piDesktop.writeClipboardText(text);
+  if (hasCapability('clipboardText') && typeof getDesktopApiOptional()?.writeClipboardText === 'function') {
+    await getDesktopApi().writeClipboardText(text);
     return;
   }
   if (typeof navigator.clipboard?.writeText !== 'function') {

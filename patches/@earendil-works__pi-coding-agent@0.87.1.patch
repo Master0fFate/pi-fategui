@@ -1,0 +1,80 @@
+diff --git a/dist/core/package-manager.d.ts b/dist/core/package-manager.d.ts
+--- a/dist/core/package-manager.d.ts
++++ b/dist/core/package-manager.d.ts
+@@ -69,5 +69,7 @@ interface PackageManagerOptions {
+     cwd: string;
+     agentDir: string;
+     settingsManager: SettingsManager;
++    /** Default true. Server profiles can exclude HOME/.agents/skills before discovery. */
++    includeHomeAgentSkills?: boolean;
+ }
+ type SourceScope = "user" | "project" | "temporary";
+diff --git a/dist/core/package-manager.js b/dist/core/package-manager.js
+--- a/dist/core/package-manager.js
++++ b/dist/core/package-manager.js
+@@ -604,11 +604,13 @@ export class DefaultPackageManager {
+     cwd;
+     agentDir;
+     settingsManager;
++    includeHomeAgentSkills;
+     globalNpmRoot;
+     globalNpmRootCommandKey;
+     progressCallback;
+     constructor(options) {
+         this.cwd = resolvePath(options.cwd);
+         this.agentDir = resolvePath(options.agentDir);
+         this.settingsManager = options.settingsManager;
++        this.includeHomeAgentSkills = options.includeHomeAgentSkills !== false;
+     }
+@@ -1976,8 +1978,10 @@ export class DefaultPackageManager {
+             themes: join(projectBaseDir, "themes"),
+         };
+-        const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
++        const userAgentsSkillsDir = this.includeHomeAgentSkills ? join(getHomeDir(), ".agents", "skills") : null;
+         const projectTrusted = this.settingsManager.isProjectTrusted();
+         const projectAgentsSkillDirs = projectTrusted
+-            ? collectAncestorAgentsSkillDirs(this.cwd).filter((dir) => resolve(dir) !== resolve(userAgentsSkillsDir))
++            ? this.includeHomeAgentSkills
++                ? collectAncestorAgentsSkillDirs(this.cwd).filter((dir) => resolve(dir) !== resolve(userAgentsSkillsDir))
++                : [join(this.cwd, ".agents", "skills")]
+             : [];
+         const addResources = (resourceType, paths, metadata, overrides, baseDir) => {
+@@ -2010,10 +2014,12 @@ export class DefaultPackageManager {
+         // User skills from ~/.pi/agent/
+         addResources("skills", collectAutoSkillEntries(userDirs.skills, "pi"), userMetadata, userOverrides.skills, globalBaseDir);
+-        // User skills from ~/.agents/ (with its own baseDir)
+-        const userAgentsBaseDir = dirname(userAgentsSkillsDir);
+-        const userAgentsMetadata = {
+-            ...userMetadata,
+-            baseDir: userAgentsBaseDir,
+-        };
+-        addResources("skills", collectAutoSkillEntries(userAgentsSkillsDir, "agents"), userAgentsMetadata, userOverrides.skills, userAgentsBaseDir);
++        if (this.includeHomeAgentSkills) {
++            // User skills from ~/.agents/ (with its own baseDir). Disabled server profiles never inspect it.
++            const userAgentsBaseDir = dirname(userAgentsSkillsDir);
++            const userAgentsMetadata = {
++                ...userMetadata,
++                baseDir: userAgentsBaseDir,
++            };
++            addResources("skills", collectAutoSkillEntries(userAgentsSkillsDir, "agents"), userAgentsMetadata, userOverrides.skills, userAgentsBaseDir);
++        }
+         addResources("prompts", collectAutoPromptEntries(userDirs.prompts), userMetadata, userOverrides.prompts, globalBaseDir);
+diff --git a/dist/core/resource-loader.d.ts b/dist/core/resource-loader.d.ts
+--- a/dist/core/resource-loader.d.ts
++++ b/dist/core/resource-loader.d.ts
+@@ -70,4 +70,6 @@ export interface DefaultResourceLoaderOptions {
+     agentDir: string;
+     settingsManager?: SettingsManager;
+     eventBus?: EventBus;
++    /** Default true; false prevents HOME/.agents/skills discovery before any filesystem read. */
++    includeHomeAgentSkills?: boolean;
+     additionalExtensionPaths?: string[];
+diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
+--- a/dist/core/resource-loader.js
++++ b/dist/core/resource-loader.js
+@@ -160,4 +160,5 @@ export class DefaultResourceLoader {
+         this.packageManager = new DefaultPackageManager({
+             cwd: this.cwd,
+             agentDir: this.agentDir,
++            includeHomeAgentSkills: options.includeHomeAgentSkills,
+             settingsManager: this.settingsManager,

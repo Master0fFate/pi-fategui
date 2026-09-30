@@ -6,6 +6,7 @@ import {
   piEventBatchSchema,
   promptAcceptanceSchema,
   promptInputSchema,
+  questionnaireAnswerInputSchema,
   promptOptimizationInputSchema,
   promptOptimizationResultSchema,
   queueMutationInputSchema,
@@ -59,12 +60,15 @@ import {
   taskUpdateInputSchema,
 } from '../shared/contracts/tasks';
 import { invoke, subscribe } from './transport';
+import { monitorDashboardSchema, monitorReadInputSchema } from '../shared/contracts/monitorDashboard';
 
 export const runtimeApi = {
   getRuntimeState: () => invoke(ipcChannels.runtimeGetState, emptyInputSchema, runtimeStateSchema),
+  getMonitorDashboard: (input = {}) => invoke(ipcChannels.runtimeMonitorDashboard, monitorReadInputSchema, monitorDashboardSchema, input),
   prompt: (input) => invoke(ipcChannels.runtimePrompt, promptInputSchema, promptAcceptanceSchema, input),
   optimizePrompt: (text, options) => invoke(ipcChannels.runtimeOptimizePrompt, promptOptimizationInputSchema, promptOptimizationResultSchema, { text, advanced: options?.advanced ?? false }),
   abort: () => invoke(ipcChannels.runtimeAbort, emptyInputSchema, abortResultSchema),
+  answerQuestion: (input) => invoke(ipcChannels.runtimeAnswerQuestion, questionnaireAnswerInputSchema, runtimeStateSchema, input),
   controlSubagent: (input) => invoke(ipcChannels.runtimeControlSubagent, subagentControlInputSchema, runtimeStateSchema, input),
   controlAgentTeam: (input) => invoke(ipcChannels.runtimeControlAgentTeam, agentTeamControlInputSchema, runtimeStateSchema, input),
   setModel: (provider, id) => invoke(ipcChannels.runtimeSetModel, setModelInputSchema, runtimeStateSchema, { provider, id }),

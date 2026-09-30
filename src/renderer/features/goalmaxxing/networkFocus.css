@@ -1,0 +1,12 @@
+[data-network-focus="true"] {
+  outline: 1px solid currentColor;
+  outline-offset: -1px;
+  background: var(--surface-hover, rgba(255, 255, 255, 0.04));
+}
+.network-focus-label {
+  display: block;
+  font-family: monospace;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  opacity: 0.8;
+}

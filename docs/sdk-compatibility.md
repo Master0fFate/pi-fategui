@@ -2,11 +2,11 @@
 
 ## Current release pin
 
-Fate UI V1 uses matching, exact pins of `@earendil-works/pi-coding-agent@0.85.1` and `@earendil-works/pi-ai@0.85.1`.
+Fate UI uses matching, exact pins of `@earendil-works/pi-coding-agent@0.87.1` and `@earendil-works/pi-ai@0.87.1`.
 
-Checked against the canonical [upstream GitHub release](https://github.com/earendil-works/pi/releases/tag/v0.85.1) on **2026-09-12**, not an npm latest-version query. The release was published on **2026-09-05**, at commit [`d981de1229ef899957bbe968bc8dcda02a21f477`](https://github.com/earendil-works/pi/commit/d981de1229ef899957bbe968bc8dcda02a21f477). It was still the latest non-draft, non-prerelease GitHub release at verification time.
+Checked against the canonical [upstream GitHub release](https://github.com/earendil-works/pi/releases/tag/v0.87.1) on **2026-09-25**, not an npm latest-version query. The stable release was published **2026-09-22** at commit [`f07218c4d4bbc12bef056a7058c3dd49dfe41abe`](https://github.com/earendil-works/pi/commit/f07218c4d4bbc12bef056a7058c3dd49dfe41abe). The GitHub `main` branch contains newer, unreleased changes and is not a stable SDK target. Matching exact distribution packages install the tagged version through the project's lockfile; GitHub release notes and tagged source are the version authority.
 
-Upstream `main` contains newer work but still reports version `0.85.1`; those commits are not a newer released SDK. V1 deliberately stays on the released tag rather than shipping unversioned behavior changes.
+The [0.86.0 release](https://github.com/earendil-works/pi/releases/tag/v0.86.0) adds prompt-cache warming, model-specific compaction budgets, and transcript-backed prompt/tool updates. The [0.87.0 release](https://github.com/earendil-works/pi/releases/tag/v0.87.0) makes SessionManager the canonical model transcript and adds context edits and image resize limits. Fate's model sessions get those SDK capabilities without replacing desktop-owned approval, queue, and history boundaries. SDK tests were adapted to inspect the new transcript and provider prompt instead of the obsolete `agent.state.systemPrompt`. No new MCP client was added upstream; Fate's opt-in MCP bridge is app-owned.
 
 ## What Fate uses
 
@@ -20,7 +20,7 @@ Upstream `main` contains newer work but still reports version `0.85.1`; those co
 
 Fate keeps its renderer/main boundary, project trust, isolated provider store, durable editable queues, recovered drafts, browser permissions, unified agent/workflow execution, worktree ownership, and GoalMax evidence gates. Upstream terminal interactions and experimental client/server designs do not replace those desktop responsibilities.
 
-The existing narrow OpenRouter patch in `patches/` remains necessary for reasoning-off requests without an explicit off mapping. It is covered by offline payload tests. Experimental Pi client/server packages are not part of Fate's production runtime.
+The narrow OpenRouter patch in `patches/` remains necessary in 0.87.1: the tagged `openai-completions.ts` still emits a default `none` effort when `thinkingLevelMap.off` is undefined. It is covered by offline payload tests. Experimental Pi client/server packages are not part of Fate's production runtime.
 
 ## Upgrade policy
 

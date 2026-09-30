@@ -26,6 +26,7 @@ export default defineConfig({
           name: 'main',
           environment: 'node',
           include: nodeTests,
+          exclude: ['src/{core,server,client,protocol}/**', 'src/shared/protocol/**', 'src/main/connections/**', 'src/**/v2/**', 'tests/v2/**'],
         },
       },
       {
@@ -35,7 +36,7 @@ export default defineConfig({
           environment: 'jsdom',
           setupFiles: ['./vitest.setup.ts'],
           include: ['src/**/*.test.{ts,tsx}'],
-          exclude: nodeTests,
+          exclude: [...nodeTests, 'src/{core,server,client,protocol}/**', 'src/shared/protocol/**', 'src/**/v2/**', 'tests/v2/**', 'src/renderer/features/connections/**'],
         },
       },
     ],

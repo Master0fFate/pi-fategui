@@ -8,7 +8,10 @@ function serviceFixture() {
     beginTask: vi.fn(),
     endTask: vi.fn(),
     cancelAnnotationSelection: vi.fn(),
+    revokeSessionControl: vi.fn(),
+    resolveAnnotations: vi.fn(async () => []),
     setControlLevel: vi.fn(),
+    setSessionFullAccess: vi.fn(),
     setMode: vi.fn(),
     createUserTab: vi.fn(async () => 'tab-2'),
     navigate: vi.fn(async () => undefined),
@@ -123,6 +126,84 @@ describe('BrowserRuntimeBridge', () => {
     await expect(pending).rejects.toThrow(/does not own/u);
     expect(service.beginTask).not.toHaveBeenCalled();
     expect(service.lease.acquire).not.toHaveBeenCalledWith('root-a');
+  });
+
+  it('keeps independent browser services for concurrently running sessions', async () => {
+    const first = serviceFixture();
+    const second = serviceFixture();
+    const sessions = new Map([['root-a', first], ['root-b', second]]);
+    const bridge = new BrowserRuntimeBridge(
+      () => null,
+      undefined,
+      (root) => sessions.get(root.sessionId) ?? null,
+    );
+    bridge.registerSession({ projectPath: '/project', sessionId: 'root-a' });
+    bridge.registerSession({ projectPath: '/project', sessionId: 'root-b' });
+    bridge.setActiveRoot({ projectPath: '/project', sessionId: 'root-a' });
+    await bridge.navigate({ sessionId: 'root-a', url: 'https://one.test/', reason: 'check' });
+    bridge.setActiveRoot({ projectPath: '/project', sessionId: 'root-b' });
+    await bridge.navigate({ sessionId: 'root-b', url: 'https://two.test/', reason: 'check' });
+    await bridge.tabs({ sessionId: 'root-a' });
+    expect(first.navigate).toHaveBeenCalledWith('browser-main', 'https://one.test/', 'agent', undefined);
+    expect(second.navigate).toHaveBeenCalledWith('browser-main', 'https://two.test/', 'agent', undefined);
+    expect(first.navigate).not.toHaveBeenCalledWith('browser-main', 'https://two.test/', 'agent', undefined);
+    expect(first.endTask).not.toHaveBeenCalled();
+    await expect(bridge.tabs({ sessionId: 'unknown' })).rejects.toThrow(/does not own/u);
+    bridge.revokeSession({ projectPath: '/project', sessionId: 'root-a' });
+    await expect(bridge.tabs({ sessionId: 'root-a' })).rejects.toThrow(/does not own/u);
+    expect(second.endTask).not.toHaveBeenCalled();
+  });
+
+  it('never borrows the focused session’s full-access browser authority', async () => {
+    const first = serviceFixture();
+    const second = serviceFixture();
+    const sessions = new Map([['root-a', first], ['root-b', second]]);
+    const bridge = new BrowserRuntimeBridge(() => null, undefined, (root) => sessions.get(root.sessionId) ?? null);
+    bridge.registerSession({ projectPath: '/project', sessionId: 'root-a' }, 'full-access');
+    bridge.registerSession({ projectPath: '/project', sessionId: 'root-b' }, 'read-only');
+    bridge.setActiveRoot({ projectPath: '/project', sessionId: 'root-a' });
+    await bridge.tabs({ sessionId: 'root-b' });
+    expect(second.setSessionFullAccess).toHaveBeenLastCalledWith(false);
+    bridge.registerSession({ projectPath: '/project', sessionId: 'root-a' }, 'read-only');
+    expect(first.setSessionFullAccess).toHaveBeenLastCalledWith(false);
+  });
+
+  it('does not return another session’s annotations even when ids are known', async () => {
+    const first = serviceFixture();
+    const second = serviceFixture();
+    vi.mocked(first.resolveAnnotations).mockResolvedValue([{ id: 'private' }] as never);
+    const sessions = new Map([['root-a', first], ['root-b', second]]);
+    const bridge = new BrowserRuntimeBridge(() => null, undefined, (root) => sessions.get(root.sessionId) ?? null);
+    bridge.registerSession({ projectPath: '/project', sessionId: 'root-a' });
+    bridge.registerSession({ projectPath: '/project', sessionId: 'root-b' });
+    expect(await bridge.resolveAnnotations(['private'], 'root-b')).toEqual([]);
+    expect(second.resolveAnnotations).toHaveBeenCalledWith(['private']);
+    expect(first.resolveAnnotations).not.toHaveBeenCalled();
+  });
+
+  it('does not return page data when a session is revoked during capture', async () => {
+    const service = serviceFixture();
+    let finish!: (value: unknown) => void;
+    vi.mocked(service.snapshot).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }) as never);
+    const bridge = new BrowserRuntimeBridge(() => null, undefined, (root) => root.sessionId === 'root-a' ? service : null);
+    bridge.registerSession({ projectPath: '/project', sessionId: 'root-a' });
+    const pending = bridge.snapshot({ sessionId: 'root-a', mode: 'content' });
+    await vi.waitFor(() => expect(service.snapshot).toHaveBeenCalledOnce());
+    bridge.revokeSession({ projectPath: '/project', sessionId: 'root-a' });
+    finish({ serialized: 'private content' });
+    await expect(pending).rejects.toThrow(/does not own/u);
+  });
+
+  it('shares only a bounded read-only excerpt when a live source session is explicitly tagged', async () => {
+    const source = serviceFixture();
+    vi.mocked(source.snapshot).mockResolvedValue({ serialized: 'Source page text', url: 'https://example.test/?token=private' } as never);
+    const bridge = new BrowserRuntimeBridge(() => null, undefined, (root) => root.sessionId === 'source' ? source : null);
+    bridge.registerSession({ projectPath: '/project', sessionId: 'source' });
+    expect(await bridge.readTaggedBrowserContext({ projectPath: '/project', sessionId: 'source' }))
+      .toContain('Source page text');
+    expect(source.snapshot).toHaveBeenCalledWith('browser-main', { mode: 'content' });
+    expect(source.navigate).not.toHaveBeenCalled();
+    expect(await bridge.readTaggedBrowserContext({ projectPath: '/project', sessionId: 'stranger' })).toBeNull();
   });
 
   it('opens a new tab for the owning root session', async () => {

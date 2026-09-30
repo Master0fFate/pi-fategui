@@ -1,4 +1,8 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { getFateApi, getFateApiOptional, getDesktopApi, getDesktopApiOptional, getWebApiOptional, hasCapability } from '../platform/api';
+import type { NetworkWorkspaceApi } from '../stores/runtimeStore';
+import { useRuntimeStore as useWebWorkspaceStore } from '../stores/runtimeStore';
+import { unavailableExplanation } from '../platform/capabilityPolicy';
 import { defaultSpeechSettings, type AppCommand, type PiEvent, type RuntimeState } from '../../shared/contracts/ipc';
 import { AppToast } from '../components/AppToast';
 import { applyNonThemeVisualSettings, applyVisualSettings } from '../appearance';
@@ -16,6 +20,8 @@ import { attachBrowserAnnotationToSession } from '../features/chat/Composer';
 import { openBrowserLink } from '../features/browser/browserLink';
 import { RuntimeEventBuffer, streamPresentationDelay } from '../lib/RuntimeEventBuffer';
 import { canStopSession } from '../../shared/sessionStop';
+import { reconcileHydrationEvents } from '../../client/reconcileHydrationEvents';
+export { reconcileHydrationEvents } from '../../client/reconcileHydrationEvents';
 
 const MAX_HYDRATION_BUFFER_EVENTS = 1_000;
 const MAX_HYDRATION_BUFFER_BYTES = 32 * 1024 * 1024;
@@ -35,71 +41,6 @@ export function hasBlockingBrowserOverlay(root: ParentNode = document): boolean 
     .some((element) => element.dataset.state !== 'closed' && !element.closest('.browser-workspace'));
 }
 
-export function reconcileHydrationEvents(runtime: RuntimeState, events: readonly PiEvent[]): PiEvent[] {
-  const watermark = runtime.eventCursor;
-  if (watermark === undefined) return [...events];
-  const messages = new Map(runtime.messages.map((message) => [message.id, message]));
-  const tools = new Map((runtime.tools ?? []).map((tool) => [tool.id, tool]));
-  const representedDeltaIndexes = new Set<number>();
-  const completedMessageIds = new Set(events.flatMap((event) =>
-    event.type === 'message.completed'
-      && event.cursor !== undefined
-      && event.cursor <= watermark
-      && messages.has(event.messageId)
-      ? [event.messageId]
-      : [],
-  ));
-
-  for (const kind of ['assistant.text', 'assistant.reasoning'] as const) {
-    const groups = new Map<string, Array<{ event: Extract<PiEvent, { type: typeof kind }>; index: number }>>();
-    events.forEach((event, index) => {
-      if (event.type !== kind || event.cursor === undefined || event.cursor > watermark) return;
-      const group = groups.get(event.messageId) ?? [];
-      group.push({ event, index });
-      groups.set(event.messageId, group);
-    });
-    for (const [messageId, group] of groups) {
-      if (completedMessageIds.has(messageId)) {
-        for (const item of group) representedDeltaIndexes.add(item.index);
-        continue;
-      }
-      const message = messages.get(messageId);
-      const snapshot = kind === 'assistant.text' ? message?.text ?? '' : message?.reasoning ?? '';
-      let combined = '';
-      let representedCount = 0;
-      group.forEach(({ event }, index) => {
-        combined += event.delta;
-        if (snapshot.endsWith(combined)) representedCount = index + 1;
-      });
-      for (let index = 0; index < representedCount; index += 1) representedDeltaIndexes.add(group[index]!.index);
-    }
-  }
-
-  return events.filter((event, index) => {
-    if (event.cursor === undefined || event.cursor > watermark) return true;
-    if (representedDeltaIndexes.has(index)) return false;
-    if (event.type === 'assistant.text' || event.type === 'assistant.reasoning') return true;
-    if (event.type === 'message.started' || event.type === 'message.completed') return !messages.has(event.messageId);
-    if (event.type === 'tool.started') return !tools.has(event.toolCallId);
-    if (event.type === 'tool.updated') {
-      const tool = tools.get(event.toolCallId);
-      if (tool && tool.status !== 'running') return false;
-      return !tool || (!tool.output.endsWith(event.output) && tool.output !== event.output);
-    }
-    if (event.type === 'tool.completed') return tools.get(event.toolCallId)?.status === 'running' || !tools.has(event.toolCallId);
-    if (event.type === 'state.changed' || event.type === 'run.accepted' || event.type === 'run.started' || event.type === 'run.completed') return false;
-    // Queue, compaction, and error events own renderer-only presentation state
-    // that is not fully represented by RuntimeState.
-    return true;
-  }).map((event) => {
-    if (event.cursor === undefined || event.cursor > watermark) return event;
-    // The reconciliation above proved this pre-watermark event is not represented
-    // by the authoritative snapshot. Replay that specific gap as uncursored so the
-    // store's monotonic cursor gate can still reject every duplicate/regression.
-    const { cursor: _representedCursor, ...reconciledGap } = event;
-    return reconciledGap as PiEvent;
-  });
-}
 const MusicPlayerDock = lazy(() => import('../features/music/MusicPlayerDock').then((module) => ({ default: module.MusicPlayerDock })));
 const CommandPalette = lazy(() => import('../features/commands/CommandPalette').then((module) => ({ default: module.CommandPalette })));
 import { useLearningStore } from '../features/learning/learningStore';
@@ -110,17 +51,22 @@ import { AppShell } from './AppShell';
 function BrowserInitializer() {
   const projectPath = useRuntimeStore((state) => state.runtime.project?.path ?? null);
   const projectTrusted = useRuntimeStore((state) => state.runtime.project?.trusted ?? false);
+  const browserSessionId = useRuntimeStore((state) => state.runtime.sessionId);
   const browserOpen = useUiStore((state) => state.browserOpen);
   const hydrate = useBrowserStore((state) => state.hydrate);
   const applyEvents = useBrowserStore((state) => state.applyEvents);
   const setAnnotations = useBrowserStore((state) => state.setAnnotations);
   const reset = useBrowserStore((state) => state.reset);
   const setBrowserOpen = useUiStore((state) => state.setBrowserOpen);
+  const previousBrowserScope = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.onBrowserEvents !== 'function') return undefined;
-    return window.piDesktop.onBrowserEvents((events) => {
-      applyEvents(events);
+    if (!hasCapability('nativeBrowser') || typeof getDesktopApiOptional()?.onBrowserEvents !== 'function') return undefined;
+    return getDesktopApi().onBrowserEvents((events) => {
+      const current = useRuntimeStore.getState().runtime;
+      const selectedEvents = events.filter((event) => !event.sessionId || !event.projectPath
+        || event.projectPath === current.project?.path && event.sessionId === current.sessionId);
+      if (selectedEvents.length) applyEvents(selectedEvents);
       for (const event of events) {
         if (event.type === 'annotation-created') {
           attachBrowserAnnotationToSession(event.projectPath, event.sessionId, event.annotation.id);
@@ -130,34 +76,40 @@ function BrowserInitializer() {
   }, [applyEvents]);
 
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.onBrowserLinkOpen !== 'function') return undefined;
-    return window.piDesktop.onBrowserLinkOpen((url) => { void openBrowserLink(url); });
+    if (!hasCapability('nativeBrowser') || typeof getDesktopApiOptional()?.onBrowserLinkOpen !== 'function') return undefined;
+    return getDesktopApi().onBrowserLinkOpen((url) => { void openBrowserLink(url); });
   }, []);
 
   useEffect(() => {
-    const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
-    if (!projectPath || !projectTrusted || !browserOpen || typeof desktop?.initializeBrowser !== 'function') {
-      if (!projectPath || !projectTrusted) {
-        reset();
-        setBrowserOpen(false);
-      }
+    const desktop = getDesktopApiOptional();
+    // Closing the browser must not detach notes already attached to this
+    // conversation. A different project/session still clears the old notes.
+    const scope = projectPath && projectTrusted && browserSessionId ? `${projectPath}\0${browserSessionId}` : null;
+    const retained = scope && scope === previousBrowserScope.current ? useBrowserStore.getState().annotations : [];
+    previousBrowserScope.current = scope;
+    reset();
+    if (retained.length) setAnnotations(retained);
+    if (!projectPath || !projectTrusted || !browserSessionId || !browserOpen || !hasCapability('nativeBrowser') || typeof desktop?.initializeBrowser !== 'function') {
+      if (!projectPath || !projectTrusted) setBrowserOpen(false);
       return undefined;
     }
     let active = true;
+    const stillSelected = () => {
+      const current = useRuntimeStore.getState().runtime;
+      return active && current.project?.path === projectPath && current.project.trusted && current.sessionId === browserSessionId;
+    };
     void desktop.initializeBrowser().then(async (state) => {
-      const current = useRuntimeStore.getState().runtime.project;
-      if (!active || current?.path !== projectPath || !current.trusted) return;
+      if (!stillSelected()) return;
       hydrate(state, projectPath);
       if (typeof desktop.listBrowserAnnotations === 'function') {
         const annotations = await desktop.listBrowserAnnotations();
-        const latest = useRuntimeStore.getState().runtime.project;
-        if (active && latest?.path === projectPath && latest.trusted) setAnnotations(annotations);
+        if (stillSelected()) setAnnotations(annotations);
       }
     }).catch((error: unknown) => {
-      if (active) useBrowserStore.getState().setError(error instanceof Error ? error.message : 'The built-in browser could not start.');
+      if (stillSelected()) useBrowserStore.getState().setError(error instanceof Error ? error.message : 'The built-in browser could not start.');
     });
     return () => { active = false; };
-  }, [browserOpen, hydrate, projectPath, projectTrusted, reset, setAnnotations, setBrowserOpen]);
+  }, [browserOpen, browserSessionId, hydrate, projectPath, projectTrusted, reset, setAnnotations, setBrowserOpen]);
 
   return null;
 }
@@ -176,8 +128,8 @@ function WorkspaceInitializer() {
   useEffect(() => {
     void initializeWorkspace(projectPath, surface).then(() => {
       const workspace = useWorkspaceStore.getState();
-      const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
-      if (projectPath && workspace.projectPath === projectPath && !workspace.git && typeof desktop?.getGitStatus === 'function') return workspace.refreshGit();
+      const api = getFateApiOptional();
+      if (projectPath && workspace.projectPath === projectPath && !workspace.git && typeof api?.getGitStatus === 'function') return workspace.refreshGit();
       return undefined;
     });
   }, [initializeWorkspace, projectPath, surface]);
@@ -185,7 +137,46 @@ function WorkspaceInitializer() {
   return null;
 }
 
+function NetworkInitializer({ web }: { web: NetworkWorkspaceApi }) {
+  const selected = useWebWorkspaceStore((state) => state.selected);
+  const snapshot = useWebWorkspaceStore((state) => state.snapshot);
+  const phase = useWebWorkspaceStore((state) => state.phase);
+  const refresh = useWebWorkspaceStore((state) => state.refresh);
+  const initialize = useWebWorkspaceStore((state) => state.initialize);
+  const disconnect = useWebWorkspaceStore((state) => state.disconnect);
+  const invalidate = useWebWorkspaceStore((state) => state.invalidate);
+  const reset = useWebWorkspaceStore((state) => state.reset);
+  // Select the DTO source before paint; never flash a previous desktop conversation.
+  useLayoutEffect(() => {
+    void initialize(web);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = web.onInvalidate(() => {
+      if (!web.isConnected) { if (timer) clearTimeout(timer); timer = undefined; disconnect(); return; }
+      // Events are invalidation metadata, not PiEvents. Disable current reads immediately.
+      invalidate();
+      if (!timer) timer = setTimeout(() => { timer = undefined; void refresh(web); }, 250);
+    });
+    return () => { unsubscribe(); if (timer) clearTimeout(timer); reset(); };
+  }, [web, initialize, refresh, disconnect, invalidate, reset]);
+  useEffect(() => { if (selected && web.isConnected) void refresh(web); }, [web, selected, refresh]);
+  useEffect(() => {
+    if (!snapshot || phase !== 'observing' || !web.isConnected) return;
+    const state = useRuntimeStore.getState();
+    state.recoverPendingReview(web);
+    void state.loadNetworkViews(web, 'session');
+    void state.loadNetworkViews(web, 'queue');
+    void useGoalMaxStore.getState().loadNetwork(web);
+    void useTaskStore.getState().loadNetwork(web);
+  }, [web, snapshot, phase]);
+  return null;
+}
+
 export function App() {
+  const web = getWebApiOptional();
+  return <>{web ? <NetworkInitializer web={web} /> : <DesktopInitializer />}<AppShell /><AppToast /></>;
+}
+
+function DesktopInitializer() {
   const setRuntime = useRuntimeStore((state) => state.setRuntime);
   const hydrateRuntime = useRuntimeStore((state) => state.hydrateRuntime);
   const applyEvents = useRuntimeStore((state) => state.applyEvents);
@@ -238,8 +229,8 @@ export function App() {
   }, [browserOpen, projectTrusted]);
 
   useEffect(() => {
-    const desktop = 'piDesktop' in window ? window.piDesktop : undefined;
-    if (!browserOpen || !projectPath || !projectTrusted || typeof desktop?.setBrowserOverlayBlocked !== 'function') return undefined;
+    const desktop = getDesktopApiOptional();
+    if (!hasCapability('nativeBrowser') || !browserOpen || !projectPath || !projectTrusted || typeof desktop?.setBrowserOverlayBlocked !== 'function') return undefined;
     let active = true;
     void desktop.setBrowserOverlayBlocked(paletteOpen || settingsOpen || goalEditorOpen || portalDialogOpen).then((state) => {
       const project = useRuntimeStore.getState().runtime.project;
@@ -256,17 +247,17 @@ export function App() {
   }, [projectPath, sessionId]);
 
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.getSettings !== 'function') return undefined;
+    if (!getFateApiOptional() || typeof getDesktopApiOptional()?.getSettings !== 'function') return undefined;
     let active = true;
-    const skinPromise = typeof window.piDesktop.getSkins === 'function'
-      ? window.piDesktop.getSkins().then((catalog) => catalog.skins).catch(() => builtInSkins)
+    const skinPromise = typeof getDesktopApiOptional()?.getSkins === 'function'
+      ? getDesktopApi().getSkins().then((catalog) => catalog.skins).catch(() => builtInSkins)
       : Promise.resolve(builtInSkins);
-    const settingsPromise = Promise.all([window.piDesktop.getSettings(), skinPromise]).then(([settings, skins]) => {
+    const settingsPromise = Promise.all([getDesktopApi().getSettings(), skinPromise]).then(([settings, skins]) => {
       if (active) setSkinDefinitions(skins);
       return resolveSkinAppearance(settings, skins);
     });
-    const themesPromise = typeof window.piDesktop.getThemes === 'function'
-      ? window.piDesktop.getThemes().catch(() => fallbackThemes)
+    const themesPromise = typeof getDesktopApiOptional()?.getThemes === 'function'
+      ? getDesktopApi().getThemes().catch(() => fallbackThemes)
       : Promise.resolve(fallbackThemes);
     // Do not make basic UI preferences wait for Pi theme discovery. Theme
     // scanning can touch several user/project locations and must not block the
@@ -296,7 +287,7 @@ export function App() {
       useUiStore.getState().setAdvancedPromptImprovement(settings.advancedPromptImprovement);
       useUiStore.getState().setDisabledModels(settings.disabledModels ?? []);
       useUiStore.getState().setSpeech(settings.speech ?? defaultSpeechSettings);
-      void window.piDesktop.getSpeechStatus().then((status) => { if (active) useUiStore.getState().setSpeechStatus(status); }).catch(() => undefined);
+      if (hasCapability('microphone')) void getDesktopApi().getSpeechStatus().then((status) => { if (active) useUiStore.getState().setSpeechStatus(status); }).catch(() => undefined);
     }).catch((error: unknown) => {
       // Settings can fail (strict-schema rejection, IPC error, …). Do not
       // swallow it silently: keep a usable built-in visual fallback.
@@ -316,12 +307,12 @@ export function App() {
 
   useEffect(() => {
     const generation = selectGoalSession(projectPath, sessionId);
-    if (!projectPath || !sessionId || !('piDesktop' in window) || typeof window.piDesktop.getGoalMax !== 'function') {
+    if (!projectPath || !sessionId || !getFateApiOptional() || typeof getFateApi().getGoalMax !== 'function') {
       hydrateGoal(generation, null);
       return;
     }
     let active = true;
-    void window.piDesktop.getGoalMax().then((goal) => {
+    void getFateApi().getGoalMax().then((goal) => {
       if (active) hydrateGoal(generation, goal);
     }).catch(() => {
       if (active) hydrateGoal(generation, null);
@@ -330,18 +321,18 @@ export function App() {
   }, [hydrateGoal, projectPath, selectGoalSession, sessionId]);
 
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.onGoalMaxEvents !== 'function') return undefined;
-    return window.piDesktop.onGoalMaxEvents((events) => applyGoalEvents(events));
+    if (!getFateApiOptional() || typeof getFateApi().onGoalMaxEvents !== 'function') return undefined;
+    return getFateApi().onGoalMaxEvents((events) => applyGoalEvents(events));
   }, [applyGoalEvents]);
 
   useEffect(() => {
     const generation = selectTaskSession(projectPath, sessionId);
-    if (!projectPath || !sessionId || !('piDesktop' in window) || typeof window.piDesktop.getTaskList !== 'function') {
+    if (!projectPath || !sessionId || !getFateApiOptional() || typeof getFateApi().getTaskList !== 'function') {
       hydrateTask(generation, null);
       return;
     }
     let active = true;
-    void window.piDesktop.getTaskList().then((list) => {
+    void getFateApi().getTaskList().then((list) => {
       if (active) hydrateTask(generation, list);
     }).catch(() => {
       if (active) hydrateTask(generation, null);
@@ -350,26 +341,26 @@ export function App() {
   }, [hydrateTask, projectPath, selectTaskSession, sessionId]);
 
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.onTaskEvents !== 'function') return undefined;
-    return window.piDesktop.onTaskEvents((events) => applyTaskEvents(events));
+    if (!getFateApiOptional() || typeof getFateApi().onTaskEvents !== 'function') return undefined;
+    return getFateApi().onTaskEvents((events) => applyTaskEvents(events));
   }, [applyTaskEvents]);
 
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.onSpeechDownload !== 'function') return undefined;
-    return window.piDesktop.onSpeechDownload((progress) => {
+    if (!hasCapability('microphone') || typeof getDesktopApiOptional()?.onSpeechDownload !== 'function') return undefined;
+    return getDesktopApi().onSpeechDownload((progress) => {
       useUiStore.getState().setSpeechDownload(progress.state === 'downloading' || progress.state === 'verifying' ? progress : null);
     });
   }, []);
 
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.getAppInfo !== 'function') return;
-    void window.piDesktop.getAppInfo()
+    if (!getFateApiOptional() || typeof getDesktopApiOptional()?.getAppInfo !== 'function') return;
+    void getDesktopApi().getAppInfo()
       .then((info) => { document.documentElement.dataset.platform = info.platform; })
       .catch(() => undefined);
   }, []);
 
   useEffect(() => {
-    if (!('piDesktop' in window)) return;
+    if (!getFateApiOptional()) return;
     let cancelled = false;
     let hydrating = true;
     const bufferedEvents: PiEvent[] = [];
@@ -378,9 +369,14 @@ export function App() {
     let bufferOverflowed = false;
     const presentation = new RuntimeEventBuffer(applyEvents, streamPresentationDelay, (id) => Boolean(useRuntimeStore.getState().toolsById[id]));
     const unsubscribePresentation = useRuntimeStore.subscribe((next, previous) => {
-      if (next.runtime.sessionId !== previous.runtime.sessionId || next.runtime.project?.path !== previous.runtime.project?.path) presentation.clear();
+      if (next.runtime.sessionId !== previous.runtime.sessionId || next.runtime.project?.path !== previous.runtime.project?.path) {
+        presentation.clear();
+        // Clear browser data in the same state transition, before React can
+        // paint the new conversation with the previous one's tab or annotation.
+        useBrowserStore.getState().reset();
+      }
     });
-    const unsubscribe = window.piDesktop.onEvents((events) => {
+    const unsubscribe = getFateApi().onEvents((events) => {
       if (cancelled) return;
       if (!hydrating) {
         presentation.enqueue(events);
@@ -410,7 +406,7 @@ export function App() {
       }
     });
 
-    void window.piDesktop.getRuntimeState().then((runtime) => {
+    void getFateApi().getRuntimeState().then((runtime) => {
       if (cancelled || !runtime) return;
       if (bufferOverflowed) {
         // Do not install a snapshot paired with an incomplete event tail. A new
@@ -450,7 +446,7 @@ export function App() {
   }, [applyEvents, hydrateRuntime, hydrationAttempt]);
 
   useEffect(() => {
-    if (!('piDesktop' in window)) return;
+    if (!getFateApiOptional()) return;
     let active = true;
     const applyReplacement = (origin: RuntimeState, state: RuntimeState) => {
       if (!active) return;
@@ -467,7 +463,8 @@ export function App() {
         kind: 'error', title, message: appCommandErrorMessage(error, fallback),
       });
       if (command === 'open-project') {
-        void window.piDesktop.selectProject().then((state) => {
+        if (!getDesktopApiOptional()) { unavailable('Project picker unavailable', 'Select a registered workspace on this host.'); return; }
+        void getDesktopApi().selectProject().then((state) => {
           if (!active) return;
           setRuntime(state);
           if (state.project) ui.setSidebarCollapsed(false);
@@ -485,7 +482,7 @@ export function App() {
         sessionReplacementBusy.current = true;
         let pending: Promise<RuntimeState>;
         try {
-          pending = window.piDesktop.newSession();
+          pending = getFateApi().newSession();
         } catch (error) {
           pending = Promise.reject(error);
         }
@@ -509,13 +506,14 @@ export function App() {
         }
       }
       else if (command === 'toggle-browser') {
+        if (!hasCapability('nativeBrowser')) { unavailable('Browser unavailable', unavailableExplanation.nativeBrowser); return; }
         if (!runtime.project?.trusted) {
           unavailable('Browser unavailable', 'Open and trust a project before opening the Browser workspace.');
           return;
         }
         const opening = !ui.browserOpen;
         if (opening) {
-          void window.piDesktop.setBrowserMode('agent').then((state) => {
+          void getDesktopApi().setBrowserMode('agent').then((state) => {
             useBrowserStore.getState().hydrate(state);
             ui.setBrowserOpen(true);
           }).catch((error: unknown) => {
@@ -532,18 +530,19 @@ export function App() {
           unavailable('Nothing to stop', 'Pi is not currently generating a response.');
           return;
         }
-        void window.piDesktop.abort().catch((error: unknown) => failed('Could not stop generation', error, 'The active response could not be stopped.'));
+        void getFateApi().abort().catch((error: unknown) => failed('Could not stop generation', error, 'The active response could not be stopped.'));
       }
       else if (command === 'toggle-sidebar') ui.toggleSidebar();
       else if (command === 'toggle-inspector') ui.toggleInspector();
       else if (command === 'open-settings') ui.setSettingsOpen(true);
       else if (command === 'open-terminal') {
+        if (!hasCapability('manualTerminal')) { unavailable('Terminal unavailable', unavailableExplanation.manualTerminal); return; }
         if (runtime.project?.trusted) ui.toggleTerminal();
         else unavailable('Terminal unavailable', 'Open and trust a project before opening the manual terminal.');
       }
       else if (command === 'open-palette') ui.setPaletteOpen(true);
       else if (command === 'export-session') {
-        if (typeof window.piDesktop.exportSession !== 'function') {
+        if (typeof getDesktopApiOptional()?.exportSession !== 'function') {
           unavailable('Export unavailable', 'Restart Fate UI to enable session export.');
           return;
         }
@@ -551,16 +550,26 @@ export function App() {
           unavailable('Nothing to export', 'Open a session before exporting it.');
           return;
         }
-        void window.piDesktop.exportSession().then((result) => {
+        void getDesktopApi().exportSession().then((result) => {
           if (result.saved) useUiStore.getState().showToast({ kind: 'success', title: 'Session exported', message: result.path ?? 'Saved locally.' });
         }).catch((error: unknown) => failed('Could not export session', error, 'The session could not be exported.'));
       }
     };
-    const unsubscribe = typeof window.piDesktop.onAppCommand === 'function'
-      ? window.piDesktop.onAppCommand(run)
+    const unsubscribe = typeof getDesktopApiOptional()?.onAppCommand === 'function'
+      ? getDesktopApi().onAppCommand(run)
       : () => undefined;
+    let armedStop: { sessionId: string; at: number } | null = null;
+    let stopHintTimer: number | null = null;
+    const clearStopHint = () => {
+      armedStop = null;
+      if (stopHintTimer) window.clearTimeout(stopHintTimer);
+      stopHintTimer = null;
+      if (useUiStore.getState().toast?.title === 'Press Esc again to stop') useUiStore.getState().dismissToast();
+    };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
+      if (event.key !== 'Escape') clearStopHint();
+      if (event.defaultPrevented) { clearStopHint(); return; }
+      if (event.repeat) return;
       const primary = event.metaKey || event.ctrlKey;
       let command: AppCommand | null = null;
       if (primary && event.key.toLocaleLowerCase() === 'k') command = 'open-palette';
@@ -577,12 +586,32 @@ export function App() {
         && !document.querySelector('[role="dialog"], [role="listbox"], [data-radix-popper-content-wrapper], .music-dock[data-open="true"]')
       ) {
         const browser = useBrowserStore.getState().state;
-        if (browser.mode === 'annotate' && typeof window.piDesktop.setBrowserMode === 'function') {
+        if (hasCapability('nativeBrowser') && browser.mode === 'annotate' && typeof getDesktopApiOptional()?.setBrowserMode === 'function') {
+          clearStopHint();
           event.preventDefault();
-          void window.piDesktop.setBrowserMode('agent').then((state) => useBrowserStore.getState().hydrate(state)).catch(() => undefined);
+          void getDesktopApi().setBrowserMode('agent').then((state) => useBrowserStore.getState().hydrate(state)).catch(() => undefined);
           return;
         }
-        if (canStopSession(useRuntimeStore.getState().runtime)) command = 'stop-generation';
+        const current = useRuntimeStore.getState().runtime;
+        if (canStopSession(current) && current.sessionId && !primary && !event.altKey && !event.shiftKey) {
+          event.preventDefault();
+          const now = Date.now();
+          if (armedStop?.sessionId === current.sessionId && now >= armedStop.at && now - armedStop.at <= 3_000) {
+            clearStopHint();
+            command = 'stop-generation';
+          } else {
+            clearStopHint();
+            armedStop = { sessionId: current.sessionId, at: now };
+            useUiStore.getState().showToast({ kind: 'info', title: 'Press Esc again to stop', message: 'Within 3 seconds.' });
+            stopHintTimer = window.setTimeout(() => {
+              if (armedStop?.at === now) clearStopHint();
+            }, 3_000);
+          }
+        } else {
+          clearStopHint();
+        }
+      } else if (event.key === 'Escape') {
+        clearStopHint();
       }
       if (command) { event.preventDefault(); run(command); }
     };
@@ -592,6 +621,7 @@ export function App() {
       sessionReplacementBusy.current = false;
       unsubscribe();
       window.removeEventListener('keydown', onKeyDown);
+      clearStopHint();
     };
   }, [setRuntime]);
 
@@ -600,9 +630,7 @@ export function App() {
       {hydrationError && <div className="hydration-error-banner" role="alert"><span>{hydrationError}</span><button type="button" onClick={() => setHydrationAttempt((value) => value + 1)}>Retry</button></div>}
       <BrowserInitializer />
       <WorkspaceInitializer />
-      <AppShell />
-      <AppToast />
-      {musicPlayerEnabled && <Suspense fallback={null}><MusicPlayerDock /></Suspense>}
+      {musicPlayerEnabled && hasCapability('ambientAudio') && getDesktopApiOptional() && <Suspense fallback={null}><MusicPlayerDock /></Suspense>}
       {(paletteOpen || paletteActivated) && <Suspense fallback={null}><CommandPalette /></Suspense>}
       {(settingsOpen || settingsActivated) && <Suspense fallback={null}><SettingsDialog themeCatalog={themeCatalog} /></Suspense>}
       {learningOpen && <Suspense fallback={null}><LearningPanel /></Suspense>}

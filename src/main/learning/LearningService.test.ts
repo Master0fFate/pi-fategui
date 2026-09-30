@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionManager, type AgentSession } from '@earendil-works/pi-coding-agent';
+import { normalizeContext } from '@earendil-works/pi-ai';
 import { emptyActivation, type LearningMutation, type LessonContent, type MemoryLearningSettings } from '../../shared/contracts/learning';
 import { LearningService } from './LearningService';
 import { learningDigest, learningIdentity, LearningRepository, projectLearningKey } from './LearningRepository';
@@ -298,7 +299,7 @@ describe('dispatch boundary, not preview or history', () => {
     const dispatch = { id: randomUUID(), text: 'filesystem renderer', turn: { binding: origin.binding, pins: [{ lessonId: lesson.id, revisionId: revision.id }], excluded: [] }, blocked };
     adapter.start(dispatch.text, dispatch);
     await mutation({ action: 'set-enabled', id: lesson.id, enabled: false });
-    await expect(adapter.wrap(send as never)({} as never, { messages: [] })).rejects.toThrow('ineligible');
+    await expect(adapter.wrap(send as never)({} as never, normalizeContext({ messages: [] }))).rejects.toThrow('ineligible');
     expect(send).not.toHaveBeenCalled(); expect(blocked).toHaveBeenCalledOnce();
   });
   it('does not block coding when the master switch is off, even if a session looks stale', async () => {
@@ -308,7 +309,7 @@ describe('dispatch boundary, not preview or history', () => {
     const send = vi.fn(() => ({ ok: true }));
     adapter.register({ id: randomUUID(), text: 'hello', turn: { binding: origin.binding, pins: [], excluded: [] } });
     adapter.start('hello');
-    await expect(adapter.wrap(send as never)({} as never, { messages: [] }, { signal: AbortSignal.abort() })).resolves.toEqual({ ok: true });
+    await expect(adapter.wrap(send as never)({} as never, normalizeContext({ messages: [] }), { signal: AbortSignal.abort() })).resolves.toEqual({ ok: true });
     expect(send).toHaveBeenCalledOnce();
   });
   it('attaches once per turn across retries without mutating signed history and does not replay continuation/fork context', async () => {
@@ -317,7 +318,7 @@ describe('dispatch boundary, not preview or history', () => {
     const dispatch = { id: randomUUID(), text: 'filesystem renderer', turn: { binding: origin.binding, pins: [{ lessonId: lesson.id, revisionId: revision.id }], excluded: [] } };
     adapter.register(dispatch); adapter.start(dispatch.text);
     const originalMessage = { role: 'user' as const, content: 'filesystem renderer', timestamp: 1 };
-    const context = { messages: [originalMessage] };
+    const context = normalizeContext({ messages: [originalMessage] });
     const send = vi.fn(() => ({})); const wrapped = adapter.wrap(send as never);
     await wrapped({} as never, context); await wrapped({} as never, context);
     expect(context.messages).toEqual([originalMessage]);

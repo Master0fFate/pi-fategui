@@ -116,6 +116,7 @@ describe('MusicService', () => {
     const privateDns = vi.fn(async () => ['127.0.0.1']);
     const proxy = new PublicHttpsProxy(privateDns);
     const proxyUrl = new URL(await proxy.start());
+    expect(proxyUrl.hostname).toBe('127.0.0.1');
     try {
       const response = await new Promise<string>((resolve, reject) => {
         const socket = connect(Number(proxyUrl.port), proxyUrl.hostname);

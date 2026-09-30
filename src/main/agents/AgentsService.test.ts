@@ -80,6 +80,55 @@ async function settled(service: AgentsService, id: string): Promise<AgentRun> {
 }
 
  describe('Agents production service boundaries', () => {
+  it('refuses a saved foreground prompt when storage fails during session creation', async () => {
+    const { service, agent, task, host, accepted } = await fixture();
+    let blocked = false;
+    host.assertAdmission = () => { if (blocked) throw new Error('STORAGE_UNAVAILABLE: recovery checkpoint failed.'); };
+    const create = host.runtime.createAgentForegroundExecution;
+    host.runtime.createAgentForegroundExecution = async (id) => {
+      const session = await create(id);
+      blocked = true; // Fault lands after the earlier claim and home awaits.
+      return session;
+    };
+    const run = await service.run({ agentId: agent.id, taskTemplateId: task.id });
+    expect((await settled(service, run.id)).status).toBe('failed');
+    expect(accepted).toHaveLength(0);
+  });
+  it('rechecks the saved foreground callback after an awaited Pi prompt preflight', async () => {
+    const { service, agent, task, host, accepted } = await fixture();
+    let blocked = false;
+    host.assertAdmission = () => { if (blocked) throw new Error('STORAGE_UNAVAILABLE: recovery checkpoint failed.'); };
+    const create = host.runtime.createAgentForegroundExecution;
+    host.runtime.createAgentForegroundExecution = async (id, beforeEffect) => {
+      const session = await create(id);
+      return { ...session, prompt: async (text, options) => {
+        await Promise.resolve(); // Synthetic async Pi preflight after the outer gate.
+        blocked = true;
+        beforeEffect?.();
+        return session.prompt(text, options);
+      } };
+    };
+    const run = await service.run({ agentId: agent.id, taskTemplateId: task.id });
+    expect((await settled(service, run.id)).status).toBe('failed');
+    expect(accepted).toHaveLength(0);
+  });
+  it('refuses provider/tool validation when storage fails after definition reads', async () => {
+    const { service, agent, task, host, execute, accepted } = await fixture(true);
+    const routine = await service.saveRoutine({ expected: null, value: { name: 'Gated', agentId: agent.id, taskTemplateId: task.id,
+      intervalMinutes: 1, timeZone: 'UTC', permissionCeiling: 'edit', enabled: true, notify: false, osNotify: false } });
+    let blocked = false;
+    host.assertAdmission = () => { if (blocked) throw new Error('STORAGE_UNAVAILABLE: recovery checkpoint failed.'); };
+    const original = execute.getMockImplementation()!;
+    execute.mockImplementation(async (input) => {
+      const session = await original(input);
+      blocked = true;
+      await expect(input.validate?.()).rejects.toThrow('STORAGE_UNAVAILABLE');
+      return session;
+    });
+    const run = await service.run({ agentId: agent.id, taskTemplateId: task.id, routineId: routine.id });
+    expect((await settled(service, run.id)).status).toBe('failed');
+    expect(accepted).toHaveLength(0);
+  });
   it('opens one retained home concurrently, preserves applied revision after rename, and blocks disabled actions', async () => {
     const { service, agent, host } = await fixture();
     const homes = await Promise.all([service.open(agent.id, 'home'), service.open(agent.id, 'home')]);

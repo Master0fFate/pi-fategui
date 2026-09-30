@@ -1,3 +1,4 @@
+import { getFateApiOptional, getDesktopApi, getDesktopApiOptional } from '../../platform/api';
 import {
   ArrowRight,
   ChevronUp,
@@ -153,7 +154,7 @@ export function MusicPlayerDock() {
       clearLocalAudio();
       return;
     }
-    if (!('piDesktop' in window) || typeof window.piDesktop.getMusicStatus !== 'function') {
+    if (!getFateApiOptional() || typeof getDesktopApiOptional()?.getMusicStatus !== 'function') {
       setAvailable(false);
       setNotice('Restart Fate UI to activate the music bridge.');
       return;
@@ -161,7 +162,7 @@ export function MusicPlayerDock() {
     let active = true;
     setAvailable(null);
     setNotice('Checking yt-dlp…');
-    void window.piDesktop.getMusicStatus().then((status) => {
+    void getDesktopApi().getMusicStatus().then((status) => {
       if (!active) return;
       setAvailable(status.available);
       setNotice(status.available ? `yt-dlp ${status.version ?? ''} ready`.trim() : status.message ?? 'yt-dlp is unavailable.');
@@ -174,8 +175,8 @@ export function MusicPlayerDock() {
   }, [clearLocalAudio, enabled, setPlaying]);
 
   useEffect(() => {
-    if (!enabled || !('piDesktop' in window) || typeof window.piDesktop.onMusicDurations !== 'function') return;
-    return window.piDesktop.onMusicDurations((event) => {
+    if (!enabled || !getFateApiOptional() || typeof getDesktopApiOptional()?.onMusicDurations !== 'function') return;
+    return getDesktopApi().onMusicDurations((event) => {
       setQueue((current) => {
         if (!current) return current;
         const durations = new Map(event.updates.map((update) => [update.trackId, update.duration]));
@@ -262,7 +263,7 @@ export function MusicPlayerDock() {
       return;
     }
 
-    if (!('piDesktop' in window) || typeof window.piDesktop.resolveMusicTrack !== 'function') {
+    if (!getFateApiOptional() || typeof getDesktopApiOptional()?.resolveMusicTrack !== 'function') {
       playWhenReady.current = false;
       setBusy(false);
       setError('The music bridge is unavailable. Restart Fate UI and try again.');
@@ -271,7 +272,7 @@ export function MusicPlayerDock() {
 
     setNotice('Resolving audio stream…');
     try {
-      const nextStream = await window.piDesktop.resolveMusicTrack(track.id);
+      const nextStream = await getDesktopApi().resolveMusicTrack(track.id);
       if (currentRequest !== requestId.current) return;
       autoSkipBudget.current = MAX_AUTO_SKIPS;
       setStream(nextStream);
@@ -314,7 +315,7 @@ export function MusicPlayerDock() {
       setError(available === null ? 'yt-dlp is still being checked.' : 'Install yt-dlp to load web media, or open a local audio file.');
       return;
     }
-    if (!('piDesktop' in window) || typeof window.piDesktop.loadMusic !== 'function') {
+    if (!getFateApiOptional() || typeof getDesktopApiOptional()?.loadMusic !== 'function') {
       setError('The music bridge is unavailable. Restart Fate UI and try again.');
       return;
     }
@@ -324,7 +325,7 @@ export function MusicPlayerDock() {
     setSkipNotice(null);
     setNotice('Reading link…');
     try {
-      const incomingQueue = await window.piDesktop.loadMusic(link);
+      const incomingQueue = await getDesktopApi().loadMusic(link);
       if (currentRequest !== requestId.current) return;
       const hadQueue = Boolean(queueRef.current?.tracks.length);
       const appended = appendMusicQueue(queueRef.current, incomingQueue);
@@ -422,13 +423,13 @@ export function MusicPlayerDock() {
     clearLocalAudio();
     setNotice('Queue cleared');
 
-    if (!('piDesktop' in window) || typeof window.piDesktop.clearMusicQueue !== 'function') {
+    if (!getFateApiOptional() || typeof getDesktopApiOptional()?.clearMusicQueue !== 'function') {
       setBusy(false);
       setError('Restart Fate UI to activate queue clearing.');
       return;
     }
     try {
-      await window.piDesktop.clearMusicQueue();
+      await getDesktopApi().clearMusicQueue();
     } catch (reason) {
       setError(bridgeMessage(reason, 'The queue was cleared locally, but the music bridge could not be reset.'));
     } finally {

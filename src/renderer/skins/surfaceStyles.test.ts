@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { builtInSkins, type SkinDefinition } from '../../shared/skins';
-import { skinSurfaceNames } from '../../shared/skinStyles';
+import { skinStylesSchema, skinSurfaceNames } from '../../shared/skinStyles';
 import { applySurfaceStyles } from './surfaceStyles';
 import { skinSurfaceSelectors, surfaceRules } from './surfaces';
 
@@ -11,6 +11,17 @@ describe('whole-UI surface style contract', () => {
     const rules = surfaceRules();
     for (const name of skinSurfaceNames) expect(rules).toContain(`--skin-${name}-control-radius`);
   });
+  it('accepts an independent questionnaire field in custom skin styles', () => {
+    const styles = skinStylesSchema.parse({ normal: { questionnaire: { surface: 'raised', surfaceRadius: 6 } }, compact: { questionnaire: { padding: 4 } } });
+    const skin: SkinDefinition = { ...builtInSkins[1]!, styles };
+    applySurfaceStyles(skin, false, false);
+    expect(document.documentElement.style.getPropertyValue('--skin-questionnaire-background')).toBe('var(--theme-raised)');
+    expect(surfaceRules()).toContain('.question-card');
+    applySurfaceStyles(skin, true, false);
+    expect(document.documentElement.style.getPropertyValue('--skin-questionnaire-padding')).toBe('4px');
+    applySurfaceStyles(builtInSkins[0]!, false, false);
+  });
+
   it('layers normal, compact and compact-session styles and clears them for Default', () => {
     const skin: SkinDefinition = { ...builtInSkins[1]!, styles: { normal: { music: { controlRadius: 3 } }, compact: { music: { controlRadius: 1 } }, compactSessions: { sidebar: { rowHeight: 28 } } } };
     applySurfaceStyles(skin, false, false);

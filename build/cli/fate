@@ -24,6 +24,6 @@ for arg in "$@"; do
 done
 [ -z "$project" ] && project="$PWD"
 
-set -- --project "$project"
+set -- "--project=$project"
 [ "$new_instance" ] && set -- "$@" --new-instance
 exec "$contents/MacOS/fate-ui" "$@"

@@ -266,6 +266,52 @@ describe('AgentTeamCoordinator vertical slice', () => {
     return { repository, root, service, host, coordinator, rootId, child, git };
   }
 
+  it('deletes an idle team with nested children and a dirty retained worktree without touching Git', async () => {
+    const { coordinator, rootId, child, root, repository, git, service } = await workspaceFixture();
+    const grandchild = await coordinator.spawn(child.nodeId, { task: 'nested review', permission: 'read-only', workspace: { mode: 'shared' } }, 'delete-nested', runtime(), undefined, { idleReleaseMs: 30_000 });
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
+    const otherTeam = coordinator.createTeam('root-session', 'Keep this team');
+    const team = coordinator.getTeams('root-session').find((item) => item.rootNodeId === rootId)!;
+    expect(coordinator.selectedTeamId('root-session')).toBe(team.id);
+    const branch = child.workspace!.branch!;
+    const checkout = child.workspace!.path;
+    await fs.writeFile(path.join(checkout, '.gitignore'), 'ignored/\n');
+    await fs.mkdir(path.join(checkout, 'ignored'));
+    await fs.writeFile(path.join(checkout, 'ignored', 'private.txt'), 'keep ignored data');
+    await fs.writeFile(path.join(checkout, 'scratch.txt'), 'keep uncommitted data');
+    await fs.writeFile(path.join(repository, 'parent-scratch.txt'), 'keep parent data');
+    const directories = createdInputs.map((input) => input.sessionDirectory!);
+    const cleanup = vi.spyOn(service, 'cleanup');
+    const sessions = [...childSessions];
+    expect(root.isStreaming).toBe(true);
+    expect(coordinator.inspectNode(rootId, grandchild.nodeId).resources).toMatchObject({ sessionLoaded: true, indexed: true, listenerAttached: true, idleReleaseTimerArmed: true });
+
+    await coordinator.deleteTeam('root-session', team.id);
+
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(coordinator.getTeams('root-session').map((item) => item.id)).toEqual([otherTeam.id]);
+    expect(coordinator.selectedTeamId('root-session')).toBe(otherTeam.id);
+    expect(coordinator.hasOwnedWork('root-session')).toBe(false);
+    const resources = coordinator as unknown as {
+      nodeToTeam: Map<string, string>; idleReleaseTimers: Map<string, unknown>;
+      schedulers: Map<string, unknown>; projectWriter: Map<string, { teamId: string }>;
+    };
+    expect(resources.nodeToTeam.has(child.nodeId)).toBe(false);
+    expect(resources.nodeToTeam.has(grandchild.nodeId)).toBe(false);
+    expect(resources.schedulers.has(team.id)).toBe(false);
+    expect([...resources.idleReleaseTimers.keys()].some((key) => key.startsWith(`${team.id}\0`))).toBe(false);
+    expect([...resources.projectWriter.values()].some((writer) => writer.teamId === team.id)).toBe(false);
+    expect(() => coordinator.inspectNode(rootId, child.nodeId)).toThrow(/not bound/);
+    for (const session of sessions) expect(session.dispose).toHaveBeenCalled();
+    for (const directory of directories) await expect(fs.stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readFile(path.join(checkout, 'scratch.txt'), 'utf8')).toBe('keep uncommitted data');
+    expect(await fs.readFile(path.join(checkout, 'ignored', 'private.txt'), 'utf8')).toBe('keep ignored data');
+    expect(await fs.readFile(path.join(repository, 'parent-scratch.txt'), 'utf8')).toBe('keep parent data');
+    expect(git('show-ref', '--verify', `refs/heads/${branch}`)).toBeTruthy();
+    expect(git('worktree', 'list', '--porcelain')).toContain(checkout.replaceAll('\\', '/'));
+    cleanup.mockRestore();
+  }, 30_000);
+
   it('rolls back a cancelled worktree spawn and does not grant worktree creation to a read-only parent', async () => {
     const { coordinator, rootId, child, service, git } = await workspaceFixture();
     const controller = new AbortController();
@@ -378,7 +424,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     forged.nodes.find((node) => node.id === child.nodeId)!.workspace!.path = repository;
     vi.spyOn(root.sessionManager, 'getBranch').mockReturnValue([{ type: 'custom', customType: 'fate-agent-team-event', data: { kind: 'fate-agent-team-event', version: 1, teamId: team.id, sequence: 1, timestamp: 1, type: 'snapshot', payload: { team: forged } } }] as never);
     const restored = new AgentTeamCoordinator(host, dataRoot, undefined, service);
-    restored.restoreRoot(root);
+    await restored.restoreRoot(root);
     await expect(restored.workspace(team.rootNodeId, child.nodeId, 'review')).rejects.toThrow();
     const shared = await coordinator.spawn(child.nodeId, { task: 'inherit', workspace: { mode: 'shared' } }, 'inherited', runtime());
     await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
@@ -580,7 +626,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
       await barrier;
       return createSdkChildSession(input);
     });
-    restored.restoreRoot(root);
+    await restored.restoreRoot(root);
     const attempt = restored.followUp(rootId, child.nodeId, 'must not start after policy changes', 'racing-followup', runtime());
     try {
       await Promise.race([opening, attempt]);
@@ -767,7 +813,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
       resolveRoot: () => ({ projectPath: dataRoot, session: reopened, permissionLevel: 'read-only' as const }),
       persist: () => undefined,
     }, dataRoot);
-    restored.restoreRoot(reopened);
+    await restored.restoreRoot(reopened);
     expect(restored.getTeams('root-session')[0]?.tasks.find((candidate) => candidate.id === task.id)).toMatchObject({ deliverFinalAnswer: false, status: 'completed' });
     expect(sendRootMessage).not.toHaveBeenCalled();
   });
@@ -833,7 +879,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
       emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
-    restored.restoreRoot(reopened);
+    await restored.restoreRoot(reopened);
     const restoredTeam = restored.getTeams('root-session')[0]!;
     expect(restored.inspectNode(restoredTeam.rootNodeId, child.nodeId).resources.idleReleaseTimerArmed).toBe(true);
     expect(restoredTeam.tasks).toHaveLength(2);
@@ -1816,7 +1862,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
       getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
-    second.restoreRoot(reopenedRoot);
+    await second.restoreRoot(reopenedRoot);
     const restored = second.getTeams('root-session')[0]!;
     expect(restored.status).toBe('restored-interrupted');
     expect(restored.nodes.find((node) => node.id === child.nodeId)?.status).toBe('ready');
@@ -1824,6 +1870,46 @@ describe('AgentTeamCoordinator vertical slice', () => {
     await settle();
     expect(second.getTeams('root-session')[0]?.tasks.find((task) => task.id === follow.taskId)?.status).toBe('completed');
     expect(createdInputs.at(-1)?.sessionFile).toMatch(/\.jsonl$/u);
+  });
+
+  it('drops inactive agents whose child transcript was deleted, without reviving them from parent snapshots', async () => {
+    const root = rootSession();
+    const events: AgentTeamLedgerEvent[] = [];
+    const host = {
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' as const }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }),
+      emit: () => undefined,
+      persist: (_root: string, event: AgentTeamLedgerEvent) => { events.push(structuredClone(event)); },
+    };
+    const first = new AgentTeamCoordinator(host, dataRoot);
+    const rootId = first.rootNodeId('root-session');
+    const lost = await first.spawn(rootId, { task: 'remove my transcript' }, 'missing-child', runtime());
+    const kept = await first.spawn(rootId, { task: 'keep my transcript' }, 'kept-child', runtime());
+    await vi.waitFor(() => expect(first.getTeams('root-session')[0]?.activeTurns).toBe(0));
+    const teamId = first.getTeams('root-session')[0]!.id;
+    await fs.rm(createdInputs[0]!.sessionDirectory!, { recursive: true });
+    // Deleting an external file does not evict an already-loaded runtime.
+    expect(first.getTeams('root-session')[0]?.nodes.map((node) => node.id)).toContain(lost.nodeId);
+
+    vi.spyOn(root.sessionManager, 'getBranch').mockImplementation(() => events.map((event) => ({ type: 'custom', customType: 'fate-agent-team-event', data: event })) as never);
+    const reopened = new AgentTeamCoordinator(host, dataRoot);
+    await reopened.restoreRoot(root);
+    const surviving = reopened.getTeams('root-session')[0]!;
+    expect(surviving.nodes.map((node) => node.id)).toEqual([rootId, kept.nodeId]);
+    expect(surviving.tasks.every((task) => task.assigneeNodeId !== lost.nodeId)).toBe(true);
+    await expect(reopened.followUp(rootId, lost.nodeId, 'do not recreate a deleted agent', 'missing-followup', runtime())).rejects.toThrow();
+
+    await fs.rm(createdInputs[1]!.sessionDirectory!, { recursive: true });
+    const readOnlyHistory = new AgentTeamCoordinator({ ...host, persist: () => { throw new Error('parent ledger unavailable'); } }, dataRoot);
+    await expect(readOnlyHistory.restoreRoot(root)).resolves.toBeUndefined();
+    expect(readOnlyHistory.getTeams('root-session')).toEqual([]);
+    const noChildren = new AgentTeamCoordinator(host, dataRoot);
+    await noChildren.restoreRoot(root);
+    expect(noChildren.getTeams('root-session')).toEqual([]);
+    expect(events.at(-1)).toMatchObject({ teamId, type: 'team.deleted', payload: {} });
+    const afterTombstone = new AgentTeamCoordinator(host, dataRoot);
+    await afterTombstone.restoreRoot(root);
+    expect(afterTombstone.getTeams('root-session')).toEqual([]);
   });
 
   it('treats restored nodes without workspace metadata as shared and refuses strict worktree follow-ups before SDK admission', async () => {
@@ -1849,7 +1935,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
       emit: () => undefined,
       persist: () => undefined,
     }, dataRoot);
-    restored.restoreRoot(reopened);
+    await restored.restoreRoot(reopened);
     const team = restored.getTeams('root-session')[0]!;
     const before = createdInputs.length;
     await expect(restored.followUp(team.rootNodeId, child.nodeId, 'must not resume shared legacy child', 'legacy-strict-followup', runtime())).rejects.toThrow(/strictly requires worktree/);
@@ -1875,6 +1961,208 @@ describe('AgentTeamCoordinator vertical slice', () => {
     await coordinator.cancelRoot('portable-root-session');
     coordinator.releaseRoot('portable-root-session');
   });
+
+  it('persists a compact deletion marker so old root snapshots cannot restore deleted history', async () => {
+    const root = rootSession();
+    const events: AgentTeamLedgerEvent[] = [];
+    let failMarker = true;
+    const host = {
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' as const }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }),
+      emit: () => undefined,
+      persist: (_root: string, event: AgentTeamLedgerEvent) => {
+        if (event.type === 'team.deleted' && failMarker) { failMarker = false; throw new Error('marker unavailable'); }
+        events.push(structuredClone(event));
+      },
+    };
+    const coordinator = new AgentTeamCoordinator(host, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'save context', name: 'durable' }, 'delete-durable', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
+    const teamId = coordinator.getTeams('root-session')[0]!.id;
+    const childDirectory = createdInputs[0]!.sessionDirectory!;
+
+    await expect(coordinator.deleteTeam('root-session', teamId)).rejects.toThrow('marker unavailable');
+    expect(coordinator.getTeams('root-session')[0]!.id).toBe(teamId);
+    expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)?.status).toBe('released');
+    await coordinator.deleteTeam('root-session', teamId);
+    expect(coordinator.getTeams('root-session')).toEqual([]);
+    await expect(fs.stat(childDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+    const marker = events.at(-1)!;
+    expect(marker).toMatchObject({ teamId, type: 'team.deleted', payload: {} });
+    expect(marker.sequence).toBeGreaterThan(events.at(-2)!.sequence);
+    expect(JSON.stringify(marker)).not.toContain('save context');
+    vi.spyOn(root.sessionManager, 'getBranch').mockReturnValue(events.map((event) => ({ type: 'custom', customType: 'fate-agent-team-event', data: event })) as never);
+    const restored = new AgentTeamCoordinator(host, dataRoot);
+    await restored.restoreRoot(root);
+    expect(restored.getTeams('root-session')).toEqual([]);
+  });
+
+  it('fences queued reset, duplicate deletion, and spawn after history is uninstalled', async () => {
+    const root = rootSession();
+    const events: AgentTeamLedgerEvent[] = [];
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }),
+      emit: () => undefined, persist: (_root, event) => { events.push(structuredClone(event)); },
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    await coordinator.spawn(rootId, { task: 'keep old snapshot', name: 'worker' }, 'queue-race-first', runtime());
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
+    const teamId = coordinator.getTeams('root-session')[0]!.id;
+    const rm = fs.rm.bind(fs);
+    let resume!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const spy = vi.spyOn(fs, 'rm').mockImplementationOnce(async (target, options) => {
+      entered();
+      await gate;
+      return rm(target, options);
+    });
+    try {
+      const deletion = coordinator.deleteTeam('root-session', teamId);
+      await started;
+      // These calls capture the still-installed runtime but must not run after
+      // the first deletion has persisted its tombstone and removed its indexes.
+      const reset = coordinator.resetTeam('root-session', teamId);
+      const duplicate = coordinator.deleteTeam('root-session', teamId);
+      const spawn = coordinator.spawn(rootId, { task: 'do not recreate history' }, 'queue-race-spawn', runtime());
+      resume();
+      await deletion;
+      await expect(reset).rejects.toThrow(/no longer installed/);
+      await expect(duplicate).rejects.toThrow(/no longer installed/);
+      await expect(spawn).rejects.toThrow(/no longer installed/);
+      expect(events.at(-1)).toMatchObject({ type: 'team.deleted', payload: {} });
+      expect(coordinator.getTeams('root-session')).toEqual([]);
+      vi.spyOn(root.sessionManager, 'getBranch').mockReturnValue(events.map((event) => ({ type: 'custom', customType: 'fate-agent-team-event', data: event })) as never);
+      const restored = new AgentTeamCoordinator({
+        resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' }),
+        getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }),
+        emit: () => undefined, persist: () => undefined,
+      }, dataRoot);
+      await restored.restoreRoot(root);
+      expect(restored.getTeams('root-session')).toEqual([]);
+    } finally { resume(); spy.mockRestore(); }
+  });
+
+  it('does not persist a late restored notification after deletion', async () => {
+    const root = rootSession();
+    const initial = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: root, permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined, persist: () => undefined,
+    }, dataRoot);
+    const rootId = initial.rootNodeId('root-session');
+    await initial.spawn(rootId, { task: 'initial answer' }, 'late-notification', runtime(), undefined, { deliverFinalAnswer: false });
+    await vi.waitFor(() => expect(initial.getTeams('root-session')[0]!.activeTurns).toBe(0));
+    const snapshot = structuredClone(initial.getTeams('root-session')[0]!);
+    const answer = snapshot.envelopes.find((envelope) => envelope.kind === 'FINAL_ANSWER')!;
+    answer.state = 'queued';
+    const event: AgentTeamLedgerEvent = {
+      kind: 'fate-agent-team-event', version: 1, teamId: snapshot.id,
+      sequence: snapshot.timeline.at(-1)!.sequence, timestamp: Date.now(), type: 'snapshot', payload: { team: snapshot },
+    };
+    const reopened = rootSession();
+    vi.spyOn(reopened.sessionManager, 'getBranch').mockReturnValue([{ type: 'custom', customType: 'fate-agent-team-event', data: event }] as never);
+    let entered!: () => void;
+    let finish!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const barrier = new Promise<void>((resolve) => { finish = resolve; });
+    const events: AgentTeamLedgerEvent[] = [];
+    const emit = vi.fn();
+    const restored = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: reopened, permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }),
+      sendRootMessage: async () => { entered(); await barrier; },
+      emit, persist: (_root, item) => { events.push(item); },
+    }, dataRoot);
+    await restored.restoreRoot(reopened);
+    await started;
+    await restored.deleteTeam('root-session', snapshot.id);
+    const count = events.length;
+    const emissions = emit.mock.calls.length;
+    finish();
+    await settle();
+    expect(events).toHaveLength(count);
+    expect(events.at(-1)?.type).toBe('team.deleted');
+    expect(emit).toHaveBeenCalledTimes(emissions);
+    expect(restored.getTeams('root-session')).toEqual([]);
+  });
+
+  it('keeps failed storage deletion retryable and never removes the child checkout', async () => {
+    const { coordinator, rootId, child } = await workspaceFixture();
+    const teamId = coordinator.getTeams('root-session')[0]!.id;
+    const workspacePath = child.workspace!.path;
+    const rm = fs.rm.bind(fs);
+    let refuseStorage = true;
+    const spy = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+      if (refuseStorage && typeof target === 'string' && target !== dataRoot && target.startsWith(dataRoot) && !target.startsWith(workspacePath)) {
+        refuseStorage = false;
+        throw new Error('storage unavailable');
+      }
+      return rm(target, options);
+    });
+    try {
+      await expect(coordinator.deleteTeam('root-session', teamId)).rejects.toThrow('storage unavailable');
+      expect(coordinator.getTeams('root-session')[0]!.id).toBe(teamId);
+      expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)?.status).toBe('released');
+      await expect(fs.stat(workspacePath)).resolves.toBeDefined();
+      await coordinator.deleteTeam('root-session', teamId);
+      expect(coordinator.getTeams('root-session')).toEqual([]);
+      await expect(fs.stat(workspacePath)).resolves.toBeDefined();
+    } finally { spy.mockRestore(); }
+    expect(() => coordinator.inspectNode(rootId, child.nodeId)).toThrow(/not bound/);
+  }, 30_000);
+
+  it('rejects deletion of an active child without closing it or aborting its task', async () => {
+    let finish!: () => void;
+    promptBarrier = new Promise<void>((resolve) => { finish = resolve; });
+    const coordinator = new AgentTeamCoordinator({
+      resolveRoot: () => ({ projectPath: dataRoot, session: rootSession(), permissionLevel: 'read-only' }),
+      getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined, persist: () => undefined,
+    }, dataRoot);
+    const rootId = coordinator.rootNodeId('root-session');
+    const child = await coordinator.spawn(rootId, { task: 'still running' }, 'active-delete', runtime());
+    const teamId = coordinator.getTeams('root-session')[0]!.id;
+    await expect(coordinator.deleteTeam('root-session', teamId)).rejects.toThrow(/active or creating/);
+    expect(coordinator.getTeams('root-session')[0]).toMatchObject({ id: teamId, status: 'active', activeTurns: 1 });
+    expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === child.nodeId)?.status).toBe('active');
+    expect(childSessions[0]!.abort).not.toHaveBeenCalled();
+    expect(childSessions[0]!.dispose).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
+    await coordinator.deleteTeam('root-session', teamId);
+  });
+
+  it('serializes deletion behind workspace creation and preserves the in-progress spawn', async () => {
+    const { coordinator, rootId, service } = await workspaceFixture();
+    let finishPrompt!: () => void;
+    promptBarrier = new Promise<void>((resolve) => { finishPrompt = resolve; });
+    const teamId = coordinator.getTeams('root-session')[0]!.id;
+    const create = service.create.bind(service);
+    let resume!: () => void;
+    let entered!: () => void;
+    const barrier = new Promise<void>((resolve) => { resume = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const spy = vi.spyOn(service, 'create').mockImplementationOnce(async (...args) => {
+      entered();
+      await barrier;
+      return create(...args);
+    });
+    const pending = coordinator.spawn(rootId, { task: 'creating', permission: 'edit', workspace: { mode: 'worktree' } }, 'creating-delete', runtime());
+    try {
+      await started;
+      const deletion = coordinator.deleteTeam('root-session', teamId);
+      resume();
+      const created = await pending;
+      await expect(deletion).rejects.toThrow(/active or creating/);
+      expect(coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === created.nodeId)?.status).toBe('active');
+      expect(childSessions.at(-1)!.abort).not.toHaveBeenCalled();
+      finishPrompt();
+      await vi.waitFor(() => expect(coordinator.getTeams('root-session')[0]!.activeTurns).toBe(0));
+      await coordinator.deleteTeam('root-session', teamId);
+    } finally { resume(); finishPrompt(); spy.mockRestore(); await pending.catch(() => undefined); }
+  }, 30_000);
 
   it('deletes every persisted sibling and nested child session when its root session is deleted', async () => {
     const coordinator = new AgentTeamCoordinator({
@@ -1958,7 +2246,7 @@ describe('AgentTeamCoordinator vertical slice', () => {
     const reopened = rootSession();
     vi.spyOn(reopened.sessionManager, 'getBranch').mockReturnValue(persisted.map((event) => ({ type: 'custom', id: `${event.teamId}-${event.sequence}`, parentId: null, timestamp: new Date().toISOString(), customType: 'fate-agent-team-event', data: event })) as never);
     const restored = new AgentTeamCoordinator({ resolveRoot: () => ({ projectPath: dataRoot, session: reopened, permissionLevel: 'read-only' }), getAgentWorkspacePolicy: () => ({ preferredMode: 'shared' as const, strict: false }), emit: () => undefined, persist: () => undefined }, dataRoot);
-    restored.restoreRoot(reopened);
+    await restored.restoreRoot(reopened);
     expect(restored.getTeams('root-session')).toHaveLength(2);
     expect(restored.selectedTeamId('root-session')).toBe(second.id);
   });

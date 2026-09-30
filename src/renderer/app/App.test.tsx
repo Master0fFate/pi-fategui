@@ -1,33 +1,52 @@
+import * as Dialog from '@radix-ui/react-dialog';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppCommand, PiDesktopApi, PiEvent, RuntimeState } from '../../shared/contracts/ipc';
+import type { BrowserState } from '../../shared/contracts/browser';
 import { clearComposerSessionDrafts } from '../features/chat/Composer';
+import { AssistantMarkdown, ConversationImageViewerProvider } from '../features/chat/RichMessageContent';
+import { useBrowserStore } from '../stores/browserStore';
 import { useRuntimeStore } from '../stores/runtimeStore';
 import { useProjectStore } from '../stores/projectStore';
 import { useGoalMaxStore } from '../stores/goalMaxStore';
 import { LEFT_MAX, LEFT_MIN, RIGHT_MAX, RIGHT_MIN, useUiStore } from '../stores/uiStore';
 import { App, hasBlockingBrowserOverlay, reconcileHydrationEvents } from './App';
+import { hasCapability, installFateApi, resetFateApi } from '../platform/api';
+import type { FateApi } from '../../client/FateApi';
+import { desktopHostCapabilities, type ClientCapabilities } from '../../shared/protocol/capabilities';
+import type { RendererFateApi } from '../platform/api';
 
 describe('browser overlay ownership', () => {
   it('blocks only modal surfaces, not inline browser confirmations or popovers', () => {
     const root = document.createElement('div');
-    root.innerHTML = '<div role="dialog">Popover</div><div class="browser-workspace"><div role="alertdialog">Browser confirmation</div></div>';
+    root.innerHTML = '<div role="dialog">Popover</div><div class="browser-workspace"><div role="alertdialog" aria-modal="true">Browser confirmation</div></div><div role="dialog" aria-modal="true" data-state="closed">Closed modal</div>';
     expect(hasBlockingBrowserOverlay(root)).toBe(false);
 
     root.insertAdjacentHTML('beforeend', '<div role="dialog" aria-modal="true" data-state="open">Image viewer</div>');
     expect(hasBlockingBrowserOverlay(root)).toBe(true);
   });
 
-  it('dims the browser behind the cinematic image viewer like any other modal', () => {
-    const root = document.createElement('div');
-    root.innerHTML = '<div class="cinematic-image-viewer" role="dialog" aria-modal="true" data-state="open"><img alt=""/></div>';
-    // The image viewer is a modal surface: the native browser view is hidden
-    // behind the dim overlay instead of covering the opened image.
-    expect(hasBlockingBrowserOverlay(root)).toBe(true);
+  it('detects the real cinematic image portal rather than assuming Radix emits aria-modal', async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <ConversationImageViewerProvider>
+        <AssistantMarkdown text="" images={[{ data: 'iVBORw0KGgo=', mimeType: 'image/png', alt: 'Preview' }]} />
+      </ConversationImageViewerProvider>,
+    );
+    expect(hasBlockingBrowserOverlay()).toBe(false);
 
-    root.innerHTML = '<div class="cinematic-image-viewer" role="dialog" aria-modal="true" data-state="closed"><img alt=""/></div>';
-    expect(hasBlockingBrowserOverlay(root)).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Expand image: Preview' }));
+    const dialog = screen.getByRole('dialog', { name: 'Preview' });
+    expect(container).not.toContainElement(dialog);
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(hasBlockingBrowserOverlay()).toBe(true);
+    expect(screen.getByRole('button', { name: 'Close image viewer' })).toHaveFocus();
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Preview' })).not.toBeInTheDocument();
+    expect(hasBlockingBrowserOverlay()).toBe(false);
   });
 });
 
@@ -53,7 +72,34 @@ describe('first-launch shell', () => {
   });
 
   afterEach(() => {
+    resetFateApi();
     Reflect.deleteProperty(window, 'piDesktop');
+  });
+
+  it('hydrates once through an injected API without a preload bridge and cleans its event sink', async () => {
+    const runtime: RuntimeState = {
+      status: 'disconnected', project: null, sessionId: null, sessionFile: null, streaming: false,
+      model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    };
+    const cleanup = vi.fn();
+    const onEvents = vi.fn(() => cleanup);
+    const getRuntimeState = vi.fn(async () => runtime);
+    const dispose = installFateApi({ onEvents, getRuntimeState } as unknown as FateApi);
+    expect(hasCapability('nativeBrowser')).toBe(false);
+    expect(hasCapability('microphone')).toBe(false);
+    expect(hasCapability('hotkeys')).toBe(false);
+    expect(hasCapability('updater')).toBe(false);
+    expect(hasCapability('ambientAudio')).toBe(false);
+    expect(hasCapability('manualTerminal')).toBe(false);
+    expect(hasCapability('monitor')).toBe(true);
+    const mounted = render(<App />);
+    await waitFor(() => expect(getRuntimeState).toHaveBeenCalledTimes(1));
+    expect(onEvents).toHaveBeenCalledTimes(1);
+    expect('piDesktop' in window).toBe(false);
+    mounted.unmount();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    dispose();
+    expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
   it('renders honest first-launch navigation and inspector tabs', () => {
@@ -65,6 +111,34 @@ describe('first-launch shell', () => {
     expect(within(screen.getByRole('tablist', { name: 'Sidebar destinations' })).getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Sessions', 'Agents', 'Resources']);
     expect(within(screen.getByRole('tablist', { name: 'Work views' })).getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Changes', 'Files']);
     expect(screen.getByRole('button', { name: 'Model and reasoning settings' })).toBeDisabled();
+  });
+
+  it('does not initialize optional local services for a client without native capabilities', async () => {
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    };
+    const native = {
+      initializeBrowser: vi.fn(), onBrowserEvents: vi.fn(), onBrowserLinkOpen: vi.fn(),
+      onVoiceHotkey: vi.fn(), onSpeechStreamUpdate: vi.fn(), getSpeechStatus: vi.fn(),
+      onSpeechDownload: vi.fn(), createTerminal: vi.fn(), onTerminalEvent: vi.fn(), checkForUpdates: vi.fn(), onUpdatesProgress: vi.fn(),
+    };
+    const client: ClientCapabilities = { version: 1, supported: {
+      monitor: false, nativeBrowser: false, microphone: false, hotkeys: false, updater: false, ambientAudio: false,
+      manualTerminal: false, localFileOpen: false, clipboardText: true,
+    } };
+    const dispose = installFateApi({
+      getRuntimeState: vi.fn(async () => runtime), onEvents: vi.fn(() => () => undefined), desktop: native,
+    } as unknown as RendererFateApi, desktopHostCapabilities, client);
+    useRuntimeStore.getState().setRuntime(runtime);
+    useUiStore.getState().setBrowserOpen(true);
+    useUiStore.getState().setTerminalOpen(true);
+    render(<App />);
+    await waitFor(() => expect(screen.getByText(/Native features unavailable/)).toBeInTheDocument());
+    for (const spy of Object.values(native)) expect(spy).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('Built-in browser')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Manual integrated terminal')).not.toBeInTheDocument();
+    dispose();
   });
 
   it('does not start the built-in browser until the workspace is opened', async () => {
@@ -91,6 +165,76 @@ describe('first-launch shell', () => {
     expect(initializeBrowser).not.toHaveBeenCalled();
     expect(setBrowserOverlayBlocked).not.toHaveBeenCalled();
     expect(useUiStore.getState().browserOpen).toBe(false);
+  });
+
+  it('blocks the browser for real image portals until the last modal closes', async () => {
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: false, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    };
+    const browserState: BrowserState = {
+      activeTabId: 'browser-main', visible: true, viewBlocked: false, sessionFullAccess: true, controlLevel: 'interact', mode: 'annotate', deviceEmulation: null,
+      tabs: [{ id: 'browser-main', profileId: 'project', url: 'http://localhost:4173/', title: 'Preview', loading: false, canGoBack: false, canGoForward: false, documentEpoch: 1, semanticAvailable: true }], grants: [],
+    };
+    const setBrowserOverlayBlocked = vi.fn(async (blocked: boolean) => ({ ...browserState, visible: !blocked, viewBlocked: blocked }));
+    const setBrowserMode = vi.fn(async () => browserState);
+    const setBrowserControlLevel = vi.fn(async () => browserState);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: {
+        getRuntimeState: vi.fn(async () => runtime), onEvents: vi.fn(() => () => undefined),
+        initializeBrowser: vi.fn(async () => browserState), setBrowserOverlayBlocked, setBrowserMode, setBrowserControlLevel,
+      } as unknown as PiDesktopApi,
+    });
+    useRuntimeStore.getState().setRuntime(runtime);
+    useBrowserStore.getState().reset();
+    useUiStore.getState().setBrowserOpen(true);
+    const user = userEvent.setup();
+    render(<><App /><ConversationImageViewerProvider>
+      <AssistantMarkdown text="" images={[{ data: 'iVBORw0KGgo=', mimeType: 'image/png', alt: 'Preview' }]} />
+    </ConversationImageViewerProvider></>);
+    await waitFor(() => expect(setBrowserOverlayBlocked).toHaveBeenLastCalledWith(false));
+
+    for (const dismissal of ['escape', 'backdrop', 'close'] as const) {
+      await user.click(screen.getByRole('button', { name: 'Expand image: Preview' }));
+      expect(screen.getByRole('dialog', { name: 'Preview' })).toHaveAttribute('aria-modal', 'true');
+      await waitFor(() => expect(setBrowserOverlayBlocked).toHaveBeenLastCalledWith(true));
+      expect(useUiStore.getState().browserOpen).toBe(true);
+      expect(useBrowserStore.getState().state).toMatchObject({ viewBlocked: true, mode: 'annotate', controlLevel: 'interact', sessionFullAccess: true });
+
+      if (dismissal === 'escape') await user.keyboard('{Escape}');
+      else if (dismissal === 'backdrop') await user.click(document.querySelector<HTMLElement>('.cinematic-image-overlay')!);
+      else await user.click(screen.getByRole('button', { name: 'Close image viewer' }));
+      await waitFor(() => expect(setBrowserOverlayBlocked).toHaveBeenLastCalledWith(false));
+      expect(screen.queryByRole('dialog', { name: 'Preview' })).not.toBeInTheDocument();
+      expect(useUiStore.getState().browserOpen).toBe(true);
+    }
+
+    // The local viewer can also sit inside another modal. Closing only the
+    // image must not release the native view from beneath its parent dialog.
+    render(<Dialog.Root defaultOpen><Dialog.Portal><Dialog.Overlay />
+      <Dialog.Content aria-modal="true" aria-describedby={undefined}>
+        <Dialog.Title>Outer dialog</Dialog.Title>
+        <AssistantMarkdown text="" images={[{ data: 'iVBORw0KGgo=', mimeType: 'image/png', alt: 'Nested preview' }]} />
+        <Dialog.Close>Close outer dialog</Dialog.Close>
+      </Dialog.Content>
+    </Dialog.Portal></Dialog.Root>);
+    await waitFor(() => expect(setBrowserOverlayBlocked).toHaveBeenLastCalledWith(true));
+    setBrowserOverlayBlocked.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Expand image: Nested preview' }));
+    expect(screen.getByRole('dialog', { name: 'Nested preview' })).toHaveAttribute('aria-modal', 'true');
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog', { name: 'Outer dialog' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Nested preview' })).not.toBeInTheDocument();
+    await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())); });
+    expect(setBrowserOverlayBlocked).not.toHaveBeenCalled();
+    expect(useBrowserStore.getState().state.viewBlocked).toBe(true);
+
+    await user.click(screen.getByRole('button', { name: 'Close outer dialog' }));
+    await waitFor(() => expect(setBrowserOverlayBlocked).toHaveBeenLastCalledWith(false));
+    expect(useBrowserStore.getState().state).toMatchObject({ visible: true, viewBlocked: false, mode: 'annotate', controlLevel: 'interact', sessionFullAccess: true });
+    expect(setBrowserMode).not.toHaveBeenCalled();
+    expect(setBrowserControlLevel).not.toHaveBeenCalled();
   });
 
   it('opens a link in the Browser workspace when the native link menu requests it', async () => {
@@ -324,6 +468,81 @@ describe('first-launch shell', () => {
     act(() => useRuntimeStore.getState().setRuntime({ ...runtime, streaming: true }));
     act(() => appCommand?.('stop-generation'));
     await waitFor(() => expect(abort).toHaveBeenCalledOnce());
+  });
+
+  it('shows a questionnaire above the input and sends each answer with its exact question index', async () => {
+    const first = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', sessionId: 's1', index: 0, total: 2,
+      question: 'Which database?', options: [{ label: 'SQLite' }, { label: 'Postgres' }, { label: 'Other DB' }],
+    };
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: true, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null, questionnaire: first,
+    };
+    useRuntimeStore.getState().setRuntime(runtime);
+    const answerQuestion = vi.fn(async () => runtime);
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { getRuntimeState: vi.fn(async () => runtime), onEvents: vi.fn(() => () => undefined), answerQuestion } as unknown as PiDesktopApi,
+    });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    expect(await screen.findByRole('heading', { name: 'Which database?' })).toBeInTheDocument();
+    expect(container.querySelector('.composer-rails .question-card')).toBeInTheDocument();
+    expect(screen.getByText('Question 1 / 2')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'SQLite' }));
+    await waitFor(() => expect(answerQuestion).toHaveBeenCalledWith({ id: first.id, index: 0, answer: 'SQLite', source: 'option' }));
+
+    const second = { ...first, id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', index: 1, question: 'Which theme?' };
+    act(() => useRuntimeStore.getState().setRuntime({ ...runtime, questionnaire: second }));
+    expect(screen.getByText('Question 2 / 2')).toBeInTheDocument();
+    const ownAnswer = screen.getByRole('textbox', { name: 'Write your own answer...' });
+    await user.type(ownAnswer, '  My theme{Enter}');
+    await waitFor(() => expect(answerQuestion).toHaveBeenLastCalledWith({ id: second.id, index: 1, answer: 'My theme', source: 'custom' }));
+  });
+
+  it('requires two Escape presses within three seconds to stop and keeps menu dismissal separate', async () => {
+    const runtime: RuntimeState = {
+      status: 'ready', project: { path: 'C:/project', name: 'project', trusted: true }, sessionId: 's1', sessionFile: null,
+      streaming: true, model: null, models: [], thinkingLevel: 'medium', messages: [], commands: [], error: null,
+    };
+    useRuntimeStore.getState().setRuntime(runtime);
+    const abort = vi.fn(async () => ({ aborted: true }));
+    Object.defineProperty(window, 'piDesktop', {
+      configurable: true,
+      value: { getRuntimeState: vi.fn(async () => runtime), onEvents: vi.fn(() => () => undefined), abort } as unknown as PiDesktopApi,
+    });
+    render(<App />);
+    await waitFor(() => expect(useRuntimeStore.getState().runtime.sessionId).toBe('s1'));
+    const now = vi.spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(1_000);
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(abort).not.toHaveBeenCalled();
+      expect(useUiStore.getState().toast?.title).toBe('Press Esc again to stop');
+      now.mockReturnValue(4_001);
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(abort).not.toHaveBeenCalled();
+      now.mockReturnValue(4_500);
+      fireEvent.keyDown(window, { key: 'Escape' });
+      await waitFor(() => expect(abort).toHaveBeenCalledTimes(1));
+
+      now.mockReturnValue(5_000);
+      fireEvent.keyDown(window, { key: 'Escape' });
+      const menu = document.createElement('div');
+      menu.setAttribute('role', 'listbox');
+      document.body.append(menu);
+      fireEvent.keyDown(window, { key: 'Escape' });
+      menu.remove();
+      now.mockReturnValue(5_500);
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(abort).toHaveBeenCalledTimes(1);
+      now.mockReturnValue(6_000);
+      fireEvent.keyDown(window, { key: 'Escape' });
+      await waitFor(() => expect(abort).toHaveBeenCalledTimes(2));
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('stops owned child work from the native stop-generation command', async () => {

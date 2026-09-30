@@ -1,3 +1,5 @@
+import { getFateApiOptional, getDesktopApi, getDesktopApiOptional, hasCapability } from '../../platform/api';
+import { unavailableExplanation } from '../../platform/capabilityPolicy';
 import { Fragment, type AnchorHTMLAttributes, type ClassAttributes, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { isLocalMarkdownLink } from '../../../shared/markdownLinks';
 import { normalizeBrowserWebUrl } from '../../../shared/contracts/browser';
@@ -89,8 +91,8 @@ export function AgentMentionLink({ href, children, node: _node, onClick, onConte
   if (!browserUrl && href && isLocalMarkdownLink(href)) {
     const reveal = async () => {
       try {
-        if (!('piDesktop' in window) || typeof window.piDesktop.revealFileLink !== 'function') throw new Error('The desktop file bridge is unavailable.');
-        const result = await window.piDesktop.revealFileLink(href);
+        if (!hasCapability('localFileOpen') || !getFateApiOptional() || typeof getDesktopApiOptional()?.revealFileLink !== 'function') throw new Error(unavailableExplanation.localFileOpen);
+        const result = await getDesktopApi().revealFileLink(href);
         if (!result.opened) throw new Error(result.error ?? 'The file could not be located.');
       } catch (error) {
         useUiStore.getState().showToast({ kind: 'error', title: 'Could not open file link', message: error instanceof Error ? error.message : String(error) });
@@ -120,8 +122,8 @@ export function AgentMentionLink({ href, children, node: _node, onClick, onConte
     onContextMenu?.(event);
     if (event.defaultPrevented) return;
     event.preventDefault();
-    if ('piDesktop' in window && typeof window.piDesktop.showBrowserLinkContextMenu === 'function') {
-      void window.piDesktop.showBrowserLinkContextMenu(browserUrl);
+    if (Boolean(getFateApiOptional()) && typeof getDesktopApiOptional()?.showBrowserLinkContextMenu === 'function') {
+      void getDesktopApi().showBrowserLinkContextMenu(browserUrl);
     }
   };
   const openFromMiddleClick = (event: ReactMouseEvent<HTMLAnchorElement>) => {

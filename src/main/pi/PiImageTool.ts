@@ -120,11 +120,11 @@ async function atomicWrite(target: string, data: Buffer | string): Promise<void>
   }
 }
 
-export const saveGeneratedImage: GeneratedImageStore = async ({
+export const createGeneratedImageStore = (agentDir: string): GeneratedImageStore => async ({
   image, dimensions, generated, prompt, size, quality, outputFormat, sessionId,
 }) => {
   const imageId = generated.imageId ?? randomUUID();
-  const directory = path.join(getAgentDir(), 'generated-images', safePathSegment(sessionId, 'unsaved-session'));
+  const directory = path.join(agentDir, 'generated-images', safePathSegment(sessionId, 'unsaved-session'));
   const timestamp = new Date().toISOString().replace(/[:.]/gu, '-');
   const fileName = `${timestamp}-${safePathSegment(imageId, randomUUID())}.${extensionFor(generated.mimeType)}`;
   const savedPath = path.join(directory, fileName);
@@ -160,6 +160,7 @@ export const saveGeneratedImage: GeneratedImageStore = async ({
     };
   }
 };
+export const saveGeneratedImage: GeneratedImageStore = createGeneratedImageStore(getAgentDir());
 
 function imageGenerationError(code: unknown, message: unknown, status?: number): Error {
   const normalizedCode = typeof code === 'string' ? code : '';

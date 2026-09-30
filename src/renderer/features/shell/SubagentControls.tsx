@@ -1,11 +1,14 @@
+import { getFateApi, getFateApiOptional, getWebApiOptional } from '../../platform/api';
 import { Check, CircleStop, Copy, LoaderCircle, Mailbox, MessageSquarePlus, Pencil, Send, X } from 'lucide-react';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { RuntimeState, SubagentControlInput, SubagentRun } from '../../../shared/contracts/ipc';
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AppTooltip } from '../../components/AppTooltip';
 import { useSkinComponents } from '../../skins/SkinProvider';
+import { draftScopeKey, useScopedDraft } from '../goalmaxxing/scopedDraft';
+const agentDrafts = new Map<string, string>();
 import { writeClipboardText } from '../../lib/clipboard';
-import { useRuntimeStore } from '../../stores/runtimeStore';
+import { canMutateNetwork, useRuntimeStore, type NetworkAgent } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 
 type EditorMode = 'message' | 'rename' | null;
@@ -18,18 +21,22 @@ function applyControlState(origin: RuntimeState, state: RuntimeState): void {
   if (selectionIsOrigin || resultIsCurrent) useRuntimeStore.getState().setRuntime(state);
 }
 
-export function SubagentControls({ run, compact = false }: { run: SubagentControlTarget; compact?: boolean }) {
+export function SubagentControls({ run, compact = false }: { run: SubagentControlTarget | NetworkAgent; compact?: boolean }) {
   const { ActionContent } = useSkinComponents();
+  const web = getWebApiOptional();
+  const networkBusy = useRuntimeStore((state) => state.networkBusy);
+  const originScope = draftScopeKey(web);
   const [mode, setMode] = useState<EditorMode>(null);
-  const [value, setValue] = useState('');
+  const [value, setValue] = useScopedDraft(agentDrafts, `${draftScopeKey(web)}:agent:${run.id}:${mode ?? 'message'}`,
+    () => mode === 'rename' && 'mailbox' in run ? subagentDisplayName(run) : '');
   const [busy, setBusy] = useState<SubagentControlInput['action'] | 'copy' | null>(null);
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<number | null>(null);
-  const handle = subagentHandle(run);
+  const handle = 'mailbox' in run ? subagentHandle(run) : run.id;
   const mention = `@${handle}`;
   const active = run.status === 'running' || run.status === 'queued';
   const canSteer = run.status === 'running';
-  const canFollowUp = run.mailbox.state === 'available';
+  const canFollowUp = 'mailbox' in run && run.mailbox.state === 'available';
   const canMessage = canSteer || canFollowUp;
   const messageAction = canSteer ? 'steer' as const : 'followUp' as const;
   const messageLabel = canSteer ? 'Send instruction' : 'Follow up';
@@ -39,11 +46,16 @@ export function SubagentControls({ run, compact = false }: { run: SubagentContro
   }, []);
 
   const control = async (input: SubagentControlInput) => {
-    if (busy || !('piDesktop' in window) || typeof window.piDesktop.controlSubagent !== 'function') return false;
+    if (busy) return false;
+    if (web) {
+      if (originScope !== draftScopeKey(web)) return false;
+      return useRuntimeStore.getState().runNetworkMutation(web, 'agent.control', (scope) => web.controlAgent(scope, input));
+    }
+    if (!getFateApiOptional() || typeof getFateApiOptional()?.controlSubagent !== 'function') return false;
     const origin = useRuntimeStore.getState().runtime;
     setBusy(input.action);
     try {
-      const state = await window.piDesktop.controlSubagent(input);
+      const state = await getFateApi().controlSubagent(input);
       applyControlState(origin, state);
       return true;
     } catch (error) {
@@ -77,7 +89,7 @@ export function SubagentControls({ run, compact = false }: { run: SubagentContro
   };
 
   const openEditor = (nextMode: Exclude<EditorMode, null>) => {
-    setValue(nextMode === 'rename' ? subagentDisplayName(run) : '');
+    // The scoped mode-specific draft survives read refreshes and uncertainty.
     setMode(nextMode);
   };
 
@@ -104,8 +116,10 @@ export function SubagentControls({ run, compact = false }: { run: SubagentContro
     }
   };
 
+  const unavailable = Boolean(busy) || networkBusy || Boolean(web && !canMutateNetwork(web, 'agent.control'));
   return (
     <div className={`subagent-controls${compact ? ' subagent-controls--compact' : ''}`}>
+      {!('mailbox' in run) && <small>Mailbox availability and display name are omitted from this bounded view. No idle follow-up grant is inferred.</small>}
       <div className="subagent-control-actions">
         {active ? (
           <AppTooltip content={`Stop ${mention}`}>
@@ -113,7 +127,7 @@ export function SubagentControls({ run, compact = false }: { run: SubagentContro
               className="subagent-control-danger"
               type="button"
               aria-label={`Stop ${mention}`}
-              disabled={Boolean(busy)}
+              disabled={unavailable}
               onClick={() => void control({ action: 'cancel', target: mention, reason: 'Stopped from the Agents inspector.' })}
             >
               <ActionContent text={busy === 'cancel' ? '~' : 'stop'}>{busy === 'cancel' ? <LoaderCircle className="tool-spinner" size={13} /> : <CircleStop size={13} />}
@@ -126,7 +140,7 @@ export function SubagentControls({ run, compact = false }: { run: SubagentContro
             <button
               type="button"
               aria-label={`Close ${mention} mailbox`}
-              disabled={Boolean(busy)}
+              disabled={unavailable}
               onClick={() => void control({ action: 'close', target: mention })}
             >
               <ActionContent text={busy === 'close' ? '~' : 'close'}>{busy === 'close' ? <LoaderCircle className="tool-spinner" size={13} /> : <Mailbox size={13} />}
@@ -136,7 +150,7 @@ export function SubagentControls({ run, compact = false }: { run: SubagentContro
         ) : null}
         {canMessage ? (
           <AppTooltip content={`${messageLabel} ${mention}`}>
-            <button type="button" aria-label={`${messageLabel} ${mention}`} disabled={Boolean(busy)} data-active={mode === 'message'} onClick={() => openEditor('message')}>
+            <button type="button" aria-label={`${messageLabel} ${mention}`} disabled={unavailable} data-active={mode === 'message'} onClick={() => openEditor('message')}>
               <ActionContent text="msg"><MessageSquarePlus size={13} />{!compact && <span className="icon-label">{messageLabel}</span>}</ActionContent>
             </button>
           </AppTooltip>
@@ -147,7 +161,7 @@ export function SubagentControls({ run, compact = false }: { run: SubagentContro
           </button>
         </AppTooltip>
         <AppTooltip content={`Rename ${mention}`}>
-          <button type="button" aria-label={`Rename ${mention}`} disabled={Boolean(busy)} data-active={mode === 'rename'} onClick={() => openEditor('rename')}>
+          <button type="button" aria-label={`Rename ${mention}`} disabled={unavailable} data-active={mode === 'rename'} onClick={() => openEditor('rename')}>
             <ActionContent text="name"><Pencil size={13} />{!compact && <span className="icon-label">Rename</span>}</ActionContent>
           </button>
         </AppTooltip>
@@ -176,7 +190,7 @@ export function SubagentControls({ run, compact = false }: { run: SubagentContro
             />
           )}
           <button type="button" aria-label={`Cancel ${mode}`} onClick={() => { setMode(null); setValue(''); }}><ActionContent text="x"><X size={13} /></ActionContent></button>
-          <button type="button" aria-label={mode === 'rename' ? 'Save display name' : messageLabel} disabled={!value.trim() || Boolean(busy)} onClick={() => void submitEditor()}>
+          <button type="button" aria-label={mode === 'rename' ? 'Save display name' : messageLabel} disabled={!value.trim() || unavailable} onClick={() => void submitEditor()}>
             <ActionContent text={busy ? '~' : mode === 'rename' ? 'save' : 'send'}>{busy ? <LoaderCircle className="tool-spinner" size={13} /> : mode === 'rename' ? <Check size={13} /> : <Send size={13} />}</ActionContent>
           </button>
         </div>

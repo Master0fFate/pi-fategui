@@ -162,7 +162,7 @@ Choose **Connect your AI**, or use `/login` in an open project. Sign in using a 
 
 You can also add providers from the live **models.dev** catalog. Fate UI keeps provider credentials in the main process; raw keys are not exposed to renderer state.
 
-**No separate Pi terminal installation is required.** Fate UI embeds the Pi SDK directly.
+**No separate Pi terminal installation is required.** Fate UI embeds the Pi SDK directly. Switching from Pi Terminal? Fate shares your Pi sessions, user settings, skills, prompts, and global extensions. It copies provider files on first use; if you already used Fate, open **Settings → MCP → Switch from Pi Terminal** to import missing provider entries and compatible global MCP servers. Keep `~/.pi/agent` and any third-party server runtimes when you uninstall the Pi command. [Migration checks and limits →](docs/mcp.md#existing-pi-agent-mcp-setups)
 
 ### 3. Open a project and start working
 
@@ -191,11 +191,13 @@ Projects, session history, settings, and credentials are stored locally. **Promp
 | Boundary | What it means |
 | :-- | :-- |
 | Project trust | Choose **Trust**, **Open without Pi**, or **Cancel** when opening a project. |
-| Read only | Project-modification and shell tools are unavailable. |
-| Edit files | Agent file operations remain project-confined. |
+| Read only | Fate's governed project-write and shell tools are unavailable. |
+| Edit files | Default for new trusted sessions. Agent file operations remain project-confined. |
 | Full access | Explicitly unsandboxed access with your account’s permissions. Use deliberately. |
 | Agent worktrees | Isolated Git checkouts, **not security sandboxes**. Integration is a separate action. |
-| Local credentials | Fate’s provider store is separate from Pi Terminal’s; existing credentials are copied only on first run. |
+| Local credentials | Fate’s provider store is separate from Pi Terminal’s; existing credentials copy on first run, and missing entries can be imported later without replacing Fate values. |
+
+Saved per-session permissions restore only within the host's current limit. Missing records use Edit files; unreadable or corrupt permission storage blocks agent execution until repaired. Permission changes must be saved before increased authority takes effect. An incomplete write leaves a blocking intent record; do not delete it without repairing or reviewing the grant file. The manual terminal and trusted user extensions are separate host capabilities, not a general sandbox.
 
 Keep important work backed up and review changes before merging or deploying. Activity links and local hash records aid investigation; they are not tamper-proof proof of authorship. [Architecture and security →](docs/architecture.md)
 

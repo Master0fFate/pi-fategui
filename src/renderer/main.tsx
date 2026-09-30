@@ -5,7 +5,8 @@ import '@fontsource-variable/noto-sans-mono/wght.css';
 import '@fontsource-variable/jetbrains-mono/wght.css';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { App } from './app/App';
+import { DesktopPlatformRoot } from './platform/DesktopPlatformRoot';
+import { installDesktopFateApi } from './platform/api';
 import { SkinProvider } from './skins/SkinProvider';
 import { NativeTitleTooltips } from './skins/NativeTitleTooltips';
 import { BackgroundProvider } from './background/BackgroundProvider';
@@ -22,6 +23,8 @@ import './styles/action-surfaces.css';
 import { applySkinDefinition, readStoredSkinDefinition } from './skin';
 import { applyTheme, readStoredTheme } from './theme';
 
+installDesktopFateApi();
+
 const root = document.getElementById('root');
 if (!root) throw new Error('Renderer root was not found');
 
@@ -35,6 +38,6 @@ if (storedSkin) applySkinDefinition(storedSkin, { persist: false });
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
-    <SkinProvider><BackgroundProvider><App /><NativeTitleTooltips /></BackgroundProvider></SkinProvider>
+    <SkinProvider><BackgroundProvider><DesktopPlatformRoot /><NativeTitleTooltips /></BackgroundProvider></SkinProvider>
   </React.StrictMode>,
 );

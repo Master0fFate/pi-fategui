@@ -1,3 +1,4 @@
+import { getDesktopApi, getDesktopApiOptional } from '../platform/api';
 import { create } from 'zustand';
 import type { AgentLibrary, LegacyImportItem } from '../../shared/contracts/agents';
 import { useRuntimeStore } from './runtimeStore';
@@ -50,9 +51,9 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
     const changedProject = projectPath !== get().projectPath;
     const filter = changedProject ? null : routineId;
     set({ projectPath, loading: Boolean(projectPath), error: null, historyRoutineId: filter, ...(changedProject ? { library: emptyAgentLibrary(), selectedRunId: null } : {}) });
-    if (!projectPath || !window.piDesktop?.getAgentLibrary) { set({ loading: false }); return; }
+    if (!projectPath || !getDesktopApiOptional()?.getAgentLibrary) { set({ loading: false }); return; }
     try {
-      const library = await window.piDesktop.getAgentLibrary(filter ? { routineId: filter } : {});
+      const library = await getDesktopApi().getAgentLibrary(filter ? { routineId: filter } : {});
       if (current === generation) set({ library, loading: false });
     } catch (error) { if (current === generation) { const message = agentError(error); set({ error: message, loading: false }); scheduleErrorDismiss('error', message); } }
   },
@@ -60,9 +61,9 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
     const current = ++legacyGeneration;
     if (!projectPath) { set({ legacy: [], legacyLoading: false, legacyError: null }); return; }
     set({ legacyLoading: true, legacyError: null });
-    if (!window.piDesktop?.listLegacyAutomations) { set({ legacyLoading: false }); return; }
+    if (!getDesktopApiOptional()?.listLegacyAutomations) { set({ legacyLoading: false }); return; }
     try {
-      const legacy = await window.piDesktop.listLegacyAutomations({});
+      const legacy = await getDesktopApi().listLegacyAutomations({});
       if (current === legacyGeneration && get().projectPath === projectPath) set({ legacy, legacyLoading: false });
     } catch (error) {
       if (current === legacyGeneration && get().projectPath === projectPath) { const message = agentError(error); set({ legacyError: message, legacyLoading: false }); scheduleErrorDismiss('legacyError', message); }
@@ -87,7 +88,7 @@ export const useAgentsStore = create<AgentsState>((set, get) => ({
 export async function openAgentNotice(projectPath: string, runId: string): Promise<void> {
   try {
     if (useRuntimeStore.getState().runtime.project?.path !== projectPath) {
-      useRuntimeStore.getState().setRuntime(await window.piDesktop.focusProject(projectPath));
+      useRuntimeStore.getState().setRuntime(await getDesktopApi().focusProject(projectPath));
     }
     useUiStore.getState().setSidebarCollapsed(false);
     useUiStore.getState().setSidebarTab('agents');

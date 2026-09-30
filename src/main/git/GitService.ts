@@ -18,6 +18,7 @@ import type {
 } from '../../shared/contracts/ipc';
 import { FilesystemService, isBinaryBuffer, isSafeExternalPath, languageForPath, MAX_FILE_PREVIEW_BYTES, previewImageMimeType } from '../files/FilesystemService';
 import { worktreeBranchName } from './GitBranchNames';
+import type { CheckoutOwnership } from '../../core/ownership/CheckoutOwnership';
 
 const MAX_GIT_OUTPUT = 8 * 1024 * 1024;
 const MAX_GIT_RUNTIME_MS = 20_000;
@@ -600,7 +601,14 @@ export class GitService {
   constructor(
     private readonly files: FilesystemService,
     private readonly worktreesRoot = path.join(homedir(), '.pi', 'fateGUI', 'worktrees'),
+    private readonly temporaryRoot = tmpdir(),
+    private readonly ownership?: CheckoutOwnership,
   ) {}
+
+  private async hooksDirectory(): Promise<string> {
+    await fs.mkdir(this.temporaryRoot, { recursive: true, mode: 0o700 });
+    return fs.mkdtemp(path.join(this.temporaryRoot, 'fate-ui-git-hooks-'));
+  }
 
   status(): Promise<GitStatus> {
     const root = this.files.getRoot();
@@ -654,11 +662,25 @@ export class GitService {
     try {
       const stat = await handle.stat();
       if (!stat.isFile()) return { state: 'unavailable' };
+      const identity = await handle.stat({ bigint: true });
+      const assertOpenedFileConfined = async () => {
+        // Use the captured root, not the legacy desktop's mutable focused root:
+        // an already-started status still projects A when focus switches to B.
+        const current = path.normalize(await fs.realpath(candidate));
+        const relative = path.relative(root, current);
+        if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+          throw new Error('Git project file changed during opening.');
+        }
+        const currentStat = await fs.stat(current, { bigint: true });
+        if (identity.ino <= 0n || currentStat.dev !== identity.dev || currentStat.ino !== identity.ino) throw new Error('Git project file changed during opening.');
+      };
+      await assertOpenedFileConfined();
       const sample = Buffer.alloc(Math.min(stat.size, 8_192));
       await handle.read(sample, 0, sample.length, 0);
       const imageMimeType = previewImageMimeType(sample);
-      if (stat.size > MAX_FILE_PREVIEW_BYTES) return { state: 'large' };
+      if (stat.size > MAX_FILE_PREVIEW_BYTES) { await assertOpenedFileConfined(); return { state: 'large' }; }
       const data = await handle.readFile();
+      await assertOpenedFileConfined();
       if (imageMimeType) return { state: 'image', data };
       if (isBinaryBuffer(sample)) return { state: 'binary', data };
       return { state: 'text', content: data.toString('utf8'), data };
@@ -759,6 +781,11 @@ export class GitService {
 
   async createWorktree(branchSeed: string): Promise<GitWorktree> {
     const root = this.files.getRoot();
+    return this.ownership ? this.ownership.mutation(root, () => this.createWorktreeUnlocked(branchSeed)) : this.createWorktreeUnlocked(branchSeed);
+  }
+
+  private async createWorktreeUnlocked(branchSeed: string): Promise<GitWorktree> {
+    const root = this.files.getRoot();
     const status = await this.readStatus(root);
     if (!status.repository) throw new Error('An isolated session requires a Git repository.');
     const head = (await execute(root, ['rev-parse', '--verify', 'HEAD'], 16_384)).toString('utf8').trim();
@@ -766,7 +793,7 @@ export class GitService {
 
     await fs.mkdir(this.worktreesRoot, { recursive: true });
     const managedRoot = path.normalize(await fs.realpath(this.worktreesRoot));
-    const hooksDirectory = await fs.mkdtemp(path.join(tmpdir(), 'fate-ui-git-hooks-'));
+    const hooksDirectory = await this.hooksDirectory();
     const filterConfig = await safeFilterConfig(root);
     const worktreeConfig = [
       ...await inheritedLineEndingConfig(root),
@@ -840,13 +867,18 @@ export class GitService {
 
   async discardCreatedWorktree(worktree: GitWorktree): Promise<void> {
     const root = this.files.getRoot();
+    return this.ownership ? this.ownership.mutation(root, () => this.discardCreatedWorktreeUnlocked(worktree)) : this.discardCreatedWorktreeUnlocked(worktree);
+  }
+
+  private async discardCreatedWorktreeUnlocked(worktree: GitWorktree): Promise<void> {
+    const root = this.files.getRoot();
     const canonical = await this.resolveWorktree(worktree.path);
     const managedRoot = path.normalize(await fs.realpath(this.worktreesRoot));
     const relative = path.relative(managedRoot, canonical);
     if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       throw new Error('Refusing to remove a worktree outside Fate UI managed storage.');
     }
-    const hooksDirectory = await fs.mkdtemp(path.join(tmpdir(), 'fate-ui-git-hooks-'));
+    const hooksDirectory = await this.hooksDirectory();
     const cleanupConfig = [
       '-c', `core.hooksPath=${hooksDirectory}`,
       '-c', 'protocol.allow=never',
@@ -878,9 +910,20 @@ export class GitService {
         commits: parsed.commits.slice(0, MAX_HISTORY_COMMITS),
         truncated: parsed.commits.length > MAX_HISTORY_COMMITS,
       };
-    }).catch((error: unknown) => {
+    }).catch(async (error: unknown) => {
       const code = (error as ExecFailure).code;
-      if (typeof code === 'number' && code !== 0) return { head: null, commits: [], truncated: false };
+      // An ordinary directory without Git metadata keeps the desktop's empty
+      // history view. A damaged repository (including a bad ref or .git file)
+      // is NOT an empty success, even when Git exits with a numeric code.
+      if (typeof code === 'number' && code !== 0 && error instanceof Error && /not a git repository/iu.test(error.message)) {
+        let missingMetadata = false;
+        try { await fs.lstat(path.join(root, '.git')); }
+        catch (metadataError) {
+          if ((metadataError as NodeJS.ErrnoException).code !== 'ENOENT') throw metadataError;
+          missingMetadata = true;
+        }
+        if (missingMetadata && !(await this.readStatus(root)).repository) return { head: null, commits: [], truncated: false };
+      }
       throw error;
     }).finally(() => {
       if (this.historyRequest?.promise === promise) this.historyRequest = null;
@@ -974,9 +1017,14 @@ export class GitService {
 
   async runOperation(operation: GitOperation): Promise<GitOperationResult> {
     const root = this.files.getRoot();
+    return this.ownership ? this.ownership.mutation(root, () => this.runOperationUnlocked(operation)) : this.runOperationUnlocked(operation);
+  }
+
+  private async runOperationUnlocked(operation: GitOperation): Promise<GitOperationResult> {
+    const root = this.files.getRoot();
     const initial = await this.readStatus(root);
     if (!initial.repository) throw new Error('Git controls require a repository.');
-    const hooksDirectory = await fs.mkdtemp(path.join(tmpdir(), 'fate-ui-git-hooks-'));
+    const hooksDirectory = await this.hooksDirectory();
     try {
       const credentialConfig = await trustedCredentialConfig(root);
       const ssh = trustedSshExecutable();

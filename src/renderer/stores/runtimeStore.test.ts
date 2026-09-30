@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { PiEvent, SubagentRun, SubagentWorkflowLivenessReport } from '../../shared/contracts/ipc';
+import type { PiEvent, RuntimeState, SubagentRun, SubagentWorkflowLivenessReport } from '../../shared/contracts/ipc';
 import { createTeamRuntime, projectTeam } from '../../main/pi/multi-agent/AgentTeamStore';
-import { MAX_LIVE_TIMELINE_ENTITIES, MAX_LIVE_TOOL_OUTPUT, useRuntimeStore } from './runtimeStore';
+import { MAX_LIVE_IMAGE_CHARACTERS, MAX_LIVE_TIMELINE_ENTITIES, MAX_LIVE_TOOL_OUTPUT, useRuntimeStore } from './runtimeStore';
 
 const resetRuntime = (sessionId: string) => ({
   status: 'ready' as const,
@@ -27,6 +27,33 @@ const reset = () => useRuntimeStore.setState({
   queue: { steering: 0, followUp: 0, items: [] }, lastError: null,
   sequence: 0, timelineSequence: 0, activeCompactionId: null,
 });
+
+function imageHistory(kind: 'message' | 'tool', id: string, data: string, timestamp = 1): Pick<RuntimeState, 'messages' | 'tools'> {
+  const images = [{ data, mimeType: 'image/png' as const }];
+  return {
+    messages: kind === 'message' ? [{ id, role: 'assistant', text: '', images, timestamp, timelinePosition: timestamp }] : [],
+    tools: kind === 'tool' ? [{
+      id, name: 'generate_image', input: '{}', output: '', outputTruncated: false,
+      status: 'succeeded', images, startedAt: timestamp, updatedAt: timestamp, timelinePosition: timestamp,
+    }] : [],
+  };
+}
+
+function expectImagePayloadAbsent(data: string): void {
+  const state = useRuntimeStore.getState();
+  // Compare booleans, not multi-megabyte strings, to keep regression failures small.
+  for (const entities of [Object.values(state.messagesById), Object.values(state.toolsById), state.runtime.messages, state.runtime.tools ?? []]) {
+    expect(entities.some((entity) => entity.images?.some((image) => image.data === data))).toBe(false);
+  }
+}
+
+function expectRuntimeHistoryReferences(): void {
+  const state = useRuntimeStore.getState();
+  expect(state.runtime.messages.map((message) => message.id)).toEqual(state.messageOrder);
+  expect((state.runtime.tools ?? []).map((tool) => tool.id)).toEqual(state.toolOrder);
+  expect(state.runtime.messages.every((message) => message === state.messagesById[message.id])).toBe(true);
+  expect((state.runtime.tools ?? []).every((tool) => tool === state.toolsById[tool.id])).toBe(true);
+}
 
 describe('runtimeStore event reducer', () => {
   beforeEach(reset);
@@ -287,6 +314,139 @@ describe('runtimeStore event reducer', () => {
     expect(useRuntimeStore.getState().messagesById['older-image']?.images).toBeUndefined();
     expect(useRuntimeStore.getState().messagesById['older-image']?.text).toMatch(/omitted/i);
     expect(useRuntimeStore.getState().messagesById['newer-image']?.images).toHaveLength(1);
+  });
+
+  it.each([
+    ['message', 'message'], ['message', 'tool'], ['tool', 'message'], ['tool', 'tool'],
+  ] as const)('releases hydrated %s image payloads from both projections when a new %s image arrives', (olderKind, newerKind) => {
+    const olderPayload = 'a'.repeat(MAX_LIVE_IMAGE_CHARACTERS);
+    useRuntimeStore.getState().hydrateRuntime({ ...resetRuntime('images'), ...imageHistory(olderKind, 'older', olderPayload) });
+    const images = [{ data: 'b', mimeType: 'image/png' as const }];
+    const event: PiEvent = newerKind === 'message'
+      ? { type: 'message.completed', messageId: 'newer', role: 'assistant', text: '', images, timestamp: 2 }
+      : { type: 'tool.completed', toolCallId: 'newer', name: 'generate_image', output: '', error: false, images, timestamp: 2 };
+
+    useRuntimeStore.getState().applyEvents([event]);
+
+    const state = useRuntimeStore.getState();
+    expectImagePayloadAbsent(olderPayload);
+    expect(olderKind === 'message' ? state.messagesById.older?.text : state.toolsById.older?.output).toMatch(/omitted/i);
+    expect((newerKind === 'message' ? state.messagesById.newer : state.toolsById.newer)?.images?.[0]?.data).toBe('b');
+    expectRuntimeHistoryReferences();
+  });
+
+  it.each(['message.completed', 'tool.completed', 'tool.started'] as const)('releases replaced image payloads from both projections on %s', (type) => {
+    const olderPayload = 'a'.repeat(MAX_LIVE_IMAGE_CHARACTERS);
+    const kind = type === 'message.completed' ? 'message' : 'tool';
+    useRuntimeStore.getState().hydrateRuntime({ ...resetRuntime('images'), ...imageHistory(kind, 'replaced', olderPayload) });
+    const event: PiEvent = type === 'message.completed'
+      ? { type, messageId: 'replaced', role: 'assistant', text: 'text instead', timestamp: 2 }
+      : type === 'tool.completed'
+        ? { type, toolCallId: 'replaced', name: 'read', output: 'text instead', error: false, timestamp: 2 }
+        : { type, toolCallId: 'replaced', name: 'read', input: '{}', timestamp: 2 };
+
+    useRuntimeStore.getState().applyEvents([event]);
+
+    expectImagePayloadAbsent(olderPayload);
+    expectRuntimeHistoryReferences();
+  });
+
+  it.each(['message', 'tool'] as const)('bounds authoritative %s image history across both projections', (olderKind) => {
+    useRuntimeStore.getState().hydrateRuntime(resetRuntime('images'));
+    const olderPayload = 'a'.repeat(MAX_LIVE_IMAGE_CHARACTERS);
+    const older = imageHistory(olderKind, 'older', olderPayload);
+    const newer = imageHistory(olderKind === 'message' ? 'tool' : 'message', 'newer', 'b', 2);
+    useRuntimeStore.getState().applyEvents([{
+      type: 'state.changed', messagesIncluded: true, timestamp: 2,
+      state: {
+        ...resetRuntime('images'),
+        messages: [...older.messages, ...newer.messages],
+        tools: [...(older.tools ?? []), ...(newer.tools ?? [])],
+      },
+    }]);
+
+    expectImagePayloadAbsent(olderPayload);
+    expectRuntimeHistoryReferences();
+  });
+
+  it.each([true, false])('bounds authoritative mixed history across both projections (messagesIncluded=%s)', (messagesIncluded) => {
+    useRuntimeStore.getState().hydrateRuntime(resetRuntime('history'));
+    useRuntimeStore.getState().applyEvents([{
+      type: 'state.changed', messagesIncluded, timestamp: 2,
+      state: {
+        ...resetRuntime(messagesIncluded ? 'history' : 'replacement'),
+        messages: Array.from({ length: 2_501 }, (_value, index) => ({
+          id: `message-${index}`, role: 'assistant' as const, text: 'answer', timestamp: index, timelinePosition: index * 2,
+          ...(index === 0 ? { images: [{ data: 'evicted-message-image', mimeType: 'image/png' as const }] } : {}),
+        })),
+        tools: Array.from({ length: 2_501 }, (_value, index) => ({
+          id: `tool-${index}`, name: 'read', input: '{}', output: 'done', outputTruncated: false,
+          status: 'succeeded' as const, startedAt: index, updatedAt: index, timelinePosition: index * 2 + 1,
+          ...(index === 0 ? { images: [{ data: 'evicted-tool-image', mimeType: 'image/png' as const }] } : {}),
+        })),
+      },
+    }]);
+
+    const state = useRuntimeStore.getState();
+    expectImagePayloadAbsent('evicted-message-image');
+    expectImagePayloadAbsent('evicted-tool-image');
+    expect(state.messagesById['message-0']).toBeUndefined();
+    expect(state.toolsById['tool-0']).toBeUndefined();
+    expect(state.timelineOrder).toHaveLength(MAX_LIVE_TIMELINE_ENTITIES);
+    expect(state.runtime.messages.length + (state.runtime.tools?.length ?? 0)).toBe(MAX_LIVE_TIMELINE_ENTITIES);
+    expect(state.messagesById['history-boundary-renderer']?.historyOmitted).toBe(3);
+    expectRuntimeHistoryReferences();
+  });
+
+  it('does not import raw tool images from metadata-only state before a session snapshot exists', () => {
+    const ignored = imageHistory('tool', 'ignored-tool', 'ignored-tool-image');
+    useRuntimeStore.getState().applyEvents([
+      { type: 'message.started', messageId: 'stream', role: 'assistant', timestamp: 1 },
+      {
+        type: 'state.changed', messagesIncluded: false, timestamp: 2,
+        state: { ...resetRuntime('images'), ...ignored, project: null },
+      },
+    ]);
+
+    expectImagePayloadAbsent('ignored-tool-image');
+    expect(useRuntimeStore.getState().messagesById.stream).toBeDefined();
+    expect(useRuntimeStore.getState().toolOrder).toEqual([]);
+    expect(useRuntimeStore.getState().runtime.tools ?? []).toEqual([]);
+  });
+
+  it('preserves hydrated image history and mutable index identities during steady-state text and tool deltas', () => {
+    const messageHistory = imageHistory('message', 'stream', 'message-image');
+    const toolHistory = imageHistory('tool', 'tool', 'tool-image', 2);
+    useRuntimeStore.getState().hydrateRuntime({ ...resetRuntime('images'), messages: messageHistory.messages, tools: toolHistory.tools });
+    const initial = useRuntimeStore.getState();
+    const message = initial.messagesById.stream;
+    const tool = initial.toolsById.tool;
+
+    useRuntimeStore.getState().applyEvents([
+      { type: 'assistant.text', messageId: 'stream', delta: 'caption', timestamp: 3, cursor: 1 },
+      { type: 'tool.updated', toolCallId: 'tool', output: 'progress', timestamp: 4, cursor: 2 },
+    ]);
+
+    const updated = useRuntimeStore.getState();
+    expect(updated.runtime).toBe(initial.runtime);
+    expect(updated.runtime.messages).toBe(initial.runtime.messages);
+    expect(updated.runtime.tools).toBe(initial.runtime.tools);
+    expect(updated.messagesById).toBe(initial.messagesById);
+    expect(updated.toolsById).toBe(initial.toolsById);
+    expect(updated.timelineById).toBe(initial.timelineById);
+    expect(updated.messageOrder).toBe(initial.messageOrder);
+    expect(updated.toolOrder).toBe(initial.toolOrder);
+    expect(updated.timelineOrder).toBe(initial.timelineOrder);
+    expect(updated.visibleTimelineOrder).toBe(initial.visibleTimelineOrder);
+    expect(updated.visibleTimelineIds).toBe(initial.visibleTimelineIds);
+    expect(updated.messagesById.stream).not.toBe(message);
+    expect(updated.toolsById.tool).not.toBe(tool);
+    expect(updated.messagesById.stream?.text).toBe('caption');
+    expect(updated.toolsById.tool?.output).toBe('progress');
+    expect(updated.messagesVersion).toBe(initial.messagesVersion + 1);
+    expect(updated.toolsVersion).toBe(initial.toolsVersion + 1);
+    expect(updated.timelineVersion).toBe(initial.timelineVersion);
+    expect(updated.waitPollVersion).toBe(initial.waitPollVersion);
   });
 
   it('models structured tool transitions and bounds live output', () => {

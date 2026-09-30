@@ -1,4 +1,5 @@
 import { useShallow } from 'zustand/react/shallow';
+import { getDesktopApiOptional, getWebApiOptional } from '../platform/api';
 import { ResizeHandle } from '../components/ResizeHandle';
 import { WindowChrome } from '../components/WindowChrome';
 import { Inspector } from '../features/shell/Inspector';
@@ -23,17 +24,19 @@ export function AppShell() {
     setLeftWidth: ui.setLeftWidth,
     setRightWidth: ui.setRightWidth,
   })));
+  const desktop = getDesktopApiOptional();
+  const pureBrowser = !desktop && Boolean(getWebApiOptional());
   const leftTrack = state.sidebarCollapsed ? '64px' : `min(${state.leftWidth}px, 27vw)`;
   const rightTrack = state.inspectorCollapsed ? '0px' : `min(${state.rightWidth}px, 31vw)`;
 
   return (
     <div
-      className={`app-shell app-shell--sidebar-${state.sidebarCollapsed ? 'collapsed' : 'open'} app-shell--inspector-${state.inspectorCollapsed ? 'collapsed' : 'open'}`}
+      className={`app-shell app-shell--sidebar-${state.sidebarCollapsed ? 'collapsed' : 'open'} app-shell--inspector-${state.inspectorCollapsed ? 'collapsed' : 'open'}${pureBrowser ? ' app-shell--web' : ''}`}
       style={{
         gridTemplateColumns: `${leftTrack} ${state.sidebarCollapsed ? 0 : 6}px minmax(min(340px, 40vw), 1fr) ${state.inspectorCollapsed ? 0 : 6}px ${rightTrack}`,
       }}
     >
-      <WindowChrome />
+      {desktop && <WindowChrome />}
       <Sidebar collapsed={state.sidebarCollapsed} onToggle={state.toggleSidebar} />
       {!state.sidebarCollapsed && (
         <ResizeHandle

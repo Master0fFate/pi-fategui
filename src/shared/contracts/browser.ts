@@ -204,20 +204,21 @@ export const browserConfirmationSchema = z.object({
 }).strict();
 export const browserConfirmationResponseSchema = z.object({ id: z.string().uuid(), approved: z.boolean() }).strict();
 export const browserOperationResultSchema = z.object({ ok: z.boolean() }).strict();
+const browserEventScope = { projectPath: z.string().min(1).max(32_000).optional(), sessionId: browserIdSchema.optional() };
 export const browserEventSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('state'), state: browserStateSchema }).strict(),
-  z.object({ type: z.literal('navigation-blocked'), tabId: browserIdSchema, url: boundedUrlSchema, reason: z.string().max(1_000) }).strict(),
-  z.object({ type: z.literal('cdp-availability'), tabId: browserIdSchema, available: z.boolean(), reason: z.string().max(1_000).optional() }).strict(),
-  z.object({ type: z.literal('work-log'), tabId: browserIdSchema, action: browserWorkLogActionSchema, target: z.string().max(1_200), timestamp: z.number().int().nonnegative().safe() }).strict(),
+  z.object({ type: z.literal('state'), state: browserStateSchema, ...browserEventScope }).strict(),
+  z.object({ type: z.literal('navigation-blocked'), tabId: browserIdSchema, url: boundedUrlSchema, reason: z.string().max(1_000), ...browserEventScope }).strict(),
+  z.object({ type: z.literal('cdp-availability'), tabId: browserIdSchema, available: z.boolean(), reason: z.string().max(1_000).optional(), ...browserEventScope }).strict(),
+  z.object({ type: z.literal('work-log'), tabId: browserIdSchema, action: browserWorkLogActionSchema, target: z.string().max(1_200), timestamp: z.number().int().nonnegative().safe(), ...browserEventScope }).strict(),
   z.object({
     type: z.literal('annotation-created'),
     projectPath: z.string().min(1).max(32_000),
     sessionId: browserIdSchema,
     annotation: z.lazy(() => browserAnnotationSchema),
   }).strict(),
-  z.object({ type: z.literal('annotation-error'), message: z.string().min(1).max(1_000) }).strict(),
-  z.object({ type: z.literal('confirmation-requested'), confirmation: browserConfirmationSchema }).strict(),
-  z.object({ type: z.literal('confirmation-cleared'), id: z.string().uuid(), approved: z.boolean() }).strict(),
+  z.object({ type: z.literal('annotation-error'), message: z.string().min(1).max(1_000), ...browserEventScope }).strict(),
+  z.object({ type: z.literal('confirmation-requested'), confirmation: browserConfirmationSchema, ...browserEventScope }).strict(),
+  z.object({ type: z.literal('confirmation-cleared'), id: z.string().uuid(), approved: z.boolean(), ...browserEventScope }).strict(),
 ]);
 export const browserEventBatchSchema = z.array(browserEventSchema).min(1).max(100);
 

@@ -1,4 +1,25 @@
 import { create } from 'zustand';
+import type { Capability, WireResultOf } from '../../shared/protocol/methods';
+import { currentNetworkScope, useRuntimeStore, type NetworkWorkspaceApi, type ReadView, type RegisteredWorkspace } from './runtimeStore';
+interface HostGitViews {
+  scopeKey: string | null;
+  status: ReadView<WireResultOf<'git.status'>>;
+  history: ReadView<WireResultOf<'git.history'>>;
+  diff: ReadView<WireResultOf<'git.diff'>>;
+  combined: ReadView<WireResultOf<'git.combinedDiff'>>;
+  commit: ReadView<WireResultOf<'git.commitDetails'>>;
+  reviewedPaths: Set<string>;
+}
+const emptyHostGit = (): HostGitViews => ({ scopeKey: null, status: { status: 'loading' }, history: { status: 'loading' },
+  diff: { status: 'unavailable' }, combined: { status: 'unavailable' }, commit: { status: 'unavailable' }, reviewedPaths: new Set() });
+let hostGitRequest = 0;
+let hostDiffRequest = 0;
+let hostCommitRequest = 0;
+export function selectGitStatusView(state: WorkspaceStore, source: 'desktop' | 'network') {
+  if (source === 'desktop') return state.git;
+  return state.hostGit.scopeKey === currentNetworkScope()?.key && state.hostGit.status.status === 'ready' ? state.hostGit.status.value : null;
+}
+import { getFateApi, getFateApiOptional, getDesktopApi, hasCapability } from '../platform/api';
 import type {
   FileEntry,
   FilePreview,
@@ -12,7 +33,75 @@ import type {
   GitWorktree,
 } from '../../shared/contracts/ipc';
 
+export interface HostFileApi {
+  readonly isConnected: boolean;
+  supports(capability: Capability): boolean;
+  listFiles(scope: RegisteredWorkspace, directoryId: string | null): Promise<WireResultOf<'file.list'>>;
+  previewText(scope: RegisteredWorkspace, fileId: string): Promise<WireResultOf<'file.previewText'>>;
+}
+interface HostFiles {
+  scopeKey: string | null;
+  directories: Record<string, WireResultOf<'file.list'>>;
+  expanded: Set<string>;
+  loading: Set<string>;
+  selected: string | null;
+  preview: WireResultOf<'file.previewText'> | null;
+  previewLoading: boolean;
+  error: string | null;
+}
+const emptyHostFiles = (): HostFiles => ({ scopeKey: null, directories: {}, expanded: new Set(), loading: new Set(),
+  selected: null, preview: null, previewLoading: false, error: null });
+const MAX_HOST_FILE_DIRECTORIES = 64;
+let hostFilesGeneration = 0;
+let hostPreviewRequest = 0;
+function confirmedHostFileScope() {
+  const state = useRuntimeStore.getState();
+  // readSnapshot already completed and acknowledged this view. Its page TTL
+  // is not a live-view lease; identity/invalidation/adapter guards own freshness.
+  if (state.source !== 'network' || state.phase !== 'observing' || !state.selected || !state.snapshot) return null;
+  const header = state.snapshot.header;
+  if (header.workspaceId !== state.selected.workspaceId || header.workspaceGeneration !== state.selected.workspaceGeneration) return null;
+  return { scope: state.selected, key: `${header.serverEpoch}:${header.workspaceId}:${header.workspaceGeneration}:${header.sessionId}:${header.snapshotId}:${state.request}` };
+}
+
+/** Presentation references remain tagged: a resource UUID must never become a local path. */
+export interface FileTreeRow {
+  id: string; name: string; kind: 'file' | 'directory'; depth: number; symlink: boolean;
+  reference: { kind: 'desktop-path'; path: string } | { kind: 'host-resource'; resourceId: string };
+}
+export function selectFileRows(state: WorkspaceStore, source: 'desktop' | 'network'): FileTreeRow[] {
+  if (source === 'desktop') {
+    const entries = state.query.trim() ? state.searchResults.map((entry) => ({ ...entry, depth: Math.max(0, entry.path.split('/').length - 1) }))
+      : flattenTree(state.directories, state.expanded);
+    return entries.map((entry) => ({ id: entry.path, name: entry.name, kind: entry.kind, depth: entry.depth,
+      symlink: entry.symlink ?? false, reference: { kind: 'desktop-path', path: entry.path } }));
+  }
+  const result: FileTreeRow[] = [];
+  if (state.hostFiles.scopeKey !== confirmedHostFileScope()?.key) return result;
+  const visit = (directory: string, depth: number, ancestors: Set<string>) => {
+    for (const entry of state.hostFiles.directories[directory]?.entries ?? []) {
+      if (ancestors.has(entry.resourceId)) continue;
+      result.push({ id: entry.resourceId, name: entry.name, kind: entry.kind, depth, symlink: false,
+        reference: { kind: 'host-resource', resourceId: entry.resourceId } });
+      if (entry.kind === 'directory' && state.hostFiles.expanded.has(entry.resourceId) && depth < 16) {
+        visit(entry.resourceId, depth + 1, new Set([...ancestors, entry.resourceId]));
+      }
+    }
+  };
+  visit('root', 0, new Set());
+  return result;
+}
+
 interface WorkspaceStore {
+  hostGit: HostGitViews;
+  loadNetworkGit: (api: NetworkWorkspaceApi) => Promise<void>;
+  readNetworkDiff: (api: NetworkWorkspaceApi, path: string | null) => Promise<void>;
+  readNetworkCommit: (api: NetworkWorkspaceApi, hash: string) => Promise<void>;
+  markNetworkReviewed: (path: string) => void;
+  hostFiles: HostFiles;
+  initializeHostFiles: (api: HostFileApi) => Promise<void>;
+  activateHostFile: (api: HostFileApi, row: FileTreeRow) => Promise<void>;
+  resetHostFiles: () => void;
   projectPath: string | null;
   directories: Record<string, FileEntry[]>;
   expanded: Set<string>;
@@ -108,6 +197,112 @@ export function flattenTree(directories: Record<string, FileEntry[]>, expanded: 
 }
 
 export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
+  hostGit: emptyHostGit(),
+  loadNetworkGit: async (api) => {
+    const captured = currentNetworkScope();
+    if (!captured || !api.isConnected) return;
+    const generation = ++hostGitRequest;
+    hostDiffRequest++; hostCommitRequest++;
+    set({ hostGit: { ...emptyHostGit(), scopeKey: captured.key } });
+    const current = () => generation === hostGitRequest && api.isConnected && currentNetworkScope()?.key === captured.key;
+    if (!api.supports('git.read')) { set({ hostGit: { ...get().hostGit, status: { status: 'unavailable' }, history: { status: 'unavailable' } } }); return; }
+    await Promise.all([
+      api.readGitStatus(captured.scope).then((value) => { if (current()) set({ hostGit: { ...get().hostGit, status: { status: 'ready', value } } }); }, () => { if (current()) set({ hostGit: { ...get().hostGit, status: { status: 'error' } } }); }),
+      api.readGitHistory(captured.scope).then((value) => { if (current()) set({ hostGit: { ...get().hostGit, history: { status: 'ready', value } } }); }, () => { if (current()) set({ hostGit: { ...get().hostGit, history: { status: 'error' } } }); }),
+    ]);
+  },
+  readNetworkDiff: async (api, path) => {
+    const captured = currentNetworkScope();
+    if (!captured || !api.isConnected || !api.supports('git.read') || get().hostGit.scopeKey !== captured.key) return;
+    const request = ++hostDiffRequest;
+    const generation = hostGitRequest;
+    set({ hostGit: { ...get().hostGit, diff: { status: path === null ? 'unavailable' : 'loading' }, combined: { status: path === null ? 'loading' : 'unavailable' } } });
+    try {
+      if (path === null) {
+        const value = await api.readGitCombinedDiff(captured.scope);
+        if (request === hostDiffRequest && generation === hostGitRequest && api.isConnected && currentNetworkScope()?.key === captured.key) set({ hostGit: { ...get().hostGit, combined: { status: 'ready', value } } });
+      } else {
+        const value = await api.readGitDiff(captured.scope, path);
+        if (value.path !== path) throw new Error('Diff path changed.');
+        if (request === hostDiffRequest && generation === hostGitRequest && api.isConnected && currentNetworkScope()?.key === captured.key) set({ hostGit: { ...get().hostGit, diff: { status: 'ready', value } } });
+      }
+    } catch { if (request === hostDiffRequest && generation === hostGitRequest && currentNetworkScope()?.key === captured.key) set({ hostGit: { ...get().hostGit,
+      ...(path === null ? { combined: { status: 'error' } as const } : { diff: { status: 'error' } as const }) } }); }
+  },
+  readNetworkCommit: async (api, hash) => {
+    const captured = currentNetworkScope();
+    if (!captured || !api.isConnected || !api.supports('git.read') || get().hostGit.scopeKey !== captured.key) return;
+    const request = ++hostCommitRequest;
+    const generation = hostGitRequest;
+    set({ hostGit: { ...get().hostGit, commit: { status: 'loading' } } });
+    try {
+      const value = await api.readGitCommitDetails(captured.scope, hash);
+      if (value.hash !== hash) throw new Error('Commit identity changed.');
+      if (request === hostCommitRequest && generation === hostGitRequest && api.isConnected && currentNetworkScope()?.key === captured.key) set({ hostGit: { ...get().hostGit, commit: { status: 'ready', value } } });
+    } catch { if (request === hostCommitRequest && generation === hostGitRequest && currentNetworkScope()?.key === captured.key) set({ hostGit: { ...get().hostGit, commit: { status: 'error' } } }); }
+  },
+  markNetworkReviewed: (path) => {
+    const git = get().hostGit;
+    if (git.scopeKey !== currentNetworkScope()?.key || git.diff.status !== 'ready' || git.diff.value.path !== path || git.diff.value.state !== 'text') return;
+    const reviewedPaths = new Set(git.reviewedPaths);
+    if (reviewedPaths.has(path)) reviewedPaths.delete(path); else reviewedPaths.add(path);
+    set({ hostGit: { ...git, reviewedPaths } });
+  },
+  hostFiles: emptyHostFiles(),
+  resetHostFiles: () => { hostFilesGeneration++; hostPreviewRequest++; set({ hostFiles: emptyHostFiles() }); },
+  initializeHostFiles: async (api) => {
+    get().resetHostFiles();
+    const captured = confirmedHostFileScope();
+    if (!captured || !api.isConnected || !api.supports('file.read')) return;
+    const generation = hostFilesGeneration;
+    const current = () => generation === hostFilesGeneration && api.isConnected && confirmedHostFileScope()?.key === captured.key;
+    set({ hostFiles: { ...emptyHostFiles(), scopeKey: captured.key, loading: new Set(['root']) } });
+    try {
+      const listing = await api.listFiles(captured.scope, null);
+      if (current()) set({ hostFiles: { ...get().hostFiles, directories: { root: listing }, loading: new Set() } });
+    } catch {
+      if (current()) set({ hostFiles: { ...get().hostFiles, loading: new Set(), error: 'Host files unavailable. Refresh this workspace.' } });
+    }
+  },
+  activateHostFile: async (api, row) => {
+    const captured = confirmedHostFileScope();
+    if (row.reference.kind !== 'host-resource' || !captured || !api.isConnected || !api.supports('file.read')
+      || get().hostFiles.scopeKey !== captured.key) return;
+    const id = row.reference.resourceId;
+    // Only entries already issued by this host may be activated.
+    if (!Object.values(get().hostFiles.directories).some((listing) => listing.entries.some((entry) => entry.resourceId === id && entry.kind === row.kind))) return;
+    const generation = hostFilesGeneration;
+    const current = () => generation === hostFilesGeneration && api.isConnected && confirmedHostFileScope()?.key === captured.key;
+    if (row.kind === 'directory') {
+      const expanded = new Set(get().hostFiles.expanded);
+      if (expanded.has(id)) { expanded.delete(id); set({ hostFiles: { ...get().hostFiles, expanded } }); return; }
+      expanded.add(id);
+      set({ hostFiles: { ...get().hostFiles, expanded } });
+      if (get().hostFiles.directories[id] || get().hostFiles.loading.has(id)) return;
+      if (Object.keys(get().hostFiles.directories).length + get().hostFiles.loading.size >= MAX_HOST_FILE_DIRECTORIES) {
+        set({ hostFiles: { ...get().hostFiles, error: 'File view reached its 64-directory limit. Refresh the workspace to read other directories.' } });
+        return;
+      }
+      set({ hostFiles: { ...get().hostFiles, loading: new Set([...get().hostFiles.loading, id]), error: null } });
+      try {
+        const listing = await api.listFiles(captured.scope, id);
+        if (current()) set({ hostFiles: { ...get().hostFiles, directories: { ...get().hostFiles.directories, [id]: listing } } });
+      } catch {
+        if (current()) set({ hostFiles: { ...get().hostFiles, error: 'Directory unavailable. Refresh this workspace.' } });
+      } finally {
+        if (current()) { const loading = new Set(get().hostFiles.loading); loading.delete(id); set({ hostFiles: { ...get().hostFiles, loading } }); }
+      }
+      return;
+    }
+    const request = ++hostPreviewRequest;
+    set({ hostFiles: { ...get().hostFiles, selected: id, preview: null, previewLoading: true, error: null } });
+    try {
+      const preview = await api.previewText(captured.scope, id);
+      if (current() && request === hostPreviewRequest && preview.fileId === id) set({ hostFiles: { ...get().hostFiles, preview, previewLoading: false } });
+    } catch {
+      if (current() && request === hostPreviewRequest) set({ hostFiles: { ...get().hostFiles, previewLoading: false, error: 'Text preview unavailable. Refresh this workspace.' } });
+    }
+  },
   projectPath: null,
   directories: {},
   expanded: new Set(),
@@ -155,8 +350,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         diff: null, diffLoading: false, combinedDiff: null, combinedDiffLoading: false, error: null,
       });
     }
-    if (!projectPath || !surface || !('piDesktop' in window)) return;
-    const desktop = window.piDesktop;
+    if (!projectPath || !surface || !getFateApiOptional()) return;
+    const desktop = getFateApi();
     const expected = projectPath;
     if (surface === 'files' && !get().directories[''] && !get().loadingDirectories.has('') && typeof desktop.listFiles === 'function') {
       set({ loadingDirectories: new Set([...get().loadingDirectories, '']) });
@@ -226,7 +421,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     set({ loadingDirectories });
     const expected = get().projectPath;
     try {
-      const listing = await window.piDesktop.listFiles(directoryPath);
+      const listing = await getFateApi().listFiles(directoryPath);
       if (get().projectPath !== expected) return;
       const nextLoading = new Set(get().loadingDirectories);
       nextLoading.delete(directoryPath);
@@ -234,6 +429,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       if (listing.truncated) treeTruncated.add(directoryPath);
       set({ directories: { ...get().directories, [directoryPath]: listing.entries }, loadingDirectories: nextLoading, treeTruncated });
     } catch (error) {
+      if (get().projectPath !== expected) return;
       const nextLoading = new Set(get().loadingDirectories);
       nextLoading.delete(directoryPath);
       set({ loadingDirectories: nextLoading, error: messageOf(error) });
@@ -246,13 +442,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     const trimmed = query.trim();
     if (!trimmed) {
       set({ searchResults: [], searchTruncated: false, searching: false });
-      if (get().projectPath && 'piDesktop' in window && typeof window.piDesktop.searchFiles === 'function') void window.piDesktop.searchFiles('').catch(() => undefined);
+      if (get().projectPath && Boolean(getFateApiOptional()) && typeof getFateApi().searchFiles === 'function') void getFateApi().searchFiles('').catch(() => undefined);
       return;
     }
     const expectedProject = get().projectPath;
     set({ searching: true });
     try {
-      const result = await window.piDesktop.searchFiles(trimmed);
+      const result = await getFateApi().searchFiles(trimmed);
       if (requestSequence !== searchRequestSequence || get().projectPath !== expectedProject || get().query.trim() !== trimmed) return;
       set({ searchResults: result.entries, searchTruncated: result.truncated, searching: false });
     } catch (error) {
@@ -265,10 +461,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     const expectedProject = get().projectPath;
     set({ selectedFile: path, preview: null, previewLoading: true, error: null });
     try {
-      const preview = await window.piDesktop.readFile(path);
+      const preview = await getFateApi().readFile(path);
       if (get().projectPath === expectedProject && get().selectedFile === path) set({ preview, previewLoading: false });
     } catch (error) {
-      if (get().selectedFile === path) set({ previewLoading: false, error: messageOf(error) });
+      if (get().projectPath === expectedProject && get().selectedFile === path) set({ previewLoading: false, error: messageOf(error) });
     }
   },
 
@@ -278,8 +474,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   },
 
   openPath: async (path) => {
+    if (!hasCapability('localFileOpen')) { set({ error: 'This file is on the host. Open it in the host file view, not on this computer.' }); return; }
     try {
-      const result = await window.piDesktop.openFile(path);
+      const result = await getDesktopApi().openFile(path);
       if (!result.opened) set({ error: result.error ?? 'The file could not be opened.' });
     } catch (error) {
       set({ error: messageOf(error) });
@@ -312,7 +509,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       error: null,
     });
     try {
-      const git = await window.piDesktop.getGitStatus();
+      const git = await getFateApi().getGitStatus();
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === gitStatusRequestSequence) set({ git, gitLoading: false });
     } catch (error) {
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === gitStatusRequestSequence) {
@@ -329,7 +526,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     const requestSequence = ++worktreesRequestSequence;
     set({ worktreesLoading: true, error: null });
     try {
-      const worktrees = await window.piDesktop.listGitWorktrees();
+      const worktrees = await getFateApi().listGitWorktrees();
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === worktreesRequestSequence) set({ worktrees, worktreesLoading: false });
     } catch (error) {
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === worktreesRequestSequence) set({ worktreesLoading: false, error: messageOf(error) });
@@ -343,7 +540,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     const requestSequence = ++historyRequestSequence;
     set({ historyLoading: true, ...(force ? { history: null, selectedCommit: null } : {}), error: null });
     try {
-      const history = await window.piDesktop.getGitHistory();
+      const history = await getFateApi().getGitHistory();
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === historyRequestSequence) set({ history, historyLoading: false });
     } catch (error) {
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === historyRequestSequence) set({ historyLoading: false, error: messageOf(error) });
@@ -358,7 +555,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     const requestSequence = ++commitDetailsRequestSequence;
     set({ commitDetailsLoading: new Set([hash]) });
     try {
-      const details = await window.piDesktop.getGitCommitDetails(hash);
+      const details = await getFateApi().getGitCommitDetails(hash);
       if (!isCurrentGitGeneration(expectedProject, generation) || requestSequence !== commitDetailsRequestSequence) return;
       set({ commitDetails: { ...get().commitDetails, [hash]: details }, commitDetailsLoading: new Set() });
     } catch (error) {
@@ -381,7 +578,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     fileDiffRequestSequence += 1;
     set({ selectedChange: null, diff: null, diffLoading: false, combinedDiff: null, combinedDiffLoading: true, error: null });
     try {
-      const combinedDiff = await window.piDesktop.getGitCombinedDiff();
+      const combinedDiff = await getFateApi().getGitCombinedDiff();
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === combinedDiffRequestSequence) set({ combinedDiff, combinedDiffLoading: false });
     } catch (error) {
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === combinedDiffRequestSequence) set({ combinedDiffLoading: false, error: messageOf(error) });
@@ -395,7 +592,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     const requestSequence = ++gitOperationRequestSequence;
     set({ gitOperation: operation, error: null });
     try {
-      const result = await window.piDesktop.runGitOperation(operation);
+      const result = await getFateApi().runGitOperation(operation);
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === gitOperationRequestSequence) {
         gitGeneration += 1;
         worktreesRequestSequence += 1;
@@ -429,12 +626,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   revertPath: async (path) => {
     const expectedProject = get().projectPath;
     if (!expectedProject) throw new Error('Open a project before reverting a change.');
-    if (!('piDesktop' in window) || typeof window.piDesktop.revertGitPath !== 'function') {
+    if (!getFateApiOptional() || typeof getFateApi().revertGitPath !== 'function') {
       throw new Error('Path revert is unavailable.');
     }
     const generation = gitGeneration;
     set({ error: null });
-    const result = await window.piDesktop.revertGitPath(path);
+    const result = await getFateApi().revertGitPath(path);
     if (!isCurrentGitGeneration(expectedProject, generation)) return;
     gitGeneration += 1;
     const reviewedPaths = new Set(get().reviewedPaths);
@@ -486,7 +683,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     combinedDiffRequestSequence += 1;
     set({ selectedChange: path, diff: null, diffLoading: true, combinedDiff: null, combinedDiffLoading: false, error: null, reviewNotice: null });
     try {
-      const diff = await window.piDesktop.getGitDiff(path);
+      const diff = await getFateApi().getGitDiff(path);
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === fileDiffRequestSequence && get().selectedChange === path) set({ diff, diffLoading: false });
     } catch (error) {
       if (isCurrentGitGeneration(expectedProject, generation) && requestSequence === fileDiffRequestSequence && get().selectedChange === path) set({ diffLoading: false, error: messageOf(error) });

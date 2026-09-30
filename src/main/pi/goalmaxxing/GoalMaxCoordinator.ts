@@ -152,6 +152,7 @@ const MAX_TRACKED_TOOL_STARTS = 128;
 
 export class GoalMaxCoordinator {
   private readonly states = new Map<string, GoalMaxState>();
+  private readonly loadedBindings = new Map<string, string>();
   private readonly sessionKeys = new Map<string, string>();
   private readonly mutationQueues = new Map<string, Promise<void>>();
   private readonly toolStarts = new Map<string, Map<string, { name: string; input: string }>>();
@@ -189,6 +190,7 @@ export class GoalMaxCoordinator {
     if (!this.controlPersistenceInhibitions.has(sessionId)) this.failClosedStates.delete(sessionId);
     const restored = await this.repository.load(projectPath, sessionId);
     if (!restored) {
+      this.loadedBindings.set(sessionId, key);
       this.states.delete(key);
       this.sessionKeys.delete(sessionId);
       this.failClosedStates.delete(sessionId);
@@ -249,6 +251,7 @@ export class GoalMaxCoordinator {
       }
     }
     this.states.set(key, goal);
+    this.loadedBindings.set(sessionId, key);
     const retainedInhibition = this.failClosedStates.get(sessionId);
     const visibleGoal = retainedInhibition?.id === goal.id && retainedInhibition.projectPath === goal.projectPath ? retainedInhibition : goal;
     this.host.emit(snapshotEvent(visibleGoal));
@@ -261,6 +264,7 @@ export class GoalMaxCoordinator {
   }
 
   unbind(sessionId: string): void {
+    this.loadedBindings.delete(sessionId);
     const goal = this.stateForSession(sessionId);
     if (!goal) return;
     this.scheduler.cancel(goal.id);
@@ -270,6 +274,8 @@ export class GoalMaxCoordinator {
     if (buffer) clearTimeout(buffer.timer);
     void this.flushObservations(sessionId).catch(() => undefined);
   }
+
+  hasLoaded(projectPath: string, sessionId: string): boolean { return this.loadedBindings.get(sessionId) === goalKey(projectPath, sessionId); }
 
   get(projectPath: string, sessionId: string): GoalMaxState | null {
     const goal = this.states.get(goalKey(projectPath, sessionId));
@@ -658,6 +664,7 @@ export class GoalMaxCoordinator {
     if (goal) this.discardTransientState(goal);
     this.states.delete(goalKey(projectPath, sessionId));
     this.sessionKeys.delete(sessionId);
+    this.loadedBindings.delete(sessionId);
     this.failClosedStates.delete(sessionId);
     this.controlPersistenceInhibitions.delete(sessionId);
     await this.repository.deleteSession(projectPath, sessionId);
@@ -850,7 +857,7 @@ export class GoalMaxCoordinator {
     if (isGoalMaxTerminal(goal.status)) throw new Error('The current goal is already terminal.');
     const taskPlanCaptured = hasGoalMaxTaskPlan(goal);
     if (input.taskPlan) {
-      if (input.outcome !== 'progress' || input.blocker || input.pendingTaskChanges || input.criterionUpdates?.length || input.ownerAssignments?.length) {
+      if (input.outcome !== 'progress' || input.blocker || input.pendingTaskChanges || input.criterionUpdates?.length || input.resolvedFailures?.length || input.ownerAssignments?.length) {
         throw new Error('Submit the initial task plan as a progress report without pending changes, blockers, criterion updates, or owner assignments.');
       }
       if (taskPlanCaptured) {
@@ -888,7 +895,7 @@ export class GoalMaxCoordinator {
     }
     if (input.pendingTaskChanges) {
       if (!taskPlanCaptured) throw new Error('Capture the initial execution task plan before changing pending tasks.');
-      if (input.outcome !== 'progress' || input.blocker || input.criterionUpdates?.length || input.ownerAssignments?.length) {
+      if (input.outcome !== 'progress' || input.blocker || input.criterionUpdates?.length || input.resolvedFailures?.length || input.ownerAssignments?.length) {
         throw new Error('Submit pending task changes as a progress report without blockers, criterion updates, or owner assignments.');
       }
       const addCount = input.pendingTaskChanges.add?.length ?? 0;
@@ -914,6 +921,51 @@ export class GoalMaxCoordinator {
       this.clearFailClosedState(sessionId);
       const updated = this.requireState(sessionId);
       return { text: 'Pending task changes recorded without changing active or completed work.', details: structuredClone(updated), rejections: [] };
+    }
+    if (input.resolvedFailures?.length) {
+      if (!taskPlanCaptured || input.outcome !== 'progress' || input.blocker || input.taskPlan || input.pendingTaskChanges
+        || input.criterionUpdates?.length || input.ownerAssignments?.length) {
+        throw new Error('Resolve failed verification in a separate progress report after the execution task plan is captured.');
+      }
+      if (input.resolvedFailures.length > 16 || new Set(input.resolvedFailures.map((item) => item.failedEvidenceId)).size !== input.resolvedFailures.length) {
+        throw new Error('Resolve at most 16 distinct failed evidence records per report.');
+      }
+      await this.mutate(sessionId, (current, now) => {
+        let evidence = current.evidence;
+        const summaries: string[] = [];
+        for (const resolution of input.resolvedFailures!) {
+          const failedIndex = evidence.findIndex((item) => item.id === resolution.failedEvidenceId);
+          const passingIndex = evidence.findIndex((item) => item.id === resolution.passingEvidenceId);
+          const failed = evidence[failedIndex];
+          const passing = evidence[passingIndex];
+          if (!failed?.current || !passing?.current || failedIndex < 0 || passingIndex <= failedIndex
+            || failed.exitCode === undefined || failed.exitCode === 0 || passing.exitCode !== 0
+            || !isVerificationEvidence(failed) || failed.kind !== passing.kind || failed.source !== passing.source
+            || (failed.source !== 'root-tool' && failed.source !== 'child-tool')
+            || !sameVerificationScope(failed.command, passing.command)) {
+            throw new Error(`Cannot resolve ${resolution.failedEvidenceId}: supply a current failed verification and a later current passing check of the same scope and source.`);
+          }
+          const reason = redactGoalMaxDiagnostic(typeof resolution.reason === 'string' ? resolution.reason.trim() : '');
+          if (reason.length < 8 || reason.length > 500) throw new Error('A failure resolution needs a brief reason (8-500 characters).');
+          summaries.push(`Failed verification ${failed.id} superseded by ${passing.id}: ${reason}`);
+          evidence = evidence.map((item) => item.id === failed.id ? { ...item, current: false } : item);
+        }
+        let next: GoalMaxState = {
+          ...current,
+          revision: current.revision + 1,
+          evidence,
+          phase: input.phase ?? current.phase,
+          // Resolving a check is not permission to resume a paused or blocked goal.
+          status: current.status,
+          blockedReason: current.blockedReason,
+          failure: current.failure,
+          updatedAt: now,
+        };
+        for (const summary of summaries) next = appendGoalMaxTimeline(next, 'checkpoint.created', summary, now);
+        return next;
+      });
+      this.clearFailClosedState(sessionId);
+      return { text: 'Failed verification superseded by the linked passing check. The failed record remains in the ledger as stale.', details: structuredClone(this.requireState(sessionId)), rejections: [] };
     }
     if (!taskPlanCaptured) {
       if (input.outcome !== 'blocked') throw new Error('Submit a detailed execution task plan before reporting progress or requesting completion.');
@@ -1205,6 +1257,7 @@ export class GoalMaxCoordinator {
     this.failClosedStates.clear();
     this.controlPersistenceInhibitions.clear();
     this.scheduler.dispose();
+    this.loadedBindings.clear();
     this.states.clear();
     this.sessionKeys.clear();
     this.toolStarts.clear();
@@ -2049,6 +2102,38 @@ function appendEvidence(evidence: GoalMaxEvidence[], item: GoalMaxEvidence): Goa
   return [...evidence.filter((candidate) => candidate.id !== item.id), item].slice(-GOALMAX_MAX_EVIDENCE);
 }
 
+function isVerificationEvidence(evidence: GoalMaxEvidence): boolean {
+  return evidence.kind === 'test' || evidence.kind === 'build' || evidence.kind === 'lint';
+}
+
+/** Do not guess equivalence from a shared kind or runner. Only a changed inline
+ * Python check with the same surrounding command and referenced files can be
+ * explicitly linked to its passing retry. Other commands need an exact rerun. */
+function sameVerificationScope(failedCommand: string | undefined, passingCommand: string | undefined): boolean {
+  if (!failedCommand || !passingCommand) return false;
+  if (failedCommand === passingCommand) return true;
+  const failed = inlinePythonCheckScope(failedCommand);
+  const passing = inlinePythonCheckScope(passingCommand);
+  return Boolean(failed && passing && failed.surrounding === passing.surrounding
+    && failed.targets.length > 0 && JSON.stringify(failed.targets) === JSON.stringify(passing.targets));
+}
+
+function inlinePythonCheckScope(command: string): { surrounding: string; targets: string[] } | null {
+  const marker = /(?:^|(?:&&|\|\||;)\s*)python(?:3(?:\.\d+)?)?\s+-c\s*(["'])/u.exec(command);
+  if (!marker || marker.index === undefined) return null;
+  const start = marker.index + marker[0].length;
+  let end = start;
+  for (; end < command.length; end += 1) {
+    if (command[end] === '\\') { end += 1; continue; }
+    if (command[end] === marker[1]) break;
+  }
+  if (end >= command.length) return null;
+  const body = command.slice(start, end);
+  const targets = [...new Set([...body.matchAll(/\b[A-Za-z0-9_.-]+\.(?:json|py|mjs|cjs|js|ts|tsx)\b/gu)].map((match) => match[0]!.toLowerCase()))].sort();
+  const surrounding = `${command.slice(0, start)}<inline>${command.slice(end + 1)}`.replace(/\s+/gu, ' ').trim();
+  return { surrounding, targets };
+}
+
 function supersedeMatchingEvidence(evidence: GoalMaxEvidence[], item: GoalMaxEvidence): GoalMaxEvidence[] {
   if (item.exitCode === undefined) return evidence;
   const operationKey = evidenceOperationKey(item);
@@ -2305,7 +2390,7 @@ function deterministicVerification(goal: GoalMaxState): { pass: boolean; finding
     (evidence.kind === 'file' && Boolean(evidence.path))
     || ((evidence.kind === 'test' || evidence.kind === 'build' || evidence.kind === 'lint') && Boolean(evidence.command))
   ));
-  if (currentFailure) findings.push(`Resolve the current failed evidence: ${currentFailure.title}.`);
+  if (currentFailure) findings.push(`Resolve the current failed evidence: ${currentFailure.title}. Rerun the same check, or link its failed ID to a later passing same-scope check with goalmax_report.resolvedFailures.`);
   const required = goal.criteria.filter((criterion) => criterion.required && criterion.status !== 'waived' && !isControlPlaneVerificationCriterion(criterion));
   if (required.length === 0) findings.push('Define at least one required completion criterion.');
   // Required work needs both a completion report and current supporting evidence.

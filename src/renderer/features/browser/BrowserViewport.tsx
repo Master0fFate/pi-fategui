@@ -1,6 +1,8 @@
+import { getFateApiOptional, getDesktopApi, getDesktopApiOptional } from '../../platform/api';
 import { Globe2, ScanSearch } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { currentBrowserTab, useBrowserStore } from '../../stores/browserStore';
+import { observeBrowserViewportBounds } from './browserViewportBounds';
 
 export function BrowserViewport({ visible }: { visible: boolean }) {
   const reservation = useRef<HTMLDivElement>(null);
@@ -10,44 +12,16 @@ export function BrowserViewport({ visible }: { visible: boolean }) {
 
   useLayoutEffect(() => {
     const node = reservation.current;
-    if (!requestedVisible || !node || !('piDesktop' in window) || typeof window.piDesktop.setBrowserBounds !== 'function') return undefined;
-    const desktop = window.piDesktop;
-    let frame = 0;
-    let disposed = false;
-    let inFlight = false;
-    let lastSent = '';
-
-    // A WebContentsView is positioned in native-window coordinates, outside the
-    // renderer layout tree. Track both size and position so grid transitions,
-    // sidebar changes, and zoom never leave Chromium floating over the chat.
-    const track = () => {
-      if (disposed) return;
-      const rect = node.getBoundingClientRect();
-      const bounds = { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
-      const key = `${bounds.x.toFixed(2)}:${bounds.y.toFixed(2)}:${bounds.width.toFixed(2)}:${bounds.height.toFixed(2)}`;
-      if (!inFlight && key !== lastSent) {
-        inFlight = true;
-        lastSent = key;
-        void desktop.setBrowserBounds(bounds).catch((error: unknown) => {
-          if (!disposed) {
-            lastSent = '';
-            useBrowserStore.getState().setError(error instanceof Error ? error.message : 'Browser viewport alignment failed.');
-          }
-        }).finally(() => { inFlight = false; });
-      }
-      frame = window.requestAnimationFrame(track);
-    };
-
-    frame = window.requestAnimationFrame(track);
-    return () => {
-      disposed = true;
-      window.cancelAnimationFrame(frame);
-    };
+    if (!requestedVisible || !node || !getFateApiOptional() || typeof getDesktopApiOptional()?.setBrowserBounds !== 'function') return undefined;
+    const desktop = getDesktopApi();
+    return observeBrowserViewportBounds(node, (bounds) => desktop.setBrowserBounds(bounds), (error) => {
+      useBrowserStore.getState().setError(error instanceof Error ? error.message : 'Browser viewport alignment failed.');
+    });
   }, [requestedVisible]);
 
   useEffect(() => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.setBrowserVisible !== 'function') return undefined;
-    const desktop = window.piDesktop;
+    if (!getFateApiOptional() || typeof getDesktopApiOptional()?.setBrowserVisible !== 'function') return undefined;
+    const desktop = getDesktopApi();
     let active = true;
     void desktop.setBrowserVisible(requestedVisible).then((next) => {
       if (active) useBrowserStore.getState().hydrate(next);

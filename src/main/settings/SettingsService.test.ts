@@ -5,9 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { builtInThemes } from '../../shared/themes';
 import { AppLogService } from '../logging/AppLogService';
 
-const appState = vi.hoisted(() => ({ userData: '' }));
-vi.mock('electron', () => ({ app: { getPath: () => appState.userData } }));
-
 import { SettingsService } from './SettingsService';
 
 let directory = '';
@@ -15,7 +12,6 @@ let dataRoot = '';
 
 beforeEach(async () => {
   directory = await mkdtemp(path.join(os.tmpdir(), 'pi-settings-'));
-  appState.userData = directory;
   dataRoot = path.join(directory, 'fateGUI');
 });
 
@@ -26,10 +22,25 @@ afterEach(async () => {
 function createSettings(logs = new AppLogService(), piThemes: ConstructorParameters<typeof SettingsService>[2] = {
   discover: async () => ({ themes: [], diagnostics: [] }),
 }) {
-  return new SettingsService(logs, dataRoot, piThemes);
+  return new SettingsService(logs, dataRoot, piThemes, path.join(directory, 'pi-agent'), {
+    legacySettingsPath: () => path.join(directory, 'settings.json'),
+  });
 }
 
 describe('SettingsService', () => {
+  it('starts a new Fate profile with Pi model and thinking defaults without editing Pi settings', async () => {
+    const pi = path.join(directory, 'pi-agent');
+    await mkdir(pi);
+    const original = JSON.stringify({ defaultProvider: 'openai', defaultModel: 'gpt-test', defaultThinkingLevel: 'high', steeringMode: 'all' });
+    await writeFile(path.join(pi, 'settings.json'), original);
+    const loaded = await createSettings().load();
+    expect(loaded).toMatchObject({ defaultModel: 'openai/gpt-test', thinkingLevel: 'high' });
+    expect(await readFile(path.join(pi, 'settings.json'), 'utf8')).toBe(original);
+    expect(await createSettings().load()).toMatchObject({ defaultModel: 'openai/gpt-test', thinkingLevel: 'high' });
+    await createSettings().set({ ...loaded, defaultModel: null, thinkingLevel: 'off' });
+    expect(await createSettings().load()).toMatchObject({ defaultModel: null, thinkingLevel: 'off' });
+  });
+
   it('persists installed pack identities and resets only owned appearance fields on removal', async () => {
     const service = createSettings();
     const baseline = await service.load();

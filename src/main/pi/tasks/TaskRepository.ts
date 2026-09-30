@@ -72,6 +72,16 @@ export class TaskRepository implements TaskPersistence {
     return state;
   }
 
+  /** Recovery-only health query; existing desktop load keeps its legacy fallback. */
+  async loadHealth(projectPath: string, sessionId: string): Promise<{ state: 'ok'; list: TaskList } | { state: 'absent' | 'invalid' }> {
+    const key = stateKey(projectPath, sessionId);
+    await this.queues.get(key)?.catch(() => undefined);
+    try {
+      const list = await this.readCurrent(projectPath, sessionId, true);
+      return list ? { state: 'ok', list } : { state: 'absent' };
+    } catch { return { state: 'invalid' }; }
+  }
+
   save(state: TaskList, expectedRevision: number | null): Promise<void> {
     const parsed = taskListSchema.parse(state);
     return this.enqueue(parsed.projectPath, parsed.sessionId, async () => {
@@ -105,7 +115,7 @@ export class TaskRepository implements TaskPersistence {
     return result;
   }
 
-  private async readCurrent(projectPath: string, sessionId: string): Promise<TaskList | null> {
+  private async readCurrent(projectPath: string, sessionId: string, strict = false): Promise<TaskList | null> {
     const target = path.join(this.sessionDirectory(projectPath, sessionId), 'current.json');
     try {
       const stat = await fs.stat(target);
@@ -117,6 +127,7 @@ export class TaskRepository implements TaskPersistence {
       return state;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      if (strict) throw error;
       this.logs.write('warn', 'tasks', `Saved task list was ignored: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }

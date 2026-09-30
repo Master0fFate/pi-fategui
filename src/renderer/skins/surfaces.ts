@@ -5,6 +5,7 @@ export const skinSurfaceSelectors: Record<Exclude<SkinSurfaceName, 'global'>, st
   sidebar: '.sidebar',
   conversation: '.conversation',
   composer: '.composer',
+  questionnaire: '.question-card',
   queue: '.queued-messages, .goalmax-steering-messages',
   tasks: '.goalmax-task-strip',
   goal: '.goalmax-flight-deck, .goalmax-rail, .goalmax-editor-dialog, .goalmax-confirm-dialog',

@@ -61,6 +61,18 @@ async function squareSurface(page: Page, selector: string) {
   await expect(page.locator(selector).first()).toBeVisible();
   await expect.poll(() => page.locator(selector).first().evaluate((element) => ({ radius: getComputedStyle(element).borderRadius, shadow: getComputedStyle(element).boxShadow, font: getComputedStyle(element).fontFamily.includes('JetBrains Mono') }))).toEqual({ radius: '0px', shadow: 'none', font: true });
 }
+async function waitForSettledMusicPanels(page: Page) {
+  // The queue and player have separate 190/210 ms transform transitions.
+  // Wait for their actual identity transforms, not a guessed wall-clock delay.
+  await expect.poll(() => page.locator('.music-dock-stage').evaluate((stage) =>
+    ['.music-player-panel', '.music-queue-panel'].map((selector) => {
+      const element = stage.querySelector(selector)!;
+      return new DOMMatrixReadOnly(getComputedStyle(element).transform).isIdentity
+        && !element.getAnimations().some((animation) => animation instanceof CSSTransition
+          && animation.transitionProperty === 'transform' && animation.playState === 'running');
+    }))).toEqual([true, true]);
+}
+
 function silentWave() {
   const bytes = Buffer.alloc(44 + 8000 * 90 * 2);
   bytes.write('RIFF'); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write('WAVEfmt ', 8); bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22); bytes.writeUInt32LE(8000, 24); bytes.writeUInt32LE(16000, 28); bytes.writeUInt16LE(2, 32); bytes.writeUInt16LE(16, 34); bytes.write('data', 36); bytes.writeUInt32LE(bytes.length - 44, 40);
@@ -117,6 +129,7 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
     await page.getByRole('button', { name: 'Show playlist' }).click();
     await expect(page.locator('.music-queue-list > li')).toHaveCount(2);
     await squareSurface(page, '.music-player-panel'); await squareSurface(page, '.music-queue-panel');
+    await waitForSettledMusicPanels(page);
     const [playlistBox, playerBox] = await Promise.all([
       page.locator('.music-queue-panel').boundingBox(),
       page.locator('.music-player-panel').boundingBox(),
@@ -201,6 +214,7 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
     await page.getByRole('button', { name: 'Show playlist' }).click();
     await squareSurface(page, '.music-player-panel');
     await squareSurface(page, '.music-queue-panel');
+    await waitForSettledMusicPanels(page);
     const [compactPlaylistBox, compactPlayerBox] = await Promise.all([
       page.locator('.music-queue-panel').boundingBox(),
       page.locator('.music-player-panel').boundingBox(),

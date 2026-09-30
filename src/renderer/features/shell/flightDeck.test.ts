@@ -22,6 +22,9 @@ describe('Flight Deck selectors', () => {
     expect(selectActivityPulse({ ...base, runtime: runtime({ status: 'auth-required' }) }).label).toBe('Authentication required');
     expect(selectActivityPulse({ ...base, runtime: runtime({ streaming: true, contextUsage: { tokens: 50, contextWindow: 100, percent: 50, estimated: true } }) })).toMatchObject({ label: 'Thinking', context: '~50.0% context' });
     expect(selectActivityPulse({ ...base, runtime: runtime({ activeSessionRunning: true }) }).label).toBe('Thinking');
+    const backgroundTeam = projectTeam(createTeamRuntime('session-1', '/project', { provider: 'test', id: 'model', name: 'Model', reasoning: true, contextWindow: 100_000 }, 'medium', 'read-only'));
+    backgroundTeam.activeTurns = 1;
+    expect(selectActivityPulse({ ...base, runtime: runtime(), teams: [backgroundTeam] })).toMatchObject({ label: 'Agents running', evidence: ['1 active', '2 changed'] });
     expect(selectActivityPulse({ ...base, runtime: runtime(), tools: [{ ...rootTool, status: 'running' }] }).label).toBe('Editing src/old.ts');
     expect(selectActivityPulse({ ...base, runtime: runtime(), changedFiles: 2 })).toMatchObject({ label: 'Ready', evidence: ['2 changed'] });
     expect(selectActivityPulse({ ...base, runtime: runtime(), changedFiles: 0 }).label).toBe('Ready');

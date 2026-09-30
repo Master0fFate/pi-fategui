@@ -1,0 +1,6 @@
+.desktop-platform-root { height: 100vh; display: flex; flex-direction: column; }
+.desktop-platform-root > .app-shell { flex: 1; min-height: 0; height: auto; }
+.desktop-host-selector { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--theme-border, #555); font-size: 11px; }
+.desktop-host-selector :is(select, button) { min-height: 28px; max-width: 100%; border: 1px solid var(--theme-border, #555); border-radius: 0; background: var(--theme-background, #0c0c0c); color: inherit; font: inherit; }
+.desktop-host-selector :is(select, button):focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.desktop-host-selector p { margin: 0; overflow-wrap: anywhere; }

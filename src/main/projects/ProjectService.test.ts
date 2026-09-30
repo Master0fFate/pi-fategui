@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +10,9 @@ vi.mock('electron', () => ({
 }));
 import { dialog, shell } from 'electron';
 import { ProjectService } from './ProjectService';
+import { FilesystemService } from '../files/FilesystemService';
+import { activatePreparedProject } from '../ipc/registerIpc';
+import type { ProjectState, RuntimeState } from '../../shared/contracts/ipc';
 
 const temporaryDirectories: string[] = [];
 
@@ -27,6 +31,70 @@ function setCurrentProject(service: ProjectService, projectPath: string): void {
 }
 
 describe('ProjectService.select', () => {
+  it('keeps native three-choice trust with Cancel as the safe default', async () => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'pi-desktop-state-'));
+    const projectPath = await mkdtemp(path.join(tmpdir(), 'pi-desktop-project-'));
+    temporaryDirectories.push(dataRoot, projectPath);
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 2, checkboxChecked: false });
+    const service = new ProjectService(dataRoot);
+    await expect(service.openPath(projectPath)).resolves.toBeNull();
+    expect(service.getCurrent()).toBeNull();
+    expect(dialog.showMessageBox).toHaveBeenCalledWith(expect.objectContaining({
+      buttons: ['Trust and open', 'Open without Pi', 'Cancel'], defaultId: 2, cancelId: 2, noLink: true,
+    }));
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 1, checkboxChecked: false });
+    await expect(service.openPath(projectPath)).resolves.toMatchObject({ trusted: false });
+    await expect(fs.stat(path.join(dataRoot, 'trusted-projects.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each(['runtime', 'trust-save'])('restores the real project/trust/file state after failed %s activation', async (failure) => {
+    const dataRoot = await mkdtemp(path.join(tmpdir(), 'pi-desktop-state-'));
+    const sourcePath = await mkdtemp(path.join(tmpdir(), 'pi-desktop-project-'));
+    const targetPath = await mkdtemp(path.join(tmpdir(), 'pi-desktop-project-'));
+    temporaryDirectories.push(dataRoot, sourcePath, targetPath);
+    vi.mocked(dialog.showMessageBox).mockResolvedValue({ response: 0, checkboxChecked: false });
+    const service = new ProjectService(dataRoot);
+    const source = (await service.openPath(sourcePath))!;
+    const candidate = (await service.prepareOpenPath(targetPath))!;
+    const files = new FilesystemService();
+    await files.setRoot(source.path);
+    let state: RuntimeState = {
+      project: source, status: 'ready', sessionId: null, sessionFile: null, streaming: false,
+      model: null, models: [], thinkingLevel: 'medium', messages: [], error: null,
+    };
+    const runtime = {
+      getState: () => state,
+      openProject: vi.fn(async (project: ProjectState) => {
+        if (failure === 'runtime' && project.path === candidate.project.path) throw new Error('fixture runtime failed');
+        state = { ...state, project };
+        return state;
+      }),
+      closeProject: async () => { state = { ...state, project: null }; return state; },
+    };
+    if (failure === 'trust-save') {
+      const rename = fs.rename.bind(fs);
+      let failed = false;
+      vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+        if (!failed && to === path.join(dataRoot, 'trusted-projects.json')) {
+          failed = true;
+          throw new Error('fixture trust save failed');
+        }
+        return rename(from, to);
+      });
+    }
+    await expect(activatePreparedProject(candidate, {
+      runtime, files,
+      settings: { load: async () => ({ thinkingLevel: 'medium', defaultModel: null }) },
+      terminal: { disposeProjectTerminals: vi.fn() }, logs: { write: vi.fn() },
+    }, 'changing projects')).rejects.toThrow('fixture');
+    expect(service.getCurrent()).toEqual(source);
+    expect(runtime.getState().project).toEqual(source);
+    expect(files.getRoot()).toBe(source.path);
+    expect(JSON.parse(await readFile(path.join(dataRoot, 'trusted-projects.json'), 'utf8')).paths).toEqual([source.path]);
+    expect(await new ProjectService(dataRoot).lastTrustedProjectPath()).toBe(source.path);
+    await expect(service.prepareSessionListPath(targetPath)).rejects.toMatchObject({ normalized: { code: 'PROJECT_NOT_TRUSTED' } });
+  });
+
   it('ignores oversized or corrupt recent-project state instead of loading it', async () => {
     const dataRoot = await mkdtemp(path.join(tmpdir(), 'pi-desktop-state-'));
     temporaryDirectories.push(dataRoot);

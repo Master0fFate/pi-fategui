@@ -61,6 +61,8 @@ export class ProjectRuntimeCoordinator<R> {
   private readonly maxConcurrent: number;
   private readonly now: () => number;
   private readonly pendingAcquires = new Map<string, Promise<ProjectContext<R>>>();
+  /** Only creations holding a slot count toward capacity; waiters cannot block one another. */
+  private readonly reservedAcquires = new Set<string>();
   private readonly pendingCloses = new Map<string, Promise<void>>();
   private stopping = false;
 
@@ -105,10 +107,10 @@ export class ProjectRuntimeCoordinator<R> {
   }
 
   /**
-   * Ensure a live context exists for the project, mark it active, and focus it.
-   * Returns the context. Reuses an existing context without recreating it.
+   * Ensure a live context exists for the project. Desktop acquisition focuses by
+   * default; scoped acquisition never changes the selected desktop view.
    */
-  async acquire(project: { path: string; name: string }): Promise<ProjectContext<R>> {
+  async acquire(project: { path: string; name: string }, focus = true): Promise<ProjectContext<R>> {
     if (this.stopping) throw new Error('Cannot acquire a project runtime while the coordinator is stopping.');
     const closing = this.pendingCloses.get(project.path);
     if (closing) await closing;
@@ -116,25 +118,29 @@ export class ProjectRuntimeCoordinator<R> {
     const existing = this.entries.get(project.path);
     if (existing) {
       this.touch(project.path);
-      this.focus(project.path);
+      if (focus) this.focus(project.path);
       return existing;
     }
-    const pending = this.pendingAcquires.get(project.path);
-    if (pending) return pending;
-    const acquisition = this.acquireFresh(project);
-    this.pendingAcquires.set(project.path, acquisition);
-    try {
-      return await acquisition;
-    } finally {
-      if (this.pendingAcquires.get(project.path) === acquisition) this.pendingAcquires.delete(project.path);
+    let acquisition = this.pendingAcquires.get(project.path);
+    if (!acquisition) {
+      acquisition = this.acquireFresh(project);
+      this.pendingAcquires.set(project.path, acquisition);
+      const tracked = acquisition;
+      void tracked.finally(() => {
+        if (this.pendingAcquires.get(project.path) === tracked) this.pendingAcquires.delete(project.path);
+      }).catch(() => undefined);
     }
+    const context = await acquisition;
+    if (focus && this.entries.get(project.path) === context) this.focus(project.path);
+    return context;
   }
 
   private async acquireFresh(project: { path: string; name: string }): Promise<ProjectContext<R>> {
     for (;;) {
-      const inFlight = [...this.pendingAcquires.entries()]
-        .filter(([path]) => path !== project.path)
-        .map(([, pending]) => pending);
+      const inFlight = [...this.reservedAcquires]
+        .filter((path) => path !== project.path)
+        .map((path) => this.pendingAcquires.get(path))
+        .filter((pending): pending is Promise<ProjectContext<R>> => pending !== undefined);
       if (this.entries.size + inFlight.length < this.maxConcurrent) break;
       const victim = this.order.find((path) => {
         if (path === this.focusedPath) return false;
@@ -152,19 +158,21 @@ export class ProjectRuntimeCoordinator<R> {
       throw new Error(`Cannot open project ${project.path}: all ${this.maxConcurrent} runtime slots are busy or focused.`);
     }
     if (this.stopping) throw new Error('Cannot acquire a project runtime while the coordinator is stopping.');
-    const runtime = await this.hooks.createRuntime(project.path, project.name);
-    const now = this.now();
-    const entry: ProjectContext<R> = {
-      projectPath: project.path,
-      projectName: project.name,
-      runtime,
-      lastActiveAt: now,
-      idleSince: null,
-    };
-    this.entries.set(project.path, entry);
-    this.order.push(project.path);
-    this.focus(project.path);
-    return entry;
+    this.reservedAcquires.add(project.path);
+    try {
+      const runtime = await this.hooks.createRuntime(project.path, project.name);
+      const now = this.now();
+      const entry: ProjectContext<R> = {
+        projectPath: project.path,
+        projectName: project.name,
+        runtime,
+        lastActiveAt: now,
+        idleSince: null,
+      };
+      this.entries.set(project.path, entry);
+      this.order.push(project.path);
+      return entry;
+    } finally { this.reservedAcquires.delete(project.path); }
   }
 
   /** Set the focused project. No-op if the project is not live. */
@@ -223,9 +231,14 @@ export class ProjectRuntimeCoordinator<R> {
     this.sweepHandle.unref?.();
   }
 
+  /** Close acquisitions synchronously, before the first asynchronous shutdown step. */
+  beginShutdown(): void {
+    this.stopping = true;
+  }
+
   /** Stop the sweep and dispose every live context. Use at shutdown. */
   async stop(): Promise<void> {
-    this.stopping = true;
+    this.beginShutdown();
     if (this.sweepHandle !== null) {
       clearInterval(this.sweepHandle);
       this.sweepHandle = null;

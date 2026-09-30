@@ -5,7 +5,8 @@ import type { GoalMaxState } from '../../../shared/contracts/goalmaxxing';
 import type { TaskList } from '../../../shared/contracts/tasks';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
 import { useTaskStore } from '../../stores/taskStore';
-import { GoalMaxTaskStrip } from './GoalMaxTaskStrip';
+import { currentNetworkScope, useRuntimeStore } from '../../stores/runtimeStore';
+import { GoalMaxTaskStrip, TaskControlsPanel } from './GoalMaxTaskStrip';
 
 function buildGoal(overrides: Partial<GoalMaxState> = {}): GoalMaxState {
   return {
@@ -50,6 +51,18 @@ afterEach(() => {
 });
 
 describe('GoalMax task strip', () => {
+  it('renders canonical task controls with no navigation or current network scope', () => {
+    useRuntimeStore.getState().reset();
+    expect(useRuntimeStore.getState().networkNavigation).toBeNull();
+    expect(currentNetworkScope()).toBeNull();
+
+    render(<TaskControlsPanel />);
+
+    expect(screen.getByRole('region', { name: 'Canonical tasks' })).toBeVisible();
+    expect(screen.getByText('No canonical tasks returned. This is not verified success.')).toBeInTheDocument();
+    expect(screen.queryByText('Selected from Monitor')).not.toBeInTheDocument();
+  });
+
   it('shows the active criterion and the required satisfied/total count', () => {
     render(<GoalMaxTaskStrip />);
     const strip = screen.getByRole('region', { name: 'GoalMax task strip' });

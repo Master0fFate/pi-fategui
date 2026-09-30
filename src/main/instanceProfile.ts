@@ -47,12 +47,17 @@ export function acquireInstanceProfile(
   electronApp: InstanceProfileApp,
   mode: InstanceAcquisitionMode = 'single',
   ensureDirectory: (directory: string) => void = (directory) => mkdirSync(directory, { recursive: true }),
+  launchProjectPath: string | null = null,
 ): InstanceProfile {
   const primaryUserDataPath = path.resolve(electronApp.getPath('userData'));
   if (mode === 'single') {
     electronApp.setPath('userData', primaryUserDataPath);
     ensureDirectory(primaryUserDataPath);
-    const isPrimary = electronApp.requestSingleInstanceLock({ instanceSlot: 1, mode: 'single' });
+    const isPrimary = electronApp.requestSingleInstanceLock({
+      instanceSlot: 1,
+      mode: 'single',
+      ...(launchProjectPath ? { projectPath: launchProjectPath } : {}),
+    });
     return { slot: 1, userDataPath: primaryUserDataPath, isPrimary, mode };
   }
   for (let slot = 1; Number.isSafeInteger(slot); slot += 1) {

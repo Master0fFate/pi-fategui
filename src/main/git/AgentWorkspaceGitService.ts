@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { executeGitInWorktree, inheritedLineEndingConfig, parseGitWorktrees, safeFilterConfig, validateSelectedRoot } from './GitService';
+import type { CheckoutOwnership } from '../../core/ownership/CheckoutOwnership';
 
 const HASH = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const MAX_DIFF_BYTES = 1_000_000;
@@ -53,10 +54,11 @@ function bounded(value: string): { value: string; truncated: boolean } {
 }
 
 export class AgentWorkspaceGitService {
-  constructor(private readonly managedRoot = path.join(homedir(), '.pi', 'fateGUI', 'agent-team-worktrees')) {}
+  constructor(private readonly managedRoot = path.join(homedir(), '.pi', 'fateGUI', 'agent-team-worktrees'), private readonly temporaryRoot = tmpdir(), private readonly ownership?: CheckoutOwnership) {}
 
   private async withConfig<T>(root: string, work: (config: string[]) => Promise<T>): Promise<T> {
-    const hooks = await fs.mkdtemp(path.join(tmpdir(), 'fate-ui-agent-hooks-'));
+    await fs.mkdir(this.temporaryRoot, { recursive: true, mode: 0o700 });
+    const hooks = await fs.mkdtemp(path.join(this.temporaryRoot, 'fate-ui-agent-hooks-'));
     try {
       const names = await this.run(root, ['config', '--includes', '--null', '--name-only', '--list'], [], 256_000);
       const mergeConfig: string[] = [];
@@ -160,6 +162,10 @@ export class AgentWorkspaceGitService {
   }
 
   async create(parentRoot: string, branch: string, baseRef?: string, owner?: string): Promise<CreatedWorkspace> {
+    return this.ownership ? this.ownership.mutation(parentRoot, () => this.createUnlocked(parentRoot, branch, baseRef, owner)) : this.createUnlocked(parentRoot, branch, baseRef, owner);
+  }
+
+  private async createUnlocked(parentRoot: string, branch: string, baseRef?: string, owner?: string): Promise<CreatedWorkspace> {
     if (!branch || branch.startsWith('-') || branch.startsWith('@') || /[\u0000-\u0020\u007f]/u.test(branch) || branch.length > 240) throw new Error('Workspace branch is invalid.');
     parentRoot = await this.canonicalRoot(parentRoot);
     const commonDirectory = await this.commonDirectory(parentRoot);
@@ -254,6 +260,10 @@ export class AgentWorkspaceGitService {
   }
 
   async checkpoint(root: string, message: string): Promise<string> {
+    return this.ownership ? this.ownership.mutation(root, () => this.checkpointUnlocked(root, message)) : this.checkpointUnlocked(root, message);
+  }
+
+  private async checkpointUnlocked(root: string, message: string): Promise<string> {
     if (!message.trim() || message.length > 2_000 || message.includes('\0')) throw new Error('Checkpoint message is invalid.');
     const initial = await this.status(root);
     if (!initial.branch) throw new Error('Checkpoint requires a checked-out branch.');
@@ -266,6 +276,10 @@ export class AgentWorkspaceGitService {
   }
 
   async integrate(source: string, target: string, expectedSourceHead: string, expectedTargetHead: string, strategy: 'ff-only' | 'cherry-pick', commits?: string[], baseCommit?: string): Promise<string> {
+    return this.ownership ? this.ownership.mutation(target, () => this.integrateUnlocked(source, target, expectedSourceHead, expectedTargetHead, strategy, commits, baseCommit)) : this.integrateUnlocked(source, target, expectedSourceHead, expectedTargetHead, strategy, commits, baseCommit);
+  }
+
+  private async integrateUnlocked(source: string, target: string, expectedSourceHead: string, expectedTargetHead: string, strategy: 'ff-only' | 'cherry-pick', commits?: string[], baseCommit?: string): Promise<string> {
     if (!HASH.test(expectedSourceHead) || !HASH.test(expectedTargetHead)) throw new Error('Integration requires full reviewed source and target heads.');
     await this.assertSameRepository(source, target);
     const [sourceStatus, targetStatus] = await Promise.all([this.status(source), this.status(target)]);
@@ -302,10 +316,16 @@ export class AgentWorkspaceGitService {
     const status = await this.status(workspace.path);
     if (status.head !== workspace.baseCommit || status.dirty) throw new Error('Failed-spawn workspace contains changes; retained for review.');
     await this.cleanup(parentRoot, workspace.path);
-    await this.withConfig(parentRoot, (config) => this.run(parentRoot, ['update-ref', '-d', `refs/heads/${workspace.branch}`, workspace.baseCommit], config).then(() => undefined));
+    const deleteRef = () => this.withConfig(parentRoot, (config) => this.run(parentRoot, ['update-ref', '-d', `refs/heads/${workspace.branch}`, workspace.baseCommit], config).then(() => undefined));
+    if (this.ownership) await this.ownership.mutation(parentRoot, deleteRef);
+    else await deleteRef();
   }
 
   async cleanup(parentRoot: string, workspace: string): Promise<void> {
+    return this.ownership ? this.ownership.mutation(parentRoot, () => this.cleanupUnlocked(parentRoot, workspace)) : this.cleanupUnlocked(parentRoot, workspace);
+  }
+
+  private async cleanupUnlocked(parentRoot: string, workspace: string): Promise<void> {
     const canonical = await this.assertManagedWorkspace(workspace);
     parentRoot = await this.canonicalRoot(parentRoot);
     await this.assertSameRepository(canonical, parentRoot);

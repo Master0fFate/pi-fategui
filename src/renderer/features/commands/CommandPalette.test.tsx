@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import * as Dialog from '@radix-ui/react-dialog';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PiDesktopApi, RuntimeState } from '../../../shared/contracts/ipc';
@@ -34,6 +35,23 @@ describe('CommandPalette resource search', () => {
   });
 
   afterEach(() => Reflect.deleteProperty(window, 'piDesktop'));
+
+  it('closes on one Escape above an already-open image dialog without dismissing that dialog', async () => {
+    const user = userEvent.setup();
+    useUiStore.getState().setPaletteOpen(false);
+    render(<>
+      <Dialog.Root open>
+        <Dialog.Portal><Dialog.Content><Dialog.Title>Project preview</Dialog.Title><button type="button">Image focus</button></Dialog.Content></Dialog.Portal>
+      </Dialog.Root>
+      <CommandPalette />
+    </>);
+    act(() => useUiStore.getState().setPaletteOpen(true));
+    expect(document.querySelector('.command-palette')).toBeVisible();
+    screen.getByText('Image focus').focus();
+    await user.keyboard('{Escape}');
+    expect(useUiStore.getState().paletteOpen).toBe(false);
+    expect(document.querySelector('[role="dialog"]')).toBeVisible();
+  });
 
   it('opens the approved left-sidebar destinations from commands', async () => {
     const user = userEvent.setup();

@@ -60,6 +60,9 @@ const packagedFiles = listPackage(asarPath).map((entry) => entry.replaceAll('\\'
 if (!packagedFiles.some((entry) => entry.endsWith('/node_modules/@earendil-works/pi-coding-agent/package.json'))) {
   throw new Error('The packaged application does not contain the embedded Pi coding-agent runtime.');
 }
+if (!packagedFiles.some((entry) => entry.endsWith('/node_modules/@modelcontextprotocol/sdk/package.json'))) {
+  throw new Error('The packaged application does not contain the embedded first-party MCP client.');
+}
 const packagedManifest = JSON.parse(extractFile(asarPath, 'package.json').toString('utf8'));
 if (packagedManifest.version !== expectedVersion || packagedManifest.releaseName !== expectedManifest.releaseName) {
   throw new Error(`Packaged release metadata does not match source metadata (${expectedVersion}, ${expectedManifest.releaseName}).`);

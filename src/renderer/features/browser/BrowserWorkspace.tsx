@@ -1,3 +1,4 @@
+import { getFateApiOptional, getDesktopApi } from '../../platform/api';
 import { AlertTriangle, Check, FileCode2, Globe2, LoaderCircle, Plus, X } from 'lucide-react';
 import { useState } from 'react';
 import { useBrowserStore } from '../../stores/browserStore';
@@ -12,7 +13,7 @@ export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
   const pending = useBrowserStore((store) => store.pending);
 
   const run = async (label: string, operation: () => Promise<typeof state>) => {
-    if (!('piDesktop' in window) || pending) return;
+    if (!getFateApiOptional() || pending) return;
     useBrowserStore.getState().setPending(label);
     try {
       useBrowserStore.getState().hydrate(await operation());
@@ -38,7 +39,7 @@ export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
                 aria-busy={tab.loading}
                 title={tab.url}
                 disabled={Boolean(pending)}
-                onClick={() => void run('tab switch', () => window.piDesktop.activateBrowserTab(tab.id))}
+                onClick={() => void run('tab switch', () => getDesktopApi().activateBrowserTab(tab.id))}
               >
                 <TabContent active={active} label={tab.title || localFileName(tab.url) || (tab.url === 'about:blank' ? 'New tab' : tab.url)} labelClassName="browser-tab-label" icon={local ? <FileCode2 size={12} aria-hidden="true" /> : <Globe2 size={12} aria-hidden="true" />} />
                 {tab.loading && <LoaderCircle className="tool-spinner" size={11} aria-hidden="true" />}
@@ -48,7 +49,7 @@ export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
                 className="browser-tab-close"
                 aria-label={`Close ${tab.title || 'browser tab'}`}
                 disabled={Boolean(pending)}
-                onClick={() => void run('tab close', () => window.piDesktop.closeBrowserTab(tab.id))}
+                onClick={() => void run('tab close', () => getDesktopApi().closeBrowserTab(tab.id))}
               ><ActionContent text="x"><X size={11} /></ActionContent></button>
             </div>
           );
@@ -58,7 +59,7 @@ export function BrowserWorkspace({ visible = true }: { visible?: boolean }) {
           className="browser-new-tab"
           aria-label="New browser tab"
           disabled={Boolean(pending) || state.tabs.length >= 16}
-          onClick={() => void run('new tab', () => window.piDesktop.createBrowserTab())}
+          onClick={() => void run('new tab', () => getDesktopApi().createBrowserTab())}
         ><ActionContent text="+"><Plus size={13} /></ActionContent></button>
       </div>
       <BrowserToolbar />
@@ -98,10 +99,10 @@ function BrowserConfirmationBanner() {
   if (!confirmation) return null;
   const target = confirmation.action.targetName || confirmation.action.targetRole || confirmation.action.kind;
   const respond = async (approved: boolean) => {
-    if (busy || !('piDesktop' in window)) return;
+    if (busy || !getFateApiOptional()) return;
     setBusy(true);
     try {
-      await window.piDesktop.respondToBrowserConfirmation(confirmation.id, approved);
+      await getDesktopApi().respondToBrowserConfirmation(confirmation.id, approved);
     } catch (error) {
       useBrowserStore.getState().setError(error instanceof Error ? error.message : 'The browser confirmation expired.');
     } finally {

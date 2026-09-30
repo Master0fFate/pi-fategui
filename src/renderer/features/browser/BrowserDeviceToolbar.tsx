@@ -1,3 +1,4 @@
+import { getDesktopApi } from '../../platform/api';
 import { Hand, RotateCcw } from 'lucide-react';
 import { useEffect, useState, type ChangeEvent } from 'react';
 import { AppTooltip } from '../../components/AppTooltip';
@@ -36,7 +37,7 @@ export function BrowserDeviceToolbar({ state }: { state: BrowserState }) {
   if (!emulation) return null;
 
   const commit = (width: number, height: number) => {
-    void window.piDesktop.setBrowserDeviceEmulation({
+    void getDesktopApi().setBrowserDeviceEmulation({
       width: clampDeviceWidth(width),
       height: clampDeviceHeight(height),
       mobile: emulation.mobile,

@@ -180,7 +180,12 @@ export class TerminalService {
   acknowledge(ownerId: number, id: string, characters: number): void {
     const terminal = this.terminals.get(id);
     if (!terminal || terminal.ownerId !== ownerId || terminal.closing) return;
-    terminal.outstandingBytes = Math.max(0, terminal.outstandingBytes - Math.max(0, characters));
+    // Legacy desktop IPC carries no sequence number. It cannot distinguish a
+    // duplicate ACK from one for the next equal-sized chunk, but invalid or
+    // oversized ACKs must never mint arbitrary send-window credit.
+    if (!Number.isSafeInteger(characters) || characters < 1 || characters > TERMINAL_CHUNK_CHARACTERS
+      || characters > terminal.outstandingBytes) return;
+    terminal.outstandingBytes -= characters;
     this.updateFlowControl(terminal);
     if (terminal.buffered.length > 0) this.flush(id, terminal);
   }

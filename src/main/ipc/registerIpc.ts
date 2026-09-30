@@ -1,41 +1,38 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, webContents } from 'electron';
 import { registerLearningIpc } from '../learning/registerLearningIpc';
+import { createRuntimeHandlers, createScopedRuntimeHandlers } from '../../core/handlers/runtimeHandlers';
+import { createSessionHandlers, createScopedSessionHandlers } from '../../core/handlers/sessionHandlers';
+import { createGoalHandlers, createScopedGoalHandlers } from '../../core/handlers/goalHandlers';
+import { createTaskHandlers, createScopedTaskHandlers } from '../../core/handlers/taskHandlers';
+import { createAgentHandlers, createScopedAgentHandlers } from '../../core/handlers/agentHandlers';
+import { createFileHandlers, createScopedFileHandlers } from '../../core/handlers/fileHandlers';
+import { createGitHandlers, createScopedGitHandlers } from '../../core/handlers/gitHandlers';
+import type { FateCore } from '../../core/FateCore';
+import { CoreIpcAdapter } from './CoreIpcAdapter';
+import type { DesktopConnectionRouter } from '../connections/DesktopConnectionRouter';
+import { registerConnectionIpc } from '../connections/registerConnectionIpc';
 import { registerAgentsIpc } from '../agents/registerAgentsIpc';
 import type { AgentsService } from '../agents/AgentsService';
 import { appReleaseDisplayVersion, releaseMetadata } from '../releaseMetadata';
 import type { LearningService } from '../learning/LearningService';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
+import { McpConfigService } from '../pi/McpConfigService';
+import { McpService } from '../pi/McpService';
+import { PiMigrationService } from '../pi/PiMigrationService';
 import packageManifest from '../../../package.json';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
-  abortResultSchema,
   appInfoSchema,
   appSettingsSchema,
   compactInputSchema,
   clipboardTextInputSchema,
   clipboardWriteResultSchema,
   emptyInputSchema,
-  fileListInputSchema,
-  fileListSchema,
   filePathInputSchema,
-  filePreviewSchema,
-  fileSearchInputSchema,
-  fileSearchResultSchema,
   getAppInfoInputSchema,
-  gitCombinedDiffSchema,
-  gitCommitDetailsSchema,
-  gitCommitInputSchema,
-  gitDiffSchema,
-  gitHistorySchema,
-  gitOperationInputSchema,
-  gitOperationResultSchema,
-  gitRevertPathInputSchema,
-  gitRevertPathResultSchema,
   sessionExportResultSchema,
-  gitStatusSchema,
   gitWorktreeInputSchema,
-  gitWorktreeListSchema,
   gitWorktreeSessionResultSchema,
   ipcChannels,
   imageSaveInputSchema,
@@ -48,6 +45,11 @@ import {
   modelsDevProviderDetailSchema,
   modelsDevRemoveInputSchema,
   logListSchema,
+  mcpServerListSchema,
+  mcpProbeInputSchema,
+  mcpProbeResultSchema,
+  piMigrationReportSchema,
+  piMigrationResultSchema,
   musicClearResultSchema,
   musicDurationsEventSchema,
   musicLoadInputSchema,
@@ -62,12 +64,8 @@ import {
   openFileResultSchema,
   projectFileReferenceSchema,
   revealProjectResultSchema,
-  promptAcceptanceSchema,
-  promptInputSchema,
   promptOptimizationInputSchema,
   promptOptimizationResultSchema,
-  queueMutationInputSchema,
-  queueMutationResultSchema,
   runtimeImageSchema,
   runtimeStateSchema,
   sessionEntryInputSchema,
@@ -78,7 +76,6 @@ import {
   navigateSessionBranchResultSchema,
   deleteSessionBranchResultSchema,
   sessionListSchema,
-  sessionSearchInputSchema,
   projectPathInputSchema,
   projectOpenInputSchema,
   type ProjectSessionTarget,
@@ -94,13 +91,11 @@ import {
   speechStreamUpdateSchema,
   speechTranscribeInputSchema,
   speechTranscriptionSchema,
-  subagentControlInputSchema,
-  setModelInputSchema,
   setPermissionInputSchema,
   providerLoginStartInputSchema,
   providerLoginRespondInputSchema,
+  questionnaireAnswerInputSchema,
   providerLogoutInputSchema,
-  setThinkingInputSchema,
   terminalAckInputSchema,
   terminalCloseInputSchema,
   terminalCreateInputSchema,
@@ -119,25 +114,12 @@ import {
   type RuntimeImage,
   type RuntimeState,
 } from '../../shared/contracts/ipc';
-import { agentTeamControlInputSchema } from '../../shared/contracts/multiAgent';
 import {
-  goalMaxClearResultSchema,
-  goalMaxControlInputSchema,
-  goalMaxCreateInputSchema,
   goalMaxEventBatchSchema,
-  goalMaxStateSchema,
-  goalMaxSteeringEditInputSchema,
-  goalMaxSteeringRemoveInputSchema,
-  goalMaxUpdateInputSchema,
   type GoalMaxEvent,
 } from '../../shared/contracts/goalmaxxing';
 import {
-  taskCreateInputSchema,
-  taskDeleteInputSchema,
   taskEventBatchSchema,
-  taskListSchema,
-  taskReorderInputSchema,
-  taskUpdateInputSchema,
   type TaskEvent,
 } from '../../shared/contracts/tasks';
 import { normalizeError, PiDesktopError } from '../pi/errors';
@@ -215,6 +197,10 @@ function suggestedImageFileName(label: string, extension: string): string {
 
 export interface IpcServices {
   runtime: PiRuntimeService;
+  /** The sole factory-owned Pi runtime. Tests may keep the legacy injected runtime. */
+  core?: FateCore;
+  /** Sole process-wide command target. Remote failure never selects the legacy host. */
+  connections?: DesktopConnectionRouter;
   projects: ProjectService;
   files: FilesystemService;
   git: GitService;
@@ -228,7 +214,7 @@ export interface IpcServices {
   hotkey: GlobalHotkeyService;
   updates: Pick<UpdateService, 'check' | 'openDownload' | 'downloadAndInstall'>;
   recovery?: Pick<RecoverySnapshotService, 'remember' | 'peek' | 'markClean'>;
-  browser: Pick<BrowserHost, 'ensure' | 'current' | 'setAppOverlay' | 'respondToConfirmation' | 'reset'>;
+  browser: Pick<BrowserHost, 'ensure' | 'current' | 'setAppOverlay' | 'respondToConfirmation' | 'reset' | 'onRootChanged'>;
   /** Read-only per-project attestation ledger; resolves only the current trusted project. */
   attestations: Pick<MutationAttestationLedger, 'query'>;
   /** Open another Fate UI window in this same process so it shares the live runtime. */
@@ -244,7 +230,7 @@ interface ProjectActivationServices {
   settings: { load: () => Promise<Pick<Awaited<ReturnType<SettingsService['load']>>, 'thinkingLevel' | 'defaultModel'> & Partial<Pick<Awaited<ReturnType<SettingsService['load']>>, 'agentTeamMode' | 'disabledModels'>>> };
   terminal: Pick<TerminalService, 'disposeProjectTerminals'>;
   logs: Pick<AppLogService, 'write'>;
-  browser?: Pick<BrowserHost, 'reset'>;
+  browser?: Pick<BrowserHost, 'onRootChanged'>;
 }
 
 function errorMessage(error: unknown): string {
@@ -395,13 +381,9 @@ export async function activatePreparedProject(
     }
     throw activationError(error, rollbackFailures);
   }
-  if (browser) {
-    try {
-      await browser.reset();
-    } catch (error) {
-      logs.write('warn', 'browser', `The previous project browser could not be fully disposed: ${errorMessage(error)}`);
-    }
-  }
+  // A background project can still have an active Pi run. Hide its native
+  // browser view, but keep that project's session-scoped service alive.
+  browser?.onRootChanged();
   try {
     terminal.disposeProjectTerminals();
   } catch (error) {
@@ -427,14 +409,35 @@ export async function resolveAttestationQuery(
   return ledger.query({ projectPath: project.path, limit: request.limit, ...(request.pathPrefix ? { pathPrefix: request.pathPrefix } : {}) });
 }
 
+// A WebFrameMain identity can be reused for a new document. Observe the first
+// navigation, not only the URL after an awaited project registration or queue.
+const documentVersions = new WeakMap<Electron.WebContents, { revision: number }>();
+const invocationGuards = new WeakMap<Electron.IpcMainInvokeEvent, () => boolean>();
+
 function register(channel: string, rendererPolicy: TrustedRendererPolicy, handler: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown | Promise<unknown>): void {
   ipcMain.handle(channel, async (event, input: unknown) => {
     try {
-      const owner = BrowserWindow.fromWebContents(event.sender);
-      if (event.senderFrame !== event.sender.mainFrame || !owner || owner.isDestroyed() || !isTrustedRendererUrl(event.senderFrame.url, rendererPolicy)) {
+      const sender = event.sender;
+      const frame = event.senderFrame;
+      const owner = BrowserWindow.fromWebContents(sender);
+      if (frame !== sender.mainFrame || !owner || owner.isDestroyed() || !isTrustedRendererUrl(frame.url, rendererPolicy)) {
         throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'IPC is restricted to the application main frame.', retryable: false });
       }
-      return await handler(event, input);
+      let version = documentVersions.get(sender);
+      if (!version) {
+        version = { revision: 0 };
+        documentVersions.set(sender, version);
+        const tracked = version;
+        sender.on('did-start-navigation', (navigation) => {
+          if (navigation.isMainFrame && !navigation.isSameDocument) tracked.revision += 1;
+        });
+      }
+      const initialRevision = version.revision;
+      invocationGuards.set(event, () => version.revision === initialRevision
+        && !sender.isDestroyed() && !owner.isDestroyed() && BrowserWindow.fromWebContents(sender) === owner
+        && frame === sender.mainFrame && !frame.isDestroyed() && isTrustedRendererUrl(frame.url, rendererPolicy));
+      try { return await handler(event, input); }
+      finally { invocationGuards.delete(event); }
     } catch (error) {
       const normalized = error instanceof PiDesktopError ? error.normalized : normalizeError(error);
       throw new Error(JSON.stringify(normalized));
@@ -461,8 +464,16 @@ async function applyPendingRecovery(
   await recovery?.markClean();
 }
 
-export function registerIpc({ runtime, projects, files, git, settings, learning, agents, terminal, logs, music, speech, hotkey, updates, recovery, browser, attestations, newWindow, rendererPolicy }: IpcServices) {
+export function registerIpc({ runtime, core, connections, projects, files, git, settings, learning, agents, terminal, logs, music, speech, hotkey, updates, recovery, browser, attestations, newWindow, rendererPolicy }: IpcServices) {
+  const sessionHandlers = createSessionHandlers(runtime);
+  const runtimeHandlers = createRuntimeHandlers(runtime, (projectPath) => projects.prepareSessionListPath(projectPath));
+  const goalHandlers = createGoalHandlers(runtime);
+  const taskHandlers = createTaskHandlers(runtime);
+  const agentHandlers = createAgentHandlers(runtime);
+  const mcpConfig = new McpConfigService();
+  const piMigration = new PiMigrationService();
   runtime.setEventSink((events) => {
+    if (connections && !connections.isLocal) return;
     try { recovery?.remember(runtime.getState(false)); } catch { /* Snapshot failures must never drop live events. */ }
     let batch: unknown;
     try {
@@ -488,6 +499,7 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
   const flushGoalEvents = () => {
     if (goalEventTimer) clearTimeout(goalEventTimer);
     goalEventTimer = null;
+    if (connections && !connections.isLocal) { pendingGoalEvents = []; return; }
     if (pendingGoalEvents.length === 0) return;
     let batch: unknown;
     try {
@@ -505,6 +517,7 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
     }
   };
   runtime.setGoalEventSink((event) => {
+    if (connections && !connections.isLocal) return;
     pendingGoalEvents.push(event);
     if (pendingGoalEvents.length >= 50) flushGoalEvents();
     else if (!goalEventTimer) {
@@ -517,6 +530,7 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
   const flushTaskEvents = () => {
     if (taskEventTimer) clearTimeout(taskEventTimer);
     taskEventTimer = null;
+    if (connections && !connections.isLocal) { pendingTaskEvents = []; return; }
     if (pendingTaskEvents.length === 0) return;
     let taskBatch: unknown;
     try {
@@ -534,6 +548,7 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
     }
   };
   runtime.setTaskEventSink((event) => {
+    if (connections && !connections.isLocal) return;
     pendingTaskEvents.push(event);
     if (pendingTaskEvents.length >= 50) flushTaskEvents();
     else if (!taskEventTimer) {
@@ -542,6 +557,7 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
     }
   });
   terminal.setEventSink((ownerId, event) => {
+    if (connections && !connections.isLocal) return;
     const owner = webContents.fromId(ownerId);
     if (owner && !owner.isDestroyed()) owner.send(ipcChannels.terminalEvents, terminalEventSchema.parse(event));
   });
@@ -558,14 +574,51 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send(ipcChannels.musicDurations, payload);
   });
 
-  const handle = (channel: string, handler: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown | Promise<unknown>) => register(channel, rendererPolicy, handler);
+  const handle = (channel: string, handler: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown | Promise<unknown>) => register(channel, rendererPolicy,
+    (event, input) => connections && !channel.startsWith('connections:')
+      ? connections.routeLegacy(channel, () => handler(event, input)) : handler(event, input));
+  if (connections) {
+    registerConnectionIpc(handle, connections, (event) => invocationGuards.get(event) ?? (() => false));
+    connections.subscribe((state) => {
+      pendingGoalEvents = []; pendingTaskEvents = [];
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed() && isTrustedRendererUrl(window.webContents.getURL(), rendererPolicy)) {
+          window.webContents.send(ipcChannels.connectionChanged, state);
+        }
+      }
+    });
+  }
+  const coreAdapters = new WeakMap<Electron.WebContents, CoreIpcAdapter>();
+  const coreAdapter = (event: Electron.IpcMainInvokeEvent): ReturnType<CoreIpcAdapter['forInvocation']> => {
+    if (!core?.workspaces) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'The desktop workspace registry is unavailable.', retryable: true });
+    const sender = event.sender;
+    let adapter = coreAdapters.get(sender);
+    if (!adapter) {
+      adapter = new CoreIpcAdapter(core.runtime, core.workspaces, () => {
+        const owner = BrowserWindow.fromWebContents(sender);
+        return !sender.isDestroyed() && !!owner && !owner.isDestroyed() && !!sender.mainFrame
+          && isTrustedRendererUrl(sender.mainFrame.url, rendererPolicy);
+      }, (root) => projects.prepareSessionListPath(root), undefined, () => connections?.isLocal !== false);
+      coreAdapters.set(sender, adapter);
+    }
+    const invocation = invocationGuards.get(event);
+    if (!invocation) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The initiating renderer document is unavailable.', retryable: false });
+    return adapter.forInvocation(invocation);
+  };
   registerLearningIpc(handle, runtime, learning, () => settings.getStoragePath());
   registerAgentsIpc(handle, agents);
   const activationServices = { runtime, files, settings, terminal, logs, browser };
   const queueProjectActivation = createProjectActivationQueue();
-  const openProjectPath = createProjectPathOpener(projects, activationServices, queueProjectActivation);
-  const focusProjectPath = createProjectPathFocuser(projects, activationServices, queueProjectActivation);
+  const localOpenProjectPath = createProjectPathOpener(projects, activationServices, queueProjectActivation);
+  const localFocusProjectPath = createProjectPathFocuser(projects, activationServices, queueProjectActivation);
+  const openProjectPath = (projectPath: string, owner?: BrowserWindow, target?: ProjectSessionTarget) => connections
+    ? connections.local(() => localOpenProjectPath(projectPath, owner, target)) : localOpenProjectPath(projectPath, owner, target);
+  const focusProjectPath = (projectPath: string, owner?: BrowserWindow) => connections
+    ? connections.local(() => localFocusProjectPath(projectPath, owner)) : localFocusProjectPath(projectPath, owner);
   const runRuntimeMutation = <T>(action: string, operation: () => T | Promise<T>) => queueProjectActivation.runRuntimeMutation(action, operation);
+  const scoped = <T>(event: Electron.IpcMainInvokeEvent, legacy: () => T | Promise<T>,
+    work: (captured: Parameters<Parameters<CoreIpcAdapter['scoped']>[0]>[0]) => T | Promise<T>) =>
+    core && runtime.getState(false).project?.trusted ? coreAdapter(event).scoped(work) : legacy();
 
   handle(ipcChannels.systemGetInfo, (_event, input): AppInfo => {
     getAppInfoInputSchema.parse(input);
@@ -665,20 +718,22 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
   });
   handle(ipcChannels.browserShowLinkContextMenu, (event, input) => {
     const { url } = browserLinkContextMenuInputSchema.parse(input);
-    const owner = ownerWindow(event);
+    const owner = ownerWindow(event), documentIsCurrent = invocationGuards.get(event) ?? (() => false);
+    const generation = connections?.state.generation;
+    const current = () => documentIsCurrent() && (!connections || connections.isLocal && connections.state.generation === generation);
     Menu.buildFromTemplate([
       {
         label: 'Open in Browser workspace',
         click: () => {
-          if (!owner.isDestroyed()) owner.webContents.send(ipcChannels.browserOpenLink, url);
+          if (current()) owner.webContents.send(ipcChannels.browserOpenLink, url);
         },
       },
       {
         label: 'Open in external browser',
-        click: () => { void shell.openExternal(url).catch(() => undefined); },
+        click: () => { if (current()) void shell.openExternal(url).catch(() => undefined); },
       },
       { type: 'separator' },
-      { label: 'Copy link', click: () => clipboard.writeText(url) },
+      { label: 'Copy link', click: () => { if (current()) clipboard.writeText(url); } },
     ]).popup({ window: owner });
     return browserLinkContextMenuResultSchema.parse({ shown: true });
   });
@@ -903,39 +958,33 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
     emptyInputSchema.parse(input);
     return runtimeStateSchema.parse(runtime.getHydrationState());
   });
-  handle(ipcChannels.runtimePrompt, async (_event, input) => runRuntimeMutation('sending a prompt', async () => {
-    const parsed = promptInputSchema.parse(input);
-    const sessionReferences = parsed.sessionReferences
-      ? await Promise.all(parsed.sessionReferences.map(async (reference) => ({
-        ...reference,
-        projectPath: await projects.prepareSessionListPath(reference.projectPath),
-      })))
-      : undefined;
-    const accepted = await runtime.prompt({ ...parsed, ...(sessionReferences ? { sessionReferences } : {}) });
-    return promptAcceptanceSchema.parse(accepted);
-  }));
+  handle(ipcChannels.runtimeMonitorDashboard, (event, input) => core
+    ? coreAdapter(event).monitor(input) : agentHandlers.desktopMonitor(input));
+  handle(ipcChannels.runtimePrompt, async (event, input) => runRuntimeMutation('sending a prompt', () => core
+    ? coreAdapter(event).prompt(input) : runtimeHandlers.prompt(input)));
   handle(ipcChannels.runtimeOptimizePrompt, async (_event, input) => runRuntimeMutation('improving a prompt', async () => {
     const parsed = promptOptimizationInputSchema.parse(input);
     return promptOptimizationResultSchema.parse(await runtime.optimizePrompt(parsed.text, parsed.advanced));
   }));
-  handle(ipcChannels.runtimeAbort, async (_event, input) => {
-    emptyInputSchema.parse(input);
-    return abortResultSchema.parse(await runtime.abort());
-  });
-  handle(ipcChannels.runtimeControlSubagent, async (_event, input) => runRuntimeMutation('controlling a child agent', async () => (
-    runtimeStateSchema.parse(await runtime.controlSubagent(subagentControlInputSchema.parse(input)))
+  handle(ipcChannels.runtimeAbort, (event, input) => core
+    ? coreAdapter(event).abort(input) : runtimeHandlers.abort(input));
+  handle(ipcChannels.runtimeAnswerQuestion, (_event, input) => runRuntimeMutation('answering a question', () => (
+    runtimeStateSchema.parse(runtime.answerQuestion(questionnaireAnswerInputSchema.parse(input)))
   )));
-  handle(ipcChannels.runtimeControlAgentTeam, async (_event, input) => runRuntimeMutation('controlling an Agent Team node', async () => (
-    runtimeStateSchema.parse(await runtime.controlAgentTeam(agentTeamControlInputSchema.parse(input)))
-  )));
-  handle(ipcChannels.runtimeSetModel, async (_event, input) => {
-    const parsed = setModelInputSchema.parse(input);
-    return runRuntimeMutation('changing the model', async () => runtimeStateSchema.parse(await runtime.setModel(parsed.provider, parsed.id)));
-  });
-  handle(ipcChannels.runtimeSetThinking, (_event, input) => {
-    const parsed = setThinkingInputSchema.parse(input);
-    return runRuntimeMutation('changing the reasoning level', () => runtimeStateSchema.parse(runtime.setThinkingLevel(parsed.level)));
-  });
+  handle(ipcChannels.runtimeControlSubagent, async (event, input) => runRuntimeMutation('controlling a child agent', () => scoped(event,
+    () => agentHandlers.controlSubagent(input), ({ handle: workspace, authorize, command }) => {
+      if (!command.expectedSessionId) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a session first.', retryable: true });
+      return createScopedAgentHandlers(workspace, authorize, command.expectedSessionId).controlSubagent(command, input);
+    })));
+  handle(ipcChannels.runtimeControlAgentTeam, async (event, input) => runRuntimeMutation('controlling an Agent Team node', () => scoped(event,
+    () => agentHandlers.controlTeam(input), ({ handle: workspace, authorize, command }) => {
+      if (!command.expectedSessionId) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'Open a session first.', retryable: true });
+      return createScopedAgentHandlers(workspace, authorize, command.expectedSessionId).controlTeam(command, input);
+    })));
+  handle(ipcChannels.runtimeSetModel, async (event, input) => runRuntimeMutation('changing the model', () => scoped(event,
+    () => runtimeHandlers.setModel(input), ({ handle: workspace, authorize, command }) => createScopedRuntimeHandlers(workspace, authorize).setModel(command, input))));
+  handle(ipcChannels.runtimeSetThinking, (event, input) => runRuntimeMutation('changing the reasoning level', () => scoped(event,
+    () => runtimeHandlers.setThinking(input), ({ handle: workspace, authorize, command }) => createScopedRuntimeHandlers(workspace, authorize).setThinking(command, input))));
   handle(ipcChannels.runtimeSetPermission, async (_event, input) => {
     const parsed = setPermissionInputSchema.parse(input);
     return runRuntimeMutation('changing permissions', async () => {
@@ -978,66 +1027,35 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
   handle(ipcChannels.modelsDevRemove, async (_event, input) => runRuntimeMutation('removing a provider', async () => (
     modelsDevMutationResultSchema.parse(await runtime.removeModelsDevProvider(modelsDevRemoveInputSchema.parse(input).providerId))
   )));
-  handle(ipcChannels.runtimeMutateQueue, async (_event, input) => runRuntimeMutation('editing queued messages', async () => (
-    queueMutationResultSchema.parse(await runtime.mutateQueuedMessage(queueMutationInputSchema.parse(input)))
-  )));
-  handle(ipcChannels.runtimeGoalMaxGet, async (_event, input) => {
-    emptyInputSchema.parse(input);
-    const goal = await runtime.getGoalMax();
-    return goal === null ? null : goalMaxStateSchema.parse(goal);
-  });
-  handle(ipcChannels.runtimeGoalMaxCreate, async (_event, input) => runRuntimeMutation('creating a goal', async () => (
-    goalMaxStateSchema.parse(await runtime.createGoalMax(goalMaxCreateInputSchema.parse(input)))
-  )));
-  handle(ipcChannels.runtimeGoalMaxControl, async (_event, input) => runRuntimeMutation('controlling a goal', async () => (
-    goalMaxStateSchema.parse(await runtime.controlGoalMax(goalMaxControlInputSchema.parse(input)))
-  )));
-  handle(ipcChannels.runtimeGoalMaxUpdate, async (_event, input) => runRuntimeMutation('editing a goal', async () => (
-    goalMaxStateSchema.parse(await runtime.updateGoalMax(goalMaxUpdateInputSchema.parse(input)))
-  )));
-  handle(ipcChannels.runtimeGoalMaxClear, async (_event, input) => runRuntimeMutation('clearing a goal', async () => {
-    emptyInputSchema.parse(input);
-    return goalMaxClearResultSchema.parse(await runtime.clearGoalMax());
-  }));
-  handle(ipcChannels.runtimeGoalMaxSteeringEdit, async (_event, input) => runRuntimeMutation('editing a goal update', async () => (
-    goalMaxStateSchema.parse(await runtime.editGoalMaxSteering(goalMaxSteeringEditInputSchema.parse(input)))
-  )));
-  handle(ipcChannels.runtimeGoalMaxSteeringRemove, async (_event, input) => runRuntimeMutation('removing a goal update', async () => (
-    goalMaxStateSchema.parse(await runtime.removeGoalMaxSteering(goalMaxSteeringRemoveInputSchema.parse(input)))
-  )));
-  handle(ipcChannels.runtimeTaskGet, async (_event, input) => {
-    emptyInputSchema.parse(input);
-    const list = await runtime.getTaskList();
-    return list === null ? null : taskListSchema.parse(list);
-  });
-  handle(ipcChannels.runtimeTaskCreate, async (_event, input) => runRuntimeMutation('creating a task', async () => (
-    taskListSchema.parse(await runtime.createTask(taskCreateInputSchema.parse(input)))
-  )));
-  handle(ipcChannels.runtimeTaskUpdate, async (_event, input) => runRuntimeMutation('updating a task', async () => (
-    taskListSchema.parse(await runtime.updateTask(taskUpdateInputSchema.parse(input)))
-  )));
-  handle(ipcChannels.runtimeTaskReorder, async (_event, input) => runRuntimeMutation('reordering tasks', async () => (
-    taskListSchema.parse(await runtime.reorderTasks(taskReorderInputSchema.parse(input)))
-  )));
-  handle(ipcChannels.runtimeTaskDelete, async (_event, input) => runRuntimeMutation('deleting a task', async () => (
-    taskListSchema.parse(await runtime.deleteTask(taskDeleteInputSchema.parse(input)))
-  )));
-  handle(ipcChannels.runtimeTaskClear, async (_event, input) => runRuntimeMutation('clearing tasks', async () => {
-    emptyInputSchema.parse(input);
-    return taskListSchema.parse(await runtime.clearTasks());
-  }));
-  handle(ipcChannels.runtimeNewSession, async (_event, input) => {
-    emptyInputSchema.parse(input);
-    return runRuntimeMutation('creating a session', async () => runtimeStateSchema.parse(await runtime.newSession()));
-  });
-  handle(ipcChannels.runtimeListSessions, async (_event, input) => {
-    const parsed = sessionSearchInputSchema.parse(input);
-    return sessionListSchema.parse(await runtime.listSessions(parsed.query));
-  });
-  handle(ipcChannels.runtimeSwitchSession, async (_event, input) => {
-    const parsed = sessionIdInputSchema.parse(input);
-    return runRuntimeMutation('switching sessions', async () => runtimeStateSchema.parse(await runtime.switchSession(parsed.sessionId)));
-  });
+  handle(ipcChannels.runtimeMutateQueue, async (event, input) => runRuntimeMutation('editing queued messages', () => scoped(event,
+    () => runtimeHandlers.mutateQueue(input), ({ handle: workspace, authorize, command }) => createScopedRuntimeHandlers(workspace, authorize).mutateQueue(command, input))));
+  handle(ipcChannels.runtimeGoalMaxGet, (event, input) => scoped(event, () => goalHandlers.get(input),
+    ({ handle: workspace, authorize }) => createScopedGoalHandlers(workspace, authorize).get(input)));
+  const goalMutation = (event: Electron.IpcMainInvokeEvent, input: unknown, action: string,
+    method: 'create' | 'control' | 'update' | 'clear' | 'editSteering' | 'removeSteering') => runRuntimeMutation(action, () => scoped<unknown>(event,
+      () => goalHandlers[method](input), ({ handle: workspace, authorize, command }) => createScopedGoalHandlers(workspace, authorize)[method](command, input)));
+  handle(ipcChannels.runtimeGoalMaxCreate, (event, input) => goalMutation(event, input, 'creating a goal', 'create'));
+  handle(ipcChannels.runtimeGoalMaxControl, (event, input) => goalMutation(event, input, 'controlling a goal', 'control'));
+  handle(ipcChannels.runtimeGoalMaxUpdate, (event, input) => goalMutation(event, input, 'editing a goal', 'update'));
+  handle(ipcChannels.runtimeGoalMaxClear, (event, input) => goalMutation(event, input, 'clearing a goal', 'clear'));
+  handle(ipcChannels.runtimeGoalMaxSteeringEdit, (event, input) => goalMutation(event, input, 'editing a goal update', 'editSteering'));
+  handle(ipcChannels.runtimeGoalMaxSteeringRemove, (event, input) => goalMutation(event, input, 'removing a goal update', 'removeSteering'));
+  handle(ipcChannels.runtimeTaskGet, (event, input) => scoped(event, () => taskHandlers.get(input),
+    ({ handle: workspace, authorize }) => createScopedTaskHandlers(workspace, authorize).get(input)));
+  const taskMutation = (event: Electron.IpcMainInvokeEvent, input: unknown, action: string,
+    method: 'create' | 'update' | 'reorder' | 'delete' | 'clear') => runRuntimeMutation(action, () => scoped(event,
+      () => taskHandlers[method](input), ({ handle: workspace, authorize, command }) => createScopedTaskHandlers(workspace, authorize)[method](command, input)));
+  handle(ipcChannels.runtimeTaskCreate, (event, input) => taskMutation(event, input, 'creating a task', 'create'));
+  handle(ipcChannels.runtimeTaskUpdate, (event, input) => taskMutation(event, input, 'updating a task', 'update'));
+  handle(ipcChannels.runtimeTaskReorder, (event, input) => taskMutation(event, input, 'reordering tasks', 'reorder'));
+  handle(ipcChannels.runtimeTaskDelete, (event, input) => taskMutation(event, input, 'deleting a task', 'delete'));
+  handle(ipcChannels.runtimeTaskClear, (event, input) => taskMutation(event, input, 'clearing tasks', 'clear'));
+  handle(ipcChannels.runtimeNewSession, async (event, input) => runRuntimeMutation('creating a session', () => scoped(event,
+    () => sessionHandlers.newSession(input), ({ handle: workspace, authorize, command }) => createScopedSessionHandlers(workspace, authorize).newSession(command, input))));
+  handle(ipcChannels.runtimeListSessions, (event, input) => scoped(event, () => sessionHandlers.listSessions(input),
+    ({ handle: workspace, authorize }) => createScopedSessionHandlers(workspace, authorize).listSessions(input)));
+  handle(ipcChannels.runtimeSwitchSession, async (event, input) => runRuntimeMutation('switching sessions', () => core
+    ? coreAdapter(event).select(input) : sessionHandlers.selectSession(input)));
   handle(ipcChannels.runtimeSendSessionMessage, async (_event, input) => {
     const parsed = sessionDirectMessageInputSchema.parse(input);
     return runRuntimeMutation('sending a direct session message', async () => runtimeStateSchema.parse(await runtime.sendSessionMessage(parsed.sessionId, parsed.text, parsed.behavior)));
@@ -1082,18 +1100,14 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
     const parsed = compactInputSchema.parse(input);
     return runRuntimeMutation('compacting context', async () => runtimeStateSchema.parse(await runtime.compact(parsed.instructions)));
   });
-  handle(ipcChannels.filesList, async (_event, input) => {
-    const parsed = fileListInputSchema.parse(input);
-    return fileListSchema.parse(await files.list(parsed.path));
-  });
-  handle(ipcChannels.filesSearch, async (_event, input) => {
-    const parsed = fileSearchInputSchema.parse(input);
-    return fileSearchResultSchema.parse(await files.search(parsed.query, parsed.limit));
-  });
-  handle(ipcChannels.filesRead, async (_event, input) => {
-    const parsed = filePathInputSchema.parse(input);
-    return filePreviewSchema.parse(await files.read(parsed.path));
-  });
+  const desktopFiles = createFileHandlers(files);
+  const desktopGit = createGitHandlers(git);
+  handle(ipcChannels.filesList, (event, input) => core
+    ? coreAdapter(event).scoped(({ handle: workspace, authorize }) => createScopedFileHandlers(workspace, authorize).list(input)) : desktopFiles.list(input));
+  handle(ipcChannels.filesSearch, (event, input) => core
+    ? coreAdapter(event).scoped(({ handle: workspace, authorize }) => createScopedFileHandlers(workspace, authorize).search(input)) : desktopFiles.search(input));
+  handle(ipcChannels.filesRead, (event, input) => core
+    ? coreAdapter(event).scoped(({ handle: workspace, authorize }) => createScopedFileHandlers(workspace, authorize).readDesktop(input)) : desktopFiles.read(input));
   handle(ipcChannels.filesRevealLink, async (_event, input) => {
     const parsed = filePathInputSchema.parse(input);
     return openFileResultSchema.parse(await files.revealLink(parsed.path));
@@ -1102,22 +1116,14 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
     const parsed = filePathInputSchema.parse(input);
     return openFileResultSchema.parse(await files.open(parsed.path));
   });
-  handle(ipcChannels.gitStatus, async (_event, input) => {
-    emptyInputSchema.parse(input);
-    return gitStatusSchema.parse(await git.status());
-  });
-  handle(ipcChannels.gitDiff, async (_event, input) => {
-    const parsed = filePathInputSchema.parse(input);
-    return gitDiffSchema.parse(await git.diff(parsed.path));
-  });
-  handle(ipcChannels.gitCombinedDiff, async (_event, input) => {
-    emptyInputSchema.parse(input);
-    return gitCombinedDiffSchema.parse(await git.combinedDiff());
-  });
-  handle(ipcChannels.gitWorktrees, async (_event, input) => {
-    emptyInputSchema.parse(input);
-    return gitWorktreeListSchema.parse(await git.worktrees());
-  });
+  handle(ipcChannels.gitStatus, (event, input) => core
+    ? coreAdapter(event).scoped(({ handle: workspace, authorize }) => createScopedGitHandlers(workspace, authorize).status(input)) : desktopGit.status(input));
+  handle(ipcChannels.gitDiff, (event, input) => core
+    ? coreAdapter(event).scoped(({ handle: workspace, authorize }) => createScopedGitHandlers(workspace, authorize).diff(input)) : desktopGit.diff(input));
+  handle(ipcChannels.gitCombinedDiff, (event, input) => core
+    ? coreAdapter(event).scoped(({ handle: workspace, authorize }) => createScopedGitHandlers(workspace, authorize).desktopCombinedDiff(input)) : desktopGit.combinedDiff(input));
+  handle(ipcChannels.gitWorktrees, (event, input) => core
+    ? coreAdapter(event).scoped(({ handle: workspace, authorize }) => createScopedGitHandlers(workspace, authorize).desktopWorktrees(input)) : desktopGit.worktrees(input));
   handle(ipcChannels.gitSwitchWorktree, async (event, input) => queueProjectActivation.run(async () => {
     assertProjectActivationIdle(runtime, 'changing worktrees');
     const current = runtime.getState(false);
@@ -1146,22 +1152,24 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
       return discardCreatedWorktreeAfterFailure(error, () => git.discardCreatedWorktree(worktree));
     }
   }));
-  handle(ipcChannels.gitHistory, async (_event, input) => {
-    emptyInputSchema.parse(input);
-    return gitHistorySchema.parse(await git.history());
-  });
-  handle(ipcChannels.gitCommitDetails, async (_event, input) => {
-    const parsed = gitCommitInputSchema.parse(input);
-    return gitCommitDetailsSchema.parse(await git.commitDetails(parsed.hash));
-  });
-  handle(ipcChannels.gitOperation, async (_event, input) => queueProjectActivation.runSerializedMutation(async () => {
-    const parsed = gitOperationInputSchema.parse(input);
-    return gitOperationResultSchema.parse(await git.runOperation(parsed.operation));
-  }));
-  handle(ipcChannels.gitRevertPath, async (_event, input) => queueProjectActivation.runSerializedMutation(async () => {
-    const parsed = gitRevertPathInputSchema.parse(input);
-    return gitRevertPathResultSchema.parse({ path: parsed.path, status: await git.revertPath(parsed.path) });
-  }));
+  handle(ipcChannels.gitHistory, (event, input) => core
+    ? coreAdapter(event).scoped(({ handle: workspace, authorize }) => createScopedGitHandlers(workspace, authorize).history(input)) : desktopGit.history(input));
+  handle(ipcChannels.gitCommitDetails, (event, input) => core
+    ? coreAdapter(event).scoped(({ handle: workspace, authorize }) => createScopedGitHandlers(workspace, authorize).commitDetails(input)) : desktopGit.commitDetails(input));
+  handle(ipcChannels.gitOperation, (event, input) => queueProjectActivation.runSerializedMutation(() => core
+    ? coreAdapter(event).scoped(async ({ handle: workspace, authorize }) => {
+      if (authorize().currentGeneration !== workspace.generation) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The project changed.', retryable: true });
+      await workspace.files.assertBoundRootIdentity();
+      if (authorize().currentGeneration !== workspace.generation) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The project changed.', retryable: true });
+      return createGitHandlers(workspace.git).runOperation(input);
+    }) : desktopGit.runOperation(input)));
+  handle(ipcChannels.gitRevertPath, (event, input) => queueProjectActivation.runSerializedMutation(() => core
+    ? coreAdapter(event).scoped(async ({ handle: workspace, authorize }) => {
+      if (authorize().currentGeneration !== workspace.generation) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The project changed.', retryable: true });
+      await workspace.files.assertBoundRootIdentity();
+      if (authorize().currentGeneration !== workspace.generation) throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The project changed.', retryable: true });
+      return createGitHandlers(workspace.git).revertPath(input);
+    }) : desktopGit.revertPath(input)));
   handle(ipcChannels.sessionExport, async (event, input) => {
     emptyInputSchema.parse(input);
     const state = runtime.getState();
@@ -1211,6 +1219,25 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
   handle(ipcChannels.terminalClose, (event, input) => {
     const parsed = terminalCloseInputSchema.parse(input);
     terminal.close(event.sender.id, parsed.id);
+  });
+  handle(ipcChannels.mcpGet, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    return mcpServerListSchema.parse(await mcpConfig.list());
+  });
+  handle(ipcChannels.mcpSet, async (_event, input) => mcpServerListSchema.parse(await mcpConfig.save(mcpServerListSchema.parse(input))));
+  handle(ipcChannels.mcpProbe, async (_event, input) => {
+    const { name } = mcpProbeInputSchema.parse(input);
+    const tools = await new McpService(await mcpConfig.list(), () => true).probe(name);
+    return mcpProbeResultSchema.parse({ tools });
+  });
+  handle(ipcChannels.piMigrationInspect, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    const project = runtime.getState(false).project;
+    return piMigrationReportSchema.parse(await piMigration.inspect(project?.trusted ? project.path : undefined));
+  });
+  handle(ipcChannels.piMigrationImport, async (_event, input) => {
+    emptyInputSchema.parse(input);
+    return piMigrationResultSchema.parse(await piMigration.importMissing());
   });
   handle(ipcChannels.settingsGet, async (_event, input) => {
     emptyInputSchema.parse(input);
@@ -1354,10 +1381,13 @@ export function registerIpc({ runtime, projects, files, git, settings, learning,
     return attestationQueryResultSchema.parse(await resolveAttestationQuery(runtime, attestations, request));
   });
 
-  const openRecoveredProjectPath = async (projectPath: string, owner?: BrowserWindow) => {
-    await openProjectPath(projectPath, owner);
-    await applyPendingRecovery(runtime, recovery);
-    return runtime.getState();
+  const openRecoveredProjectPath = (projectPath: string, owner?: BrowserWindow) => {
+    const open = async () => {
+      await openProjectPath(projectPath, owner);
+      await applyPendingRecovery(runtime, recovery);
+      return runtime.getState();
+    };
+    return connections ? connections.local(open) : open();
   };
   return { openProjectPath: openRecoveredProjectPath, focusProjectPath };
 }

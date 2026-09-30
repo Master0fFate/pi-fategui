@@ -22,6 +22,8 @@ export interface FateProviderStorageMigration {
 export interface PrepareFateProviderStorageOptions {
   dataRoot?: string;
   piAgentDir?: string;
+  /** Server profiles must opt out explicitly, even when their root is brand new. */
+  legacyImport?: boolean;
 }
 
 export function fateDataRoot(): string {
@@ -105,9 +107,9 @@ export async function prepareFateProviderStorage(options: PrepareFateProviderSto
   }
 
   if (process.platform !== 'win32') await fs.chmod(paths.dataRoot, 0o700);
-  if (!firstRun) {
+  if (!firstRun || options.legacyImport === false) {
     await Promise.all(providerFiles.map(async (file) => requirePrivateRegularFile(path.join(paths.dataRoot, file))));
-    return { paths, firstRun: false, imported: [] };
+    return { paths, firstRun, imported: [] };
   }
 
   const legacyRoot = path.resolve(options.piAgentDir ?? getAgentDir());

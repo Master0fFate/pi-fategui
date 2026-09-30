@@ -10,6 +10,8 @@ import type {
   PiDesktopApi,
 } from '../../shared/contracts/ipc';
 import { useWorkspaceStore } from './workspaceStore';
+import { installFateApi, resetFateApi } from '../platform/api';
+import type { FateApi } from '../../client/FateApi';
 
 const HASH = 'abc1234567890abc1234567890abc1234567890';
 const OTHER_HASH = 'def1234567890def1234567890def1234567890';
@@ -82,6 +84,22 @@ describe('workspaceStore Git request invalidation', () => {
   beforeEach(() => {
     reset();
     Reflect.deleteProperty(window, 'piDesktop');
+    resetFateApi();
+  });
+
+  it('initializes shared file and Git reads with an injected fake and no preload bridge', async () => {
+    const listFiles = vi.fn(async () => ({ entries: [{ path: 'notes.txt', name: 'notes.txt', kind: 'file' as const }], truncated: false }));
+    const getGitStatus = vi.fn(async () => status('injected'));
+    const dispose = installFateApi({ listFiles, getGitStatus } as unknown as FateApi);
+    try {
+      await useWorkspaceStore.getState().initialize('C:/injected', 'files');
+      expect(useWorkspaceStore.getState().directories['']?.[0]?.path).toBe('notes.txt');
+      await useWorkspaceStore.getState().refreshGit();
+      expect(useWorkspaceStore.getState().git?.branch).toBe('injected');
+      expect(listFiles).toHaveBeenCalledTimes(1);
+      expect(getGitStatus).toHaveBeenCalledTimes(1);
+      expect('piDesktop' in window).toBe(false);
+    } finally { dispose(); }
   });
 
   it('clears all derived Git state immediately and ignores pre-refresh responses and errors', async () => {

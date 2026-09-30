@@ -6,6 +6,7 @@ import { InMemorySessionPermissionStore } from './SessionPermissionStore';
 import { InMemoryGoalMaxRepository } from './goalmaxxing/GoalMaxRepository';
 import { MultiProjectPiRuntime, backgroundAttentionUpdate } from './MultiProjectPiRuntime';
 import type { PiRuntimeService, PiSdkAdapter } from './PiRuntimeService';
+import type { PermissionHostPolicy } from '../../core/security/PermissionPolicy';
 
 const started = { type: 'run.started', runId: 'run-1', timestamp: 1 } satisfies PiEvent;
 const completed = { type: 'run.completed', runId: 'run-1', aborted: false, timestamp: 2 } satisfies PiEvent;
@@ -62,7 +63,7 @@ function makeFakeRuntime(): AgentSessionRuntime {
   } as unknown as AgentSessionRuntime;
 }
 
-function makeMulti(getAgentWorkspacePolicy: () => { preferredMode: 'shared' | 'worktree'; strict: boolean } = () => ({ preferredMode: 'worktree', strict: false })) {
+function makeMulti(getAgentWorkspacePolicy: () => { preferredMode: 'shared' | 'worktree'; strict: boolean } = () => ({ preferredMode: 'worktree', strict: false }), permissionHost: PermissionHostPolicy = {}) {
   const created = vi.fn();
   const modelRuntime = {
     getAvailable: vi.fn(async () => [model]), getModel: vi.fn(() => model),
@@ -75,19 +76,35 @@ function makeMulti(getAgentWorkspacePolicy: () => { preferredMode: 'shared' | 'w
     createModelRuntime: vi.fn(async () => modelRuntime as unknown as ModelRuntime),
     createRuntime: vi.fn(async () => { created(); return makeFakeRuntime(); }),
   };
+  const sessionPermissions = new InMemorySessionPermissionStore();
   const multi = new MultiProjectPiRuntime({
     adapter,
-    sessionPermissions: new InMemorySessionPermissionStore(),
+    sessionPermissions,
+    permissionHost,
     getImageGenerationSettings: () => defaultImageGenerationSettings,
     getAgentWorkspacePolicy,
     createGoalPersistence: () => new InMemoryGoalMaxRepository(),
     browserIntegration: null,
     defaults: async () => ({ thinkingLevel: 'medium', defaultModel: null }),
   });
-  return { multi, created, modelRuntime };
+  return { multi, created, modelRuntime, sessionPermissions };
 }
 
 describe('MultiProjectPiRuntime multi-folder', () => {
+  it('threads the immutable host cap into boot, focused and background runtime owners', async () => {
+    const { multi, sessionPermissions } = makeMulti(undefined, { maximumLevel: 'read-only' });
+    try {
+      expect(multi.getFocused().getState(false).permissionLevel).toBe('read-only');
+      await sessionPermissions.set('/proj-A', 'session-1', 'full-access');
+      await sessionPermissions.set('/proj-B', 'session-1', 'full-access');
+      expect((await multi.openProject({ path: '/proj-A', name: 'A', trusted: true })).permissionLevel).toBe('read-only');
+      expect((await multi.openProject({ path: '/proj-B', name: 'B', trusted: true })).permissionLevel).toBe('read-only');
+      multi.focus('/proj-A');
+      await expect(multi.getFocused().setPermissionLevel('edit')).rejects.toThrow(/host permission ceiling/);
+      expect(multi.getFocused().getState(false).permissionLevel).toBe('read-only');
+    } finally { await multi.dispose(); }
+  });
+
   it('broadcasts logout to background pickers and clears staged models without rebuilding agents', async () => {
     const { multi, created, modelRuntime } = makeMulti();
     try {

@@ -16,7 +16,8 @@ test('M3 compact current session has centered title and metadata', async () => {
     const page = await app.firstWindow();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1440, 900));
     await page.getByRole('button', { name: /Open project/u }).first().click();
-    await page.getByRole('button', { name: 'Expand project', exact: true }).click();
+    // Opening a project now expands its sessions automatically.
+    await expect(page.getByRole('button', { name: 'Collapse project', exact: true })).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
     await page.mouse.move(1000, 800);
     const row = page.locator('.session-row--current');
@@ -92,8 +93,7 @@ test('M3 compact current session has centered title and metadata', async () => {
       expect(Math.abs(text.center - geometry.row.center)).toBeLessThanOrEqual(0.5);
       expect(Math.abs((text.top - geometry.row.top) - (geometry.row.bottom - text.bottom))).toBeLessThanOrEqual(1);
     }
-    await mkdir('screenshots/m3-expressive', { recursive: true });
-    await page.locator('.sidebar').screenshot({ path: 'screenshots/m3-expressive/compact-session-row-rhythm.png', animations: 'disabled' });
+    await page.locator('.sidebar').screenshot({ path: test.info().outputPath('compact-session-row-rhythm.png'), animations: 'disabled' });
     const actions = row.getByRole('button', { name: 'Actions for First session', exact: true });
     await row.hover();
     await actions.click();

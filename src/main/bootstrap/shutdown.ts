@@ -14,8 +14,10 @@ export interface ShutdownCoordinatorDeps {
   disposeSync?: () => void;
   /** Async dispose steps raced against the timeout. */
   disposeAsync: () => readonly unknown[];
-  /** Called after disposal settles (success or timeout). */
-  onExit: () => void;
+  /** Write a clean marker only after every shutdown step actually settles. */
+  onClean?: () => void | Promise<void>;
+  /** Called with the truthful bounded result; the host owns process exit. */
+  onExit: (status: 'settled' | 'incomplete') => void;
   /** Called when async disposal throws. */
   onError?: (error: unknown) => void;
   /** Dispose timeout. Defaults to 5000ms. */
@@ -26,7 +28,10 @@ export class ShutdownCoordinator {
   private shutdownPromise: Promise<void> | null = null;
   private quitReady = false;
 
-  constructor(private readonly deps: ShutdownCoordinatorDeps) {}
+  constructor(private readonly deps: ShutdownCoordinatorDeps) {
+    const budget = deps.timeoutMs ?? 5_000;
+    if (!Number.isSafeInteger(budget) || budget < 1 || budget > 60_000) throw new Error('A finite shutdown timeout between 1ms and 60s is required.');
+  }
 
   isQuitReady(): boolean {
     return this.quitReady;
@@ -50,30 +55,36 @@ export class ShutdownCoordinator {
   }
 
   private async run(): Promise<void> {
-    // Best-effort continuation: a throw in an earlier hook must not prevent the
-    // later disposal phases or the final exit. Each error is reported via
-    // reportError (which never throws), and onExit is called exactly once in the
-    // finally block.
+    let incomplete = false;
+    try { this.deps.onBeforeDispose?.(); } catch (error) { incomplete = true; this.reportError(error); }
+    try { this.deps.disposeSync?.(); } catch (error) { incomplete = true; this.reportError(error); }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const deadline = Date.now() + (this.deps.timeoutMs ?? 5_000);
     try {
-      this.deps.onBeforeDispose?.();
+      const cleanup = async (): Promise<'settled' | 'incomplete'> => {
+        const results = await Promise.all(this.deps.disposeAsync().map((value) => Promise.resolve(value)));
+        if (results.some((result) => typeof result === 'object' && result !== null && 'status' in result && result.status === 'incomplete')) {
+          return 'incomplete';
+        }
+        return 'settled';
+      };
+      const timeout = new Promise<'incomplete'>((resolve) => {
+        timer = setTimeout(() => resolve('incomplete'), this.deps.timeoutMs ?? 5_000);
+      });
+      const outcome = await Promise.race([cleanup(), timeout]);
+      if (outcome === 'incomplete' || Date.now() >= deadline) incomplete = true;
+      if (!incomplete) {
+        // Never begin the marker while a core or other disposer is pending.
+        const marked = await Promise.race([Promise.resolve().then(() => this.deps.onClean?.()).then(() => 'settled' as const), timeout]);
+        if (marked === 'incomplete') incomplete = true;
+      }
     } catch (error) {
-      this.reportError(error);
-    }
-    try {
-      this.deps.disposeSync?.();
-    } catch (error) {
-      this.reportError(error);
-    }
-    try {
-      await Promise.race([
-        Promise.all(this.deps.disposeAsync().map((value) => Promise.resolve(value))).then(() => undefined),
-        new Promise<void>((resolve) => setTimeout(resolve, this.deps.timeoutMs ?? 5_000)),
-      ]);
-    } catch (error) {
+      incomplete = true;
       this.reportError(error);
     } finally {
+      if (timer !== null) clearTimeout(timer);
       this.quitReady = true;
-      this.deps.onExit();
+      this.deps.onExit(incomplete ? 'incomplete' : 'settled');
     }
   }
 

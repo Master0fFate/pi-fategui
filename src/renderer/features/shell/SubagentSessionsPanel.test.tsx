@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeState, SubagentRun } from '../../../shared/contracts/ipc';
 import type { AgentTeam } from '../../../shared/contracts/multiAgent';
 import { useGoalMaxStore } from '../../stores/goalMaxStore';
-import { useRuntimeStore } from '../../stores/runtimeStore';
+import { currentNetworkScope, useRuntimeStore } from '../../stores/runtimeStore';
+import { installFateApi, resetFateApi } from '../../platform/api';
+import { alpha, networkFixture } from '../../app/networkFixture.testSupport';
 import { useUiStore } from '../../stores/uiStore';
 import { ToolCard } from '../chat/ToolCard';
 import { Inspector } from './Inspector';
@@ -171,7 +173,7 @@ describe('subagent session inspector', () => {
 
     expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Changes', 'Files']);
     await user.click(screen.getByRole('button', { name: 'Run' }));
-    expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Goal', 'Subagent sessions', 'Tools', 'Activity']);
+    expect(screen.getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual(['Monitor', 'Goal', 'Subagent sessions', 'Tools', 'Activity']);
     expect(screen.queryByRole('tab', { name: 'Changes' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Resources' })).not.toBeInTheDocument();
   });
@@ -473,6 +475,57 @@ describe('subagent session inspector', () => {
     expect(trigger.querySelector('svg')).not.toBeNull();
   });
 
+  it.each(['active', 'paused', 'restored-interrupted', 'closed', 'released'] as const)('deletes an idle %s team with retained agents in one confirmed action', async (status) => {
+    const user = userEvent.setup();
+    const controlAgentTeam = vi.fn().mockResolvedValue({ ...state, subagents: [], agentTeams: [] });
+    Object.defineProperty(window, 'piDesktop', { configurable: true, value: { controlAgentTeam } });
+    useRuntimeStore.getState().hydrateRuntime({
+      ...state, subagents: [], agentTeams: [{
+        ...team, status,
+        nodes: team.nodes.map((node) => node.depth === 0 ? { ...node, status: 'active' } : {
+          ...node,
+          workspace: { mode: 'worktree', path: '/worktrees/reviewer', parentPath: '/project', commonDirectory: '/project/.git', branch: 'agents/reviewer', baseCommit: 'a'.repeat(40), state: 'ready' },
+        }),
+      }],
+    });
+    render(<SubagentSessionsPanel />);
+
+    await user.click(screen.getByRole('button', { name: 'Delete team history for Review team' }));
+    const confirmation = screen.getByRole('alertdialog', { name: 'Delete Review team history?' });
+    expect(within(confirmation).getByText(/worktree files and Git branches are kept/u)).toBeVisible();
+    expect(controlAgentTeam).not.toHaveBeenCalled();
+    await user.click(within(confirmation).getByRole('button', { name: 'Delete history' }));
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(controlAgentTeam).toHaveBeenCalledExactlyOnceWith({ action: 'deleteTeam', teamId: team.id, operationId: expect.any(String) });
+    expect(screen.queryByRole('button', { name: 'Delete team history for Review team' })).not.toBeInTheDocument();
+    expect(useRuntimeStore.getState().runtime.agentTeams).toEqual([]);
+  });
+
+  it.each([
+    { label: 'active turns', activeTurns: 1 },
+    { label: 'creating agent', nodeStatus: 'creating' as const },
+    { label: 'active agent', nodeStatus: 'active' as const },
+    { label: 'queued task', taskStatus: 'queued' as const },
+    { label: 'running task', taskStatus: 'running' as const },
+    { label: 'task waiting for children', taskStatus: 'waiting-for-children' as const },
+  ])('blocks history deletion with $label', async ({ activeTurns = 0, nodeStatus = 'ready' as const, taskStatus = 'completed' as const }) => {
+    const user = userEvent.setup();
+    useRuntimeStore.getState().hydrateRuntime({
+      ...state, subagents: [], agentTeams: [{
+        ...team, activeTurns,
+        nodes: team.nodes.map((node) => node.depth > 0 ? { ...node, status: nodeStatus } : node),
+        tasks: team.tasks.map((task) => ({ ...task, status: taskStatus })),
+      }],
+    });
+    render(<SubagentSessionsPanel />);
+
+    const trigger = screen.getByRole('button', { name: 'Delete team history for Review team' });
+    expect(trigger).toBeDisabled();
+    await user.click(trigger);
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
   it('keeps failed deletion recoverable and prevents duplicate confirmations', async () => {
     const user = userEvent.setup();
     let rejectDelete!: (reason: Error) => void;
@@ -487,9 +540,9 @@ describe('subagent session inspector', () => {
     act(() => { confirm.click(); confirm.click(); });
     expect(controlAgentTeam).toHaveBeenCalledOnce();
     expect(within(confirmation).getByRole('button', { name: 'Cancel' })).toBeDisabled();
-    await act(async () => rejectDelete(new Error('Clean up the retained worktree first.')));
+    await act(async () => rejectDelete(new Error('Team history could not be removed. Retry deletion.')));
 
-    expect(within(confirmation).getByRole('status')).toHaveTextContent('Clean up the retained worktree first.');
+    expect(within(confirmation).getByRole('status')).toHaveTextContent('Team history could not be removed. Retry deletion.');
     expect(confirm).toBeEnabled();
     await user.click(within(confirmation).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
@@ -599,5 +652,66 @@ describe('subagent session inspector', () => {
     expect(screen.getByRole('region', { name: 'Architecture Scout chat preview' })).toBeInTheDocument();
 
     view.unmount();
+  });
+});
+
+describe('network agent navigation', () => {
+  beforeEach(() => {
+    useRuntimeStore.getState().reset();
+  });
+
+  afterEach(() => {
+    resetFateApi();
+    useRuntimeStore.getState().reset();
+  });
+
+  it.each(['unselected', 'synchronizing', 'disconnected'] as const)('renders the %s boundary with no navigation or current network scope', (phase) => {
+    const f = networkFixture();
+    installFateApi({ ...f.api.shared, web: f.api });
+    useRuntimeStore.getState().select(phase === 'unselected' ? null : alpha);
+    if (phase === 'disconnected') useRuntimeStore.getState().disconnect();
+    expect(useRuntimeStore.getState().networkNavigation).toBeNull();
+    expect(currentNetworkScope()).toBeNull();
+
+    const { container } = render(<SubagentSessionsPanel />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('Agents and tasks are not current. Host work may continue.');
+    expect(screen.queryByText('No child sessions')).not.toBeInTheDocument();
+    expect(container.querySelectorAll('[data-network-focus="true"]')).toHaveLength(0);
+    expect(f.api.readTeams).not.toHaveBeenCalled();
+    expect(f.api.readAgents).not.toHaveBeenCalled();
+    expect(f.api.controlTeam).not.toHaveBeenCalled();
+  });
+
+  it('focuses only an explicit team node target from the current network scope', async () => {
+    const f = networkFixture();
+    f.host.teams = [{ id: 'network-team', rootNodeId: 'node-root', status: 'active', selected: true, activeTurns: 0, writerNodeId: null,
+      nodesTruncated: false, nodes: [{ id: 'node-root', parentNodeId: null, path: '/root', handle: 'root', status: 'ready',
+        permissionLevel: 'edit', writer: false, unreadMessages: 0 }, { id: 'node-target', parentNodeId: 'node-root', path: '/root/child', handle: 'child',
+        status: 'ready', permissionLevel: 'edit', writer: false, unreadMessages: 0 }] }];
+    installFateApi({ ...f.api.shared, web: f.api });
+    await act(async () => {
+      await useRuntimeStore.getState().initialize(f.api);
+      await useRuntimeStore.getState().refresh(f.api);
+    });
+    const scope = currentNetworkScope();
+    if (!scope) throw new Error('Fixture did not establish a current network scope.');
+    const { container } = render(<SubagentSessionsPanel />);
+    expect(await screen.findByText('/root/child')).toBeInTheDocument();
+    expect(useRuntimeStore.getState().networkNavigation).toBeNull();
+    expect(container.querySelectorAll('[data-network-focus="true"]')).toHaveLength(0);
+
+    const target = { kind: 'team-node', teamId: 'network-team', nodeId: 'node-target' } as const;
+    act(() => useRuntimeStore.setState({ networkNavigation: { scopeKey: `${scope.key}:stale`, target } }));
+    expect(screen.queryByText('Selected from Monitor')).not.toBeInTheDocument();
+    expect(container.querySelectorAll('[data-network-focus="true"]')).toHaveLength(0);
+
+    act(() => useRuntimeStore.setState({ networkNavigation: { scopeKey: scope.key, target } }));
+    await waitFor(() => expect(container.querySelector('[data-team-id="network-team"][data-node-id="node-target"]')).toHaveFocus());
+    expect(container.querySelector('[data-team-id="network-team"][data-node-id="node-target"]')).toHaveAttribute('data-network-focus', 'true');
+    expect(container.querySelector('[data-team-id="network-team"][data-node-id="node-root"]')).not.toHaveAttribute('data-network-focus');
+    expect(container.querySelectorAll('[data-network-focus="true"]')).toHaveLength(1);
+    expect(f.api.readTeams).toHaveBeenCalledWith(alpha);
+    expect(f.api.controlTeam).not.toHaveBeenCalled();
   });
 });

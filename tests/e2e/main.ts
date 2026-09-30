@@ -9,10 +9,13 @@ import { LegacyAutomations } from '../../src/main/automations/LegacyAutomations'
 import { LearningService } from '../../src/main/learning/LearningService';
 import { LearningRepository } from '../../src/main/learning/LearningRepository';
 import { FilesystemService } from '../../src/main/files/FilesystemService';
+import { DesktopFileActions } from '../../src/main/files/DesktopFileActions';
 import { GitService } from '../../src/main/git/GitService';
 import { BrowserHost } from '../../src/main/browser/BrowserHost';
 import { LOCAL_PAGE_SCHEME } from '../../src/main/browser/LocalPageRegistry';
 import { registerIpc } from '../../src/main/ipc/registerIpc';
+import { ConnectionProfileStore } from '../../src/main/connections/ConnectionProfileStore';
+import { DesktopConnectionRouter } from '../../src/main/connections/DesktopConnectionRouter';
 import type { AppLogService } from '../../src/main/logging/AppLogService';
 import type { MusicService } from '../../src/main/music/MusicService';
 import type { PiRuntimeService } from '../../src/main/pi/PiRuntimeService';
@@ -21,6 +24,7 @@ import { secureWebPreferences } from '../../src/main/security/windowOptions';
 import { createTrustedRendererPolicy } from '../../src/main/security/trustedRenderer';
 import { SettingsService } from '../../src/main/settings/SettingsService';
 import { SkinPackService } from '../../src/main/settings/SkinPackService';
+import { preparePackBackground } from '../../src/main/settings/DesktopSkinImage';
 import { skinPackThemeId } from '../../src/shared/skins';
 import { removePackFontPreferences } from '../../src/shared/skinAppearance';
 import type { SpeechService } from '../../src/main/speech/SpeechService';
@@ -42,8 +46,11 @@ const projectPath = process.env.PI_DESKTOP_E2E_PROJECT;
 if (!projectPath) throw new Error('PI_DESKTOP_E2E_PROJECT is required');
 if (process.env.PI_DESKTOP_E2E_USER_DATA) app.setPath('userData', process.env.PI_DESKTOP_E2E_USER_DATA);
 
+// Exercise the real named selection bridge, even in local-only desktop fixtures.
+// No approved remote profiles or credential references exist in this private harness.
+const connections = new DesktopConnectionRouter(new ConnectionProfileStore());
 const runtime = new FakePiRuntimeService();
-const files = new FilesystemService();
+const files = new FilesystemService(undefined, new DesktopFileActions());
 const git = new GitService(files);
 const project = { path: projectPath, name: path.basename(projectPath), trusted: true };
 const secondProjectPath = process.env.PI_DESKTOP_E2E_SECOND_PROJECT;
@@ -73,7 +80,7 @@ try {
 const learning = new LearningService(new LearningRepository(path.join(app.getPath('userData'), 'learning-data')), () => settingsValue.memoryLearning);
 runtime.setLearningService(learning);
 const e2ePiTheme = { ...builtInThemes.find((theme) => theme.id === 'graphite')!, id: 'pi-e2e-theme-0123456789ab', name: 'Pi · E2E Theme' };
-const skinPacks = new SkinPackService(path.dirname(settingsPath));
+const skinPacks = new SkinPackService(path.dirname(settingsPath), preparePackBackground);
 const settings = {
   skinPacks,
   removeSkinPack: async (id: string) => {
@@ -140,7 +147,7 @@ const updates = {
 let browser: BrowserHost;
 browser = new BrowserHost({
   currentProject: () => runtime.getState().project,
-  currentPermissionLevel: () => runtime.getState().permissionLevel ?? 'full-access',
+  currentPermissionLevel: () => runtime.getState().permissionLevel ?? 'read-only',
   bridge: {
     currentRoot: () => {
       const state = runtime.getState();
@@ -174,6 +181,7 @@ let shutdown: Promise<void> | null = null;
 app.whenReady().then(() => {
   const rendererPath = path.resolve(directory, '../../dist/renderer/index.html');
   registerIpc({
+    connections,
     runtime: runtime as unknown as PiRuntimeService,
     projects,
     files,
@@ -210,6 +218,7 @@ app.on('before-quit', (event) => {
     Promise.all([agents.dispose(), browser.reset()]).then(() => undefined),
     new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
   ]).catch(() => undefined).finally(() => {
+    connections.close();
     quitReady = true;
     app.exit(0);
   });

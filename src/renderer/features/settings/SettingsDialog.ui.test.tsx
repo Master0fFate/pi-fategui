@@ -6,6 +6,8 @@ import { builtInThemes, type ThemeDefinition } from '../../../shared/themes';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { SettingsDialog } from './SettingsDialog';
+import { installFateApi, resetFateApi, type RendererFateApi } from '../../platform/api';
+import { desktopHostCapabilities } from '../../../shared/protocol/capabilities';
 
 const settings: AppSettings = {
   appearance: 'dark',
@@ -35,6 +37,8 @@ const settings: AppSettings = {
 };
 
 let speechListener: ((progress: SpeechDownloadProgress) => void) | null = null;
+
+const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
 
 const speechStatus: SpeechStatus = {
   backend: 'Test Vulkan GPU', accelerated: true,
@@ -94,6 +98,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetFateApi();
+  if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices);
+  else Reflect.deleteProperty(navigator, 'mediaDevices');
   Reflect.deleteProperty(window, 'piDesktop');
   useUiStore.setState({ settingsOpen: false });
   document.documentElement.dataset.performanceMode = 'false';
@@ -109,6 +116,62 @@ afterEach(() => {
 });
 
 describe('SettingsDialog feedback', () => {
+  it('opens without a desktop adapter and explains that native settings are unavailable', async () => {
+    const dispose = installFateApi({} as RendererFateApi);
+    render(<SettingsDialog />);
+    expect(await screen.findByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+    expect(screen.getByText('Settings are unavailable on this client. Use the local desktop for host settings.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
+    dispose();
+  });
+  it('still loads native desktop settings', async () => {
+    const bridge = installBridge(vi.fn(async (value) => value));
+    render(<SettingsDialog />);
+    await waitFor(() => expect(bridge.getSettings).toHaveBeenCalledOnce());
+    expect(await screen.findByRole('button', { name: 'Save changes' })).toBeEnabled();
+  });
+  it('does not enumerate, capture, or call native speech on a false microphone Voice tab', async () => {
+    const bridge = installBridge(vi.fn(async (value) => value));
+    const enumerateDevices = vi.fn(async () => []);
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [] }));
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { enumerateDevices, getUserMedia, addEventListener: vi.fn(), removeEventListener: vi.fn() } });
+    const dispose = installFateApi({ desktop: bridge } as unknown as RendererFateApi, {
+      ...desktopHostCapabilities, supported: { ...desktopHostCapabilities.supported, microphone: false, hotkeys: false },
+    });
+    render(<SettingsDialog />);
+    await userEvent.click(screen.getByRole('tab', { name: /Voice/ }));
+    expect(screen.getByText('Voice capture is unavailable on this client or host.')).toBeInTheDocument();
+    expect(enumerateDevices).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(bridge.getSpeechStatus).not.toHaveBeenCalled();
+    expect(bridge.onSpeechDownload).not.toHaveBeenCalled();
+    dispose();
+  });
+  it('still enumerates devices and reads native speech on supported desktop Voice tab', async () => {
+    const bridge = installBridge(vi.fn(async (value) => value));
+    const enumerateDevices = vi.fn(async () => [{ kind: 'audioinput', deviceId: 'device-one', label: 'Desk microphone' }]);
+    const getUserMedia = vi.fn();
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { enumerateDevices, getUserMedia, addEventListener: vi.fn(), removeEventListener: vi.fn() } });
+    render(<SettingsDialog />);
+    await userEvent.click(screen.getByRole('tab', { name: /Voice/ }));
+    await waitFor(() => expect(enumerateDevices).toHaveBeenCalled());
+    await waitFor(() => expect(bridge.getSpeechStatus).toHaveBeenCalled());
+    expect(bridge.onSpeechDownload).toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+  it('does not subscribe to or call the updater when the host disables it', async () => {
+    const bridge = installBridge(vi.fn(async (value) => value));
+    const dispose = installFateApi({ desktop: bridge } as unknown as RendererFateApi, {
+      ...desktopHostCapabilities, supported: { ...desktopHostCapabilities.supported, updater: false },
+    });
+    render(<SettingsDialog />);
+    const button = await screen.findByRole('button', { name: 'Check for Updates' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', 'Application updates are managed on the local desktop.');
+    expect(bridge.onUpdatesProgress).not.toHaveBeenCalled();
+    expect(bridge.checkForUpdates).not.toHaveBeenCalled();
+    dispose();
+  });
   it('shows the named release without changing its numeric update identity', async () => {
     const bridge = installBridge(vi.fn(async (value) => value));
     Object.assign(bridge, { getAppInfo: vi.fn(async () => ({ name: 'Fate UI', version: '1.0.0', releaseName: 'Modulo', displayVersion: 'V1.0.0 - Modulo', platform: 'win32' })) });

@@ -34,7 +34,7 @@ export const BROWSER_PANE_MIN = 360;
 export const BROWSER_PANE_MAX = 2400;
 
 export type SidebarTab = 'sessions' | 'resources' | 'agents';
-export type InspectorTab = 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context' | 'goal' | 'activity';
+export type InspectorTab = 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context' | 'goal' | 'activity' | 'monitor';
 export type InspectorDestination = 'work' | 'run' | 'system';
 export type InspectorLastViews = Record<InspectorDestination, InspectorTab>;
 export type SelectedAgent =
@@ -49,7 +49,7 @@ export const INSPECTOR_DEFAULT_VIEWS: Record<InspectorDestination, InspectorTab>
 
 export function inspectorDestinationForTab(tab: InspectorTab): InspectorDestination {
   if (tab === 'changes' || tab === 'files') return 'work';
-  if (tab === 'goal' || tab === 'sessions' || tab === 'tools' || tab === 'activity') return 'run';
+  if (tab === 'goal' || tab === 'sessions' || tab === 'tools' || tab === 'activity' || tab === 'monitor') return 'run';
   return 'system';
 }
 
@@ -135,7 +135,7 @@ function selectInspectorTab(state: Pick<UiState, 'inspectorLastViews'>, inspecto
   };
 }
 
-const INSPECTOR_TABS: readonly InspectorTab[] = ['changes', 'files', 'tools', 'sessions', 'resources', 'context', 'goal', 'activity'];
+const INSPECTOR_TABS: readonly InspectorTab[] = ['changes', 'files', 'tools', 'sessions', 'resources', 'context', 'goal', 'activity', 'monitor'];
 
 /** Legacy tabs merged into the single Activity tab (v1 storage had 'recorder' and 'attestations'). */
 function normalizeInspectorTab(tab: unknown): InspectorTab {

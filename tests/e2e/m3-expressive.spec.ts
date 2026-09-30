@@ -380,7 +380,7 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await page.screenshot({ path: 'screenshots/m3-expressive/resources-browser.png', animations: 'disabled' });
     await browser.getByRole('button', { name: 'Close browser', exact: true }).click();
     await page.getByRole('button', { name: 'Open inspector', exact: true }).click();
-    await page.getByRole('button', { name: /^Run/u }).click();
+    await page.getByRole('button', { name: /^Run(?:,|$)/u }).click();
     await page.getByRole('tab', { name: /^Subagent sessions/u }).click();
     await page.evaluate(() => window.piDesktop.clearTasks());
     await page.getByRole('button', { name: 'Open music player' }).click();

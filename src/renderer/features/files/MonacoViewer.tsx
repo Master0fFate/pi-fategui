@@ -1,6 +1,6 @@
-import Editor, { DiffEditor, loader } from '@monaco-editor/react';
+import Editor, { loader } from '@monaco-editor/react';
 import * as monaco from './monacoRuntime';
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import CssWorker from 'monaco-editor/language/css/css.worker.js?worker';
 import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker';
 import HtmlWorker from 'monaco-editor/language/html/html.worker.js?worker';
@@ -68,17 +68,49 @@ export function FileMonacoViewer({ value, language, path }: { value: string; lan
 
 export function DiffMonacoViewer({ original, modified, language, path }: { original: string; modified: string; language: string; path: string }) {
   const { theme, fontFamily } = useMonacoAppearance();
-  return (
-    <DiffEditor
-      height="100%"
-      original={original}
-      modified={modified}
-      language={language}
-      theme={theme}
-      options={{ ...commonOptions, fontFamily, renderSideBySide: false, originalEditable: false }}
-      loading={<div className="preview-loading">Loading diff editor…</div>}
-      originalModelPath={`file://pi-desktop/original/${path}`}
-      modifiedModelPath={`file://pi-desktop/modified/${path}`}
-    />
-  );
+  const viewerId = useId();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    // Each viewer owns its models, even when two previews show the same path.
+    const modelUri = (side: string) => monaco.Uri.from({
+      scheme: 'file', authority: 'pi-desktop',
+      path: `/diff/${encodeURIComponent(viewerId)}/${side}/${path}`,
+    });
+    const originalModel = monaco.editor.createModel('', undefined, modelUri('original'));
+    const modifiedModel = monaco.editor.createModel('', undefined, modelUri('modified'));
+    const editor = monaco.editor.createDiffEditor(containerRef.current, {
+      ...commonOptions, renderSideBySide: false, originalEditable: false,
+    });
+    editor.setModel({ original: originalModel, modified: modifiedModel });
+    editorRef.current = editor;
+    return () => {
+      editorRef.current = null;
+      // Monaco requires reset before either attached text model is disposed.
+      // Own the whole teardown rather than relying on React DiffEditor's order.
+      editor.setModel(null);
+      editor.dispose();
+      originalModel.dispose();
+      modifiedModel.dispose();
+    };
+  }, [path, viewerId]);
+
+  useEffect(() => {
+    const models = editorRef.current?.getModel();
+    if (!models) return;
+    // A same-path refresh updates live models without replacing or disposing them.
+    if (models.original.getValue() !== original) models.original.setValue(original);
+    if (models.modified.getValue() !== modified) models.modified.setValue(modified);
+    monaco.editor.setModelLanguage(models.original, language);
+    monaco.editor.setModelLanguage(models.modified, language);
+  }, [original, modified, language, path]);
+
+  useEffect(() => {
+    monaco.editor.setTheme(theme);
+    editorRef.current?.updateOptions({ fontFamily });
+  }, [theme, fontFamily, path]);
+
+  return <div ref={containerRef} style={{ height: '100%', width: '100%' }} />;
 }

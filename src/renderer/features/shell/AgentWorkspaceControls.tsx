@@ -1,22 +1,28 @@
+import { getFateApi, getWebApiOptional } from '../../platform/api';
+import type { InputOf } from '../../../shared/protocol/methods';
 import * as Dialog from '@radix-ui/react-dialog';
 import { ArrowUpRight, GitBranch, GitMerge, GitPullRequest, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import type { AgentTeam, AgentTeamControlInput, AgentTeamNode } from '../../../shared/contracts/multiAgent';
+import type { AgentTeam, AgentTeamNode } from '../../../shared/contracts/multiAgent';
 import { InlineConfirm } from '../../components/InlineConfirm';
-import { useRuntimeStore } from '../../stores/runtimeStore';
+import { canMutateNetwork, selectSessionView, useRuntimeStore, type NetworkTeam, type NetworkTeamNode } from '../../stores/runtimeStore';
+import { draftScopeKey, useScopedDraft } from '../goalmaxxing/scopedDraft';
+const checkpointDrafts = new Map<string, string>();
 
 function useWorkspaceControl() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pendingRef = useRef(false);
-  const control = async (input: AgentTeamControlInput): Promise<boolean> => {
+  const control = async (input: InputOf<'agent.workspace'>): Promise<boolean> => {
     if (pendingRef.current) return false;
+    const web = getWebApiOptional();
+    if (web) return useRuntimeStore.getState().runNetworkMutation(web, 'agent.control', (scope) => web.agentWorkspace(scope, input));
     const origin = useRuntimeStore.getState().runtime;
     pendingRef.current = true;
     setPending(true);
     setError(null);
     try {
-      const state = await window.piDesktop.controlAgentTeam({ ...input, operationId: crypto.randomUUID() });
+      const state = await getFateApi().controlAgentTeam({ action: 'workspace', ...input, operationId: crypto.randomUUID() });
       const current = useRuntimeStore.getState().runtime;
       if (current.sessionId !== origin.sessionId || current.project?.path !== origin.project?.path) return false;
       useRuntimeStore.getState().setRuntime(state);
@@ -34,12 +40,19 @@ function useWorkspaceControl() {
 
 type Confirmation = 'checkpoint' | 'integrate' | 'cleanup' | null;
 
-export function AgentWorkspaceDetails({ team, node }: { team: AgentTeam; node: AgentTeamNode }) {
+export function AgentWorkspaceDetails({ team, node }: { team: AgentTeam | NetworkTeam; node: AgentTeamNode | NetworkTeamNode }) {
+  const web = getWebApiOptional();
+  const networkBusy = useRuntimeStore((state) => state.networkBusy);
+  const displayName = 'displayName' in node ? node.displayName : node.handle || node.path;
   const workspace = node.workspace;
+  const parentPath = workspace && 'parentPath' in workspace && typeof workspace.parentPath === 'string' ? workspace.parentPath : 'parent checkout on host';
+  const checkoutLabel = workspace && 'path' in workspace && typeof workspace.path === 'string' ? workspace.path
+    : 'projectPath' in team && typeof team.projectPath === 'string' ? team.projectPath : 'Host-scoped checkout; path withheld';
   const { control, pending, error } = useWorkspaceControl();
-  const rootStreaming = useRuntimeStore((state) => state.runtime.streaming);
-  const permission = useRuntimeStore((state) => state.runtime.permissionLevel);
-  const [message, setMessage] = useState('');
+  const rootStreaming = useRuntimeStore((state) => web ? selectSessionView(state).activeSessionRunning : state.runtime.streaming);
+  const permission = useRuntimeStore((state) => selectSessionView(state).permissionLevel);
+  const checkpointKey = `${draftScopeKey(web)}:team:${team.id}:workspace:${node.id}`;
+  const [message, setMessage] = useScopedDraft(checkpointDrafts, checkpointKey, () => '');
   const [strategy, setStrategy] = useState<'ff-only' | 'cherry-pick'>('ff-only');
   const [commits, setCommits] = useState<string[]>([]);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
@@ -50,14 +63,17 @@ export function AgentWorkspaceDetails({ team, node }: { team: AgentTeam; node: A
   const removed = workspace?.state === 'removed';
   const active = node.status === 'active' || node.status === 'creating' || node.status === 'closing';
   const readOnly = (permission ?? team.nodes.find((candidate) => candidate.id === team.rootNodeId)?.permissionLevel) === 'read-only';
-  const cannotMutate = pending || active || rootStreaming || readOnly || removed;
+  const unavailable = pending || networkBusy || Boolean(web && !canMutateNetwork(web, 'agent.control'));
+  const cannotMutate = unavailable || active || rootStreaming === true || web !== null && rootStreaming === null || readOnly || removed;
   const targetNode = team.nodes.find((candidate) => candidate.id === node.parentNodeId);
+  const parentLabel = targetNode ? 'displayName' in targetNode && typeof targetNode.displayName === 'string' ? targetNode.displayName : targetNode.handle : 'Parent';
   const directChild = node.parentNodeId === team.rootNodeId;
   const canIntegrate = directChild && !cannotMutate && Boolean(review?.targetBranch && !review.dirty && !review.targetDirty && !review.truncated && review.commits.length > 0 && (strategy === 'ff-only' || commits.length > 0));
   const act = async (operation: 'review' | 'checkpoint' | 'integrate' | 'cleanup') => {
+    if (web && checkpointKey !== `${draftScopeKey(web)}:team:${team.id}:workspace:${node.id}`) return;
     setNotice(null);
     const ok = await control({
-      action: 'workspace', teamId: team.id, target: node.id, operation,
+      teamId: team.id, target: node.id, operation,
       ...(operation === 'checkpoint' ? { message: message.trim() } : {}),
       ...(operation === 'integrate' && review ? {
         strategy, expectedSourceHead: review.sourceHead, expectedTargetHead: review.targetHead,
@@ -74,7 +90,7 @@ export function AgentWorkspaceDetails({ team, node }: { team: AgentTeam; node: A
   return (
     <Dialog.Root>
       <Dialog.Trigger asChild>
-        <button type="button" className="agent-workspace-trigger" aria-label={`Workspace for ${node.displayName}`}>
+        <button type="button" className="agent-workspace-trigger" aria-label={`Workspace for ${displayName}`}>
           <GitBranch size={12} /><span>{owned ? removed ? 'Removed worktree' : 'Isolated worktree' : 'Shared workspace'}</span>
           {owned && workspace.branch ? <small title={workspace.branch}>{workspace.branch}</small> : null}
           <ArrowUpRight size={11} aria-hidden="true" />
@@ -84,18 +100,20 @@ export function AgentWorkspaceDetails({ team, node }: { team: AgentTeam; node: A
         <Dialog.Overlay className="agent-workspace-overlay" />
         <Dialog.Content className="agent-workspace-dialog" aria-describedby={undefined}>
           <header className="agent-workspace-dialog-header">
-            <div><Dialog.Title>{node.displayName} workspace</Dialog.Title><span>{owned ? removed ? 'Removed worktree' : 'Isolated Git worktree' : 'Shared checkout'} · {node.status}</span></div>
+            <div><Dialog.Title>{displayName} workspace</Dialog.Title><span>{owned ? removed ? 'Removed worktree' : 'Isolated Git worktree' : 'Shared checkout'} · {node.status}</span></div>
             <Dialog.Close aria-label="Close workspace"><X size={16} /></Dialog.Close>
           </header>
-      <div className="agent-workspace-body" role="region" aria-label={`${node.displayName} workspace`}>
+      <div className="agent-workspace-body" role="region" aria-label={`${displayName} workspace`}>
         <dl className="agent-workspace-facts">
-          <dt>Checkout</dt><dd><code>{workspace?.path ?? team.projectPath}</code></dd>
-          {owned ? <><dt>Branch</dt><dd><code>{workspace.branch}</code></dd><dt>Base</dt><dd><code title={workspace.baseCommit}>{workspace.baseRef ?? 'HEAD'} · {workspace.baseCommit?.slice(0, 12)}</code></dd><dt>Integrate into</dt><dd><code>{workspace.parentPath}</code> · {targetNode?.displayName ?? 'Parent'}</dd></> : null}
+          <dt>Checkout</dt><dd><code>{checkoutLabel}</code></dd>
+          {owned ? <><dt>Branch</dt><dd><code>{workspace.branch}</code></dd>
+            {'baseCommit' in workspace ? <><dt>Base</dt><dd><code title={workspace.baseCommit}>{workspace.baseRef ?? 'HEAD'} · {workspace.baseCommit?.slice(0, 12)}</code></dd></> : null}
+            <dt>Integrate into</dt><dd><code>{parentPath}</code> · {parentLabel}</dd></> : null}
         </dl>
         <p>{owned ? 'Separate checkout, not a security sandbox. Edit files stays confined here; Full access can reach other host paths and services.' : 'Files are shared with the direct parent. A child that needs isolation must be spawned in a new worktree.'}</p>
         {owned && !removed ? <>
           <div className="agent-workspace-actions">
-            <button type="button" disabled={pending || active} onClick={() => void act('review')}><RefreshCw size={12} className={pending ? 'tool-spinner' : undefined} />{review ? 'Refresh review' : 'Review changes'}</button>
+            <button type="button" disabled={unavailable || active} onClick={() => void act('review')}><RefreshCw size={12} className={pending ? 'tool-spinner' : undefined} />{review ? 'Refresh review' : 'Review changes'}</button>
             <button type="button" disabled={cannotMutate || (node.status !== 'closed' && node.status !== 'released')} title="Close or release the agent first. Dirty worktrees cannot be removed." onClick={() => setConfirmation('cleanup')}><Trash2 size={12} />Remove worktree</button>
           </div>
           {active ? <p>Stop this agent and any agents sharing its checkout before reviewing or changing the workspace.</p> : null}
@@ -126,8 +144,8 @@ export function AgentWorkspaceDetails({ team, node }: { team: AgentTeam; node: A
         {notice ? <p role="status" className="agent-workspace-success">{notice}</p> : null}
         {error ? <p className="agent-workspace-error" role="alert">{error}</p> : null}
         {confirmation ? <InlineConfirm
-          title={confirmation === 'cleanup' ? `Remove ${node.displayName} worktree?` : confirmation === 'checkpoint' ? 'Commit agent changes?' : `Integrate into ${targetNode?.displayName ?? 'parent'}?`}
-          message={confirmation === 'cleanup' ? 'Removes only this clean, inactive checkout. The branch and agent history stay available. This cannot be undone.' : confirmation === 'checkpoint' ? 'All current worktree changes will be committed locally with your message. The parent checkout stays untouched.' : `Apply the reviewed ${strategy === 'ff-only' ? 'branch' : `${commits.length} selected commit(s)`} to ${workspace?.parentPath}. Stale reviews and dirty checkouts are refused.`}
+          title={confirmation === 'cleanup' ? `Remove ${displayName} worktree?` : confirmation === 'checkpoint' ? 'Commit agent changes?' : `Integrate into ${parentLabel}?`}
+          message={confirmation === 'cleanup' ? 'Removes only this clean, inactive checkout. The branch and agent history stay available. This cannot be undone.' : confirmation === 'checkpoint' ? 'All current worktree changes will be committed locally with your message. The parent checkout stays untouched.' : `Apply the reviewed ${strategy === 'ff-only' ? 'branch' : `${commits.length} selected commit(s)`} to ${parentPath}. Stale reviews and dirty checkouts are refused.`}
           confirmLabel={confirmation === 'cleanup' ? 'Remove worktree' : confirmation === 'checkpoint' ? 'Commit checkpoint' : 'Integrate'}
           busy={pending || (confirmation === 'integrate' ? !canIntegrate : cannotMutate)}
           onCancel={() => setConfirmation(null)}

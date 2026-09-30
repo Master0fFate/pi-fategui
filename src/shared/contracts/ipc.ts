@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import type { DesktopConnectionApi } from './connections';
 import { memoryLearningSettingsSchema, learningTurnSchema, type LearningApi } from './learning';
 import { agentChannels, type AgentsApi } from './agents';
+import type { MonitorDashboard, MonitorReadInput } from './monitorDashboard';
 import { MAX_SPEECH_STREAM_FEED_SAMPLES, SPEECH_PCM_BYTES_PER_SAMPLE } from '../speech';
 import {
   SUBAGENT_DISPLAY_NAME_MAX_LENGTH,
@@ -55,6 +57,43 @@ import {
 
 export const ipcChannels = {
   ...agentChannels,
+  connectionProfiles: 'connections:list-profiles',
+  connectionState: 'connections:get-state',
+  connectionSelect: 'connections:select',
+  connectionConnect: 'connections:connect',
+  connectionDisconnect: 'connections:disconnect',
+  connectionChanged: 'connections:changed',
+  remoteWorkspaces: 'connections:remote-workspaces',
+  remoteSnapshot: 'connections:remote-snapshot',
+  remoteMonitor: 'connections:remote-monitor',
+  remoteGoal: 'connections:remote-goal',
+  remoteTasks: 'connections:remote-tasks',
+  remoteGitStatus: 'connections:remote-git-status',
+  remoteGitHistory: 'connections:remote-git-history',
+  remoteSessions: 'connections:remote-sessions',
+  remoteModels: 'connections:remote-models',
+  remoteQueue: 'connections:remote-queue',
+  remoteTeams: 'connections:remote-teams',
+  remoteAgents: 'connections:remote-agents',
+  remoteGitDiff: 'connections:remote-git-diff',
+  remoteGitCombinedDiff: 'connections:remote-git-combined-diff',
+  remoteGitCommitDetails: 'connections:remote-git-commit-details',
+  remoteMonitorDetail: 'connections:remote-monitor-detail',
+  remoteTextUpload: 'connections:remote-text-upload',
+  remoteTextCancel: 'connections:remote-text-cancel',
+  remoteApplyOperation: 'connections:remote-apply-operation',
+  remoteFiles: 'connections:remote-files',
+  remotePreview: 'connections:remote-preview',
+  remoteClaim: 'connections:remote-claim',
+  remoteRenew: 'connections:remote-renew',
+  remoteTakeOver: 'connections:remote-takeover',
+  remoteIssuePermission: 'connections:remote-permission-issue',
+  remoteConfirmPermission: 'connections:remote-permission-confirm',
+  remoteRelease: 'connections:remote-release',
+  remotePrompt: 'connections:remote-prompt',
+  remoteAbort: 'connections:remote-abort',
+  remoteSession: 'connections:remote-session',
+  remoteCommandStatus: 'connections:remote-command-status',
   systemGetInfo: 'system:get-info',
   windowControl: 'window:control',
   windowGetState: 'window:get-state',
@@ -100,9 +139,11 @@ export const ipcChannels = {
   browserRespondConfirmation: 'browser:respond-confirmation',
   browserEvents: 'browser:events',
   runtimeGetState: 'runtime:get-state',
+  runtimeMonitorDashboard: 'runtime:monitor-dashboard',
   runtimePrompt: 'runtime:prompt',
   runtimeOptimizePrompt: 'runtime:optimize-prompt',
   runtimeAbort: 'runtime:abort',
+  runtimeAnswerQuestion: 'runtime:answer-question',
   runtimeControlSubagent: 'runtime:control-subagent',
   runtimeControlAgentTeam: 'runtime:control-agent-team',
   runtimeSendSessionMessage: 'runtime:send-session-message',
@@ -164,6 +205,11 @@ export const ipcChannels = {
   learningChanged: 'learning:changed',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
+  mcpGet: 'mcp:get',
+  mcpSet: 'mcp:set',
+  mcpProbe: 'mcp:probe',
+  piMigrationInspect: 'pi-migration:inspect',
+  piMigrationImport: 'pi-migration:import',
   updatesCheck: 'updates:check',
   updatesOpenDownload: 'updates:open-download',
   updatesDownloadInstall: 'updates:download-and-install',
@@ -912,6 +958,24 @@ export const runtimeQueueSchema = z.object({
   recovered: z.array(queuedMessageSchema).max(100).optional(),
 });
 
+export const pendingQuestionnaireSchema = z.object({
+  id: z.string().uuid(),
+  sessionId: z.string().min(1).max(500),
+  index: z.number().int().min(0).max(7),
+  total: z.number().int().min(1).max(8),
+  question: z.string().min(1).max(500),
+  options: z.array(z.object({
+    label: z.string().min(1).max(100),
+    description: z.string().max(160).optional(),
+  }).strict()).min(2).max(4),
+}).strict();
+export const questionnaireAnswerInputSchema = z.object({
+  id: z.string().uuid(),
+  index: z.number().int().min(0).max(7),
+  answer: z.string().trim().min(1).max(2_000),
+  source: z.enum(['option', 'custom']),
+}).strict();
+
 export const extensionUiStateSchema = z.object({
   statuses: z.array(z.object({
     key: z.string().min(1).max(100),
@@ -969,6 +1033,7 @@ export const runtimeStateSchema = z.object({
   pendingThinkingLevel: thinkingLevelSchema.nullable().optional(),
   permissionLevel: permissionLevelSchema.optional(),
   providerLogin: providerLoginStateSchema.optional(),
+  questionnaire: pendingQuestionnaireSchema.nullable().optional(),
   messages: z.array(runtimeMessageSchema),
   tools: z.array(runtimeToolSchema).optional(),
   commands: z.array(slashCommandSchema).max(5_000).optional(),
@@ -1258,6 +1323,37 @@ export const updateDownloadProgressSchema = z.object({
 export const updateInstallStartedSchema = z.object({ installing: z.literal(true) }).strict();
 export const updateVersionInputSchema = z.object({ version: z.string().min(1).max(100) }).strict();
 
+const mcpServerNameSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
+const mcpServerBaseSchema = z.object({ name: mcpServerNameSchema, enabled: z.boolean() });
+export const mcpServerSchema = z.discriminatedUnion('transport', [
+  mcpServerBaseSchema.extend({ transport: z.literal('stdio'), command: z.string().trim().min(1).max(2_048), args: z.array(z.string().max(2_048)).max(32) }).strict(),
+  mcpServerBaseSchema.extend({ transport: z.literal('http'), url: z.string().url().max(2_048).refine((raw) => {
+    const url = new URL(raw);
+    return !url.username && !url.password && !url.hash
+      && (url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)));
+  }, 'Use HTTPS or a local HTTP server without URL credentials.') }).strict(),
+]);
+export const mcpServerListSchema = z.array(mcpServerSchema).max(32).refine(
+  (servers) => new Set(servers.map((server) => server.name)).size === servers.length,
+  'MCP server names must be unique.',
+);
+export type McpServerDefinition = z.infer<typeof mcpServerSchema>;
+export const mcpProbeInputSchema = z.object({ name: mcpServerNameSchema }).strict();
+export const mcpProbeResultSchema = z.object({ tools: z.array(z.string().max(200)).max(100) }).strict();
+export const piMigrationReportSchema = z.object({
+  piProfileFound: z.boolean(), sharedSettings: z.boolean(), sharedSessions: z.boolean(), sharedExtensions: z.boolean(),
+  bridgeConfigured: z.boolean(), projectExtensionsBlocked: z.boolean(), projectMcpRequiresBridge: z.boolean(), providerEntriesToImport: z.number().int().nonnegative(), providerConflicts: z.number().int().nonnegative(),
+  mcpServersToImport: z.number().int().nonnegative(), mcpServersSkipped: z.number().int().nonnegative(),
+  missingMcpCommands: z.array(z.string().max(64)).max(32), packageManagerMissing: z.boolean(),
+  warnings: z.array(z.string().max(500)).max(100),
+}).strict();
+export const piMigrationResultSchema = z.object({
+  providerEntriesImported: z.number().int().nonnegative(), mcpServersImported: z.number().int().nonnegative(),
+  providerConflicts: z.number().int().nonnegative(), mcpServersSkipped: z.number().int().nonnegative(),
+  warnings: z.array(z.string().max(500)).max(100),
+}).strict();
+export type PiMigrationReport = z.infer<typeof piMigrationReportSchema>;
+
 export const imageGenerationSettingsSchema = z.object({
   provider: z.enum(imageGenerationProviderIds),
   model: z.string().trim().min(1).max(500).nullable(),
@@ -1401,6 +1497,8 @@ export type SubagentToolDetails = z.infer<typeof subagentToolDetailsSchema>;
 export type SubagentSnapshot = z.infer<typeof subagentSnapshotSchema>;
 export type SubagentChildEvent = z.infer<typeof subagentChildEventSchema>;
 export type ExtensionUiState = z.infer<typeof extensionUiStateSchema>;
+export type PendingQuestionnaire = z.infer<typeof pendingQuestionnaireSchema>;
+export type QuestionnaireAnswerInput = z.infer<typeof questionnaireAnswerInputSchema>;
 export type SessionAttention = z.infer<typeof sessionAttentionSchema>;
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
 export type SessionReference = z.infer<typeof sessionReferenceSchema>;
@@ -1457,7 +1555,7 @@ export type ModelsDevAddInput = z.infer<typeof modelsDevAddInputSchema>;
 export type ModelsDevRemoveInput = z.infer<typeof modelsDevRemoveInputSchema>;
 export type ModelsDevMutationResult = z.infer<typeof modelsDevMutationResultSchema>;
 
-export interface PiDesktopApi extends LearningApi, AgentsApi {
+export interface PiDesktopApi extends LearningApi, AgentsApi, DesktopConnectionApi {
   getAppInfo: () => Promise<AppInfo>;
   controlWindow: (action: WindowControlAction) => Promise<WindowState>;
   getWindowState: () => Promise<WindowState>;
@@ -1501,9 +1599,11 @@ export interface PiDesktopApi extends LearningApi, AgentsApi {
   respondToBrowserConfirmation: (id: BrowserConfirmation['id'], approved: boolean) => Promise<boolean>;
   onBrowserEvents: (listener: (events: BrowserEvent[]) => void) => () => void;
   getRuntimeState: () => Promise<RuntimeState>;
+  getMonitorDashboard: (input?: MonitorReadInput) => Promise<MonitorDashboard>;
   prompt: (input: PromptInput) => Promise<PromptAcceptance>;
   optimizePrompt: (text: string, options?: PromptOptimizationOptions) => Promise<PromptOptimizationResult>;
   abort: () => Promise<{ aborted: boolean }>;
+  answerQuestion: (input: QuestionnaireAnswerInput) => Promise<RuntimeState>;
   controlSubagent: (input: SubagentControlInput) => Promise<RuntimeState>;
   controlAgentTeam: (input: AgentTeamControlInput) => Promise<RuntimeState>;
   setModel: (provider: string, id: string) => Promise<RuntimeState>;
@@ -1571,6 +1671,11 @@ export interface PiDesktopApi extends LearningApi, AgentsApi {
   closeTerminal: (id: string) => Promise<void>;
   getSettings: () => Promise<AppSettings>;
   setSettings: (settings: AppSettings) => Promise<AppSettings>;
+  getMcpServers: () => Promise<McpServerDefinition[]>;
+  setMcpServers: (servers: McpServerDefinition[]) => Promise<McpServerDefinition[]>;
+  testMcpServer: (name: string) => Promise<z.infer<typeof mcpProbeResultSchema>>;
+  inspectPiMigration: () => Promise<PiMigrationReport>;
+  importPiMigration: () => Promise<z.infer<typeof piMigrationResultSchema>>;
   checkForUpdates: () => Promise<UpdateCheckResult>;
   openUpdateDownload: () => Promise<void>;
   downloadAndInstallUpdate: (version: string) => Promise<void>;

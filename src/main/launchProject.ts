@@ -17,7 +17,7 @@ export function parseLaunchProjectPath(argv: readonly string[], workingDirectory
     const argument = argv[index];
     if (argument === PROJECT_OPTION) {
       const value = argv[index + 1];
-      if (!validProjectPath(value)) throw new Error(`${PROJECT_OPTION} requires a project directory.`);
+      if (!validProjectPath(value) || value.startsWith('--')) throw new Error(`${PROJECT_OPTION} requires a project directory.`);
       projectPath = value;
       index += 1;
     } else if (argument?.startsWith(`${PROJECT_OPTION}=`)) {
@@ -41,4 +41,9 @@ export function projectPathFromAdditionalData(value: unknown): string | null {
   if (!value || typeof value !== 'object' || !('projectPath' in value)) return null;
   const projectPath = (value as { projectPath?: unknown }).projectPath;
   return validProjectPath(projectPath) && path.isAbsolute(projectPath) ? path.normalize(projectPath) : null;
+}
+
+/** Electron may insert Chromium switches between a split --project and its value. */
+export function parseForwardedProjectPath(argv: readonly string[], workingDirectory: string, additionalData: unknown): string | null {
+  return projectPathFromAdditionalData(additionalData) ?? parseLaunchProjectPath(argv, workingDirectory);
 }

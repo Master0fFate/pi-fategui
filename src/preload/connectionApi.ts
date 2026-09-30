@@ -1,0 +1,53 @@
+import { z } from 'zod';
+import { emptyInputSchema, ipcChannels } from '../shared/contracts/ipc';
+import { methodCatalog, publicWorkspaceSchema } from '../shared/protocol/methods';
+import { connectionProfilesSchema, connectionSelectSchema, connectionGenerationSchema, desktopConnectionStateSchema,
+  remoteWorkspaceInputSchema, remoteReadInputSchema, remoteMonitorInputSchema, remoteFileListInputSchema,
+  remotePreviewInputSchema, remotePromptInputSchema, remoteSessionInputSchema, remoteStatusInputSchema,
+  remoteSnapshotSchema, remoteMonitorSchema, remoteMutationSchema, remoteSessionsInputSchema, remoteGitDiffInputSchema,
+  remoteGitCommitInputSchema, remoteMonitorDetailInputSchema, remoteUploadInputSchema, remoteCancelTextInputSchema,
+  remoteOperationInputSchema, remoteIssuePermissionInputSchema, remoteConfirmPermissionInputSchema,
+  type DesktopConnectionApi } from '../shared/contracts/connections';
+import { invoke, subscribe, discardResult } from './transport';
+
+/** Strict named inputs and bounded public outputs. No raw network or credentials cross preload. */
+export const connectionApi = {
+  listConnectionProfiles: () => invoke(ipcChannels.connectionProfiles, emptyInputSchema, connectionProfilesSchema),
+  getConnectionState: () => invoke(ipcChannels.connectionState, emptyInputSchema, desktopConnectionStateSchema),
+  selectConnectionProfile: (selection) => invoke(ipcChannels.connectionSelect, connectionSelectSchema, desktopConnectionStateSchema, selection),
+  connectConnection: (generation) => invoke(ipcChannels.connectionConnect, connectionGenerationSchema, desktopConnectionStateSchema, { generation }),
+  disconnectConnection: (generation) => invoke(ipcChannels.connectionDisconnect, connectionGenerationSchema, desktopConnectionStateSchema, { generation }),
+  onConnectionState: (listener) => subscribe(ipcChannels.connectionChanged, desktopConnectionStateSchema, listener, () => undefined),
+  remoteListWorkspaces: (generation) => invoke(ipcChannels.remoteWorkspaces, connectionGenerationSchema,
+    z.array(publicWorkspaceSchema).max(8), { generation }),
+  remoteReadSnapshot: (generation, workspace) => invoke(ipcChannels.remoteSnapshot, remoteWorkspaceInputSchema, remoteSnapshotSchema, { generation, workspace }),
+  remoteReadMonitor: (scope, input = {}) => invoke(ipcChannels.remoteMonitor, remoteMonitorInputSchema, remoteMonitorSchema, { scope, input }),
+  remoteReadGoal: (scope) => invoke(ipcChannels.remoteGoal, remoteReadInputSchema, methodCatalog['goal.get'].wireResultSchema, { scope }),
+  remoteReadTasks: (scope) => invoke(ipcChannels.remoteTasks, remoteReadInputSchema, methodCatalog['task.list'].wireResultSchema, { scope }),
+  remoteReadGitStatus: (scope) => invoke(ipcChannels.remoteGitStatus, remoteReadInputSchema, methodCatalog['git.status'].wireResultSchema, { scope }),
+  remoteReadGitHistory: (scope) => invoke(ipcChannels.remoteGitHistory, remoteReadInputSchema, methodCatalog['git.history'].wireResultSchema, { scope }),
+  remoteReadSessions: (scope, query) => invoke(ipcChannels.remoteSessions, remoteSessionsInputSchema, methodCatalog['session.list'].wireResultSchema, { scope, input: { query } }),
+  remoteReadModels: (scope) => invoke(ipcChannels.remoteModels, remoteReadInputSchema, methodCatalog['runtime.models'].wireResultSchema, { scope }),
+  remoteReadQueue: (scope) => invoke(ipcChannels.remoteQueue, remoteReadInputSchema, methodCatalog['runtime.queueRead'].wireResultSchema, { scope }),
+  remoteReadTeams: (scope) => invoke(ipcChannels.remoteTeams, remoteReadInputSchema, methodCatalog['team.read'].wireResultSchema, { scope }),
+  remoteReadAgents: (scope) => invoke(ipcChannels.remoteAgents, remoteReadInputSchema, methodCatalog['agent.read'].wireResultSchema, { scope }),
+  remoteReadGitDiff: (scope, path) => invoke(ipcChannels.remoteGitDiff, remoteGitDiffInputSchema, methodCatalog['git.diff'].wireResultSchema, { scope, input: { path } }),
+  remoteReadGitCombinedDiff: (scope) => invoke(ipcChannels.remoteGitCombinedDiff, remoteReadInputSchema, methodCatalog['git.combinedDiff'].wireResultSchema, { scope }),
+  remoteReadGitCommitDetails: (scope, hash) => invoke(ipcChannels.remoteGitCommitDetails, remoteGitCommitInputSchema, methodCatalog['git.commitDetails'].wireResultSchema, { scope, input: { hash } }),
+  remoteReadMonitorDetail: (scope, id) => invoke(ipcChannels.remoteMonitorDetail, remoteMonitorDetailInputSchema, methodCatalog['workspace.monitorDetail'].wireResultSchema, { scope, input: { id } }),
+  remoteUploadText: (scope, input) => invoke(ipcChannels.remoteTextUpload, remoteUploadInputSchema, methodCatalog['text.upload'].wireResultSchema, { scope, input }),
+  remoteCancelText: (scope, id) => invoke(ipcChannels.remoteTextCancel, remoteCancelTextInputSchema, discardResult(z.null()), { scope, input: { attachmentId: id } }),
+  remoteApplyOperation: (scope, operation) => invoke(ipcChannels.remoteApplyOperation, remoteOperationInputSchema, remoteMutationSchema, { scope, operation }),
+  remoteListFiles: (scope, directoryId) => invoke(ipcChannels.remoteFiles, remoteFileListInputSchema, methodCatalog['file.list'].wireResultSchema, { scope, directoryId }),
+  remotePreviewText: (scope, fileId) => invoke(ipcChannels.remotePreview, remotePreviewInputSchema, methodCatalog['file.previewText'].wireResultSchema, { scope, fileId }),
+  remoteClaimControl: (scope) => invoke(ipcChannels.remoteClaim, remoteReadInputSchema, methodCatalog['control.claim'].wireResultSchema, { scope }),
+  remoteRenewControl: (scope) => invoke(ipcChannels.remoteRenew, remoteReadInputSchema, methodCatalog['control.renew'].wireResultSchema, { scope }),
+  remoteTakeOverControl: (scope) => invoke(ipcChannels.remoteTakeOver, remoteReadInputSchema, methodCatalog['control.takeover'].wireResultSchema, { scope }),
+  remoteIssuePermission: (scope, level) => invoke(ipcChannels.remoteIssuePermission, remoteIssuePermissionInputSchema, methodCatalog['permission.issue'].wireResultSchema, { scope, level }),
+  remoteConfirmPermission: (scope, challengeId) => invoke(ipcChannels.remoteConfirmPermission, remoteConfirmPermissionInputSchema, remoteMutationSchema, { scope, challengeId }),
+  remoteReleaseControl: (scope) => invoke(ipcChannels.remoteRelease, remoteReadInputSchema, discardResult(z.null()), { scope }),
+  remoteSendPrompt: (scope, text, options = {}) => invoke(ipcChannels.remotePrompt, remotePromptInputSchema, remoteMutationSchema, { scope, input: { text, ...options } }),
+  remoteAbort: (scope) => invoke(ipcChannels.remoteAbort, remoteReadInputSchema, remoteMutationSchema, { scope }),
+  remoteSelectSession: (scope, sessionId) => invoke(ipcChannels.remoteSession, remoteSessionInputSchema, remoteMutationSchema, { scope, sessionId }),
+  remoteReviewCommand: (scope, requestId) => invoke(ipcChannels.remoteCommandStatus, remoteStatusInputSchema, methodCatalog['command.status'].wireResultSchema, { scope, requestId }),
+} satisfies DesktopConnectionApi;

@@ -1,3 +1,5 @@
+import { getFateApi, getFateApiOptional, getDesktopApi, getDesktopApiOptional, getWebApiOptional, hasCapability } from '../../platform/api';
+import { useRuntimeStore as useWebWorkspaceStore } from '../../stores/runtimeStore';
 import * as Popover from '@radix-ui/react-popover';
 import * as Tabs from '@radix-ui/react-tabs';
 import {
@@ -93,7 +95,34 @@ function sidebarErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export function Sidebar(props: SidebarProps) {
+  return getWebApiOptional() ? <WebSidebar {...props} /> : <DesktopSidebar {...props} />;
+}
+
+function WebSidebar({ collapsed, onToggle }: SidebarProps) {
+  const workspaces = useWebWorkspaceStore((state) => state.workspaces);
+  const selected = useWebWorkspaceStore((state) => state.selected);
+  const select = useWebWorkspaceStore((state) => state.select);
+  const phase = useWebWorkspaceStore((state) => state.phase);
+  return <aside className={`sidebar ${collapsed ? 'sidebar--collapsed' : ''}`} aria-label="Primary navigation">
+    <div className="brand-row"><strong aria-label="Fate UI">ƒ {collapsed ? '' : 'Fate UI'}</strong>
+      <IconButton label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} terminalLabel={collapsed ? '>' : '<'} onClick={onToggle}>
+        {collapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}
+      </IconButton>
+    </div>
+    {!collapsed && <div className="sidebar-expanded-sections">
+      <strong>Registered workspaces</strong>
+      {workspaces.length === 0 ? <p>{phase === 'observing' ? 'No registered workspaces returned.' : 'Workspace list is not confirmed. Reconnect or refresh.'}</p> : <nav aria-label="Registered workspaces">
+        {workspaces.map((workspace) => <button type="button" className="folder-open" key={`${workspace.workspaceId}:${workspace.workspaceGeneration}`}
+          aria-current={selected?.workspaceId === workspace.workspaceId ? 'page' : undefined}
+          onClick={() => select(workspace)}>{workspace.label}</button>)}
+      </nav>}
+      <p>Workspaces are registered on the host. Select sessions in the shared conversation. Native project opening, terminal, provider login, saved routines and memory administration stay host-local.</p>
+    </div>}
+  </aside>;
+}
+
+function DesktopSidebar({ collapsed, onToggle }: SidebarProps) {
   const { ActionContent, Symbol, TabContent } = useSkinComponents();
   const runtime = useRuntimeStore(useShallow((state) => ({
     project: state.runtime.project,
@@ -117,8 +146,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const requestComposerDraft = useUiStore((state) => state.requestComposerDraft);
   const musicPlaying = useUiStore((state) => state.musicPlaying);
   useEffect(() => {
-    if (typeof window.piDesktop?.onAgentLibraryChanged !== 'function') return;
-    return window.piDesktop.onAgentLibraryChanged((event) => {
+    if (typeof getDesktopApiOptional()?.onAgentLibraryChanged !== 'function') return;
+    return getDesktopApi().onAgentLibraryChanged((event) => {
       if (event.projectPath === useAgentsStore.getState().projectPath) void useAgentsStore.getState().load(event.projectPath);
       if (event.focus && event.runId) void openAgentNotice(event.projectPath, event.runId);
       else if (event.message && event.runId) useUiStore.getState().showToast({ kind: event.status === 'failed' ? 'error' : event.status === 'needs-attention' ? 'warning' : 'info', title: 'Agents', message: event.message, agentRun: { projectPath: event.projectPath, runId: event.runId } });
@@ -258,14 +287,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   }, [collapsed, sessions.length]);
   useEffect(() => {
     const projectPath = runtime.project?.path;
-    const canSearchRuntime = 'piDesktop' in window && typeof window.piDesktop.listSessions === 'function';
-    const canSearchPreview = 'piDesktop' in window && typeof window.piDesktop.listProjectSessions === 'function';
+    const canSearchRuntime = Boolean(getFateApiOptional()) && typeof getFateApiOptional()?.listSessions === 'function';
+    const canSearchPreview = Boolean(getFateApiOptional()) && typeof getFateApiOptional()?.listProjectSessions === 'function';
     if (collapsed || !query.trim() || !projectPath || (!canSearchRuntime && !canSearchPreview)) return;
     let active = true;
     const timer = setTimeout(() => {
       const search = (runtime.status === 'disconnected' || !canSearchRuntime) && canSearchPreview
-        ? window.piDesktop.listProjectSessions(projectPath, query)
-        : window.piDesktop.listSessions(query);
+        ? getFateApi().listProjectSessions(projectPath, query)
+        : getFateApi().listSessions(query);
       void search
         .then((items) => {
           if (!active || !mounted.current) return;
@@ -357,12 +386,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       });
   };
   const switchSession = (session: SessionSummary) => {
-    if (!('piDesktop' in window) || navigationBusyRef.current || actionBusyRef.current) return;
+    if (!getFateApiOptional() || navigationBusyRef.current || actionBusyRef.current) return;
     const store = useRuntimeStore.getState();
     const origin = store.runtime;
     if (pendingFolderFocusRef.current && origin.project) {
       const projectPath = origin.project.path;
-      runFolderFocus(projectPath, () => window.piDesktop.openProject(projectPath, { sessionId: session.id }), `session:${session.id}`);
+      runFolderFocus(projectPath, () => getDesktopApi().openProject(projectPath, { sessionId: session.id }), `session:${session.id}`);
       return;
     }
     const generation = store.beginSessionSwitch(session.id);
@@ -371,7 +400,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     setNavigationBusy(true);
     let pending: Promise<typeof origin>;
     try {
-      pending = window.piDesktop.switchSession(session.id);
+      pending = getFateApi().switchSession(session.id);
     } catch (error) {
       pending = Promise.reject(error);
     }
@@ -383,8 +412,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       .catch(async (error: unknown) => {
         if (!mounted.current) return;
         let rollback = origin;
-        if (typeof window.piDesktop.getRuntimeState === 'function') {
-          try { rollback = await window.piDesktop.getRuntimeState(); } catch { /* The click-time state is still a safe rollback. */ }
+        if (typeof getFateApiOptional()?.getRuntimeState === 'function') {
+          try { rollback = await getFateApi().getRuntimeState(); } catch { /* The click-time state is still a safe rollback. */ }
         }
         useRuntimeStore.getState().cancelSessionSwitch(generation, rollback);
         showToast({
@@ -399,20 +428,25 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       });
   };
   const selectProject = () => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.selectProject !== 'function') return;
+    if (!getFateApiOptional() || typeof getDesktopApiOptional()?.selectProject !== 'function') return;
     invokeState('Project selection', async () => {
-      const state = await window.piDesktop.selectProject();
-      if (state.project) setSidebarCollapsed(false);
+      const state = await getDesktopApi().selectProject();
+      if (state.project) {
+        setSidebarCollapsed(false);
+        useProjectStore.getState().setExpanded(state.project.path, true);
+      }
       return state;
     }, 'navigation');
   };
   const createSession = () => {
-    if (!('piDesktop' in window)) return;
+    if (!getFateApiOptional()) return;
     if (pendingFolderFocusRef.current && runtime.project) {
       createSessionInFolder(runtime.project);
       return;
     }
-    invokeState('Creating session', () => window.piDesktop.newSession(), 'navigation');
+    if (invokeState('Creating session', () => getFateApi().newSession(), 'navigation') && runtime.project) {
+      useProjectStore.getState().setExpanded(runtime.project.path, true);
+    }
   };
   const beginRename = (session: SessionSummary) => {
     setEditingSessionId(session.id);
@@ -422,29 +456,29 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   };
   const saveRename = () => {
     const name = sessionName.trim().slice(0, 120);
-    if (!editingSessionId || !name || !('piDesktop' in window)) return;
+    if (!editingSessionId || !name || !getFateApiOptional()) return;
     const id = editingSessionId;
-    if (invokeState('Renaming session', () => window.piDesktop.renameSession(id, name))) setEditingSessionId(null);
+    if (invokeState('Renaming session', () => getFateApi().renameSession(id, name))) setEditingSessionId(null);
   };
   const deleteSession = (sessionId: string) => {
-    if (!('piDesktop' in window)) return;
+    if (!getFateApiOptional()) return;
     // Non-blocking: a delete only removes one saved session. Locking the whole
     // list (via invokeState/actionBusy) made every other session unclickable
     // until the disk refresh finished. Run it in the background and update the
     // list when it lands; the activation queue still serializes it safely.
     setConfirmingDeleteId(null);
-    void window.piDesktop.deleteSession(sessionId)
+    void getFateApi().deleteSession(sessionId)
       .then((state) => { if (mounted.current) setRuntime(state); })
       .catch((error: unknown) => {
         if (mounted.current) showToast({ kind: 'error', title: 'Deleting session failed', message: sidebarErrorMessage(error, 'The session could not be deleted.') });
       });
   };
   const deleteAllSessions = (project: KnownProject) => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.deleteProjectSessions !== 'function' || replacementBusy || actionBusyRef.current) return;
+    if (!getFateApiOptional() || typeof getFateApiOptional()?.deleteProjectSessions !== 'function' || replacementBusy || actionBusyRef.current) return;
     actionBusyRef.current = true;
     setActionBusy(true);
     setDeleteAllError(null);
-    void window.piDesktop.deleteProjectSessions(project.path)
+    void getFateApi().deleteProjectSessions(project.path)
       .then(async (result) => {
         if (!mounted.current) return;
         setConfirmingDeleteAll(null);
@@ -454,7 +488,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           // (which the main process refreshed before replying) so the active
           // list never waits on the state.changed event to catch up.
           try {
-            const state = await window.piDesktop.getRuntimeState();
+            const state = await getFateApi().getRuntimeState();
             if (mounted.current) setRuntime(state);
           } catch {
             // The main-process state.changed event reconciles the list instead.
@@ -476,7 +510,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       });
   };
   const runSessionAction = async (session: SessionSummary, action: 'fork' | 'worktree' | 'clone' | 'compact') => {
-    if (!('piDesktop' in window) || actionBusyRef.current || navigationBusyRef.current) return;
+    if (!getFateApiOptional() || actionBusyRef.current || navigationBusyRef.current) return;
     const live = useRuntimeStore.getState().runtime;
     const selectedRunning = live.activeSessionRunning ?? live.streaming;
     const targetRunning = session.id === live.sessionId
@@ -502,18 +536,18 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     try {
       let state = live;
       if (state.sessionId !== session.id) {
-        state = await window.piDesktop.switchSession(session.id);
+        state = await getFateApi().switchSession(session.id);
         if (!applyState(state)) return;
       }
       if (action === 'clone') {
-        applyState(await window.piDesktop.cloneSession());
+        applyState(await getFateApi().cloneSession());
       } else if (action === 'compact') {
-        applyState(await window.piDesktop.compact());
+        applyState(await getFateApi().compact());
       } else {
         const forkPoint = state.forkPoints?.at(-1);
         if (!forkPoint) throw new Error('This session has no user message to fork from.');
         if (action === 'worktree') {
-          const result = await window.piDesktop.createWorktreeSession(forkPoint.entryId);
+          const result = await getFateApi().createWorktreeSession(forkPoint.entryId);
           if (!applyState(result.state)) return;
           requestComposerDraft(
             result.selectedText,
@@ -526,7 +560,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             message: `${result.worktree.branch} is isolated at committed HEAD; uncommitted source changes stay behind. Its first push publishes this exact branch.`,
           });
         } else {
-          const result = await window.piDesktop.forkSession(forkPoint.entryId);
+          const result = await getFateApi().forkSession(forkPoint.entryId);
           if (!applyState(result.state)) return;
           requestComposerDraft(
             result.selectedText ?? forkPoint.text,
@@ -550,7 +584,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   };
   const navigateConversationPath = (branch: SessionBranch) => {
     if (branch.active || replacementBusy || capabilities?.navigate !== true) return;
-    if (!('piDesktop' in window) || typeof window.piDesktop.navigateSessionBranch !== 'function') {
+    if (!getFateApiOptional() || typeof getFateApiOptional()?.navigateSessionBranch !== 'function') {
       showToast({ kind: 'error', title: 'Path switching unavailable', message: 'The desktop session bridge cannot navigate conversation paths.' });
       return;
     }
@@ -558,7 +592,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     actionBusyRef.current = true;
     setActionBusy(true);
     setNavigatingBranchId(branch.id);
-    void window.piDesktop.navigateSessionBranch(branch.id)
+    void getFateApi().navigateSessionBranch(branch.id)
       .then((result) => {
         if (!mounted.current) return;
         const current = useRuntimeStore.getState().runtime;
@@ -587,20 +621,20 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       });
   };
   const runForkAction = (branch: SessionBranch, action: ForkAction) => {
-    if (!('piDesktop' in window) || replacementBusy || actionBusyRef.current) return;
+    if (!getFateApiOptional() || replacementBusy || actionBusyRef.current) return;
     if (action === 'delete') {
       if (confirmingForkDeleteId !== branch.id) {
         setConfirmingForkDeleteId(branch.id);
         return;
       }
-      if (typeof window.piDesktop.deleteSessionBranch !== 'function') {
+      if (typeof getFateApiOptional()?.deleteSessionBranch !== 'function') {
         showToast({ kind: 'error', title: 'Deleting fork unavailable', message: 'Restart Fate UI to delete saved conversation forks.' });
         return;
       }
       actionBusyRef.current = true;
       setActionBusy(true);
       setForkActionBranchId(branch.id);
-      void window.piDesktop.deleteSessionBranch(branch.id)
+      void getFateApi().deleteSessionBranch(branch.id)
         .then((result) => {
           if (mounted.current) {
             setRuntime(result.state);
@@ -617,11 +651,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         });
       return;
     }
-    if (typeof window.piDesktop.navigateSessionBranch !== 'function') return;
+    if (typeof getFateApiOptional()?.navigateSessionBranch !== 'function') return;
     actionBusyRef.current = true;
     setActionBusy(true);
     setForkActionBranchId(branch.id);
-    void window.piDesktop.navigateSessionBranch(branch.id)
+    void getFateApi().navigateSessionBranch(branch.id)
       .then(async (result) => {
         if (!mounted.current) return;
         useRuntimeStore.getState().hydrateRuntime(result.state);
@@ -632,12 +666,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           beginRename({ ...active, ...(label ? { title: label } : {}) });
         }
         else if (action === 'compact') {
-          const state = await window.piDesktop.compact();
+          const state = await getFateApi().compact();
           if (mounted.current) setRuntime(state);
         } else if (action === 'fork') {
           const forkPoint = result.state.forkPoints?.at(-1);
           if (!forkPoint) throw new Error('This fork has no user message to branch from.');
-          const forked = await window.piDesktop.forkSession(forkPoint.entryId);
+          const forked = await getFateApi().forkSession(forkPoint.entryId);
           if (mounted.current) {
             setRuntime(forked.state);
             requestComposerDraft(forked.selectedText ?? forkPoint.text, true, `This new session branches from this fork. Edit the selected prompt, then send to continue.`);
@@ -645,13 +679,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         } else if (action === 'worktree') {
           const forkPoint = result.state.forkPoints?.at(-1);
           if (!forkPoint) throw new Error('This fork has no user message to branch from.');
-          const isolated = await window.piDesktop.createWorktreeSession(forkPoint.entryId);
+          const isolated = await getFateApi().createWorktreeSession(forkPoint.entryId);
           if (mounted.current) {
             setRuntime(isolated.state);
             requestComposerDraft(isolated.selectedText, true, `Isolated worktree ready on ${isolated.worktree.branch}. Edit the selected prompt, then send to begin.`);
           }
         } else if (action === 'clone') {
-          const cloned = await window.piDesktop.cloneSession();
+          const cloned = await getFateApi().cloneSession();
           if (mounted.current) setRuntime(cloned);
         }
       })
@@ -684,6 +718,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const activeProjectPath = runtime.project?.path ?? null;
   const activeProjectKey = projectPathKey(activeProjectPath ?? '');
   useEffect(() => { projectNavigationGeneration.current += 1; }, [activeProjectKey]);
+  const previousSessionRef = useRef({ projectKey: activeProjectKey, sessionId: runtime.sessionId });
+  useEffect(() => {
+    const previous = previousSessionRef.current;
+    previousSessionRef.current = { projectKey: activeProjectKey, sessionId: runtime.sessionId };
+    if (activeProjectPath && runtime.sessionId && (previous.projectKey !== activeProjectKey || previous.sessionId !== runtime.sessionId)) {
+      useProjectStore.getState().setExpanded(activeProjectPath, true);
+    }
+  }, [activeProjectKey, activeProjectPath, runtime.sessionId]);
   const isActiveProject = (path: string) => projectPathKey(path) === activeProjectKey;
   const [previewsByPath, setPreviewsByPath] = useState<Record<string, SessionSummary[]>>({});
   const [previewCountByPath, setPreviewCountByPath] = useState<Record<string, number>>({});
@@ -726,7 +768,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     store.addProject({ path: project.path, name: project.name });
     const key = projectPathKey(project.path);
     const hasExpansionState = Object.keys(store.expandedByPath).some((path) => projectPathKey(path) === key);
-    if (!hasExpansionState) store.setExpanded(project.path, false);
+    if (!hasExpansionState) store.setExpanded(project.path, true);
   }, [runtime.project?.path, runtime.project?.name]);
 
   // Cache the active folder's live session list so that when focus moves to
@@ -775,13 +817,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       const path = project.path;
       const pathKey = projectPathKey(path);
       if (loadedPaths.current.has(pathKey) || previewInFlight.current.has(pathKey)) continue;
-      if (!('piDesktop' in window) || typeof window.piDesktop.listProjectSessions !== 'function') continue;
+      if (!getFateApiOptional() || typeof getFateApiOptional()?.listProjectSessions !== 'function') continue;
       previewInFlight.current.add(pathKey);
       const requestGeneration = (previewRequestGeneration.current.get(pathKey) ?? 0) + 1;
       previewRequestGeneration.current.set(pathKey, requestGeneration);
       loadedPaths.current.add(pathKey);
       setPreviewStateByPath((state) => ({ ...state, [path]: 'loading' }));
-      void window.piDesktop.listProjectSessions(path)
+      void getFateApi().listProjectSessions(path)
         .then((items) => {
           if (!mounted.current || previewRequestGeneration.current.get(pathKey) !== requestGeneration || !useProjectStore.getState().projects.some((candidate) => projectPathKey(candidate.path) === pathKey)) return;
           const priority = items.filter((session) => session.active || Boolean(session.attention));
@@ -845,10 +887,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   const switchToProject = (path: string) => {
     if (isActiveProject(path)) return;
-    if (!('piDesktop' in window)) return;
-    const focus = typeof window.piDesktop.focusProject === 'function'
-      ? window.piDesktop.focusProject
-      : window.piDesktop.openProject;
+    if (!getFateApiOptional()) return;
+    const focus = typeof getDesktopApiOptional()?.focusProject === 'function'
+      ? getDesktopApi().focusProject
+      : getDesktopApi().openProject;
     if (typeof focus !== 'function') return;
     // Folder switch bypasses the global navigation-busy gate (folders are
     // isolated Pi agents). The outgoing folder is seeded from its live
@@ -864,22 +906,23 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       createSession();
       return;
     }
-    if (!('piDesktop' in window) || typeof window.piDesktop.openProject !== 'function' || replacementBusy) return;
+    if (!getFateApiOptional() || typeof getDesktopApiOptional()?.openProject !== 'function' || replacementBusy) return;
     if (navigationBusyRef.current || actionBusyRef.current) return;
-    runFolderFocus(project.path, () => window.piDesktop.openProject(project.path, { newSession: true }), 'new-session');
+    useProjectStore.getState().setExpanded(project.path, true);
+    runFolderFocus(project.path, () => getDesktopApi().openProject(project.path, { newSession: true }), 'new-session');
   };
   const focusForeignSession = (project: KnownProject, session: SessionSummary) => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.openProject !== 'function' || actionBusyRef.current) return;
+    if (!getFateApiOptional() || typeof getDesktopApiOptional()?.openProject !== 'function' || actionBusyRef.current) return;
     // Folder sessions are isolated Pi agents: clicking a session in another
     // folder must work even while the focused folder is starting/streaming.
     // Uses the non-blocking folder-focus helper (generation-guarded, queued).
-    runFolderFocus(project.path, () => window.piDesktop.openProject(project.path, { sessionId: session.id }), `session:${session.id}`);
+    runFolderFocus(project.path, () => getDesktopApi().openProject(project.path, { sessionId: session.id }), `session:${session.id}`);
   };
   const forgetFolder = (project: KnownProject) => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.closeProjectRuntime !== 'function' || isActiveProject(project.path) || navigationBusyRef.current || actionBusyRef.current) return;
+    if (!getFateApiOptional() || typeof getFateApiOptional()?.closeProjectRuntime !== 'function' || isActiveProject(project.path) || navigationBusyRef.current || actionBusyRef.current) return;
     actionBusyRef.current = true;
     setActionBusy(true);
-    void window.piDesktop.closeProjectRuntime(project.path)
+    void getFateApi().closeProjectRuntime(project.path)
       .then(() => {
         if (mounted.current) forgetProject(project.path);
       })
@@ -892,8 +935,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       });
   };
   const revealFolder = (projectPath: string) => {
-    if (!('piDesktop' in window) || typeof window.piDesktop.revealProjectPath !== 'function') return;
-    void window.piDesktop.revealProjectPath(projectPath).catch((error: unknown) => {
+    if (!hasCapability('localFileOpen') || typeof getDesktopApiOptional()?.revealProjectPath !== 'function') {
+      showToast({ kind: 'info', title: 'Reveal unavailable', message: 'This project is on the host. Open it in the host file view.' });
+      return;
+    }
+    void getDesktopApi().revealProjectPath(projectPath).catch((error: unknown) => {
       showToast({ kind: 'error', title: 'Reveal failed', message: sidebarErrorMessage(error, 'The folder could not be revealed.') });
     });
   };
@@ -916,11 +962,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const renderSessionActions = (session: SessionSummary, inMenu = false) => {
     type SessionAction = { key: string; label: string; ariaLabel: string; icon: typeof GitFork; disabled: boolean; onClick: () => void; danger?: boolean; className?: string };
     const exportSession = () => {
-      if (!('piDesktop' in window) || typeof window.piDesktop.exportSession !== 'function') {
+      if (!getFateApiOptional() || typeof getDesktopApiOptional()?.exportSession !== 'function') {
         showToast({ kind: 'error', title: 'Export unavailable', message: 'Restart Fate UI to enable session export.' });
         return;
       }
-      void window.piDesktop.exportSession().then((result) => {
+      void getDesktopApi().exportSession().then((result) => {
         if (result.saved) showToast({ kind: 'success', title: 'Session exported', message: result.path ?? 'Saved locally.' });
       }).catch((error: unknown) => {
         showToast({ kind: 'error', title: 'Export failed', message: sidebarErrorMessage(error, 'The session could not be exported.') });

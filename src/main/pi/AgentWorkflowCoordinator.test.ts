@@ -8,6 +8,8 @@ import { emptyUsage, type SubagentChildSessionFactory } from './SubagentSessionF
 import type { SubagentWorkflow } from './SubagentWorkflow';
 import { AgentWorkflowCoordinator } from './AgentWorkflowCoordinator';
 import { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
+import { buildMonitorDashboard } from './monitor/MonitorDashboard';
+import { createMonitorDashboardTool } from './monitor/MonitorDashboardTool';
 
 const model = { provider: 'test', id: 'primary', name: 'Primary', reasoning: true, contextWindow: 128_000, input: ['text'] } as const;
 const fallback = { ...model, id: 'fallback', name: 'Fallback' } as const;
@@ -508,6 +510,20 @@ describe('AgentWorkflowCoordinator', () => {
     }]);
     resumed.coordinator.restoreParent(resumed.session);
     expect(resumed.coordinator.getWorkflowViews('parent-1')[0]).toMatchObject({ status: 'paused', nodes: [expect.objectContaining({ status: 'interrupted' })] });
+    expect(resumed.teams.spawn).not.toHaveBeenCalled();
+    const read = vi.fn(async (query: Parameters<typeof buildMonitorDashboard>[1], rootSessionId: string) => {
+      expect(rootSessionId).toBe('parent-1');
+      expect(resumed.coordinator.getWorkflowViews(rootSessionId)[0]?.status).toBe('paused');
+      return buildMonitorDashboard({ projectPath: '/project', sessionId: rootSessionId,
+        runs: [], runsAvailable: true, sessionAvailable: true, teams: [], tasks: null, goal: null }, query);
+    });
+    const monitor = createMonitorDashboardTool(read);
+    const inspect = () => monitor.execute('paused-read', { section: 'overview', limit: 1 }, undefined, undefined,
+      { sessionManager: { getSessionId: () => 'parent-1' } } as never);
+    expect((await inspect()).details).toMatchObject({ projectPath: '/project', sessionId: 'parent-1', limit: 1 });
+    resumed.coordinator.restoreParent(resumed.session); // Reconnect must be observation, not resume.
+    expect((await inspect()).details).toMatchObject({ projectPath: '/project', sessionId: 'parent-1' });
+    expect(read).toHaveBeenCalledTimes(2);
     expect(resumed.teams.spawn).not.toHaveBeenCalled();
     await execute(resumed.tool, 'resume', { action: 'resume', workflowId });
     await vi.waitFor(() => expect(resumed.coordinator.getWorkflowViews('parent-1')[0]?.status).toBe('completed'));
