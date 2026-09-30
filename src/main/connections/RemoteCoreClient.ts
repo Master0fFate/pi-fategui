@@ -14,6 +14,9 @@ import type { MonitorReadInput } from '../../shared/contracts/monitorDashboard';
 import { z } from 'zod';
 import type { ApprovedConnectionProfile } from './ConnectionProfileStore';
 import { NativeEventTransport, NativeProtocolMismatch, type NativeEvents } from './NativeEventTransport';
+import { forwardedHostSchema, remoteHandshakePinSchema, type RemoteHandshakePin } from '../../shared/protocol/connectionProfiles';
+import { RemoteHandshake, RemoteHandshakeError } from './RemoteHandshake';
+import { createNativeForwardedFetch } from './NativeForwardedHttp';
 
 type Workspace = WireResultOf<'workspace.list'>['workspaces'][number];
 export type PendingRemoteOutcome = z.infer<typeof pendingRemoteOutcomeSchema>;
@@ -22,6 +25,9 @@ export interface RemoteClientOptions {
   readonly makeEvents?: (onEvent: (event: NetworkEvent) => void, onDisconnect: () => void) => NativeEvents;
   readonly outcomeStorage?: boolean;
   readonly saveOutcomes?: (outcomes: readonly PendingRemoteOutcome[]) => Promise<void>;
+  /** Trusted main-owned SSH endpoint/pin only. Never accepted over the renderer bridge. */
+  readonly forwardedHost?: string;
+  readonly handshake?: RemoteHandshakePin;
 }
 const unavailable = () => new Error('Remote connection or scope is unavailable. Refresh the selected host.');
 const safeResult = <M extends MethodName>(response: ProtocolResponse, method: M): WireResultOf<M> => {
@@ -57,6 +63,8 @@ export class RemoteCoreClient {
   private confirmedAt: number | null = null;
   private hostName: string | null = null;
   private takeoverAllowed = false;
+  private providerStatus: 'auth-required' | 'unverified' | null = null;
+  private readonly handshake = new RemoteHandshake();
   private confirmedStatus: DesktopConnectionState['lastConfirmedStatus'] = 'unknown';
   private storageHealthy: boolean;
   private readonly privateValues: string[];
@@ -64,11 +72,15 @@ export class RemoteCoreClient {
   constructor(readonly profile: ApprovedConnectionProfile, private readonly credential: string, readonly generation: number,
     private readonly notify: () => void, private readonly outcomes: PendingRemoteOutcome[], private readonly options: RemoteClientOptions = {}) {
     this.storageHealthy = options.outcomeStorage !== false && typeof options.saveOutcomes === 'function';
+    if (options.forwardedHost !== undefined) forwardedHostSchema.parse(options.forwardedHost);
+    if (options.handshake !== undefined) remoteHandshakePinSchema.parse(options.handshake);
     this.privateValues = [credential, profile.credentialRef, profile.baseUrl];
     this.events = options.makeEvents?.((event) => this.invalidate(event), () => this.lost())
-      ?? new NativeEventTransport(profile.baseUrl, credential, (event) => this.invalidate(event), () => this.lost());
-    const send = options.send ?? ((input, init) => globalThis.fetch(input, init));
-    this.commands = new HttpCommandTransport(profile.baseUrl, () => ({ Authorization: `Bearer ${this.credential}` }),
+      ?? new NativeEventTransport(profile.baseUrl, credential, (event) => this.invalidate(event), () => this.lost(), options.forwardedHost);
+    const send = options.send ?? (options.forwardedHost === undefined ? ((input, init) => globalThis.fetch(input, init))
+      : createNativeForwardedFetch(profile.baseUrl, options.forwardedHost));
+    this.commands = new HttpCommandTransport(profile.baseUrl, () => ({ Authorization: `Bearer ${this.credential}`,
+      ...(options.forwardedHost === undefined ? {} : { Host: options.forwardedHost }) }),
       () => this.events.connection?.ticket ?? null, async (input, init) => {
         const response = await send(input, { ...init, credentials: 'omit', redirect: 'error', cache: 'no-store',
           signal: AbortSignal.any([this.aborter.signal, AbortSignal.timeout(10_000)]) });
@@ -89,6 +101,7 @@ export class RemoteCoreClient {
     return desktopConnectionStateSchema.parse({ kind: 'remote', generation: this.generation,
       profile: { id: this.profile.id, label: this.profile.label, hostId: this.profile.hostId }, serverEpoch: this.epoch,
       hostName: this.hostName, serverTime: this.epoch && this.hostName !== null ? this.mutationTime() : null, takeoverAllowed: this.takeoverAllowed,
+      providerStatus: this.providerStatus,
       scope: this.scope, status: this.connected && this.header ? this.control === null ? 'observing' : 'controlling' : this.status,
       capabilities: this.capabilities, controlGeneration: this.control, permissionLevel: this.header?.controls.permissionLevel ?? null,
       lastConfirmedAt: this.confirmedAt, lastConfirmedStatus: this.confirmedStatus, pending: this.outcomes,
@@ -130,21 +143,40 @@ export class RemoteCoreClient {
     let connection: EventConnectionInfo;
     try {
       connection = await this.events.connect();
-      if (!isCurrent() || this.closed) { this.close(); return; }
+      if (!isCurrent() || this.closed || this.events.connection?.ticket !== connection.ticket
+        || this.events.connection.serverEpoch !== connection.serverEpoch) { this.close(); return; }
       this.privateValues.push(connection.ticket);
       this.epoch = connection.serverEpoch; this.connected = true;
-      const response = await this.command({ ...this.identity(), method: 'host.info', input: {} });
-      if (!isCurrent() || this.closed) { this.close(); return; }
-      const info = this.publicResult(response, 'host.info');
+      const handshakeLive = () => isCurrent() && !this.closed && this.connected
+        && this.events.connection?.ticket === connection.ticket && this.events.connection.serverEpoch === connection.serverEpoch;
+      let info: WireResultOf<'host.info'>;
+      if (this.options.handshake) {
+        const verified = await this.handshake.verify(this.options.handshake, connection.serverEpoch, {
+          info: async () => this.publicResult(await this.command({ ...this.identity(), method: 'host.info', input: {} }), 'host.info'),
+          workspaces: async () => this.publicResult(await this.command({ ...this.identity(), method: 'workspace.list', input: {} }), 'workspace.list'),
+        }, handshakeLive);
+        if (!handshakeLive()) { this.close(); return; }
+        info = verified.info; this.registered = verified.workspaces; this.selected = verified.workspace;
+      } else {
+        const response = await this.command({ ...this.identity(), method: 'host.info', input: {} });
+        if (!handshakeLive()) { this.close(); return; }
+        info = this.publicResult(response, 'host.info');
+      }
       if (info.hostId !== this.profile.hostId || info.serverEpoch !== this.epoch || !info.networkDispatchEnabled) {
         this.close(); this.changed('incompatible', 'identity-mismatch'); return;
       }
       this.capabilities = info.capabilities; this.hostName = info.hostName ?? this.profile.label;
       this.takeoverAllowed = info.takeoverAllowed === true;
+      this.providerStatus = info.readiness?.provider ?? null;
       this.hostTime = info.serverTime; this.syncedAt = performance.now();
-      this.changed('observing', 'ready');
+      this.changed('observing', this.providerStatus === 'auth-required' ? 'provider-auth-required' : 'ready');
     } catch (error) {
       if (!isCurrent() || this.closed) return;
+      if (error instanceof RemoteHandshakeError) {
+        this.close(); this.changed(error.code === 'identity-mismatch' || error.code === 'protocol-incompatible' ? 'incompatible' : 'error',
+          error.code === 'protocol-incompatible' ? 'protocol-incompatible' : error.code === 'connection-canceled' ? 'connection-failed' : error.code);
+        return;
+      }
       const incompatible = error instanceof NativeProtocolMismatch || error instanceof z.ZodError || error instanceof SyntaxError
         || error instanceof Error && ['Stale command response.', 'PROTOCOL_MISMATCH', 'UNSUPPORTED_CAPABILITY'].includes(error.message);
       this.close(); this.changed(incompatible ? 'incompatible' : 'error', incompatible ? 'protocol-incompatible' : 'connection-failed');
@@ -164,7 +196,12 @@ export class RemoteCoreClient {
   async listWorkspaces(): Promise<readonly Workspace[]> {
     this.requireCapability('workspace.list');
     const result = this.publicResult(await this.command({ ...this.identity(), method: 'workspace.list', input: {} }), 'workspace.list');
-    this.checkLive(); this.registered = result.workspaces; return result.workspaces;
+    this.checkLive();
+    const pin = this.options.handshake;
+    if (pin && !result.workspaces.some((item) => item.workspaceId === pin.workspaceId && item.workspaceGeneration === pin.workspaceGeneration)) {
+      this.close(); this.changed('error', 'workspace-mismatch'); throw new RemoteHandshakeError('workspace-mismatch');
+    }
+    this.registered = result.workspaces; return result.workspaces;
   }
   private checkScope(input: RemoteScope, requireHeader = true): { scope: RemoteScope; header: SnapshotHeader | null; revision: number } {
     this.checkLive();
@@ -195,6 +232,8 @@ export class RemoteCoreClient {
   private async assembleSnapshot(workspace: Workspace): Promise<RemoteSnapshot> {
     this.requireCapability('workspace.snapshot');
     const selected = publicWorkspaceSchema.parse(workspace);
+    const pin = this.options.handshake;
+    if (pin && (selected.workspaceId !== pin.workspaceId || selected.workspaceGeneration !== pin.workspaceGeneration)) throw new RemoteHandshakeError('workspace-mismatch');
     if (!this.registered.some((item) => item.workspaceId === selected.workspaceId
       && item.workspaceGeneration === selected.workspaceGeneration && item.label === selected.label)) throw unavailable();
     if (this.selected?.workspaceId !== selected.workspaceId || this.selected.workspaceGeneration !== selected.workspaceGeneration) {
@@ -469,7 +508,7 @@ export class RemoteCoreClient {
     this.changed('disconnected', 'disconnected');
   }
   close(): void {
-    this.closed = true; this.connected = false; this.aborter.abort(); this.events.close();
+    this.closed = true; this.connected = false; this.handshake.close(); this.aborter.abort(); this.events.close();
     this.header = null; this.streamId = null; this.controlRequest++; this.clearLease(); this.revision++;
     for (const item of this.outcomes) if (item.scope.generation === this.generation && item.status === 'sending') item.status = 'outcome_unknown';
     this.status = 'disconnected'; this.message = 'disconnected';

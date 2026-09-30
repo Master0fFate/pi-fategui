@@ -19,7 +19,7 @@ import { FilesystemService } from './files/FilesystemService';
 import { DesktopFileActions } from './files/DesktopFileActions';
 import { GitService } from './git/GitService';
 import { registerIpc } from './ipc/registerIpc';
-import { parseLaunchProjectPath, parseForwardedProjectPath, hasNewInstanceFlag } from './launchProject';
+import { parseLaunchProjectPath, parseForwardedProjectPath, hasNewInstanceFlag, parseConnectionProfile } from './launchProject';
 import { acquireInstanceProfile } from './instanceProfile';
 import { AppLogService } from './logging/AppLogService';
 import { CrashTelemetryService } from './logging/CrashTelemetry';
@@ -29,6 +29,7 @@ import { MEDIA_SCHEME, MusicService, PublicHttpsProxy } from './music/MusicServi
 import { BrowserRuntimeBridge } from './pi/BrowserRuntimeBridge';
 import type { PiRuntimeService } from './pi/PiRuntimeService';
 import { ConnectionProfileStore } from './connections/ConnectionProfileStore';
+import { ConnectionProfileEditor } from './connections/ConnectionProfileEditor';
 import { ConnectionSelectionStore } from './connections/ConnectionSelectionStore';
 import { DesktopConnectionRouter } from './connections/DesktopConnectionRouter';
 import { TargetProjectService } from './connections/TargetProjectService';
@@ -224,8 +225,9 @@ const shutdown = new ShutdownCoordinator({
     core?.shutdownCore();
     rememberWindowPlacement(dispatcher.activeHandle(), windowState);
   },
-  disposeSync: () => { connections?.close(); terminal?.dispose(); music.dispose(); rendererNetworkProxy.dispose(); },
+  disposeSync: () => { terminal?.dispose(); music.dispose(); rendererNetworkProxy.dispose(); },
   disposeAsync: () => [
+    connections?.close() ?? Promise.resolve(),
     core?.shutdownCore() ?? coreStartup?.then((created) => created.shutdownCore()) ?? Promise.resolve({ status: 'settled' as const }),
     speech.dispose(),
     hotkey.dispose(),
@@ -289,6 +291,16 @@ function wireSmoke(window: BrowserWindow): void {
 }
 
 let windows: ReturnType<typeof createAppWindowFactory>;
+let pendingConnectionProfile = parseConnectionProfile(process.argv);
+async function openLaunchConnection(profile: string): Promise<void> {
+  if (!connections) { pendingConnectionProfile = profile; return; }
+  const matches = connections.listProfiles().filter((item) => item.id === profile || item.label === profile);
+  if (matches.length !== 1) throw new Error('Select one approved connection profile.');
+  dispatcher.setPendingProjectPath(null);
+  const selected = await connections.select({ kind: 'remote', profileId: matches[0]!.id });
+  await connections.connect({ generation: selected.generation }, () => true);
+}
+
 
 // Register this before app readiness work begins. A second launch can arrive
 // while the proxy, settings, or first window is still starting; the dispatcher
@@ -301,6 +313,8 @@ if (instanceProfile.mode === 'single' && instancePrimaryApp) {
       window.focus();
     }
     try {
+      const connectionProfile = parseConnectionProfile(commandLine);
+      if (connectionProfile) { void openLaunchConnection(connectionProfile).catch(reportLaunchError); return; }
       const forwardedProjectPath = parseForwardedProjectPath(commandLine, workingDirectory, additionalData);
       if (forwardedProjectPath) dispatcher.dispatch(forwardedProjectPath);
     } catch (error) {
@@ -322,12 +336,22 @@ app.whenReady().then(async () => {
     logs.write('warn', 'connections', 'Saved desktop target unavailable; explicit target selection is required.');
   }
   let approvedProfiles: ConnectionProfileStore;
-  try { approvedProfiles = await ConnectionProfileStore.fromFile(process.env.FATE_DESKTOP_CONNECTION_PROFILES
-    ? path.resolve(process.env.FATE_DESKTOP_CONNECTION_PROFILES) : path.join(nativeConnectionRoot, 'profiles.json')); }
+  let profilesWritable = true;
+  const connectionProfilesFile = process.env.FATE_DESKTOP_CONNECTION_PROFILES
+    ? path.resolve(process.env.FATE_DESKTOP_CONNECTION_PROFILES) : path.join(nativeConnectionRoot, 'profiles.json');
+  try { approvedProfiles = await ConnectionProfileStore.fromFile(connectionProfilesFile); }
   catch {
+    profilesWritable = false;
     approvedProfiles = new ConnectionProfileStore();
     logs.write('warn', 'connections', 'Approved desktop connection profiles unavailable.');
   }
+  const connectionEditor = profilesWritable ? new ConnectionProfileEditor(approvedProfiles, connectionProfilesFile, async (ownerId) => {
+    const owner = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.webContents.id === ownerId);
+    if (!owner) throw new Error('The initiating window is unavailable.');
+    const result = await dialog.showOpenDialog(owner, { title: 'Choose the private Fate client credential',
+      properties: ['openFile'], filters: [{ name: 'Client credential', extensions: ['json'] }] });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  }) : undefined;
   remoteOutcomes = new RemoteOutcomeStore(path.join(nativeConnectionRoot, 'outcomes.json'));
   let initialOutcomes: PendingRemoteOutcome[] = [], outcomeStorage = true;
   try { initialOutcomes = await remoteOutcomes.load(); }
@@ -336,6 +360,10 @@ app.whenReady().then(async () => {
   connections = new DesktopConnectionRouter(approvedProfiles, { outcomeStorage, saveOutcomes: (outcomes) => outcomeStore.save(outcomes) }, {
     initialSelection: selectedTarget, initialOutcomes, persistSelection: (selection) => targetStore.save(selection),
   });
+  if (pendingConnectionProfile) {
+    const profile = pendingConnectionProfile; pendingConnectionProfile = null;
+    await openLaunchConnection(profile);
+  }
   if (!connections.isLocal) dispatcher.setPendingProjectPath(null);
   coreStartup = createFateCore({
     paths: createDesktopFatePaths({ piAgentDir: getAgentDir() }),
@@ -441,7 +469,7 @@ app.whenReady().then(async () => {
     }
   }
   await recovery.load();
-  const mainCommands = registerIpc({ runtime, ...(useCoreIpcAdapter ? { core } : {}), connections, projects, files, git, settings, learning: core.learning, ...(core.savedAgents ? { agents: core.savedAgents } : {}), terminal, logs, music, speech, hotkey, updates, recovery, browser: browserHost, attestations: core.attestations, newWindow: () => windows.createWindow(), rendererPolicy });
+  const mainCommands = registerIpc({ runtime, ...(useCoreIpcAdapter ? { core } : {}), connections, ...(connectionEditor ? { connectionEditor } : {}), projects, files, git, settings, learning: core.learning, ...(core.savedAgents ? { agents: core.savedAgents } : {}), terminal, logs, music, speech, hotkey, updates, recovery, browser: browserHost, attestations: core.attestations, newWindow: () => windows.createWindow(), rendererPolicy });
   // Refresh every models.dev-managed provider's model list once per Fate GUI
   // start. Runs beside startup, never blocking it; offline keeps the cache.
   // A saved remote target never starts local scheduled work or an automatic provider refresh.

@@ -69,4 +69,13 @@ describe('main native WebSocket header ownership without network access', () => 
     expect(() => new NativeEventTransport('http://127.0.0.1:49331/redirect', credential, vi.fn(), vi.fn())).toThrow();
     expect(mockWs.created).toEqual([]);
   });
+  it('sends the approved remote numeric Host on a forwarded upgrade and refuses arbitrary headers', async () => {
+    const transport = new NativeEventTransport('http://127.0.0.1:49331', credential, vi.fn(), vi.fn(), '127.0.0.1:49332');
+    const pending = transport.connect(), socket = mockWs.created[0]!;
+    expect(socket.url).toBe('ws://127.0.0.1:49331/api/events');
+    expect(socket.options).toMatchObject({ headers: { Authorization: `Bearer ${credential}`, Host: '127.0.0.1:49332' } });
+    message(socket, { protocol: 1, type: 'ready', clientId: randomUUID(), serverEpoch: epoch, ticket }); await pending; transport.close();
+    expect(() => new NativeEventTransport('http://127.0.0.1:49331', credential, vi.fn(), vi.fn(), 'attacker.example:443')).toThrow();
+    expect(() => new NativeEventTransport('http://127.0.0.1:49331', credential, vi.fn(), vi.fn(), '127.0.0.1:49332\r\nOther: value')).toThrow();
+  });
 });

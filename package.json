@@ -53,7 +53,11 @@
     "deps:update:speech": "pnpm update --latest transcribe-cpp && pnpm typecheck && pnpm test",
     "package": "pnpm verify:speech-runtime && pnpm prepare:yt-dlp && pnpm build && electron-builder --dir && pnpm smoke:packaged",
     "dist:artifacts": "pnpm prepare:yt-dlp && electron-builder --publish never",
-    "dist": "pnpm verify:speech-runtime && pnpm prepare:yt-dlp && pnpm build && electron-builder --publish never"
+    "dist": "pnpm verify:speech-runtime && pnpm prepare:yt-dlp && pnpm build && electron-builder --publish never",
+    "build:cli": "vite build --config vite.cli.config.ts",
+    "test:remote": "node scripts/test-remote.mjs",
+    "package:server": "node scripts/package-server.mjs",
+    "smoke:server-package": "node scripts/smoke-server-package.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.87.1",

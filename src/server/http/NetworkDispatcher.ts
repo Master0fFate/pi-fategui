@@ -15,7 +15,7 @@ import { modelReadSchema, sessionReadSchema, queueReadSchema, teamReadSchema, ag
   gitDiffReadSchema, gitCombinedReadSchema, gitCommitReadSchema, monitorDetailSchema, type HostMethodName } from '../../shared/protocol/hostOperations';
 import { attachmentScopeSchema, networkPromptInputSchema, TEXT_ATTACHMENT_BYTES, isStrictUnicode, projectFileReferenceSchema } from '../../shared/protocol/attachments';
 import { clipUtf8 } from '../../core/views/WorkspaceSnapshotService';
-import { goalReadSchema, taskReadSchema, gitStatusReadSchema, gitHistoryReadSchema } from '../../shared/protocol/methods';
+import { goalReadSchema, taskReadSchema, gitStatusReadSchema, gitHistoryReadSchema, type PublicHostReadiness } from '../../shared/protocol/methods';
 import { WorkspaceControl, type ControlLease, type ControlTransition } from '../../core/security/WorkspaceControl';
 import { ApprovalChallenges, type ApprovalTarget } from '../../core/security/ApprovalChallenges';
 import { hostPermissionMaximum, permissionRank } from '../../core/security/PermissionPolicy';
@@ -59,6 +59,8 @@ export interface NetworkDispatcherOptions {
   readonly mayTakeOver?: (identity: RequestContext, previous: ControlLease) => boolean;
   /** Opened in the private server profile by host composition; never a path supplied by a client. */
   readonly textAttachments?: TextAttachmentStore;
+  /** Safe health projection from the current sole host composition. No profile paths or secrets. */
+  readonly readiness?: () => Promise<PublicHostReadiness>;
   readonly now?: () => number;
 }
 
@@ -322,7 +324,7 @@ export function createNetworkDispatcher(options: NetworkDispatcherOptions) {
   // Desktop's dispatcher has no network views; the active server must
   // implement all three before it can advertise these capabilities.
   const handlers: HandlerMap & Required<Pick<HandlerMap, 'workspace.snapshot' | 'workspace.snapshotPage' | 'workspace.monitor' | 'goal.get' | 'task.list' | 'git.status' | 'git.history' | HostMethodName>> = {
-    'host.info': (_input, context) => ({ hostId: options.hostId, hostName: options.hostName ?? 'Fate host',
+    'host.info': async (_input, context) => ({ hostId: options.hostId, hostName: options.hostName ?? 'Fate host',
       takeoverAllowed: options.mayTakeOver !== undefined, protocol: 1, serverEpoch: context.serverEpoch,
       serverTime: context.serverTime, appVersion: options.appVersion,
       capabilities: ['host.info', 'workspace.list', 'file.read', 'workspace.snapshot', 'workspace.monitor',
@@ -330,7 +332,7 @@ export function createNetworkDispatcher(options: NetworkDispatcherOptions) {
         'queue.read', 'queue.control', 'agent.read', 'agent.control', ...(options.textAttachments ? ['text.context' as const] : []),
         'workspace.control', 'permission.approve', 'runtime.prompt', 'runtime.abort', 'session.select',
         ...(options.terminalEnabled ? ['terminal.manual' as const] : [])],
-      networkDispatchEnabled: true }),
+      networkDispatchEnabled: true, ...(options.readiness === undefined ? {} : { readiness: await options.readiness() }) }),
     'workspace.list': (_input, context) => ({ workspaces: roots.flatMap((root, index) => {
       if (!member(context.identity, root)) return [];
       const origin = core.runtime.workspaceOrigin(root);

@@ -6,6 +6,7 @@ import type { Duplex } from 'node:stream';
 import { ProtocolFault, safeError, type ErrorCode } from '../../shared/protocol/errors';
 import { responseEnvelopeSchema, type ProtocolResponse } from '../../shared/protocol/envelopes';
 import { executeAdminMethod } from '../admin/adminMethods';
+import type { ProviderAdminPort } from '../admin/providerMethods';
 import type { RedactedLog } from '../logging/RedactedLog';
 import type { Diagnostic } from '../../shared/protocol/diagnostics';
 import type { AuthService, BrowserPrincipal, ClientPrincipal } from '../auth/AuthService';
@@ -25,6 +26,8 @@ export interface HttpServiceOptions {
   readonly serverEpoch: string;
   readonly ready: () => boolean;
   readonly logger?: RedactedLog;
+  /** Host composition only; never accepted from request JSON. */
+  readonly providerAdmin?: ProviderAdminPort;
   /** Trusted host opt-in only. Never a workspace or a request-supplied path. */
   readonly staticDirectory?: string;
   readonly onCommand?: (body: string, principal: AuthenticatedPrincipal, ticket: string, origin: string | null) => Promise<ProtocolResponse>;
@@ -140,7 +143,8 @@ export async function createHttpServer(options: HttpServiceOptions): Promise<Htt
         if (!ownerCredential) throw new ProtocolFault('UNAUTHENTICATED');
         // Authentication is evaluated before parsing admin payloads. The method catalog is fixed.
         options.auth.authorizeAdmin({ ownerCredential, origin, cookiePresented: oneHeader(request, 'cookie') !== null });
-        const result = await executeAdminMethod(options.auth, { ownerCredential, origin, cookiePresented: false }, await boundedJsonBody(request, MAX_JSON_BYTES));
+        const result = await executeAdminMethod(options.auth, { ownerCredential, origin, cookiePresented: false },
+          await boundedJsonBody(request, MAX_JSON_BYTES), options.providerAdmin);
         respond(response, 200, result);
         return;
       }

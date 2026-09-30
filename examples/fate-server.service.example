@@ -1,0 +1,22 @@
+# Review and replace all paths. Copy into your user service directory only by an
+# explicit operator action. Do not run this unit as root.
+[Unit]
+Description=Fate independent Node server
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=/absolute/path/fate-server
+ExecStart=/absolute/path/node /absolute/path/fate-server/dist/cli/main.js serve --profile remote
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+SendSIGKILL=no
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

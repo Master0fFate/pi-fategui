@@ -10,7 +10,7 @@ export default defineConfig({
     target: 'node22',
     minify: false,
     rollupOptions: {
-      external: (id) => id.startsWith('node:') || id === '@earendil-works/pi-coding-agent'
+      external: (id) => id.startsWith('node:') || id === '@earendil-works/pi-coding-agent' || id === '@earendil-works/pi-ai'
         || id.startsWith('@modelcontextprotocol/sdk/') || id === 'node-pty' || id === 'ws',
     },
   },

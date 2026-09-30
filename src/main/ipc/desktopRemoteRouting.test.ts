@@ -87,6 +87,7 @@ describe('production registerIpc desktop remote routing', () => {
     const f = fixture(() => new Promise<string>((resolve) => { release = resolve; }));
     const pending = f.invoke(ipcChannels.connectionConnect, { generation: 0 });
     const refused = expect(pending).rejects.toThrow(/document/i);
+    await vi.waitFor(() => expect(typeof release).toBe('function'));
     const navigation = f.sender.on.mock.calls.find(([name]) => name === 'did-start-navigation')?.[1] as (value: { isMainFrame: boolean; isSameDocument: boolean }) => void;
     navigation({ isMainFrame: true, isSameDocument: false }); release(`fc1_${'x'.repeat(43)}`);
     await refused; expect(f.eventConnect).not.toHaveBeenCalled(); expect(f.runtime.openProject).not.toHaveBeenCalled();

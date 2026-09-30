@@ -21,6 +21,12 @@ export type Capability = z.infer<typeof capabilitySchema>;
 // Labels are presentation names, not absolute paths. Contents are authorized plain text, never HTML/media.
 const labelSchema = z.string().min(1).max(128).refine((text) => !/[\\/:\u0000-\u001f\u007f]/u.test(text));
 export const publicWorkspaceSchema = z.object({ workspaceId: uuidSchema, workspaceGeneration: revisionSchema, label: labelSchema }).strict();
+export const publicHostReadinessSchema = z.object({ ready: z.boolean(), profileLock: z.enum(['held', 'unavailable']),
+  workspaceRegistry: z.enum(['ready', 'unavailable']), permissionStore: z.enum(['healthy', 'unhealthy']),
+  commandJournal: z.enum(['healthy', 'unhealthy']), authentication: z.enum(['ready', 'unavailable']),
+  requiredServices: z.enum(['ready', 'unavailable']), provider: z.enum(['auth-required', 'unverified']),
+}).strict();
+export type PublicHostReadiness = z.infer<typeof publicHostReadinessSchema>;
 const hostInfoSchema = z.object({
   hostId: uuidSchema,
   hostName: labelSchema.optional(),
@@ -31,6 +37,7 @@ const hostInfoSchema = z.object({
   appVersion: z.string().min(1).max(32).regex(/^[0-9A-Za-z.+-]+$/u),
   capabilities: z.array(capabilitySchema).max(32).refine((items) => new Set(items).size === items.length),
   networkDispatchEnabled: z.boolean(),
+  readiness: publicHostReadinessSchema.optional(),
 }).strict();
 const workspaceListSchema = z.object({ workspaces: z.array(publicWorkspaceSchema).max(8) }).strict()
   .refine(({ workspaces }) => new Set(workspaces.map((item) => item.workspaceId)).size === workspaces.length);

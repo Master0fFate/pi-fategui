@@ -807,7 +807,8 @@ describe('PiRuntimeService', () => {
 
   it('cancels in-flight prompt improvement when the user sends a message', async () => {
     const fake = fixture();
-    const completeSimple = vi.fn().mockImplementationOnce(() => new Promise(() => undefined));
+    let complete!: (result: { stopReason: 'stop'; content: [] }) => void;
+    const completeSimple = vi.fn().mockImplementationOnce(() => new Promise<{ stopReason: 'stop'; content: [] }>((resolve) => { complete = resolve; }));
     Object.assign(fake.modelRuntime, { completeSimple });
     const service = new PiRuntimeService(fake.adapter);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
@@ -820,12 +821,19 @@ describe('PiRuntimeService', () => {
     expect(fake.session.prompt).toHaveBeenCalled();
     expect(fake.session.abort).not.toHaveBeenCalled();
     fake.settle();
-    await service.dispose();
+    expect(service.hasEvictionBlockingWork()).toBe(true);
+    let disposed = false;
+    const disposal = service.dispose().then(() => { disposed = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(disposed).toBe(false);
+    complete({ stopReason: 'stop', content: [] });
+    await disposal;
   });
 
   it('does not let a cancelled prompt rewrite swallow the next session abort', async () => {
     const fake = fixture();
-    const completeSimple = vi.fn().mockImplementationOnce(() => new Promise(() => undefined));
+    let complete!: (result: { stopReason: 'stop'; content: [] }) => void;
+    const completeSimple = vi.fn().mockImplementationOnce(() => new Promise<{ stopReason: 'stop'; content: [] }>((resolve) => { complete = resolve; }));
     Object.assign(fake.modelRuntime, { completeSimple });
     const service = new PiRuntimeService(fake.adapter);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
@@ -837,7 +845,13 @@ describe('PiRuntimeService', () => {
     await expect(service.abort()).resolves.toEqual({ aborted: true });
     expect(fake.session.abort).toHaveBeenCalledOnce();
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-    await service.dispose();
+    expect(service.hasEvictionBlockingWork()).toBe(true);
+    let disposed = false;
+    const disposal = service.dispose().then(() => { disposed = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(disposed).toBe(false);
+    complete({ stopReason: 'stop', content: [] });
+    await disposal;
   });
 
   it('forces one rewrite retry when the model echoes the draft back unchanged', async () => {
@@ -939,9 +953,10 @@ describe('PiRuntimeService', () => {
       content: [{ type: 'text', text: 'Rewritten after timeout.' }],
     }));
     Object.assign(fake.modelRuntime, { completeSimple });
+    let settleResearch: (() => void) | undefined;
     const researchSession = {
-      prompt: vi.fn(() => new Promise<void>(() => undefined)),
-      abort: vi.fn(async () => undefined),
+      prompt: vi.fn(() => new Promise<void>((resolve) => { settleResearch = resolve; })),
+      abort: vi.fn(async () => { settleResearch?.(); }),
       dispose: vi.fn(),
       messages: [],
     };

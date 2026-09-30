@@ -9,9 +9,13 @@ import { connectionProfilesSchema, connectionSelectSchema, connectionGenerationS
   remoteOperationInputSchema, remoteIssuePermissionInputSchema, remoteConfirmPermissionInputSchema,
   type DesktopConnectionApi } from '../shared/contracts/connections';
 import { invoke, subscribe, discardResult } from './transport';
+import { credentialSelectionSchema, saveSshProfileSchema } from '../shared/contracts/connectionEditor';
+import { connectionProfileSchema } from '../shared/contracts/connections';
 
 /** Strict named inputs and bounded public outputs. No raw network or credentials cross preload. */
 export const connectionApi = {
+  pickConnectionCredential: () => invoke(ipcChannels.connectionCredentialPick, emptyInputSchema, credentialSelectionSchema),
+  saveSshConnectionProfile: (input) => invoke(ipcChannels.connectionProfileSave, saveSshProfileSchema, connectionProfileSchema, input),
   listConnectionProfiles: () => invoke(ipcChannels.connectionProfiles, emptyInputSchema, connectionProfilesSchema),
   getConnectionState: () => invoke(ipcChannels.connectionState, emptyInputSchema, desktopConnectionStateSchema),
   selectConnectionProfile: (selection) => invoke(ipcChannels.connectionSelect, connectionSelectSchema, desktopConnectionStateSchema, selection),

@@ -1320,6 +1320,11 @@ export class PiRuntimeService {
   private promptIdentityContext: { key: string; value: Promise<ProjectIdentityContext | null> } | null = null;
   private providerLogin: ProviderLoginState = { status: 'idle', providers: [], providerId: null, providerName: null, method: null, prompt: null, message: null, deviceCode: null };
   private providerLoginAbort: AbortController | null = null;
+  /** Canceled SDK work still owns credential storage until its promise settles. */
+  private providerLoginSettlement: Promise<void> | null = null;
+  private executionAdmissionGuard: () => void = () => undefined;
+  private readonly pendingTitleGenerations = new Set<Promise<void>>();
+  private readonly pendingModelOperations = new Set<Promise<unknown>>();
   private providerLoginResponse: { id: string; resolve: (value: string) => void; reject: (error: Error) => void; detachAbort?: () => void } | null = null;
   private providerLoginRuntimeInitialization: Promise<ModelRuntime> | null = null;
   private readonly modelsDev: ModelsDevService;
@@ -1337,6 +1342,19 @@ export class PiRuntimeService {
 
   setLearningService(service: LearningService): void { this.learningService = service; }
   setMonitorRunsSource(source: ((projectPath: string) => Promise<MonitorRunsSource>) | null): void { this.monitorRunsSource = source; }
+
+  /** Host-owned admission only. The renderer cannot install or reset this guard. */
+  setExecutionAdmissionGuard(assertAdmission: () => void): void { this.executionAdmissionGuard = assertAdmission; }
+  /** Cancellation keeps this ownership until the real SDK promise has settled. */
+  hasProviderLoginOwnership(): boolean { return this.providerLoginAbort !== null || this.providerLoginSettlement !== null; }
+
+  private trackModelOperation<T>(operation: () => Promise<T>): Promise<T> {
+    this.executionAdmissionGuard();
+    const pending = operation();
+    this.pendingModelOperations.add(pending);
+    void pending.then(() => { this.pendingModelOperations.delete(pending); }, () => { this.pendingModelOperations.delete(pending); });
+    return pending;
+  }
 
   /** The renderer and agent tool use this exact same dashboard projection. */
   async getMonitorDashboard(input: MonitorReadInput = {}, callerSessionId?: string): Promise<MonitorDashboard> {
@@ -2089,10 +2107,10 @@ export class PiRuntimeService {
       let grounding = identity ? PROMPT_OPTIMIZER_IDENTITY_SUFFIX(identity) : '';
       if (brief) grounding += PROMPT_OPTIMIZER_BRIEF_SUFFIX(brief);
       const run = async (directiveSuffix: string) => {
-        const response = await waitFor(modelRuntime.completeSimple(model, {
+        const response = await waitFor(this.trackModelOperation(() => modelRuntime.completeSimple(model, {
           systemPrompt: PROMPT_OPTIMIZER_SYSTEM_PROMPT,
           messages: [{ role: 'user', content: `${text}${PROMPT_OPTIMIZER_DRAFT_CLOSE}${grounding}${directiveSuffix}`, timestamp: Date.now() }],
-        }, { ...(reasoning === 'off' ? {} : { reasoning }), timeoutMs: 120_000, maxRetries: 1, signal }));
+        }, { ...(reasoning === 'off' ? {} : { reasoning }), timeoutMs: 120_000, maxRetries: 1, signal })));
         if (response.stopReason !== 'stop') {
           throw new PiDesktopError({ code: 'PI_RUNTIME_ERROR', message: 'Prompt improvement did not complete. Your draft was not changed; try again.', retryable: true });
         }
@@ -2161,7 +2179,7 @@ export class PiRuntimeService {
       abortResearch = () => { void session.abort().catch(() => undefined); };
       signal.addEventListener('abort', abortResearch, { once: true });
       if (signal.aborted) abortResearch();
-      const turn = session.prompt(prompt);
+      const turn = this.trackModelOperation(() => session.prompt(prompt));
       // After a timeout-triggered abort the turn can reject late; swallow it so
       // it never surfaces as an unhandled rejection.
       turn.catch(() => undefined);
@@ -2516,7 +2534,9 @@ export class PiRuntimeService {
           if (isFirstUserPrompt) {
             slot.firstTitleStarted = true;
             slot.firstPromptText = input.text;
-            void this.generateFirstPromptTitle(slot, session, input.text, initialization);
+            const title = this.generateFirstPromptTitle(slot, session, input.text, initialization);
+            this.pendingTitleGenerations.add(title);
+            void title.then(() => { this.pendingTitleGenerations.delete(title); }, () => { this.pendingTitleGenerations.delete(title); });
           }
           this.mergeLiveSessionSummaries();
           if (this.selectedSlot === slot) {
@@ -2596,6 +2616,7 @@ export class PiRuntimeService {
     const modelRuntime = this.modelRuntime;
     if (!projectPath || !modelRuntime) return;
     try {
+      this.executionAdmissionGuard();
       const title = await this.sessionTitleGenerator.generate(prompt, modelRuntime, session);
       const claimKey = this.sessionClaimKey(projectPath, session.sessionId);
       if (
@@ -2900,6 +2921,7 @@ export class PiRuntimeService {
 
   private assertPermissionAdmission(target: ColdSessionState | RuntimeSlot): void {
     if (this.hostStopping) throw new Error('The core is shutting down; new admissions are closed.');
+    this.executionAdmissionGuard();
     this.assertPermissionPublication();
     if (target.permissionError) throw new PiDesktopError(target.permissionError);
     if (target.permissionChange) throw this.activeOperationError('executing while permissions are being saved');
@@ -2909,8 +2931,11 @@ export class PiRuntimeService {
   /** Load provider choices before a project or session exists. */
   async initializeProviderLogin(): Promise<RuntimeState> {
     try {
+      if (this.hostStopping) throw new Error('Host shutdown has started.');
       const runtime = await this.providerLoginRuntime();
+      if (this.hostStopping) throw new Error('Host shutdown has started.');
       const available = await runtime.getAvailable();
+      if (this.hostStopping) throw new Error('Host shutdown has started.');
       this.publishModelCatalog(available);
       if (this.providerLogin.status === 'error') {
         this.providerLogin = { ...this.providerLoginState(), status: 'idle', providerId: null, providerName: null, method: null, prompt: null, message: null, deviceCode: null };
@@ -2922,13 +2947,16 @@ export class PiRuntimeService {
     }
   }
 
-  async startProviderLogin(input: ProviderLoginStartInput): Promise<RuntimeState> {
+  async startProviderLogin(input: ProviderLoginStartInput, assertHostAdmission: () => void = () => undefined): Promise<RuntimeState> {
+    if (this.hostStopping) throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Host shutdown has started.', retryable: false });
     const session = this.runtime?.session;
     if (this.replacementActive || (session && this.sessionHasActiveWork(session))) {
       throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for the active Pi operation to finish before signing in.', retryable: true });
     }
     const runtime = await this.providerLoginRuntime();
-    if (this.providerLoginAbort) throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Finish or cancel the current provider sign-in first.', retryable: true });
+    // The model-runtime await can admit another workspace before this resumes.
+    assertHostAdmission();
+    if (this.hostStopping || this.providerLoginAbort || this.providerLoginSettlement) throw new PiDesktopError({ code: 'RUN_ACTIVE', message: 'Wait for the previous provider sign-in to settle.', retryable: true });
     const provider = runtime.getProvider(input.providerId);
     if (!provider || (input.method === 'oauth' ? !provider.auth.oauth : !provider.auth.apiKey?.login)) {
       throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'That sign-in method is not available for this provider.', retryable: false });
@@ -2939,6 +2967,7 @@ export class PiRuntimeService {
     this.emitState();
     let authorizationUrl: string | null = null;
     const prompt = (request: { type: 'text' | 'secret' | 'select' | 'manual_code'; message: string; placeholder?: string; options?: readonly { id: string; label: string; description?: string }[]; signal?: AbortSignal }) => new Promise<string>((resolve, reject) => {
+      if (controller.signal.aborted || this.providerLoginAbort !== controller || request.signal?.aborted) { reject(new Error('Login cancelled')); return; }
       const id = randomUUID();
       const rejectCancelled = () => reject(new Error('Login cancelled'));
       const detachAbort = () => request.signal?.removeEventListener('abort', rejectCancelled);
@@ -2955,7 +2984,7 @@ export class PiRuntimeService {
       this.emitState();
     });
     const notify = (event: { type: 'info' | 'auth_url' | 'device_code' | 'progress'; message?: string; url?: string; userCode?: string; verificationUri?: string; expiresInSeconds?: number }) => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || this.providerLoginAbort !== controller) return;
       if (event.type === 'auth_url') authorizationUrl = event.url ? this.openProviderAuthUrl(event.url) : null;
       const verificationUri = event.type === 'device_code' && event.verificationUri ? this.openProviderAuthUrl(event.verificationUri) : null;
       // Keep the complete validated URL available in the existing bounded message
@@ -2970,25 +2999,35 @@ export class PiRuntimeService {
       this.providerLogin = { ...this.providerLoginState(), status: 'working', providerId: provider.id, providerName: provider.name, method: input.method, prompt: pendingManualPrompt, message: message.slice(0, 2_000), deviceCode: event.type === 'device_code' && event.userCode && verificationUri ? { userCode: event.userCode.slice(0, 500), verificationUri, ...(event.expiresInSeconds ? { expiresInSeconds: Math.min(86_400, Math.max(1, Math.floor(event.expiresInSeconds))) } : {}) } : (pendingManualPrompt ? this.providerLogin.deviceCode : null) };
       this.emitState();
     };
-    void runtime.login(provider.id, input.method, { signal: controller.signal, prompt, notify }).then(async () => {
+    const settlement = Promise.resolve().then(() => {
+      if (controller.signal.aborted || this.providerLoginAbort !== controller) throw new Error('Login cancelled');
+      assertHostAdmission();
+      return runtime.login(provider.id, input.method, { signal: controller.signal, prompt, notify });
+    }).then(async () => {
+      if (controller.signal.aborted || this.providerLoginAbort !== controller) return;
       // Providers can publish a remote catalog only after credentials exist.
       // Force a live fetch so /login does not reuse pi's 4-hour catalog TTL.
       await runtime.refresh({ allowNetwork: true, force: true });
+      if (controller.signal.aborted || this.providerLoginAbort !== controller) return;
       const available = await runtime.getAvailable();
+      if (controller.signal.aborted || this.providerLoginAbort !== controller) return;
       this.publishModelCatalog(available);
       if (this.project) {
         this.status = available.length > 0 ? 'ready' : 'auth-required';
         this.stateError = available.length > 0 ? null : authRequiredError();
       }
     }).catch(() => {
-      if (!controller.signal.aborted) this.providerLogin = { ...this.providerLoginState(), status: 'error', message: 'Provider sign-in did not finish. Check the provider page and try again.', prompt: null, deviceCode: null };
+      if (!controller.signal.aborted && this.providerLoginAbort === controller) this.providerLogin = { ...this.providerLoginState(), status: 'error', message: 'Provider sign-in did not finish. Check the provider page and try again.', prompt: null, deviceCode: null };
     }).finally(() => {
+      if (this.providerLoginAbort !== controller) return;
       this.providerLoginResponse?.detachAbort?.();
       this.providerLoginResponse = null;
       this.providerLoginAbort = null;
+      this.providerLoginSettlement = null;
       if (this.providerLogin.status !== 'error') this.providerLogin = { ...this.providerLoginState(), status: 'idle', providerId: null, providerName: null, method: null, prompt: null, message: null, deviceCode: null };
       this.emitState(true);
     });
+    this.providerLoginSettlement = settlement;
     return this.getState(false);
   }
 
@@ -3008,7 +3047,8 @@ export class PiRuntimeService {
     this.providerLoginResponse?.detachAbort?.();
     this.providerLoginResponse = null;
     this.providerLoginAbort?.abort();
-    this.providerLoginAbort = null;
+    // Retain the canceled controller and settlement until the SDK finishes.
+    // Starting a new login sooner would let the old finally clear its prompt.
     this.providerLogin = { ...this.providerLoginState(), status: 'idle', providerId: null, providerName: null, method: null, prompt: null, message: null, deviceCode: null };
     this.emitState();
     return this.getState(false);
@@ -3226,7 +3266,7 @@ export class PiRuntimeService {
       : this.adapter.createModelRuntime()
     ).then((runtime) => {
       this.modelRuntime ??= runtime;
-      if (this.modelRuntime === runtime) this.attachProviderFileSync(runtime);
+      if (this.modelRuntime === runtime && !this.hostStopping) this.attachProviderFileSync(runtime);
       return this.modelRuntime;
     });
     try {
@@ -3927,6 +3967,7 @@ export class PiRuntimeService {
   beginHostShutdown(): void {
     if (this.hostStopping) return;
     this.hostStopping = true;
+    this.cancelProviderLogin();
     for (const slot of this.liveSlots) {
       this.revokeSlotToolAccess(slot);
       try { this.agentTeams.lowerRootPermission(slot.runtime.session.sessionId, 'read-only'); } catch { /* Cancellation still follows. */ }
@@ -3936,6 +3977,8 @@ export class PiRuntimeService {
 
   async dispose(): Promise<void> {
     this.beginHostShutdown();
+    await this.providerLoginRuntimeInitialization;
+    await this.providerLoginSettlement;
     const ownedProjectPath = this.project?.path;
     this.browserIntegration?.clearActiveRoot?.(ownedProjectPath ?? '');
     ++this.initialization;
@@ -3951,6 +3994,9 @@ export class PiRuntimeService {
     }
     const pending = await Promise.allSettled([...this.pendingDisposals]);
     failures.push(...pending.flatMap((result) => result.status === 'rejected' ? [result.reason] : []));
+    // Detached model reads/titles can still touch provider or session state.
+    // Keep the profile owner until their real promises finish, including after abort.
+    await Promise.allSettled([...this.pendingModelOperations, ...this.pendingTitleGenerations]);
     try { await this.goalMax.dispose(); } catch (error) { failures.push(error); }
     try { await this.tasks.dispose(); } catch (error) { failures.push(error); }
     this.subagents.reset();
@@ -5359,6 +5405,7 @@ export class PiRuntimeService {
       throw new Error('Strict isolated-worktree goal review requires a clean, committed project. Commit the project changes or relax Strict mode in Settings > Agent before verification.');
     }
     const rootNodeId = this.agentTeams.rootNodeId(sessionId);
+    this.assertPermissionAdmission(slot);
     const receipt = await this.agentTeams.spawn(rootNodeId, {
       task: input.prompt,
       name: input.name,
@@ -5630,7 +5677,7 @@ export class PiRuntimeService {
 
   /** Eviction must retain owned descendants and failed-to-stop writers, not only streamed text. */
   hasEvictionBlockingWork(): boolean {
-    if (this.replacementActive) return true;
+    if (this.replacementActive || this.promptOptimizationActive || this.pendingModelOperations.size > 0 || this.pendingTitleGenerations.size > 0) return true;
     return [...this.liveSlots].some((slot) => !slot.disposed && (slot.activeRunId !== null
       || this.sessionHasActiveWork(slot.runtime.session)
       || this.hasOwnedAgentWork(slot.runtime.session.sessionId)

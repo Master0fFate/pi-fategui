@@ -26,7 +26,7 @@ export async function createIsolatedEnvironment(inherited = process.env) {
       if (value !== undefined && safe.has(key.toUpperCase())) env[key] = value;
     }
     const inheritedPath = Object.entries(inherited).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? '';
-    env.PATH = [...new Set([path.dirname(process.execPath), ...inheritedPath.split(path.delimiter)
+    env.PATH = [...new Set([...(path.isAbsolute(process.execPath) ? [path.dirname(process.execPath)] : []), ...inheritedPath.split(path.delimiter)
       .filter((entry) => path.isAbsolute(entry) && !entry.includes('\0'))])].join(path.delimiter);
     const locations = {
       HOME: 'home', USERPROFILE: 'home', APPDATA: 'appdata', LOCALAPPDATA: 'localappdata',

@@ -58,6 +58,8 @@ import {
 export const ipcChannels = {
   ...agentChannels,
   connectionProfiles: 'connections:list-profiles',
+  connectionCredentialPick: 'connections:pick-private-credential',
+  connectionProfileSave: 'connections:save-ssh-profile',
   connectionState: 'connections:get-state',
   connectionSelect: 'connections:select',
   connectionConnect: 'connections:connect',

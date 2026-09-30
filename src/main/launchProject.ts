@@ -47,3 +47,13 @@ export function projectPathFromAdditionalData(value: unknown): string | null {
 export function parseForwardedProjectPath(argv: readonly string[], workingDirectory: string, additionalData: unknown): string | null {
   return projectPathFromAdditionalData(additionalData) ?? parseLaunchProjectPath(argv, workingDirectory);
 }
+
+/** Native launch metadata only; never a credential, endpoint or host path. */
+export function parseConnectionProfile(argv: readonly string[]): string | null {
+  const values = argv.filter((value) => value.startsWith('--connection-profile='));
+  if (!values.length) return null;
+  const profile = values[0]!.slice('--connection-profile='.length);
+  if (values.length !== 1 || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/u.test(profile)
+    || /(?:fo1|fc1|fb1|fs1|ft1|fx1)_/u.test(profile)) throw new Error('Invalid connection profile.');
+  return profile;
+}

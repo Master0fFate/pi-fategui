@@ -1,6 +1,7 @@
 import { WebSocket } from 'ws';
 import { z } from 'zod';
 import { eventCursorSchema, type EventCursor } from '../../shared/protocol/events';
+import { forwardedHostSchema } from '../../shared/protocol/connectionProfiles';
 import { NetworkEventReplayGate, networkEventSchema, type NetworkEvent } from '../../shared/protocol/diagnostics';
 import type { EventConnectionInfo } from '../../client/EventTransport';
 
@@ -26,9 +27,11 @@ export class NativeEventTransport implements NativeEvents {
   private waiting: { resolve(cursor: EventCursor): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>;
     cursor: EventCursor } | null = null;
   constructor(private readonly origin: string, private readonly credential: string,
-    private readonly onEvent: (event: NetworkEvent) => void, private readonly onDisconnect: () => void) {
+    private readonly onEvent: (event: NetworkEvent) => void, private readonly onDisconnect: () => void,
+    private readonly forwardedHost?: string) {
     if (!/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/u.test(origin) || Number(new URL(origin).port) > 65535
       || !/^fc1_[A-Za-z0-9_-]{43}$/u.test(credential)) throw new Error('Invalid native connection.');
+    if (forwardedHost !== undefined) forwardedHostSchema.parse(forwardedHost);
   }
   get connection(): EventConnectionInfo | null { return this.info; }
   private refuseWaiting(): void {
@@ -38,7 +41,7 @@ export class NativeEventTransport implements NativeEvents {
   connect(): Promise<EventConnectionInfo> {
     if (this.socket) throw new Error('Remote event connection already active.');
     const socket = new WebSocket(`${this.origin.replace(/^http:/u, 'ws:')}/api/events`, {
-      headers: { Authorization: `Bearer ${this.credential}` }, handshakeTimeout: 5000,
+      headers: { Authorization: `Bearer ${this.credential}`, ...(this.forwardedHost === undefined ? {} : { Host: this.forwardedHost }) }, handshakeTimeout: 5000,
       maxPayload: 1024 * 1024, perMessageDeflate: false, followRedirects: false,
     });
     this.socket = socket;

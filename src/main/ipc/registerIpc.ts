@@ -11,6 +11,7 @@ import type { FateCore } from '../../core/FateCore';
 import { CoreIpcAdapter } from './CoreIpcAdapter';
 import type { DesktopConnectionRouter } from '../connections/DesktopConnectionRouter';
 import { registerConnectionIpc } from '../connections/registerConnectionIpc';
+import type { ConnectionProfileEditor } from '../connections/ConnectionProfileEditor';
 import { registerAgentsIpc } from '../agents/registerAgentsIpc';
 import type { AgentsService } from '../agents/AgentsService';
 import { appReleaseDisplayVersion, releaseMetadata } from '../releaseMetadata';
@@ -201,6 +202,7 @@ export interface IpcServices {
   core?: FateCore;
   /** Sole process-wide command target. Remote failure never selects the legacy host. */
   connections?: DesktopConnectionRouter;
+  connectionEditor?: ConnectionProfileEditor;
   projects: ProjectService;
   files: FilesystemService;
   git: GitService;
@@ -464,7 +466,7 @@ async function applyPendingRecovery(
   await recovery?.markClean();
 }
 
-export function registerIpc({ runtime, core, connections, projects, files, git, settings, learning, agents, terminal, logs, music, speech, hotkey, updates, recovery, browser, attestations, newWindow, rendererPolicy }: IpcServices) {
+export function registerIpc({ runtime, core, connections, connectionEditor, projects, files, git, settings, learning, agents, terminal, logs, music, speech, hotkey, updates, recovery, browser, attestations, newWindow, rendererPolicy }: IpcServices) {
   const sessionHandlers = createSessionHandlers(runtime);
   const runtimeHandlers = createRuntimeHandlers(runtime, (projectPath) => projects.prepareSessionListPath(projectPath));
   const goalHandlers = createGoalHandlers(runtime);
@@ -578,7 +580,7 @@ export function registerIpc({ runtime, core, connections, projects, files, git, 
     (event, input) => connections && !channel.startsWith('connections:')
       ? connections.routeLegacy(channel, () => handler(event, input)) : handler(event, input));
   if (connections) {
-    registerConnectionIpc(handle, connections, (event) => invocationGuards.get(event) ?? (() => false));
+    registerConnectionIpc(handle, connections, (event) => invocationGuards.get(event) ?? (() => false), connectionEditor);
     connections.subscribe((state) => {
       pendingGoalEvents = []; pendingTaskEvents = [];
       for (const window of BrowserWindow.getAllWindows()) {

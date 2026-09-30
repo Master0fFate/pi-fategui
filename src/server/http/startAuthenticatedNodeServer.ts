@@ -18,6 +18,9 @@ import { ClientTickets } from '../auth/ClientTickets';
 import { EventConnection } from '../ws/EventConnection';
 import { createTerminalBridge } from '../ws/TerminalBridge';
 import { RedactedLog } from '../logging/RedactedLog';
+import { createProviderAdminPort } from '../admin/providerMethods';
+import { fateProviderStoragePaths } from '../../main/pi/FateProviderStorage';
+import type { PublicHostReadiness } from '../../shared/protocol/methods';
 
 export interface AuthenticatedNodeServer {
   readonly core: FateCore;
@@ -25,6 +28,7 @@ export interface AuthenticatedNodeServer {
   readonly http: HttpService;
   readonly tickets: ClientTickets;
   readonly serverEpoch: string;
+  readonly hostId: string;
   readonly readiness: Readonly<{ ready: true; listener: 'bound'; host: '127.0.0.1'; port: number }>;
   stop(): Promise<CoreShutdownResult>;
 }
@@ -78,6 +82,7 @@ export async function startAuthenticatedNodeServerWithFactory(input: unknown,
   try {
     // Reuse the sole profile-owned authority store; never open a second writer.
     const auth = base.auth;
+    const providerAdmin = createProviderAdminPort(base.core.runtime);
     const serverEpoch = base.core.events.serverEpoch;
     tickets = new ClientTickets(auth);
     if (!base.core.workspaces) throw new Error('Workspace registry is unavailable.');
@@ -91,10 +96,27 @@ export async function startAuthenticatedNodeServerWithFactory(input: unknown,
     const liveAttachments = attachments;
     expiryTimer = setInterval(() => { void liveAttachments.sweepExpired().catch(() => { /* Store operations continue to fail closed. */ }); }, 30_000);
     expiryTimer.unref();
+    const hostId = await publicHostId(base.core);
     const commands = createNetworkDispatcher({ core: base.core, tickets: liveTickets, serverEpoch,
       journal: base.journal, registeredRoots: base.readiness.registeredWorkspaces,
-      hostId: await publicHostId(base.core), appVersion: '1.1.0', maxPermission: base.readiness.maxPermission,
+      hostId, appVersion: '1.1.0', maxPermission: base.readiness.maxPermission,
       terminalEnabled: base.readiness.terminalEnabled, textAttachments: liveAttachments,
+      readiness: async (): Promise<PublicHostReadiness> => {
+        const health = await Promise.allSettled([base.core.sessionPermissions.checkHealth(), base.journal.checkHealth()]);
+        const permissionStore = health[0]?.status === 'fulfilled' ? 'healthy' : 'unhealthy';
+        const commandJournal = health[1]?.status === 'fulfilled' ? 'healthy' : 'unhealthy';
+        const live = !base.core.lifecycle.isStopping && [...handles.values()].every((handle) => base.core.runtime.peekWorkspace(handle.root) === handle.runtime);
+        let provider: PublicHostReadiness['provider'] = 'auth-required', providerStorageHealthy = true;
+        try {
+          const stat = await fs.lstat(fateProviderStoragePaths(base.core.paths.dataRoot).authPath);
+          if (!stat.isFile() || stat.isSymbolicLink()) providerStorageHealthy = false;
+          else provider = 'unverified'; // Presence never proves provider authorization.
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') providerStorageHealthy = false; }
+        return { ready: live && permissionStore === 'healthy' && commandJournal === 'healthy' && providerStorageHealthy,
+          profileLock: live ? 'held' : 'unavailable', workspaceRegistry: live ? 'ready' : 'unavailable',
+          permissionStore, commandJournal, authentication: live ? 'ready' : 'unavailable',
+          requiredServices: live && providerStorageHealthy ? 'ready' : 'unavailable', provider };
+      },
       ...(hostPolicy.hostName === undefined ? {} : { hostName: hostPolicy.hostName }),
       ...(hostPolicy.mayTakeOver === undefined ? {} : { mayTakeOver: hostPolicy.mayTakeOver }) });
     if (base.readiness.terminalEnabled) {
@@ -117,12 +139,12 @@ export async function startAuthenticatedNodeServerWithFactory(input: unknown,
     const liveEvents = events;
     http = await createHttpServer({ auth, host: base.readiness.host, port: base.readiness.configuredPort,
       profileId: base.core.paths.dataRoot, allowedOrigins: base.readiness.browserOrigins, serverEpoch, ready: () => true,
-      logger: new RedactedLog(diagnosticSink), ...(builtWebDirectory === undefined ? {} : { staticDirectory: builtWebDirectory }),
+      logger: new RedactedLog(diagnosticSink), providerAdmin, ...(builtWebDirectory === undefined ? {} : { staticDirectory: builtWebDirectory }),
       onCommand: commands.onCommand,
       onUpgrade: (request, socket, head, config, cookieName) => liveEvents.handleUpgrade(request, socket, head, config, cookieName) });
     const listener = http;
     let stopping: Promise<CoreShutdownResult> | null = null;
-    return { core: base.core, auth, http: listener, tickets: liveTickets, serverEpoch,
+    return { core: base.core, auth, http: listener, tickets: liveTickets, serverEpoch, hostId,
       readiness: Object.freeze({ ready: true, listener: 'bound', host: base.readiness.host, port: listener.port }),
       stop: () => stopping ??= (async () => {
         if (expiryTimer) clearInterval(expiryTimer);

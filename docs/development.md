@@ -39,6 +39,12 @@ The `test` and `test:watch` scripts resolve Electron before starting Vitest work
 
 `node-pty`, transcription libraries, and other native dependencies are built or selected on the target operating system. Do not treat cross-compilation as equivalent to a native build.
 
+## Independent Node server package
+
+Build the Linux x64 server-only preparation with `pnpm package:server --without-web --with-terminal --store-dir /absolute/pnpm-store`. Packaging builds the CLI and server entries, then installs a minimal runtime closure into a clean stage from the existing frozen lock. It prefers the approved store and preserves the existing supply-chain policies. Use `--offline` only when the locked package data and policy metadata are cached. Supply supported Node headers through `npm_config_nodedir` when the terminal package needs a source build. Omit `--with-terminal` to exclude that optional native dependency, or use `--without-web` to omit browser assets.
+
+The package uses no copied checkout or Electron native module tree. It contains exact dependency/license records, unchanged existing patches, a public manifest, checksums and a package smoke command. Only a completed real target smoke adds a tested target to the manifest. The web-enabled package additionally captures exact browser/worker module and font owners, versions and license texts. Its strict notice check currently refuses `react-remove-scroll-bar@2.3.8`, whose full published license text is unavailable. Preserve that failing gate; the passing standalone web build does not close it. Windows verification and manual host-service checks remain separate gates. See [the server package guide](../build/server-package/README.md) for startup, verification and rollback commands.
+
 ## Build an installer from source
 
 To build an installer from source, install the platform prerequisites above, check out the desired tag, run `pnpm install --frozen-lockfile`, then run `pnpm dist` (or `pnpm dist:artifacts` to skip the speech-runtime and full-build gates) on the target operating system.

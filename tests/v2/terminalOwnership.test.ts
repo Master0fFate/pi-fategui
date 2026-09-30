@@ -1,3 +1,10 @@
+import path from 'node:path';
+import { realpathSync, existsSync } from 'node:fs';
+const nodeExecutable = path.isAbsolute(process.execPath) ? process.execPath : (process.env.PATH ?? '').split(path.delimiter)
+  .filter((directory) => path.isAbsolute(directory)).map((directory) => path.join(directory, process.platform === 'win32' ? 'node.exe' : 'node'))
+  .find((candidate) => existsSync(candidate));
+if (!nodeExecutable) throw new Error('The fixture requires an absolute Node executable.');
+const canonicalNodeExecutable = realpathSync(nodeExecutable);
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAuthenticatedServerContext, createLocalIpcContext } from '../../src/core/dispatch/RequestContext';
 import { TerminalOwner } from '../../src/core/terminal/TerminalOwner';
@@ -30,7 +37,7 @@ function owner() {
       return { root };
     } } as unknown as WorkspaceRegistry,
     control: { hasControl: (context: typeof a, id: string, generation: number) => hasControl && context === a && id === workspaceId && generation === 4 } as unknown as WorkspaceControl,
-    permission: () => permission, resolveShell: () => process.execPath,
+    permission: () => permission, resolveShell: () => canonicalNodeExecutable,
     loadPty: () => import('node-pty'), send: (_identity, event) => events.push(event),
   });
 }

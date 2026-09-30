@@ -6,6 +6,7 @@ import { uuidSchema, mutationRequestIdSchema } from '../protocol/requestIds';
 import { snapshotHeaderSchema, snapshotItemSchema } from '../protocol/snapshots';
 import { responseEnvelopeSchema } from '../protocol/envelopes';
 import type { MonitorReadInput } from './monitorDashboard';
+import type { SaveSshProfile } from './connectionEditor';
 
 const revision = z.number().int().nonnegative().safe();
 const label = z.string().min(1).max(128).refine((value) => !/[\\/:\u0000-\u001f\u007f]/u.test(value)
@@ -84,12 +85,15 @@ export const desktopConnectionStateSchema = z.object({ kind: z.enum(['local', 'r
   profile: connectionProfileSchema.nullable(), serverEpoch: uuidSchema.nullable(), scope: remoteScopeSchema.nullable(),
   hostName: methodCatalog['host.info'].wireResultSchema.shape.hostName.nullable().optional(),
   serverTime: z.number().int().nonnegative().safe().nullable().optional(), takeoverAllowed: z.boolean().optional(),
+  providerStatus: z.enum(['auth-required', 'unverified']).nullable().optional(),
   status: z.enum(['disconnected', 'connecting', 'authenticating', 'synchronizing', 'observing', 'controlling', 'reconnecting', 'incompatible', 'error']),
   capabilities: z.array(capabilitySchema).max(32), controlGeneration: revision.nullable(),
   permissionLevel: z.enum(['read-only', 'edit', 'full-access']).nullable(),
   lastConfirmedStatus: z.enum(['running', 'idle', 'unknown']), lastConfirmedAt: z.number().finite().nullable(),
   pending: z.array(pendingRemoteOutcomeSchema).max(128), outcomeStorage: z.enum(['ready', 'blocked']),
-  message: z.enum(['local', 'selected', 'connecting', 'ready', 'disconnected', 'connection-failed', 'identity-mismatch', 'protocol-incompatible', 'refresh-required']),
+  message: z.enum(['local', 'selected', 'connecting', 'ready', 'disconnected', 'connection-failed', 'identity-mismatch', 'protocol-incompatible', 'refresh-required',
+    'ssh-connecting', 'ssh-unavailable', 'ssh-host-verification-required', 'ssh-authentication-failed', 'ssh-port-collision', 'ssh-stop-pending',
+    'profile-unhealthy', 'workspace-mismatch', 'provider-auth-required']),
 }).strict();
 export type ConnectionProfile = z.infer<typeof connectionProfileSchema>;
 export type ConnectionSelection = z.infer<typeof connectionSelectSchema>;
@@ -101,6 +105,8 @@ export type RemoteMutation = z.infer<typeof remoteMutationSchema>;
 
 /** A named, scoped bridge. No endpoint, credential, owner key, or host/config path is accepted. */
 export interface DesktopConnectionApi {
+  pickConnectionCredential?(): Promise<{ selectionId: string } | null>;
+  saveSshConnectionProfile?(input: SaveSshProfile): Promise<ConnectionProfile>;
   listConnectionProfiles(): Promise<readonly ConnectionProfile[]>;
   getConnectionState(): Promise<DesktopConnectionState>;
   selectConnectionProfile(selection: ConnectionSelection): Promise<DesktopConnectionState>;
@@ -142,7 +148,9 @@ export interface DesktopConnectionApi {
 
 /** Explicit projection used by renderer adapters; never spread an arbitrary bridge. */
 export function selectConnectionMethods(api: DesktopConnectionApi): DesktopConnectionApi {
-  return { listConnectionProfiles: api.listConnectionProfiles, getConnectionState: api.getConnectionState,
+  return { ...(api.pickConnectionCredential ? { pickConnectionCredential: api.pickConnectionCredential } : {}),
+    ...(api.saveSshConnectionProfile ? { saveSshConnectionProfile: api.saveSshConnectionProfile } : {}),
+    listConnectionProfiles: api.listConnectionProfiles, getConnectionState: api.getConnectionState,
     selectConnectionProfile: api.selectConnectionProfile, connectConnection: api.connectConnection,
     disconnectConnection: api.disconnectConnection, onConnectionState: api.onConnectionState,
     remoteListWorkspaces: api.remoteListWorkspaces, remoteReadSnapshot: api.remoteReadSnapshot,

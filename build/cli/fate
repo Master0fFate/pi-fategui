@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+for argument in "$@"; do
+  case "$argument" in *fo1_*|*fc1_*|*fb1_*|*fs1_*|*ft1_*|*fx1_*) echo 'Do not pass credentials as command-line values.' >&2; exit 1 ;; esac
+  [ "${#argument}" -le 32768 ] || { echo 'Argument is too long.' >&2; exit 1; }
+done
+
 self=$0
 while [ -L "$self" ]; do
   link=$(readlink "$self")
@@ -11,19 +16,41 @@ while [ -L "$self" ]; do
 done
 contents=$(CDPATH= cd -- "$(dirname -- "$self")/../.." && pwd)
 
-# Parse arguments: --new-instance requests a fully isolated second process;
-# the first positional argument is the project folder (default: current dir).
+# Server modes require a separately installed Node companion.
+case "${1-}" in
+  init|serve|web|--web|provider|auth-code|access-key|doctor)
+    command -v fate-server >/dev/null 2>&1 || { echo 'Install the separate fate-server Node package (Node 22.19+).' >&2; exit 1; }
+    exec fate-server "$@" ;;
+esac
+connection=""
+if [ "${1-}" = connect ]; then
+  [ "$#" -eq 2 ] || { echo 'Use fate connect PROFILE.' >&2; exit 1; }
+  connection=$2
+  case "$connection" in ''|[!a-zA-Z0-9]*|*[!a-zA-Z0-9_-]*|*fo1_*|*fc1_*|*fb1_*|*fs1_*|*ft1_*|*fx1_*) echo 'Invalid connection profile.' >&2; exit 1 ;; esac
+  [ "${#connection}" -le 64 ] || { echo 'Invalid connection profile.' >&2; exit 1; }
+  shift 2
+fi
 project=""
 new_instance=""
-for arg in "$@"; do
-  case "$arg" in
-    --new-instance) new_instance=1 ;;
-    --project|--*) ;;
-    *) [ -z "$project" ] && project="$arg" ;;
-  esac
+literal=""
+while [ "$#" -gt 0 ]; do
+  arg=$1
+  shift
+  if [ -z "$literal" ]; then
+    case "$arg" in
+      --) literal=1; continue ;;
+      --new-instance) [ -z "$new_instance" ] || { echo 'Duplicate --new-instance.' >&2; exit 1; }; new_instance=1; continue ;;
+      --project) [ "$#" -gt 0 ] || { echo 'Missing project path.' >&2; exit 1; }; arg=$1; shift; case "$arg" in -*) echo 'Missing project path.' >&2; exit 1 ;; esac ;;
+      --project=*) arg=${arg#--project=}; case "$arg" in -*) echo 'Invalid project path.' >&2; exit 1 ;; esac ;;
+      -*) echo 'Unknown option.' >&2; exit 1 ;;
+    esac
+  fi
+  [ -n "$arg" ] && [ -z "$project" ] || { echo 'Use one project path.' >&2; exit 1; }
+  project=$arg
 done
-[ -z "$project" ] && project="$PWD"
+[ -n "$project" ] || project=$PWD
 
+[ -z "$connection" ] || exec "$contents/MacOS/fate-ui" "--connection-profile=$connection"
 set -- "--project=$project"
 [ "$new_instance" ] && set -- "$@" --new-instance
 exec "$contents/MacOS/fate-ui" "$@"

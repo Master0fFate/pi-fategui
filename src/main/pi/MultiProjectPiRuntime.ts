@@ -27,6 +27,7 @@ import { assertPrivateWindowsAcl } from '../../core/storage/WindowsPrivateAcl';
 import { ScopedDomainEvents, type EventOrigin } from '../../core/events/ScopedDomainEvents';
 import { hostCheckoutOwnership, type CheckoutOwnership } from '../../core/ownership/CheckoutOwnership';
 import type { OwnerLock } from '../../core/ownership/OwnerLock';
+import { PiDesktopError } from './errors';
 
 const noopEventSink = (_events: PiEvent[]) => undefined;
 const noopGoalSink = (_event: GoalMaxEvent) => undefined;
@@ -252,6 +253,19 @@ export class MultiProjectPiRuntime {
   /** The service the renderer currently sees (focused, or a disconnected boot service). */
   getFocused(): PiRuntimeService {
     return this.manager.getFocused() ?? this.bootService;
+  }
+
+  /** One stable host login service, sharing the existing SDK model runtime. */
+  hostProviderLoginService(): PiRuntimeService { return this.bootService; }
+
+  /** Includes unfocused work, descendants, runnable goals, and pending admissions. */
+  hasHostActiveWork(): boolean {
+    if (this.stopping || this.pendingOpenPaths.size > 0 || this.bootService.hasEvictionBlockingWork()) return true;
+    let busy = false;
+    this.manager.forEach((root, service) => {
+      if (service.hasEvictionBlockingWork() || this.admissionGuards.get(root)?.() === true) busy = true;
+    });
+    return busy;
   }
 
   get focusedProjectPath(): string | null {
@@ -502,6 +516,10 @@ export class MultiProjectPiRuntime {
       this.deps.providerAuthUrlPresenter,
       this.deps.paths,
     );
+    service.setExecutionAdmissionGuard(() => {
+      if (this.bootService?.hasProviderLoginOwnership()) throw new PiDesktopError({ code: 'RUN_ACTIVE',
+        message: 'Wait for host provider login to settle before starting Pi work.', retryable: true });
+    });
     service.setModelCatalogListener((models) => {
       if (this.bootService && this.bootService !== service) {
         this.bootService.synchronizeModelCatalog(models, this.getFocused() === this.bootService && this.pendingOpenPaths.size === 0);

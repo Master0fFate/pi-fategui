@@ -8,11 +8,23 @@ import { connectionProfilesSchema, connectionSelectSchema, connectionGenerationS
   remoteGitCommitInputSchema, remoteMonitorDetailInputSchema, remoteUploadInputSchema, remoteCancelTextInputSchema,
   remoteOperationInputSchema, remoteIssuePermissionInputSchema, remoteConfirmPermissionInputSchema } from '../../shared/contracts/connections';
 import type { DesktopConnectionRouter } from './DesktopConnectionRouter';
+import type { ConnectionProfileEditor } from './ConnectionProfileEditor';
+import { credentialSelectionSchema, saveSshProfileSchema } from '../../shared/contracts/connectionEditor';
+import { connectionProfileSchema } from '../../shared/contracts/connections';
 
 type Register = (channel: string, handler: (event: Electron.IpcMainInvokeEvent, input: unknown) => unknown | Promise<unknown>) => void;
 /** Uses registerIpc's trusted main-frame AND captured document guard, not a renderer-provided owner. */
 export function registerConnectionIpc(handle: Register, router: DesktopConnectionRouter,
-  trusted: (event: Electron.IpcMainInvokeEvent) => () => boolean): void {
+  trusted: (event: Electron.IpcMainInvokeEvent) => () => boolean, editor?: ConnectionProfileEditor): void {
+  if (editor) {
+    handle(ipcChannels.connectionCredentialPick, async (event, value) => {
+      emptyInputSchema.parse(value);
+      return credentialSelectionSchema.parse(await editor.pick(event.sender.id, trusted(event)));
+    });
+    handle(ipcChannels.connectionProfileSave, async (event, value) => {
+      return connectionProfileSchema.parse(await editor.save(event.sender.id, trusted(event), saveSshProfileSchema.parse(value)));
+    });
+  }
   const named = <I extends z.ZodTypeAny, O extends z.ZodTypeAny>(channel: string, inputSchema: I, outputSchema: O,
     operation: (input: z.output<I>, guard: () => boolean) => unknown | Promise<unknown>) => {
     handle(channel, async (event, input) => {

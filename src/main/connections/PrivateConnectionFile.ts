@@ -26,7 +26,9 @@ export async function readPrivateConnectionJson(file: string, maxBytes: number):
     } finally { await handle.close(); }
   } catch { throw unavailable(); }
 }
-export async function writePrivateConnectionJson(file: string, value: unknown, maxBytes: number): Promise<void> {
+export async function writePrivateConnectionJson(file: string, value: unknown, maxBytes: number,
+  live: () => boolean = () => true): Promise<void> {
+  if (!live()) throw unavailable();
   if (!path.isAbsolute(file) || path.normalize(file) !== file) throw unavailable();
   const text = JSON.stringify(value);
   if (Buffer.byteLength(text, 'utf8') > maxBytes) throw unavailable();
@@ -45,6 +47,7 @@ export async function writePrivateConnectionJson(file: string, value: unknown, m
     const handle = await fs.open(temporary, 'wx', 0o600);
     try { await handle.writeFile(text, 'utf8'); await handle.sync(); } finally { await handle.close(); }
     await assertPrivateWindowsAcl(temporary);
+    if (!live()) throw unavailable();
     await fs.rename(temporary, file);
     if (process.platform !== 'win32') {
       const dir = await fs.open(parent, 'r'); try { await dir.sync(); } finally { await dir.close(); }

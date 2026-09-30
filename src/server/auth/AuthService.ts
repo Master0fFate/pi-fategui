@@ -113,6 +113,20 @@ export class AuthService {
     });
   }
 
+  /** Host-only rollback/revocation. A consumed code cannot revoke its separate browser session. */
+  async revokeBootstrapCode(ownerCredential: string, code: string): Promise<{ revoked: boolean }> {
+    this.assertOwner(ownerCredential);
+    if (!codePattern.test(code)) throw new ProtocolFault('INVALID_REQUEST');
+    return this.store.transaction((draft, now) => {
+      this.assertOwner(ownerCredential);
+      prune(draft, now);
+      const digest = credentialDigest('code', code);
+      const before = draft.codes.length;
+      draft.codes = draft.codes.filter((entry) => entry.digest !== digest);
+      return { revoked: draft.codes.length !== before };
+    });
+  }
+
   async issueClientCredential(ownerCredential: string, workspaceRoots: readonly string[]): Promise<IssuedClient> {
     this.assertOwner(ownerCredential);
     if (workspaceRoots.length < 1 || workspaceRoots.length > 8 || new Set(workspaceRoots).size !== workspaceRoots.length
