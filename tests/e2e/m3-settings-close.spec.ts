@@ -150,6 +150,17 @@ test('M3 noncompact Settings close owns its visible pointer target and supports 
           // cloak/desktop/hit diagnostics visible when safety rejects a click.
           const failure = error as Error & { stdout?: string; stderr?: string };
           console.error('[T20 native refused]', failure.stdout ?? '', failure.stderr ?? '');
+          // A mouse_event call has no insertion/delivery result. Preserve the
+          // owned renderer receipt on refusal too, without any replacement click.
+          try {
+            console.error('[T20 native refusal renderer receipt]', JSON.stringify({
+              events: await page.evaluate(() => (window as Window & { __t20NativeEvents?: Array<{ type: string; trusted: boolean; insideClose: boolean }> }).__t20NativeEvents ?? []),
+              dialogVisible: await dialog.isVisible(),
+              focused: await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isFocused()),
+            }));
+          } catch (receiptError) {
+            console.error('[T20 native refusal renderer unavailable]', String(receiptError));
+          }
           throw error;
         }
         // Native input is queued by Windows. Require its observable completion

@@ -1,9 +1,15 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, expect, it, vi } from 'vitest';
+import { SkinProvider } from '../../skins/SkinProvider';
 import { ConnectionProfileEditor } from './ConnectionProfileEditor';
 import type { SaveSshProfile } from '../../../shared/contracts/connectionEditor';
 const id = '10000000-0000-4000-8000-000000000001';
 const selectionId = '10000000-0000-4000-8000-000000000002';
+afterEach(() => { delete document.documentElement.dataset.skin; });
+function fillValid() {
+  for (const [name, value] of [['Host label', 'Host'], ['SSH config alias', 'fixture'], ['Verified server ID', id], ['Host workspace ID', id]] as const) fireEvent.change(screen.getByLabelText(name), { target: { value } });
+}
 it('uses an opaque credential choice and explicit identity trust before saving', async () => {
   const pick = vi.fn(async () => ({ selectionId })), save = vi.fn(async (_input: SaveSshProfile) => ({ id, label: 'Host', hostId: id })), onSaved = vi.fn(async () => undefined);
   render(<ConnectionProfileEditor api={{ pickConnectionCredential: pick, saveSshConnectionProfile: save }} onSaved={onSaved} />);
@@ -24,4 +30,159 @@ it('resets trust when the pinned server identity changes', () => {
   fireEvent.click(screen.getByRole('button', { name: 'Add SSH host' }));
   const trust = screen.getByRole('checkbox'); fireEvent.click(trust); expect(trust).toBeChecked();
   fireEvent.change(screen.getByLabelText('Verified server ID'), { target: { value: id } }); expect(trust).not.toBeChecked();
+});
+it('stays compact when closed, portals four meaningful cards, traps focus and returns it after Escape', async () => {
+  const user = userEvent.setup();
+  const pick = vi.fn(async () => null), save = vi.fn();
+  const view = render(<section data-testid="host-rail"><ConnectionProfileEditor api={{ pickConnectionCredential: pick, saveSshConnectionProfile: save }} onSaved={async () => undefined} /></section>);
+  expect(view.container.querySelector('input')).toBeNull();
+  const trigger = screen.getByRole('button', { name: 'Add SSH host' });
+  await user.click(trigger);
+  const dialog = screen.getByRole('dialog', { name: 'Add SSH host' });
+  expect(screen.getByTestId('host-rail').querySelector('[role="dialog"]')).toBeNull();
+  expect(within(dialog).getAllByRole('region')).toHaveLength(4);
+  expect(screen.getByLabelText('Host label')).toHaveFocus();
+  await user.tab({ shift: true });
+  expect(dialog.contains(document.activeElement)).toBe(true);
+  await user.tab({ shift: true });
+  expect(screen.getByRole('button', { name: /^Cancel$/ })).toHaveFocus();
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(trigger).toHaveFocus(); expect(pick).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
+});
+it('shows malformed pins/ports and does not submit empty or invalid host details', async () => {
+  const save = vi.fn(), pick = vi.fn(async () => ({ selectionId }));
+  render(<ConnectionProfileEditor api={{ pickConnectionCredential: pick, saveSshConnectionProfile: save }} onSaved={async () => undefined} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Add SSH host' }));
+  fillValid();
+  fireEvent.change(screen.getByLabelText('Verified server ID'), { target: { value: 'not-a-uuid' } });
+  fireEvent.blur(screen.getByLabelText('Verified server ID'));
+  expect(screen.getByLabelText('Verified server ID')).toHaveAttribute('aria-invalid', 'true');
+  expect(screen.getByText('Enter the verified server UUID.')).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Remote loopback port'), { target: { value: '99999' } });
+  fireEvent.blur(screen.getByLabelText('Remote loopback port'));
+  expect(screen.getByText('Use a port from 1–65535.')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Choose private client credential' }));
+  await waitFor(() => expect(screen.getByText('Private file selected')).toBeInTheDocument());
+  fireEvent.click(screen.getByRole('checkbox'));
+  expect(screen.getByRole('button', { name: 'Save host profile' })).toBeDisabled();
+  fireEvent.submit(document.querySelector('form')!); expect(save).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText('Workspace generation'), { target: { value: '' } });
+  expect(screen.getByRole('button', { name: 'Save host profile' })).toBeDisabled();
+});
+it('holds the dialog during native picker work, guards duplicates, and cancellation clears an earlier choice', async () => {
+  const user = userEvent.setup();
+  let finish: (choice: { selectionId: string } | null) => void = () => undefined;
+  const pick = vi.fn().mockResolvedValueOnce({ selectionId }).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  render(<ConnectionProfileEditor api={{ pickConnectionCredential: pick, saveSshConnectionProfile: vi.fn() }} onSaved={async () => undefined} />);
+  await user.click(screen.getByRole('button', { name: 'Add SSH host' }));
+  await user.click(screen.getByRole('button', { name: 'Choose private client credential' }));
+  expect(screen.getByText('Private file selected')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Choose private client credential' }));
+  expect(screen.getByLabelText('Host label')).toBeDisabled(); expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+  await user.keyboard('{Escape}'); expect(screen.getByRole('dialog')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Choose private client credential' })); expect(pick).toHaveBeenCalledTimes(2);
+  finish(null);
+  await waitFor(() => expect(screen.getByText('No private file selected')).toBeInTheDocument());
+  expect(screen.getByRole('button', { name: 'Save host profile' })).toBeDisabled();
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+it('retains editable details on safe picker/save errors, never showing credential contents or paths', async () => {
+  const pick = vi.fn().mockRejectedValueOnce(new Error('C:/private/key.json fc1_raw_not_for_renderer')).mockResolvedValueOnce({ selectionId });
+  const save = vi.fn(async () => { throw new Error('owner secret must not render'); });
+  render(<ConnectionProfileEditor api={{ pickConnectionCredential: pick, saveSshConnectionProfile: save }} onSaved={async () => undefined} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Add SSH host' })); fillValid();
+  fireEvent.click(screen.getByRole('button', { name: 'Choose private client credential' }));
+  await screen.findByRole('alert'); expect(document.body.textContent).not.toMatch(/C:\/private|fc1_raw/);
+  expect(screen.getByText(/not your SSH private key/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Choose private client credential' }));
+  await screen.findByText('Private file selected'); fireEvent.click(screen.getByRole('checkbox'));
+  fireEvent.submit(document.querySelector('form')!); fireEvent.submit(document.querySelector('form')!);
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Profile was not saved'));
+  expect(save).toHaveBeenCalledOnce(); expect(screen.getByLabelText('Host label')).toHaveValue('Host');
+  expect(document.body.textContent).not.toContain('owner secret'); expect(document.body.textContent).not.toContain(selectionId);
+});
+it('invalidates a consumed choice after save failure and recovers only with a fresh native pick', async () => {
+  const user = userEvent.setup();
+  const freshId = '10000000-0000-4000-8000-000000000003';
+  const pick = vi.fn().mockResolvedValueOnce({ selectionId }).mockResolvedValueOnce({ selectionId: freshId });
+  const save = vi.fn().mockRejectedValueOnce(new Error('synthetic consumed handle; private backend detail'))
+    .mockResolvedValueOnce({ id, hostId: id, label: 'Host' });
+  const onSaved = vi.fn(async () => undefined);
+  render(<ConnectionProfileEditor api={{ pickConnectionCredential: pick, saveSshConnectionProfile: save }} onSaved={onSaved} />);
+  await user.click(screen.getByRole('button', { name: 'Add SSH host' })); fillValid();
+  await user.click(screen.getByRole('button', { name: 'Choose private client credential' })); await user.click(screen.getByRole('checkbox'));
+  await user.click(screen.getByRole('button', { name: 'Save host profile' }));
+  await screen.findByRole('alert'); expect(screen.getByRole('alert')).toHaveTextContent('Choose the private client file again');
+  expect(screen.getByText('No private file selected')).toBeInTheDocument(); expect(screen.queryByText('Private file selected')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Save host profile' })).toBeDisabled();
+  fireEvent.submit(document.querySelector('form')!); expect(save).toHaveBeenCalledOnce(); expect(onSaved).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('Host label')).toHaveValue('Host'); expect(document.body.textContent).not.toContain('private backend detail');
+  await user.click(screen.getByRole('button', { name: 'Choose private client credential' }));
+  expect(screen.getByRole('button', { name: 'Save host profile' })).toBeEnabled();
+  await user.click(screen.getByRole('button', { name: 'Save host profile' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(save).toHaveBeenCalledTimes(2); expect(save.mock.calls[0]![0].selectionId).toBe(selectionId);
+  expect(save.mock.calls[1]![0].selectionId).toBe(freshId); expect(onSaved).toHaveBeenCalledOnce();
+});
+it('holds pending save ownership, blocks cancel and duplicates, then restores focus on success', async () => {
+  const user = userEvent.setup();
+  let finish: () => void = () => undefined;
+  const save = vi.fn(() => new Promise<{ id: string; hostId: string; label: string }>((resolve) => { finish = () => resolve({ id, hostId: id, label: 'Host' }); }));
+  const onSaved = vi.fn(async () => undefined);
+  render(<ConnectionProfileEditor api={{ pickConnectionCredential: async () => ({ selectionId }), saveSshConnectionProfile: save }} onSaved={onSaved} />);
+  const trigger = screen.getByRole('button', { name: 'Add SSH host' }); await user.click(trigger); fillValid();
+  await user.click(screen.getByRole('button', { name: 'Choose private client credential' })); await user.click(screen.getByRole('checkbox'));
+  fireEvent.submit(document.querySelector('form')!); fireEvent.submit(document.querySelector('form')!);
+  expect(save).toHaveBeenCalledOnce(); expect(screen.getByRole('button', { name: 'Save host profile' })).toHaveAttribute('aria-busy', 'true');
+  expect(screen.getByRole('button', { name: /^Cancel$/ })).toBeDisabled(); await user.keyboard('{Escape}'); expect(screen.getByRole('dialog')).toBeInTheDocument();
+  finish(); await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull()); expect(onSaved).toHaveBeenCalledOnce(); expect(trigger).toHaveFocus();
+  await user.click(trigger); expect(screen.getByText('No private file selected')).toBeInTheDocument(); expect(screen.getByRole('checkbox')).not.toBeChecked();
+});
+it('reports a successful save separately from refresh failure and only retries the read callback', async () => {
+  const user = userEvent.setup();
+  let finishRefresh: () => void = () => undefined;
+  const pick = vi.fn(async () => ({ selectionId }));
+  const save = vi.fn(async (_input: SaveSshProfile) => ({ id, hostId: id, label: 'Host' }));
+  const onSaved = vi.fn().mockRejectedValueOnce(new Error('fc1_mock_private_error'))
+    .mockRejectedValueOnce(new Error('C:/private/client.json owner backend secret'))
+    .mockImplementationOnce(() => new Promise<void>((resolve) => { finishRefresh = resolve; }));
+  render(<ConnectionProfileEditor api={{ pickConnectionCredential: pick, saveSshConnectionProfile: save }} onSaved={onSaved} />);
+  const trigger = screen.getByRole('button', { name: 'Add SSH host' }); await user.click(trigger); fillValid();
+  await user.click(screen.getByRole('button', { name: 'Choose private client credential' })); await user.click(screen.getByRole('checkbox'));
+  await user.click(screen.getByRole('button', { name: 'Save host profile' }));
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Host profile was saved, but the host list could not be refreshed'));
+  expect(save).toHaveBeenCalledExactlyOnceWith({ label: 'Host', hostId: id, sshAlias: 'fixture', remotePort: 47119,
+    workspaceId: id, workspaceGeneration: 1, selectionId, trust: true });
+  expect(onSaved).toHaveBeenCalledTimes(1); expect(onSaved).toHaveBeenNthCalledWith(1);
+  expect(screen.queryByRole('button', { name: 'Save host profile' })).toBeNull();
+  expect(screen.getByText('Client access saved')).toBeInTheDocument(); expect(screen.getByRole('checkbox')).not.toBeChecked();
+  expect(screen.getByRole('button', { name: 'Choose private client credential' })).toBeDisabled();
+  expect(document.body.textContent).not.toMatch(/fc1_mock|owner backend secret|C:\/private|10000000-0000-4000-8000-000000000002/);
+  fireEvent.submit(document.querySelector('form')!); expect(save).toHaveBeenCalledOnce(); expect(onSaved).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByRole('button', { name: 'Retry refresh' }));
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Host profile was saved'));
+  expect(onSaved).toHaveBeenCalledTimes(2); expect(onSaved).toHaveBeenNthCalledWith(2); expect(save).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry refresh' })); fireEvent.click(screen.getByRole('button', { name: 'Retry refresh' }));
+  expect(onSaved).toHaveBeenCalledTimes(3); expect(onSaved).toHaveBeenNthCalledWith(3); expect(save).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: /^Close$/ })).toBeDisabled(); await user.keyboard('{Escape}'); expect(screen.getByRole('dialog')).toBeInTheDocument();
+  finishRefresh(); await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull()); expect(trigger).toHaveFocus();
+  expect(pick).toHaveBeenCalledOnce(); expect(save).toHaveBeenCalledOnce(); expect(onSaved).toHaveBeenCalledTimes(3);
+  await user.click(trigger); expect(screen.getByText('No private file selected')).toBeInTheDocument(); expect(screen.getByRole('checkbox')).not.toBeChecked();
+  expect(screen.getByRole('button', { name: 'Save host profile' })).toBeDisabled();
+});
+it('uses the existing skin leaves without remounting drafts', async () => {
+  const user = userEvent.setup();
+  document.documentElement.dataset.skin = 'dreamcore';
+  render(<SkinProvider><ConnectionProfileEditor api={{ pickConnectionCredential: async () => null, saveSshConnectionProfile: vi.fn() }} onSaved={async () => undefined} /></SkinProvider>);
+  expect(screen.getByRole('button', { name: 'Add SSH host' })).toHaveTextContent('[add ssh host]');
+  await user.click(screen.getByRole('button', { name: 'Add SSH host' }));
+  fireEvent.change(screen.getByLabelText('Host label'), { target: { value: 'Retained draft' } });
+  expect(screen.getByRole('button', { name: 'Choose private client credential' })).toHaveTextContent('[choose client file]');
+  const input = screen.getByLabelText('Host label');
+  document.documentElement.dataset.skin = 'm3-expressive';
+  fireEvent(window, new Event('fate-skin-change'));
+  expect(screen.getByRole('button', { name: 'Choose private client credential' })).toHaveTextContent('Choose private client credential');
+  expect(screen.getByLabelText('Host label')).toBe(input);
+  expect(input).toHaveValue('Retained draft');
 });

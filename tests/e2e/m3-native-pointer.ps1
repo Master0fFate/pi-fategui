@@ -17,6 +17,11 @@ using System.Text;
 [StructLayout(LayoutKind.Sequential)] public struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }
 [StructLayout(LayoutKind.Sequential)] public struct NativeMouseInput { public int X; public int Y; public uint Data; public uint Flags; public uint Time; public UIntPtr Extra; }
 [StructLayout(LayoutKind.Sequential)] public struct NativeInput { public uint Type; public NativeMouseInput Mouse; }
+[StructLayout(LayoutKind.Sequential)] public struct NativeGuiThreadInfo {
+  public uint Size; public uint Flags;
+  public IntPtr Active; public IntPtr Focus; public IntPtr Capture; public IntPtr MenuOwner; public IntPtr MoveSize; public IntPtr Caret;
+  public NativeRect CaretRect;
+}
 public class NativePointer {
   [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
   [DllImport("user32.dll")] public static extern IntPtr GetThreadDpiAwarenessContext();
@@ -62,7 +67,8 @@ public class NativePointer {
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(NativePoint point);
-  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint source, uint target, bool attach);
+  [DllImport("user32.dll", SetLastError = true)] public static extern bool GetGUIThreadInfo(uint thread, ref NativeGuiThreadInfo info);
+  [DllImport("kernel32.dll", SetLastError = true)] public static extern bool ProcessIdToSessionId(uint pid, out uint session);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
 }
@@ -88,6 +94,56 @@ function Get-DesktopName([IntPtr]$handle) {
     throw "Cannot identify desktop: handle=$handle win32=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
   }
   return $name.ToString()
+}
+function Get-ProcessIdentity([uint32]$processId) {
+  $process = $null
+  try {
+    if ($processId -eq 0) { throw 'No process identity' }
+    $process = [Diagnostics.Process]::GetProcessById([int]$processId)
+    # Only executable basename/creation time; never title, command line, user
+    # profile, process memory or an unrelated window's content.
+    return @{ status = 'read'; name = $process.ProcessName; startedAt = $process.StartTime.ToUniversalTime().ToString('o') }
+  } catch { return @{ status = 'unavailable'; errorType = $_.Exception.GetType().FullName } }
+  finally { if ($null -ne $process) { $process.Dispose() } }
+}
+function Write-NativeReceipt([string]$stage) {
+  Assert-OwnedTarget
+  $foreground = [NativePointer]::GetForegroundWindow()
+  $foregroundPid = [uint32]0
+  $foregroundThread = [NativePointer]::GetWindowThreadProcessId($foreground, [ref]$foregroundPid)
+  $foregroundClass = New-Object System.Text.StringBuilder 256
+  [void][NativePointer]::GetClassName($foreground, $foregroundClass, 256)
+  $identity = Get-ProcessIdentity $foregroundPid
+  $helperSession = [uint32]0; $targetSession = [uint32]0; $foregroundSession = [uint32]0
+  $helperSessionRead = [NativePointer]::ProcessIdToSessionId([uint32]$PID, [ref]$helperSession)
+  $targetSessionRead = [NativePointer]::ProcessIdToSessionId($ExpectedPid, [ref]$targetSession)
+  $foregroundSessionRead = [NativePointer]::ProcessIdToSessionId($foregroundPid, [ref]$foregroundSession)
+  $gui = New-Object NativeGuiThreadInfo
+  $gui.Size = [Runtime.InteropServices.Marshal]::SizeOf([type][NativeGuiThreadInfo])
+  $guiRead = [NativePointer]::GetGUIThreadInfo($targetThread, [ref]$gui)
+  $guiError = if ($guiRead) { 0 } else { [Runtime.InteropServices.Marshal]::GetLastWin32Error() }
+  $afterPid = [uint32]0
+  $after = [NativePointer]::GetForegroundWindow()
+  [void][NativePointer]::GetWindowThreadProcessId($after, [ref]$afterPid)
+  $stable = $foreground -eq $after -and $foregroundPid -eq $afterPid
+  Write-Host ('[T20 native receipt] ' + ([ordered]@{
+    utc = [DateTime]::UtcNow.ToString('o'); stage = $stage; helperPid = $PID; helperThread = [NativePointer]::GetCurrentThreadId(); inputSize = [Runtime.InteropServices.Marshal]::SizeOf([type][NativeInput]);
+    targetHwnd = $target.ToInt64(); expectedPid = $ExpectedPid; targetThread = $targetThread;
+    foregroundHwnd = $foreground.ToInt64(); foregroundPid = $foregroundPid; foregroundThread = $foregroundThread; foregroundClass = $foregroundClass.ToString(); foregroundIdentity = $identity;
+    helperSessionRead = $helperSessionRead; helperSession = $helperSession; targetSessionRead = $targetSessionRead; targetSession = $targetSession; foregroundSessionRead = $foregroundSessionRead; foregroundSession = $foregroundSession;
+    stable = $stable; foregroundAfter = $after.ToInt64(); foregroundPidAfter = $afterPid;
+    targetGuiRead = $guiRead; targetGuiError = $guiError; targetActive = $gui.Active.ToInt64(); targetFocus = $gui.Focus.ToInt64(); targetCapture = $gui.Capture.ToInt64(); targetMenuOwner = $gui.MenuOwner.ToInt64(); targetGuiFlags = $gui.Flags;
+  } | ConvertTo-Json -Compress -Depth 5))
+  return @{ foreground = $foreground; foregroundPid = $foregroundPid; stable = $stable; gui = $gui; guiRead = $guiRead; sessionsOwned = $helperSessionRead -and $targetSessionRead -and $helperSession -eq $targetSession -and $helperSession -ne 0 }
+}
+function Assert-OwnedForeground([string]$stage) {
+  $receipt = Write-NativeReceipt $stage
+  if (-not $receipt.stable -or $receipt.foreground -ne $target -or $receipt.foregroundPid -ne $ExpectedPid -or -not $receipt.sessionsOwned) {
+    throw "OWNED_FOREGROUND_UNAVAILABLE: stage=$stage hwnd=$($receipt.foreground) pid=$($receipt.foregroundPid) target=$target expected=$ExpectedPid; interactive owned-window handoff required, no pointer injection"
+  }
+  if (-not $receipt.guiRead -or $receipt.gui.Active -ne $target -or $receipt.gui.Capture -ne [IntPtr]::Zero -or ($receipt.gui.Flags -band 0x1E) -ne 0) {
+    throw "OWNED_INPUT_QUEUE_UNAVAILABLE: stage=$stage active=$($receipt.gui.Active) capture=$($receipt.gui.Capture) flags=$($receipt.gui.Flags); refusing input during capture/menu/move-size or unreadable queue"
+  }
 }
 function Get-Geometry([switch]$DiagnosticOnly) {
   Assert-OwnedTarget
@@ -145,6 +201,7 @@ function Assert-GeometryUnchanged($before) {
   if ($current.width -ne $before.width -or $current.height -ne $before.height -or $current.origin.X -ne $before.origin.X -or $current.origin.Y -ne $before.origin.Y) { throw 'Owned HWND client geometry changed after DOM sampling; refusing stale target' }
 }
 function Move-NativePointer($expected, $geometry, [string]$purpose) {
+  Assert-OwnedForeground "before-$purpose-move"
   Assert-GeometryUnchanged $geometry
   Assert-PointOwned $expected $purpose
   $clip = New-Object NativeRect
@@ -194,15 +251,12 @@ try {
   [void][NativePointer]::ShowWindow($target, $showCommand)
   $raised = [NativePointer]::SetWindowPos($target, [IntPtr]::new(-1), 0, 0, 0, 0, 0x0053)
   if (-not $raised) { throw "Could not raise owned Electron HWND: win32=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
-  $foreground = [NativePointer]::GetForegroundWindow()
-  $foregroundPid = [uint32]0
-  $foregroundThread = [NativePointer]::GetWindowThreadProcessId($foreground, [ref]$foregroundPid)
-  $thread = [NativePointer]::GetCurrentThreadId()
-  $attached = $false
-  if ($foregroundThread -ne 0 -and $foregroundThread -ne $thread) { $attached = [NativePointer]::AttachThreadInput($thread, $foregroundThread, $true) }
-  try { $activated = [NativePointer]::SetForegroundWindow($target) }
-  finally { if ($attached) { [void][NativePointer]::AttachThreadInput($thread, $foregroundThread, $false) } }
+  [void](Write-NativeReceipt 'before-owned-activation')
+  # Request activation only for the validated target. Attaching an unrelated
+  # foreground input queue is not permission to bypass Windows focus policy.
+  $activated = [NativePointer]::SetForegroundWindow($target)
   Start-Sleep -Milliseconds 80
+  [void](Write-NativeReceipt 'after-owned-activation')
   $geometry = Get-Geometry
   $point = Get-ScreenPoint $geometry $ClientX $ClientY
   $activationPoint = Get-ScreenPoint $geometry $ActivationClientX $ActivationClientY
@@ -210,20 +264,10 @@ try {
   $ownerPid = [uint32]0
   $foreground = [NativePointer]::GetForegroundWindow()
   [void][NativePointer]::GetWindowThreadProcessId($foreground, [ref]$ownerPid)
-  $activatedByPointer = $false
-  if ($ownerPid -ne $ExpectedPid -or $foreground -ne $target) {
-    # Windows may consume a first click for activation. Preserve the inert
-    # heading click, but never click if either OS hit test finds another window.
-    Assert-PointOwned $activationPoint 'activation'
-    $activationMovement = Move-NativePointer $activationPoint $geometry 'activation'
-    $activationCursor = $activationMovement.cursor
-    Assert-GeometryUnchanged $geometry
-    Assert-PointOwned $activationCursor 'activation'
-    [NativePointer]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-    [NativePointer]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 80
-    $activatedByPointer = $true
-  }
+  # Do not inject activation input while a different process owns foreground.
+  # A topmost WindowFromPoint hit says nothing about capture/activation delivery.
+  Assert-PointOwned $activationPoint 'activation preflight'
+  Assert-OwnedForeground 'before-native-close'
   Assert-GeometryUnchanged $geometry
   Assert-PointOwned $point 'native close'
   $movement = Move-NativePointer $point $geometry 'native close'
@@ -235,11 +279,26 @@ try {
   $ownerPid = [uint32]0
   $foreground = [NativePointer]::GetForegroundWindow()
   [void][NativePointer]::GetWindowThreadProcessId($foreground, [ref]$ownerPid)
-  $evidence = "activated=$activated attached=$attached raised=$raised activatedByPointer=$activatedByPointer moved=$moved cursor=$($cursor.X),$($cursor.Y) foregroundHwnd=$foreground targetHwnd=$target targetPid=$targetPid foregroundPid=$ownerPid expectedPid=$ExpectedPid"
+  $evidence = "activated=$activated raised=$raised activationInjection=False moved=$moved cursor=$($cursor.X),$($cursor.Y) foregroundHwnd=$foreground targetHwnd=$target targetPid=$targetPid foregroundPid=$ownerPid expectedPid=$ExpectedPid"
   if (-not $moved -or -not $readCursor -or $cursor.X -ne $point.X -or $cursor.Y -ne $point.Y -or $ownerPid -ne $ExpectedPid -or $foreground -ne $target) { throw "Refusing native click without owned foreground/cursor: $evidence" }
+  Assert-OwnedForeground 'before-close-mousedown'
+  # Receipts above can take time: re-read actual cursor/hit/geometry after them.
+  if (-not [NativePointer]::GetCursorPos([ref]$cursor) -or $cursor.X -ne $point.X -or $cursor.Y -ne $point.Y) { throw 'Cursor changed before native close mouse-down' }
+  Assert-GeometryUnchanged $geometry
+  Assert-PointOwned $cursor 'native close final'
+  $foreground = [NativePointer]::GetForegroundWindow()
+  $ownerPid = [uint32]0
+  [void][NativePointer]::GetWindowThreadProcessId($foreground, [ref]$ownerPid)
+  if ($foreground -ne $target -or $ownerPid -ne $ExpectedPid) { throw 'Foreground changed before native close mouse-down' }
+  # The legacy API has no insertion result. Success still requires the caller's
+  # real trusted renderer click AND hidden dialog; this is only a send attempt.
   [NativePointer]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
   [NativePointer]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
   Write-Output $evidence
+} catch {
+  try { [void](Write-NativeReceipt 'refused') }
+  catch { Write-Host "[T20 native receipt unavailable] $($_.Exception.GetType().FullName)" }
+  throw
 } finally {
   [void][NativePointer]::SetThreadDpiAwarenessContext($previousDpi)
 }

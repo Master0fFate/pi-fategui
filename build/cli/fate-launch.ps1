@@ -1,5 +1,48 @@
-param([Parameter(ValueFromRemainingArguments=$true)][string[]]$LaunchArgs)
+# No named script parameters: user flags must not bind PowerShell parameters.
+$LaunchArgs = @($args)
 $ErrorActionPreference = 'Stop'
+# The script binder consumes --. Windows PowerShell 5 also forwards a quoted
+# trailing backslash incorrectly to native .cmd programs. Read the raw -File
+# tail with Windows quoting rules, accepting that final single-backslash form
+# as a closing path delimiter rather than a literal quote in the file name.
+function Read-NativeArguments([string]$Line) {
+  $result = New-Object 'System.Collections.Generic.List[string]'
+  $token = New-Object Text.StringBuilder
+  $quoted = $false; $started = $false
+  for ($p = 0; $p -lt $Line.Length; $p++) {
+    $char = $Line[$p]
+    if (($char -eq ' ' -or $char -eq [char]9) -and !$quoted) {
+      if ($started) { $result.Add($token.ToString()); [void]$token.Clear(); $started = $false }
+      continue
+    }
+    $started = $true
+    if ($char -eq '\') {
+      $count = 1
+      while ($p + 1 -lt $Line.Length -and $Line[$p + 1] -eq '\') { $count++; $p++ }
+      if ($p + 1 -lt $Line.Length -and $Line[$p + 1] -eq '"') {
+        $p++
+        [void]$token.Append(('\' * [Math]::Floor($count / 2)))
+        if ($count % 2 -eq 1) {
+          if ($quoted -and ($p + 1 -eq $Line.Length -or $Line[$p + 1] -eq ' ' -or $Line[$p + 1] -eq [char]9)) {
+            [void]$token.Append('\'); $quoted = $false
+          } else { [void]$token.Append('"') }
+        } else { $quoted = !$quoted }
+      } else { [void]$token.Append(('\' * $count)) }
+    } elseif ($char -eq '"') { $quoted = !$quoted }
+    else { [void]$token.Append($char) }
+  }
+  if ($quoted) { throw 'Invalid command line quoting.' }
+  if ($started) { $result.Add($token.ToString()) }
+  return $result.ToArray()
+}
+try { $nativeArgs = @(Read-NativeArguments ([Environment]::CommandLine)) }
+catch { [Console]::Error.WriteLine('Fate launch failed. Invalid command line quoting.'); exit 1 }
+for ($i = 1; $i -lt $nativeArgs.Length - 1; $i++) {
+  if ($nativeArgs[$i] -ieq '-File' -and [IO.Path]::GetFullPath($nativeArgs[$i + 1]) -eq $PSCommandPath) {
+    $LaunchArgs = @($nativeArgs | Select-Object -Skip ($i + 2))
+    break
+  }
+}
 function Quote-Argument([string]$Value) {
   if ($Value -notmatch '[\s"]' -and $Value.Length -gt 0) { return $Value }
   return '"' + (($Value -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"'
@@ -21,8 +64,15 @@ try {
     $companion = Get-Command fate-server.cmd -CommandType Application -ErrorAction SilentlyContinue
     $node = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue
     if (!$companion -or !$node) { throw 'Install the separate fate-server Node package (Node 22.19+).' }
-    $entry = Join-Path (Split-Path $companion.Source) '../dist/cli/main.js'
-    if (!(Test-Path -LiteralPath $entry -PathType Leaf)) { throw 'The installed Node companion is incomplete.' }
+    # Ask the installed shim using a fixed, non-user-controlled query. Global
+    # npm/pnpm shims are not adjacent to dist. Never feed user arguments back
+    # through cmd.exe: the selected Node process receives them directly.
+    $metadataText = & $companion.Source --launcher-entry
+    if ($LASTEXITCODE -ne 0) { throw 'The installed Node companion needs the launcher-entry protocol. Update the separate package.' }
+    $metadata = ($metadataText -join "`n") | ConvertFrom-Json
+    if ($metadata.version -ne 1 -or $metadata.entry -isnot [string] -or ![IO.Path]::IsPathRooted($metadata.entry)) { throw 'The installed Node companion is incomplete.' }
+    $entry = [IO.Path]::GetFullPath($metadata.entry)
+    if (!(Test-Path -LiteralPath $entry -PathType Leaf) -or [IO.Path]::GetExtension($entry) -ne '.js') { throw 'The installed Node companion is incomplete.' }
     Run-Program $node.Source (@($entry) + $LaunchArgs) $true
     exit 0
   }

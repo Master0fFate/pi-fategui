@@ -68,22 +68,28 @@ describe('isolated v2 test infrastructure', () => {
     expect(packageJson).toHaveProperty('scripts.test:v2', 'node scripts/run-v2-tests.mjs');
   });
 
-  test('launcher sets roots before entry, forwards actual argv, and cleans up on nonzero exit', () => {
+  test.each([0, 7])('launcher sets roots before entry, forwards actual argv, and cleans only a confirmed successful run (exit %i)', async (exitCode) => {
     const args = ['with spaces', 'literal;not-shell', ''];
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
       const { runIsolated } = await import(${JSON.stringify(launcherUrl)});
       const code = await runIsolated(['--input-type=module', '-e',
-        'console.log(JSON.stringify({ root: process.env.FATE_V2_TEST_ROOT, home: process.env.HOME, args: process.argv.slice(1), secret: process.env.OPENAI_API_KEY })); process.exitCode = 7',
+        'console.log(JSON.stringify({ root: process.env.FATE_V2_TEST_ROOT, home: process.env.HOME, args: process.argv.slice(1), secret: process.env.OPENAI_API_KEY })); process.exitCode = ${exitCode}',
         ...${JSON.stringify(args)}], { env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, OPENAI_API_KEY: 'sentinel-not-a-key' } });
       process.exitCode = code;
     `], { encoding: 'utf8' });
-    expect(result.status, result.stderr).toBe(7);
+    expect(result.status, result.stderr).toBe(exitCode);
     const output: unknown = JSON.parse(result.stdout.trim());
     expect(output).toEqual({ root: expect.any(String), home: expect.any(String), args });
     if (typeof output !== 'object' || output === null || !('root' in output) || typeof output.root !== 'string'
       || !('home' in output) || typeof output.home !== 'string') throw new Error('Invalid child probe');
     expect(isWithin(output.root, output.home)).toBe(true);
-    expect(existsSync(output.root)).toBe(false);
+    expect(existsSync(output.root)).toBe(exitCode !== 0);
+    if (exitCode !== 0) {
+      // Failed wrappers retain evidence even when ownership markers are lost.
+      // This probe has no descendant process: it reports its own actual exit.
+      await assertPrivatePath(output.root);
+      expect(result.stderr).toContain('TEST_FIXTURE_RETAINED');
+    }
   });
 
   test('blocks outbound provider attempts before network access', async () => {

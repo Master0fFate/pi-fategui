@@ -1,15 +1,18 @@
 /**
- * T50 acceptance contract. The production `test:remote` runner performs a real
- * OpenSSH preflight and fails before workflow activation when its prerequisites
- * are unavailable. These assertions must be implemented and executed on the
- * supported fixture after T48/T49 acceptance. They are not skipped passing tests.
+ * T50 review checklist, NOT executable acceptance or a count of passing tests.
+ * Implementations: workflow.mjs (real SSH/HTTP cases), host.ts (separate typed
+ * test-only Fate/Pi composition), production-proof.mjs (packaged boundary/idle),
+ * controller.mjs (independent actual-PID host supervision and durable evidence).
+ * remoteWorkspace.test.mjs executes the runner; absent fixture fails, not skips.
+ * Static helper tests never stand in for these still-unexecuted remote cases.
  */
 export const requiredRemoteCases = Object.freeze([
   'packaged Node server and separate test-only Pi adapter composition',
   'remote sentinel effect and Git diff; unchanged client-side sentinel',
   'active run survives tunnel kill with same server PID',
   'reconnect reports the actual result and original invocation count',
-  'host kill after admitted effect before response reports unknown without replay',
+  'separate host kill after admitted effect before response; explicit verified fixture-lock quarantine; interrupted/unknown and cumulative count one without replay',
+  'unknown SSH host pin refuses connection',
   'wrong SSH key refuses authentication',
   'changed SSH host key refuses connection',
   'local port collision refuses forwarding',

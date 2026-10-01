@@ -1,11 +1,40 @@
 import { execFile, spawn } from 'node:child_process';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const guard = pathToFileURL(path.join(projectRoot, 'tests/v2/helpers/nodeGuard.mjs')).href;
+
+// A subprocess failure can leave exit/ownership genuinely unconfirmed. Keep
+// that private root, including nested isolated runners, instead of deleting
+// the retained fixture through an outer runner's unconditional cleanup.
+async function containsRetainedOwnedWork(root) {
+  const pending = [{ directory: root, depth: 0 }];
+  let visited = 0;
+  while (pending.length) {
+    if (++visited > 256) return true; // An incomplete ownership scan must retain.
+    const { directory, depth } = pending.pop();
+    for (const marker of ['.fate-retained-owned-work.json', '.fate-owned-cli-guard']) {
+      try { await lstat(path.join(directory, marker)); return true; }
+      catch (error) { if (error.code !== 'ENOENT') return true; }
+    }
+    let entries;
+    try { entries = await readdir(path.join(directory, 'tmp'), { withFileTypes: true }); }
+    catch (error) { if (error.code !== 'ENOENT') return true; continue; }
+    for (const entry of entries) {
+      if (!/^fate-v2-/u.test(entry.name)) continue;
+      // Never follow an uncertain owned-root link or silently truncate nesting.
+      if (entry.isSymbolicLink()) return true;
+      if (entry.isDirectory()) {
+        if (depth >= 8) return true;
+        pending.push({ directory: path.join(directory, 'tmp', entry.name), depth: depth + 1 });
+      }
+    }
+  }
+  return false;
+}
 
 // Deliberately an allowlist: new provider credentials, proxies, Git config and
 // NODE_OPTIONS/NODE_PATH must not silently enter the child as integrations grow.
@@ -43,7 +72,17 @@ export async function createIsolatedEnvironment(inherited = process.env) {
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(root, 'empty-gitconfig'),
       GIT_TERMINAL_PROMPT: '0', TZ: 'UTC',
     });
-    return { root, env, cleanup: () => rm(root, { recursive: true, force: true, maxRetries: 3 }) };
+    return { root, env, cleanup: async ({ retain = false } = {}) => {
+      if (retain) {
+        process.stderr.write(`TEST_FIXTURE_RETAINED: failed or unconfirmed run at ${root}\n`);
+        return;
+      }
+      if (await containsRetainedOwnedWork(root)) {
+        process.stderr.write(`OWNED_TEST_WORK_UNCONFIRMED: private fixture retained at ${root}\n`);
+        return;
+      }
+      await rm(root, { recursive: true, force: true, maxRetries: 3 });
+    } };
   } catch (error) {
     await rm(root, { recursive: true, force: true });
     throw error;
@@ -57,24 +96,25 @@ export function buildV2Command(args) {
 // Exported for subprocess probes. Never modifies the launcher's own environment.
 export async function runIsolated(entryArgs, options = {}) {
   const isolated = await createIsolatedEnvironment(options.env ?? process.env);
-  let child;
+  let child, observedCode;
   const forward = (signal) => child?.kill(signal);
   const onInterrupt = () => forward('SIGINT');
   const onTerminate = () => forward('SIGTERM');
   try {
     process.on('SIGINT', onInterrupt);
     process.on('SIGTERM', onTerminate);
-    return await new Promise((resolve, reject) => {
+    observedCode = await new Promise((resolve, reject) => {
       child = spawn(process.execPath, ['--import', guard, ...entryArgs], {
         cwd: projectRoot, env: isolated.env, stdio: 'inherit', shell: false,
       });
       child.once('error', reject);
       child.once('exit', (code, signal) => resolve(code ?? (signal === 'SIGINT' ? 130 : 1)));
     });
+    return observedCode;
   } finally {
     process.off('SIGINT', onInterrupt);
     process.off('SIGTERM', onTerminate);
-    await isolated.cleanup();
+    await isolated.cleanup({ retain: observedCode !== 0 });
   }
 }
 

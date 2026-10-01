@@ -56,11 +56,28 @@ describe('main-owned SSH profile editor', () => {
     await expect(fs.lstat(file)).rejects.toMatchObject({ code: 'ENOENT' });
   });
   it('rejects a selected symbolic link and rechecks a changed credential at save', async () => {
-    const link = path.join(root, 'alias.json'); await fs.symlink(credential, link);
+    // Exercise actual OS indirection on both platforms. Normal Windows users
+    // can create directory junctions but not necessarily file symlinks.
+    const link = process.platform === 'win32' ? path.join(root, 'alias', 'credential.json') : path.join(root, 'alias.json');
+    if (process.platform === 'win32') await fs.symlink(root, path.dirname(link), 'junction');
+    else await fs.symlink(credential, link);
     await expect(new ConnectionProfileEditor(new ConnectionProfileStore(), file, async () => link).pick(7, () => true)).rejects.toThrow();
     const editor = new ConnectionProfileEditor(new ConnectionProfileStore(), file, async () => credential);
     const picked = await editor.pick(7, () => true); await fs.writeFile(credential, 'invalid');
     await expect(editor.save(7, () => true, { ...fields(), ...picked })).rejects.toThrow();
+  });
+  it('refuses an in-place valid credential change and same-byte file replacement after picking', async () => {
+    const store = new ConnectionProfileStore(), editor = new ConnectionProfileEditor(store, file, async () => credential);
+    const first = await editor.pick(7, () => true);
+    const replacementToken = `fc1_${'b'.repeat(43)}`;
+    await fs.writeFile(credential, replacementToken);
+    await expect(editor.save(7, () => true, { ...fields(), ...first })).rejects.toThrow('Choose the client credential again');
+    const second = await editor.pick(7, () => true);
+    const replacement = path.join(root, 'replacement.json');
+    await fs.writeFile(replacement, replacementToken, { mode: 0o600 });
+    await fs.rename(replacement, credential);
+    await expect(editor.save(7, () => true, { ...fields(), ...second })).rejects.toThrow('Choose the client credential again');
+    expect(store.list()).toEqual([]); await expect(fs.lstat(file)).rejects.toMatchObject({ code: 'ENOENT' });
   });
   it('does not publish a canceled save into its live store', async () => {
     const store = new ConnectionProfileStore();

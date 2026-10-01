@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { readClientCredentialReference } from '../../server/auth/AuthStore';
@@ -6,9 +6,27 @@ import { connectionProfileSchema, type ConnectionProfile } from '../../shared/co
 import { saveSshProfileSchema } from '../../shared/contracts/connectionEditor';
 import type { ConnectionProfileStore } from './ConnectionProfileStore';
 
+interface CredentialIdentity {
+  readonly dev: number; readonly ino: number; readonly size: number;
+  readonly mtimeMs: number; readonly ctimeMs: number; readonly digest: string;
+}
+const sameIdentity = (left: CredentialIdentity, right: CredentialIdentity): boolean =>
+  left.dev === right.dev && left.ino === right.ino && left.size === right.size
+  && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs && left.digest === right.digest;
+async function credentialIdentity(file: string): Promise<CredentialIdentity> {
+  const before = await fs.lstat(file);
+  const credential = await readClientCredentialReference(file);
+  const after = await fs.lstat(file);
+  if (!before.isFile() || before.isSymbolicLink() || !after.isFile() || after.isSymbolicLink()
+    || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+    || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error('Choose the client credential again.');
+  return { dev: after.dev, ino: after.ino, size: after.size, mtimeMs: after.mtimeMs, ctimeMs: after.ctimeMs,
+    digest: createHash('sha256').update(credential).digest('hex') };
+}
+
 /** Native chooser authority stays in main. The renderer has only a short-lived opaque handle. */
 export class ConnectionProfileEditor {
-  private readonly choices = new Map<string, { path: string; owner: number; live: () => boolean; expiresAt: number }>();
+  private readonly choices = new Map<string, { path: string; identity: CredentialIdentity; owner: number; live: () => boolean; expiresAt: number }>();
   constructor(private readonly store: ConnectionProfileStore, private readonly storeFile: string,
     private readonly choose: (owner: number) => Promise<string | null>) {}
   async pick(owner: number, live: () => boolean): Promise<{ selectionId: string } | null> {
@@ -17,12 +35,12 @@ export class ConnectionProfileEditor {
     if (!live()) throw new Error('The initiating document changed.');
     if (!file) return null;
     if (!path.isAbsolute(file) || await fs.realpath(file) !== file) throw new Error('Choose a private regular credential file.');
-    await readClientCredentialReference(file);
+    const identity = await credentialIdentity(file);
     if (!live()) throw new Error('The initiating document changed.');
     for (const [id, choice] of this.choices) if (choice.owner === owner || !choice.live() || choice.expiresAt <= Date.now()) this.choices.delete(id);
     if (this.choices.size >= 4) throw new Error('Complete or cancel the current credential selection.');
     const selectionId = randomUUID();
-    this.choices.set(selectionId, { path: file, owner, live, expiresAt: Date.now() + 300_000 });
+    this.choices.set(selectionId, { path: file, identity, owner, live, expiresAt: Date.now() + 300_000 });
     return { selectionId };
   }
   async save(owner: number, live: () => boolean, input: unknown): Promise<ConnectionProfile> {
@@ -30,7 +48,7 @@ export class ConnectionProfileEditor {
     this.choices.delete(value.selectionId);
     if (!choice || choice.owner !== owner || !choice.live() || !live() || choice.expiresAt <= Date.now()) throw new Error('Choose the client credential again.');
     if (await fs.realpath(choice.path) !== choice.path) throw new Error('Choose the client credential again.');
-    await readClientCredentialReference(choice.path);
+    if (!sameIdentity(choice.identity, await credentialIdentity(choice.path))) throw new Error('Choose the client credential again.');
     if (!choice.live() || !live()) throw new Error('The initiating document changed.');
     const { selectionId: _selection, trust: _trust, ...publicFields } = value;
     const profile = { ...publicFields, id: randomUUID(), approved: true as const, transport: 'ssh' as const, credentialRef: choice.path };

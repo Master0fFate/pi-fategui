@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createServer as createNetServer } from 'node:net';
@@ -19,9 +19,17 @@ import { FakePiSdkAdapter } from '../v2/helpers/fakePi';
 import { ModelsDevService } from '../../src/main/pi/modelsdev/ModelsDevService';
 import type { SessionTitleGenerator } from '../../src/main/pi/PiSessionTitleGenerator';
 import { privateTestRoot } from '../v2/helpers/isolatedEnvironment';
+import { disposeProductionCliBuild, mustRetainCliFixture, recordCliResult, runNoninteractiveCli, runTerminalCli } from './helpers/productionCliProcess';
 
 const roots: string[] = [];
-afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true, maxRetries: 3 }))); });
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(roots.splice(0).map(async (root) => {
+    if (mustRetainCliFixture(root)) { console.error(`CLI_EXIT_UNCONFIRMED: fixture retained at ${root}`); return; }
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 3 });
+  }));
+});
+afterAll(disposeProductionCliBuild);
 async function freePort(): Promise<number> {
   const server = createNetServer();
   return new Promise((resolve, reject) => {
@@ -60,6 +68,10 @@ async function liveFixture(fixtureOptions: { readonly titleGenerator?: SessionTi
     cleanup: async () => { expect(await server.stop()).toEqual({ status: 'settled' }); await adapter.dispose(); } };
 }
 function deferred() { let resolve!: () => void; const promise = new Promise<void>((done) => { resolve = done; }); return { promise, resolve }; }
+// An admin poll includes a fresh native ACL read (measured 2.8s on Windows),
+// before HTTP. Vitest's 1s default aborts that legitimate first poll. Keep the
+// overall 45s behavior limit; only these real-IO polls get a finite 10s bound.
+const adminPoll = { timeout: process.platform === 'win32' ? 10_000 : 1_000 };
 
 describe('T45 host-only profile and administration', () => {
   it('init requires trust, writes a private descriptor outside data, and starts no engine or credentials', async () => {
@@ -88,7 +100,10 @@ describe('T45 host-only profile and administration', () => {
     if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) throw new Error('Invalid fixture');
     await fs.writeFile(file, JSON.stringify({ ...descriptor, providerKey: 'synthetic-secret' }));
     await expect(readHostProfile('host', fixture.home)).rejects.toThrow();
-    await fs.unlink(file); await fs.symlink(path.join(fixture.root, 'outside'), file);
+    await fs.unlink(file);
+    const outside = path.join(fixture.root, 'outside');
+    if (process.platform === 'win32') await fs.mkdir(outside);
+    await fs.symlink(outside, file, process.platform === 'win32' ? 'junction' : 'file');
     await expect(readHostProfile('host', fixture.home)).rejects.toThrow();
     if (process.platform !== 'win32') {
       const publicParent = path.join(fixture.root, 'public'); await fs.mkdir(publicParent, { mode: 0o755 });
@@ -97,8 +112,23 @@ describe('T45 host-only profile and administration', () => {
     }
   });
 
+});
+
+describe('T45 live host-only administration', () => {
+  let prepared: Awaited<ReturnType<typeof liveFixture>> | undefined;
+  let titleGenerator: SessionTitleGenerator;
+  const currentFixture = () => { if (!prepared) throw new Error('Live fixture did not finish setup.'); return prepared; };
+  // Measured Windows setup is 41.3s before behavior assertions. Keep the
+  // 45s behavior deadline, with a separate finite setup budget and all real
+  // ACL checks intact. No server or credential state is shared across tests.
+  beforeEach(async () => {
+    prepared = undefined;
+    titleGenerator = { generate: async () => null };
+    prepared = await liveFixture({ titleGenerator });
+  }, 90_000);
+
   it('real admin HTTP refuses client key, browser cookie, Origin and malformed provider reflection before Pi access', async () => {
-    const fixture = await liveFixture();
+    const fixture = currentFixture();
     try {
       const login = vi.spyOn(fixture.sdk, 'login');
       const issued = await fixture.client.execute({ method: 'client.issue', input: { workspaceRoots: [fixture.workspace] } });
@@ -118,7 +148,7 @@ describe('T45 host-only profile and administration', () => {
   });
 
   it('provider input and SDK errors stay private; ordinary admin response contains only provider state', async () => {
-    const fixture = await liveFixture();
+    const fixture = currentFixture();
     const secret = 'synthetic-provider-response-44119';
     try {
       vi.spyOn(fixture.sdk, 'login').mockImplementation(async (_id, _method, interaction) => {
@@ -129,14 +159,14 @@ describe('T45 host-only profile and administration', () => {
       let promptId = '';
       await vi.waitFor(async () => { const state = await fixture.client.execute({ method: 'provider.state', input: {} });
         if (state.method !== 'provider.state') throw new Error('Fixture state mismatch'); promptId = state.result.prompt?.id ?? ''; expect(promptId).not.toBe('');
-        expect(Object.keys(state.result)).not.toContain('messages'); expect(Object.keys(state.result)).not.toContain('project'); });
+        expect(Object.keys(state.result)).not.toContain('messages'); expect(Object.keys(state.result)).not.toContain('project'); }, adminPoll);
       await fixture.server.core.runtime.openProject({ path: fixture.workspace, name: 'fixture', trusted: true });
       expect(fixture.server.core.runtime.getFocused()).not.toBe(fixture.server.core.runtime.hostProviderLoginService());
       await fixture.client.execute({ method: 'provider.respond', input: { promptId, value: secret } });
       await vi.waitFor(async () => {
         const state = await fixture.client.execute({ method: 'provider.state', input: {} });
         expect(state).toMatchObject({ result: { status: 'error' } }); expect(JSON.stringify(state)).not.toContain(secret);
-      });
+      }, adminPoll);
       expect(fixture.logs.join('\n')).not.toContain(secret);
       await expect(fixture.client.execute({ method: 'provider.start', input: { providerId: 'missing-sdk-provider', method: 'oauth' } })).rejects.toThrow();
       expect(fixture.logs.join('\n')).not.toContain(fixture.owner);
@@ -144,7 +174,7 @@ describe('T45 host-only profile and administration', () => {
   });
 
   it('cancel retains SDK ownership until settlement, then a later login keeps its own prompt', async () => {
-    const fixture = await liveFixture();
+    const fixture = currentFixture();
     const old = deferred(); let count = 0;
     try {
       vi.spyOn(fixture.sdk, 'login').mockImplementation(async (_id, _method, interaction) => {
@@ -157,14 +187,14 @@ describe('T45 host-only profile and administration', () => {
       await expect(fixture.client.execute({ method: 'provider.start', input: { providerId: 'anthropic', method: 'api_key' } })).rejects.toThrow();
       old.resolve();
       await vi.waitFor(() => expect(fixture.server.core.runtime.hostProviderLoginService().getState(false).providerLogin?.status).toBe('idle'));
-      await vi.waitFor(async () => { await fixture.client.execute({ method: 'provider.start', input: { providerId: 'anthropic', method: 'api_key' } }); });
-      await vi.waitFor(async () => expect(await fixture.client.execute({ method: 'provider.state', input: {} })).toMatchObject({ result: { status: 'awaiting-input', prompt: { message: 'New login prompt' } } }));
+      await vi.waitFor(async () => { await fixture.client.execute({ method: 'provider.start', input: { providerId: 'anthropic', method: 'api_key' } }); }, adminPoll);
+      await vi.waitFor(async () => expect(await fixture.client.execute({ method: 'provider.state', input: {} })).toMatchObject({ result: { status: 'awaiting-input', prompt: { message: 'New login prompt' } } }), adminPoll);
       await fixture.client.execute({ method: 'provider.cancel', input: {} });
     } finally { old.resolve(); await fixture.cleanup(); }
   });
 
   it('an active unfocused workspace blocks shared provider start and respond', async () => {
-    const fixture = await liveFixture();
+    const fixture = currentFixture();
     try {
       const workspace = fixture.server.core.runtime.peekWorkspace(fixture.workspace);
       if (!workspace) throw new Error('Fixture workspace missing');
@@ -185,7 +215,7 @@ describe('T45 host-only profile and administration', () => {
   });
 
   it('live admin is the sole profile writer and a missing live server never starts another core', async () => {
-    const fixture = await liveFixture();
+    const fixture = currentFixture();
     try {
       const before = fixture.adapter.invocations.filter((entry) => entry.kind === 'createRuntime').length;
       await fixture.client.execute({ method: 'auth.status', input: {} });
@@ -196,7 +226,7 @@ describe('T45 host-only profile and administration', () => {
   });
 
   it('rechecks host admission when another workspace starts during provider initialization', async () => {
-    const fixture = await liveFixture();
+    const fixture = currentFixture();
     const blocked = deferred(), refreshEntered = deferred(), loginEntered = deferred();
     let refresh: Promise<void> | null = null;
     let request: Promise<unknown> | null = null;
@@ -233,7 +263,7 @@ describe('T45 host-only profile and administration', () => {
   });
 
   it('new execution stays blocked during a pending login and canceled SDK settlement', async () => {
-    const fixture = await liveFixture();
+    const fixture = currentFixture();
     const settle = deferred();
     try {
       const workspace = fixture.server.core.runtime.peekWorkspace(fixture.workspace);
@@ -259,9 +289,10 @@ describe('T45 host-only profile and administration', () => {
 
   it('a title model call that outlives its root run still blocks provider mutation', async () => {
     const titleEntered = deferred(), titleSettles = deferred();
-    const fixture = await liveFixture({ titleGenerator: { generate: async () => {
+    const fixture = currentFixture();
+    vi.spyOn(titleGenerator, 'generate').mockImplementation(async () => {
       titleEntered.resolve(); await titleSettles.promise; return null;
-    } } });
+    });
     try {
       const workspace = fixture.server.core.runtime.peekWorkspace(fixture.workspace);
       if (!workspace) throw new Error('Fixture workspace missing');
@@ -283,7 +314,7 @@ describe('T45 host-only profile and administration', () => {
   });
 
   it('a canceled optimizer keeps provider admission blocked until its real model promise settles', async () => {
-    const fixture = await liveFixture();
+    const fixture = currentFixture();
     const entered = deferred(), settles = deferred();
     let canceled = false;
     let optimization: Promise<unknown> | null = null;
@@ -315,7 +346,7 @@ describe('T45 host-only profile and administration', () => {
   });
 
   it('issued access keys remain client-only, and a failed private write revokes the new key', async () => {
-    const fixture = await liveFixture();
+    const fixture = currentFixture();
     try {
       const output = path.join(fixture.root, 'client.key'); await issueAccessKey(fixture.client, fixture.workspace, output);
       const credential = await readClientCredentialReference(output);
@@ -335,7 +366,7 @@ describe('T45 host-only profile and administration', () => {
   });
 
   it('bootstrap output is private or interactive only; revoked codes do not exchange', async () => {
-    const fixture = await liveFixture(); const output: string[] = [];
+    const fixture = currentFixture(); const output: string[] = [];
     try {
       const before = fixture.server.auth.safeStatus(fixture.owner).pendingCodeCount;
       await expect(issueBootstrapCode(fixture.client, undefined, false, (text) => { output.push(text); })).rejects.toThrow('private');
@@ -348,7 +379,7 @@ describe('T45 host-only profile and administration', () => {
   });
 
   it('owner admin client refuses redirects and validates response shape without exposing keys', async () => {
-    const fixture = await liveFixture(); let redirected = 0;
+    const fixture = currentFixture(); let redirected = 0;
     const fake = createHttpServer((request, response) => { if (request.url === '/api/admin') { response.writeHead(302, { Location: '/sink' }); response.end(); } else { redirected += 1; response.end(fixture.owner); } });
     const fakePort = await freePort(); await new Promise<void>((resolve) => fake.listen(fakePort, '127.0.0.1', resolve));
     try {
@@ -358,7 +389,7 @@ describe('T45 host-only profile and administration', () => {
   });
 
   it('interactive CLI uses existing SDK prompts, keeps replies hidden, and truthfully rejects unsupported/noninteractive login', async () => {
-    const fixture = await liveFixture(); const printed: string[] = [];
+    const fixture = currentFixture(); const printed: string[] = [];
     try {
       const secret = 'synthetic-hidden-response';
       vi.spyOn(fixture.sdk, 'login').mockImplementation(async (_id, _method, interaction) => {
@@ -372,6 +403,137 @@ describe('T45 host-only profile and administration', () => {
     } finally { await fixture.cleanup(); }
   });
 
+  it('actual compiled CLI under native PTY hides Unicode input and completes the existing SDK login lifecycle', async () => {
+    const fixture = currentFixture();
+    const secret = 'zażółć hidden-response';
+    const started = performance.now(), sdkEvents: { event: string; elapsedMs: number }[] = [];
+    const observe = (event: string) => { sdkEvents.push({ event, elapsedMs: Math.round(performance.now() - started) }); };
+    try {
+      const login = vi.spyOn(fixture.sdk, 'login').mockImplementation(async (_id, _method, interaction) => {
+        observe('login-entered');
+        const response = await interaction.prompt({ type: 'secret', message: 'Native private fixture response' });
+        observe('prompt-response-received'); expect(response).toBe(secret);
+        fixture.configure(); observe('sdk-configured'); return { type: 'api_key', key: 'synthetic-native' };
+      });
+      const result = await runTerminalCli(fixture.home, ['provider', 'login', '--profile', 'host', '--provider-id', 'anthropic', '--method', 'api_key'],
+        { marker: 'Input is hidden.', value: secret + 'X\b\r' });
+      expect(result.exitCode).toBe(0); expect(result.output).toContain('Provider login completed.');
+      expect(login).toHaveBeenCalledOnce(); expect(fixture.logs.join('\n')).not.toContain(secret);
+      expect(fixture.server.core.runtime.hostProviderLoginService().hasProviderLoginOwnership()).toBe(false);
+      expect(fixture.adapter.invocations.filter(entry => entry.kind === 'providerBlocked')).toEqual([]);
+      recordCliResult('native-unicode-hidden-sdk-completion', result, [secret, fixture.owner]);
+    } finally {
+      console.log(JSON.stringify({ nativeCliSdkTiming: sdkEvents, elapsedMs: Math.round(performance.now() - started), fixtureOnly: true }));
+      await fixture.cleanup();
+    }
+  });
+
+  it('actual native CLI Ctrl+C requests cancellation but retains SDK admission until late settlement', async () => {
+    const fixture = currentFixture(), old = deferred();
+    try {
+      const login = vi.spyOn(fixture.sdk, 'login').mockImplementation(async (_id, _method, interaction) => {
+        await interaction.prompt({ type: 'secret', message: 'Native cancel fixture response' }).catch(() => undefined);
+        await old.promise;
+        interaction.notify({ type: 'progress', message: 'old canceled fixture progress' });
+        return { type: 'api_key', key: 'synthetic-canceled' };
+      });
+      const result = await runTerminalCli(fixture.home, ['provider', 'login', '--profile', 'host', '--provider-id', 'anthropic', '--method', 'api_key'],
+        { marker: 'Input is hidden.', value: '\u0003' });
+      expect(result.exitCode).toBe(1); expect(result.output).toContain('Provider login canceled.');
+      const service = fixture.server.core.runtime.hostProviderLoginService();
+      expect(login).toHaveBeenCalledOnce(); expect(service.hasProviderLoginOwnership()).toBe(true);
+      await expect(fixture.client.execute({ method: 'provider.start', input: { providerId: 'anthropic', method: 'api_key' } })).rejects.toThrow();
+      expect(login).toHaveBeenCalledOnce();
+      old.resolve(); await vi.waitFor(() => expect(service.hasProviderLoginOwnership()).toBe(false));
+      expect(service.getState(false).providerLogin?.status).toBe('idle');
+      recordCliResult('native-cancel-and-held-sdk-settlement', result, [fixture.owner, 'synthetic-canceled']);
+    } finally { old.resolve(); await fixture.cleanup(); }
+  });
+
+  it('actual native CLI provider error stays generic and never echoes the hidden response', async () => {
+    const fixture = currentFixture(), secret = 'synthetic-native-provider-error';
+    const service = fixture.server.core.runtime.hostProviderLoginService();
+    const cancel = service.cancelProviderLogin.bind(service);
+    let statusBeforeCancel: string | undefined;
+    // Observe the real state before the CLI's existing cancellation cleanup.
+    // Calling the actual method is essential: cancellation resets error to idle.
+    const cancellation = vi.spyOn(service, 'cancelProviderLogin').mockImplementation(() => {
+      statusBeforeCancel = service.getState(false).providerLogin?.status;
+      return cancel();
+    });
+    try {
+      const login = vi.spyOn(fixture.sdk, 'login').mockImplementation(async (_id, _method, interaction) => {
+        const value = await interaction.prompt({ type: 'secret', message: 'Native provider error fixture' });
+        expect(value).toBe(secret); throw new Error(`fixture error containing ${value}`);
+      });
+      const result = await runTerminalCli(fixture.home, ['provider', 'login', '--profile', 'host', '--provider-id', 'anthropic', '--method', 'api_key'],
+        { marker: 'Input is hidden.', value: secret + '\r' });
+      expect(result.exitCode).toBe(1); expect(result.output).toContain('Provider login failed.');
+      expect(login).toHaveBeenCalledOnce(); expect(cancellation).toHaveBeenCalledOnce();
+      expect(statusBeforeCancel).toBe('error');
+      const state = await fixture.client.execute({ method: 'provider.state', input: {} });
+      expect(state).toMatchObject({ result: { status: 'idle' } });
+      expect(service.hasProviderLoginOwnership()).toBe(false);
+      expect(JSON.stringify(state)).not.toContain(secret); expect(fixture.logs.join('\n')).not.toContain(secret);
+      recordCliResult('native-provider-error-redaction', result, [secret, fixture.owner]);
+    } finally { await fixture.cleanup(); }
+  });
+
+  it('actual native CLI refuses an unsupported SDK flow before login invocation', async () => {
+    const fixture = currentFixture();
+    try {
+      const login = vi.spyOn(fixture.sdk, 'login');
+      const result = await runTerminalCli(fixture.home, ['provider', 'login', '--profile', 'host', '--provider-id', 'unsupported-fixture']);
+      expect(result.exitCode).toBe(1); expect(result.output).toContain('unavailable in this Pi SDK');
+      expect(login).not.toHaveBeenCalled(); recordCliResult('native-unsupported-sdk-flow', result, [fixture.owner]);
+    } finally { await fixture.cleanup(); }
+  });
+
+  it('actual noninteractive CLI refuses login before SDK invocation', async () => {
+    const fixture = currentFixture();
+    try {
+      const login = vi.spyOn(fixture.sdk, 'login');
+      const result = await runNoninteractiveCli(fixture.home, ['provider', 'login', '--profile', 'host', '--provider-id', 'anthropic', '--method', 'api_key']);
+      expect(result.exitCode).toBe(1); expect(result.output).toContain('interactive host terminal');
+      expect(login).not.toHaveBeenCalled(); recordCliResult('noninteractive-login-refusal', result, [fixture.owner]);
+    } finally { await fixture.cleanup(); }
+  });
+
+  it('actual CLI issues a private client-only key through the sole live owner', async () => {
+    const fixture = currentFixture();
+    try {
+      const before = fixture.adapter.invocations.filter(entry => entry.kind === 'createRuntime').length;
+      const output = path.join(fixture.root, 'native client zażółć &.key');
+      const result = await runNoninteractiveCli(fixture.home, ['access-key', 'create', '--profile', 'host', '--workspace', fixture.workspace, '--out-file', output]);
+      expect(result.exitCode).toBe(0);
+      const receipt: unknown = JSON.parse(result.output);
+      if (!receipt || typeof receipt !== 'object' || !('clientId' in receipt) || typeof receipt.clientId !== 'string') throw new Error('Actual CLI receipt invalid');
+      const credential = await readClientCredentialReference(output);
+      expect(fixture.server.auth.authenticateClient(credential)?.kind).toBe('client');
+      expect(() => fixture.server.auth.assertOwner(credential)).toThrow();
+      expect(fixture.adapter.invocations.filter(entry => entry.kind === 'createRuntime').length).toBe(before);
+      recordCliResult('actual-cli-private-client-key-issuance', result, [credential, fixture.owner]);
+    } finally { await fixture.cleanup(); }
+  });
+
+  it('actual CLI revokes a private client key without starting a second writer', async () => {
+    const fixture = currentFixture();
+    try {
+      const before = fixture.adapter.invocations.filter(entry => entry.kind === 'createRuntime').length;
+      const output = path.join(fixture.root, 'revocation fixture.key');
+      const issued = await issueAccessKey(fixture.client, fixture.workspace, output);
+      const credential = await readClientCredentialReference(output);
+      const result = await runNoninteractiveCli(fixture.home, ['access-key', 'revoke', '--profile', 'host', '--client-id', issued.clientId]);
+      expect(result.exitCode).toBe(0); expect(result.output).toContain('Client access revoked.');
+      expect(fixture.server.auth.authenticateClient(credential)).toBeNull();
+      expect(fixture.adapter.invocations.filter(entry => entry.kind === 'createRuntime').length).toBe(before);
+      recordCliResult('actual-cli-private-client-key-revocation', result, [credential, fixture.owner]);
+    } finally { await fixture.cleanup(); }
+  });
+
+});
+
+describe('T45 foreground ownership', () => {
   it('foreground host retains its process and signal ownership until an incomplete shutdown really settles', async () => {
     const signals = new EventEmitter(), actual = deferred(), stopped = deferred(); const printed: string[] = [];
     let finished = false;

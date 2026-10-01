@@ -95,6 +95,8 @@
 :root[data-skin="m3-expressive"] .inspector-primary-trigger[aria-current="page"],
 :root[data-skin="m3-expressive"] .inspector-primary-trigger[aria-current="page"]:hover { color: var(--theme-on-accent); background: var(--theme-accent); }
 :root[data-skin="m3-expressive"] .inspector-secondary-tabs { flex-basis: 40px; margin: 0 8px 8px; padding: 0; gap: 3px; border: 0; }
+/* Unequal label lengths need content-sized slots before sharing spare space. */
+:root[data-skin="m3-expressive"] .inspector-secondary-tooltip { flex-basis: auto; }
 :root[data-skin="m3-expressive"] .inspector-secondary-trigger { height: 34px; padding-inline: 5px; gap: 5px; border-radius: 18px; font-size: 11px; }
 :root[data-skin="m3-expressive"] .inspector-secondary-trigger[data-state="active"] { background: var(--theme-accent-soft); color: var(--theme-text); }
 :root[data-skin="m3-expressive"] .welcome--conversation .composer-wrap { bottom: 24px; width: min(calc(100% - 64px), 800px); }

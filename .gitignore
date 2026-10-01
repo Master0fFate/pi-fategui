@@ -27,6 +27,13 @@ coverage/
 .parallax/
 .impeccable/
 /plans/
+# Local handoff archives are inputs, not source or release artifacts.
+/pi-fategui-M5-updated-plans.zip
+/fate-server-1.1.0-linux-x64-server-only.tar.gz
+/plans.7z
+/*.rar
+/tests/remote/.built/
+/tests/network/.built/
 /.codegraph/
 # Local research and internal review notes are not release documentation.
 /AGENTS-RESEARCH.md

@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { runProductionSmoke } from './bootstrap/productionSmoke';
 import { RecoverySnapshotService } from './bootstrap/RecoverySnapshot';
 import { ShutdownCoordinator } from './bootstrap/shutdown';
+import { desktopStartupFailure, desktopStartupExitCode } from './bootstrap/startupFailure';
 import { BrowserHistoryRepository } from './browser/BrowserHistoryRepository';
 import { BrowserHost } from './browser/BrowserHost';
 import { LOCAL_PAGE_SCHEME } from './browser/LocalPageRegistry';
@@ -20,7 +21,7 @@ import { DesktopFileActions } from './files/DesktopFileActions';
 import { GitService } from './git/GitService';
 import { registerIpc } from './ipc/registerIpc';
 import { parseLaunchProjectPath, parseForwardedProjectPath, hasNewInstanceFlag, parseConnectionProfile } from './launchProject';
-import { acquireInstanceProfile } from './instanceProfile';
+import { acquireInstanceProfile, isMultiInstanceProbe } from './instanceProfile';
 import { AppLogService } from './logging/AppLogService';
 import { CrashTelemetryService } from './logging/CrashTelemetry';
 import { LegacyAutomations } from './automations/LegacyAutomations';
@@ -147,6 +148,7 @@ const browserBridge = new BrowserRuntimeBridge(
 let core: FateCore | null = null;
 let coreStartup: Promise<FateCore> | null = null;
 let hostStopping = false;
+let startupFailed = false;
 let runtime: PiRuntimeService;
 let connections: DesktopConnectionRouter | null = null;
 let remoteOutcomes: RemoteOutcomeStore | null = null;
@@ -239,7 +241,7 @@ const shutdown = new ShutdownCoordinator({
   onError: (error) => logs.write('warn', 'app', `Application shutdown failed: ${error instanceof Error ? error.message : String(error)}`),
   onExit: (status) => {
     if (status === 'incomplete') logs.write('error', 'app', 'Shutdown incomplete; recovery status is uncertain.');
-    app.exit(status === 'settled' ? 0 : 1);
+    app.exit(desktopStartupExitCode(startupFailed, status));
   },
 });
 
@@ -307,6 +309,9 @@ async function openLaunchConnection(profile: string): Promise<void> {
 // keeps the latest project pending until the renderer can accept it.
 if (instanceProfile.mode === 'single' && instancePrimaryApp) {
   app.on('second-instance', (_event, commandLine, workingDirectory, additionalData) => {
+    // A contender probes occupied Chromium slots; this is not a request to
+    // focus the owner or forward a project/connection into its live runtime.
+    if (isMultiInstanceProbe(commandLine, additionalData)) return;
     const window = dispatcher.activeHandle();
     if (window) {
       if (window.isMinimized()) window.restore();
@@ -494,6 +499,19 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) windows.createWindow({ initial: true });
   });
+}).catch((error: unknown) => {
+  startupFailed = true;
+  const failure = desktopStartupFailure(error);
+  try {
+    logs.write('error', 'app', failure.message);
+    console.error(`${failure.title}: ${failure.message}`);
+    // Profile ownership can fail before any renderer/window exists. Never
+    // expose SDK error text or owner diagnostics through this native notice.
+    dialog.showErrorBox(failure.title, failure.message);
+  } finally {
+    // Only this failed contender exits, through the existing disposal owner.
+    app.quit();
+  }
 });
 
 app.on('before-quit', (event) => {

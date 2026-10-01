@@ -20,17 +20,30 @@ function runSuite(target, workspace, timeout) {
     let output = '';
     let diagnostics = '';
     let terminationReason = null;
+    let treeTermination = Promise.resolve();
     const stop = (reason) => {
       if (terminationReason) return;
       terminationReason = reason;
-      if (process.platform === 'win32') execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 2_000 }, () => { if (child.exitCode === null) child.kill('SIGKILL'); });
-      else { try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); } }
+      if (process.platform === 'win32') {
+        // The Node test coordinator can close before taskkill finishes its
+        // owned descendants. Keep the workspace until the tree command exits.
+        treeTermination = new Promise((settled) => {
+          execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 2_000 }, () => {
+            if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+            settled();
+          });
+        });
+      } else { try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); } }
     };
     const timer = setTimeout(() => stop('timeout'), timeout);
     child.stdout.on('data', (chunk) => { output += chunk.toString(); if (Buffer.byteLength(output) > 1_000_000) { output = output.slice(-64_000); stop('output-limit'); } });
     child.stderr.on('data', (chunk) => { diagnostics += chunk.toString(); if (Buffer.byteLength(diagnostics) > 1_000_000) { diagnostics = diagnostics.slice(-64_000); stop('output-limit'); } });
     child.once('error', (error) => { clearTimeout(timer); reject(error); });
-    child.once('close', (code) => { clearTimeout(timer); resolve({ output, diagnostics, exitCode: code ?? 1, terminationReason }); });
+    child.once('close', async (code) => {
+      clearTimeout(timer);
+      await treeTermination;
+      resolve({ output, diagnostics, exitCode: code ?? 1, terminationReason });
+    });
   });
 }
 async function readJson(file) {
@@ -92,7 +105,7 @@ export async function evaluate({ caseId, workspace, metricsFile, baselineFile, t
       limitations: ['Offline component task, not a live Fate UI/provider run.', 'Task time and provider cost are externally reported, not measured by this grader.', 'Candidate code runs with the invoking account privileges; this is not a sandbox or adversarially tamper-proof grader. Source hashes cover the submitted module, not arbitrary imported dependencies.'],
     };
   } finally {
-    await fs.rm(directory, { recursive: true, force: true });
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: process.platform === 'win32' ? 3 : 0, retryDelay: 100 });
   }
 }
 

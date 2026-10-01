@@ -18,6 +18,10 @@ export default defineConfig({
     // Windows ACL checks are real host-policy probes, not mocked mode bits.
     testTimeout: process.platform === 'win32' ? 90_000 : 30_000,
     pool: 'forks',
+    // Native ACL subprocesses plus real Git/Node contenders oversubscribe a
+    // Windows workstation at the CPU-derived default. Bound independent test
+    // workers, not lock deadlines: the 15s ownership case remains unchanged.
+    ...(process.platform === 'win32' ? { maxWorkers: 2 } : {}),
     projects: [
       {
         extends: true,

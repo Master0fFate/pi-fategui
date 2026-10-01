@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -63,7 +63,7 @@ describe('independent server package closure and artifact boundaries', () => {
   it('refuses a missing required locked snapshot instead of re-resolving it', async () => {
     const directory = await fixture(); await mkdir(path.join(directory, 'node_modules/@earendil-works'), { recursive: true });
     await symlink(await import('node:fs/promises').then(module => module.realpath(path.join(root, 'node_modules/@earendil-works/pi-coding-agent'))),
-      path.join(directory, 'node_modules/@earendil-works/pi-coding-agent'), 'dir');
+      path.join(directory, 'node_modules/@earendil-works/pi-coding-agent'), process.platform === 'win32' ? 'junction' : 'dir');
     await writeFile(path.join(directory, 'pnpm-workspace.yaml'), await readFile(path.join(root, 'pnpm-workspace.yaml')));
     const script = `import {createRuntimeProjection} from ${JSON.stringify(packageImport)};
 import {createRequire} from 'node:module'; import {readFileSync,writeFileSync,realpathSync} from 'node:fs';
@@ -90,9 +90,13 @@ await createRuntimeProjection(${JSON.stringify(directory)},true);`;
 
   it('refuses dependency links outside the package even when the link map is checksummed', async () => {
     const parent = await fixture(); const directory = path.join(parent, 'artifact'); await mkdir(directory);
-    const outside = path.join(parent, 'checkout-module.mjs'); await writeFile(outside, 'export const borrowed = true;');
-    await symlink(outside, path.join(directory, 'module.mjs'));
-    const links = JSON.stringify([{ path: 'module.mjs', target: outside }]) + '\n'; await writeFile(path.join(directory, 'LINKS.json'), links);
+    // A real Windows junction requires no elevated symlink permission. It must
+    // still be refused as an outside-package dependency, just like a POSIX link.
+    const outside = path.join(parent, 'checkout-module'); await mkdir(outside);
+    await writeFile(path.join(outside, 'index.mjs'), 'export const borrowed = true;');
+    const link = path.join(directory, 'module');
+    await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    const links = JSON.stringify([{ path: 'module', target: await readlink(link) }]) + '\n'; await writeFile(path.join(directory, 'LINKS.json'), links);
     await writeFile(path.join(directory, 'SHA256SUMS'), `${sha(links)}  LINKS.json\n`);
     const script = `import {verifyPackage} from ${JSON.stringify(smokeImport)}; await verifyPackage(${JSON.stringify(directory)});`;
     const processResult = runNode(['--input-type=module', '-e', script]);

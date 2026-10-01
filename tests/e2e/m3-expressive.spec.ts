@@ -46,13 +46,27 @@ async function geometry(page: Page, chromeRadius: string) {
         const shell = document.querySelector('.app-shell')!;
         const tracks = [...shell.querySelectorAll<HTMLElement>(':scope > .sidebar, :scope > .workspace, :scope > .inspector, :scope > .resize-handle')];
         const panel = getComputedStyle(shell).backgroundColor;
+        // Native host controls precede the shell in M5. The tonal tracks must
+        // still join exactly inside their own frame, not cover those controls.
+        const frame = shell.getBoundingClientRect();
         return tracks.every((track, index) => {
           const style = getComputedStyle(track);
           const box = track.getBoundingClientRect();
-          const previousRight = index === 0 ? 0 : tracks[index - 1]!.getBoundingClientRect().right;
+          const previousRight = index === 0 ? frame.left : tracks[index - 1]!.getBoundingClientRect().right;
           return style.margin === '0px' && style.borderRadius === '0px' && style.backgroundColor === panel
-            && Math.abs(box.left - previousRight) < 0.5 && box.top === 0 && box.bottom === innerHeight;
-        }) && Math.abs(tracks.at(-1)!.getBoundingClientRect().right - innerWidth) < 0.5;
+            && Math.abs(box.left - previousRight) < 0.5 && box.top === frame.top && box.bottom === frame.bottom;
+        }) && Math.abs(tracks.at(-1)!.getBoundingClientRect().right - frame.right) < 0.5;
+      })(),
+      platformFits: (() => {
+        const root = document.querySelector<HTMLElement>('.desktop-platform-root')!;
+        const frame = bounds('.app-shell');
+        const rootBox = root.getBoundingClientRect();
+        const flow = [...root.children].filter((element) => !['fixed', 'absolute'].includes(getComputedStyle(element).position));
+        const preceding = flow[flow.indexOf(document.querySelector('.app-shell')!) - 1];
+        const controlsBottom = preceding?.getBoundingClientRect().bottom ?? rootBox.top;
+        return rootBox.top === 0 && rootBox.left === 0 && rootBox.right === innerWidth && rootBox.bottom === innerHeight
+          && frame.left === 0 && frame.right === innerWidth && frame.top === controlsBottom && frame.bottom === innerHeight
+          && root.scrollHeight <= root.clientHeight + 1;
       })(),
       circles: (() => {
         const buttons = [...document.querySelectorAll<HTMLElement>('.composer-toolbar .composer-icon-action, .composer-toolbar .composer-tools-toggle, .composer-toolbar .permission-toggle, .composer-toolbar .voice-button')].filter((button) => button.getBoundingClientRect().width > 0);
@@ -93,7 +107,7 @@ async function geometry(page: Page, chromeRadius: string) {
       radius: getComputedStyle(document.querySelector('.composer')!).borderRadius,
       chromeRadius: getComputedStyle(document.querySelector('.window-control')!).borderRadius,
     };
-  })).toMatchObject({ overflow: false, joinedShell: true, circles: true, toolbarFits: true, composerFits: true, insetAligned: true, closedMusicClear: true, headerFits: true, tabsFit: true, searchFits: true, sessionInset: true, sendFits: true, chromeRadius });
+  })).toMatchObject({ overflow: false, joinedShell: true, platformFits: true, circles: true, toolbarFits: true, composerFits: true, insetAligned: true, closedMusicClear: true, headerFits: true, tabsFit: true, searchFits: true, sessionInset: true, sendFits: true, chromeRadius });
 }
 
 async function agentIconGeometry(page: Page) {

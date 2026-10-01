@@ -8,15 +8,30 @@ export interface ProviderLoginIo {
   write(text: string): void;
   readPrivate(message: string, signal: AbortSignal): Promise<string>;
 }
-const cancelled = (): Error => new Error('Provider login canceled.');
+const operatorMessages = {
+  interactive: 'Provider login requires an interactive host terminal. Run it on the execution host, or use Pi-supported host settings.',
+  noProviders: 'This Pi SDK has no supported provider login methods. Configure providers on the execution host.',
+  unsupportedProvider: 'Provider login is unavailable in this Pi SDK. Use supported host configuration.',
+  unsupportedMethod: 'This login method is unavailable. Use Pi-supported host configuration.',
+  failed: 'Provider login failed. Check the provider page and supported host configuration.',
+  incomplete: 'Provider login did not complete. Check authorization on the execution host.',
+  cancelled: 'Provider login canceled. The host retains SDK ownership until cancellation settles.',
+  inputLimit: 'Provider response exceeds the input limit.',
+} as const;
+/** Only fixed operator guidance may cross the CLI error boundary, never SDK text. */
+export class ProviderLoginOperatorError extends Error {
+  constructor(readonly code: keyof typeof operatorMessages) { super(operatorMessages[code]); }
+  get operatorMessage(): string { return operatorMessages[this.code]; }
+}
+const cancelled = (): Error => new ProviderLoginOperatorError('cancelled');
 /** Hidden terminal input. No raw-mode response reaches stdout or an ordinary log. */
 export function createProviderLoginIo(): ProviderLoginIo {
   const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true && typeof process.stdin.setRawMode === 'function';
   return {
     interactive,
-    write(text) { if (!interactive) throw new Error('Provider login requires an interactive host terminal.'); process.stdout.write(text); },
+    write(text) { if (!interactive) throw new ProviderLoginOperatorError('interactive'); process.stdout.write(text); },
     readPrivate(message, signal) {
-      if (!interactive) return Promise.reject(new Error('Provider login requires an interactive host terminal.'));
+      if (!interactive) return Promise.reject(new ProviderLoginOperatorError('interactive'));
       if (signal.aborted) return Promise.reject(cancelled());
       process.stdout.write(`${message}\nInput is hidden. Press Enter to continue, or Ctrl+C to cancel.\n`);
       return new Promise<string>((resolve, reject) => {
@@ -38,7 +53,7 @@ export function createProviderLoginIo(): ProviderLoginIo {
             if (character === '\u007f' || character === '\b') { value = [...value].slice(0, -1).join(''); continue; }
             if (character < ' ' || character === '\u007f') continue;
             value += character;
-            if (value.length > 20_000) { cleanup(); reject(new Error('Provider response exceeds the input limit.')); return; }
+            if (value.length > 20_000) { cleanup(); reject(new ProviderLoginOperatorError('inputLimit')); return; }
           }
         };
         process.stdin.setRawMode(true); process.stdin.resume();
@@ -66,7 +81,7 @@ function showChallenge(io: ProviderLoginIo, state: ProviderLoginState): void {
 /** Uses only existing SDK prompts and responses. It invents no OAuth exchange. */
 export async function runProviderLogin(client: HostAdminClient, requested: { readonly providerId?: string; readonly method?: 'api_key' | 'oauth' },
   io: ProviderLoginIo = createProviderLoginIo(), options: { readonly signal?: AbortSignal; readonly pollMs?: number; readonly deadlineMs?: number; readonly signals?: HostSignals } = {}): Promise<void> {
-  if (!io.interactive) throw new Error('Use provider login in an interactive terminal on the execution host. Configure unsupported flows with Pi-supported host settings.');
+  if (!io.interactive) throw new ProviderLoginOperatorError('interactive');
   const interrupted = new AbortController(), signals = options.signals ?? process;
   const interrupt = () => interrupted.abort();
   signals.on('SIGINT', interrupt); signals.on('SIGTERM', interrupt);
@@ -76,12 +91,12 @@ export async function runProviderLogin(client: HostAdminClient, requested: { rea
     if (signal.aborted) throw cancelled();
     let provider = catalog.providers.find((entry) => entry.id === requested.providerId);
     if (!requested.providerId) {
-      if (!catalog.providers.length) throw new Error('This Pi SDK has no supported provider login methods. Configure providers on the execution host.');
+      if (!catalog.providers.length) throw new ProviderLoginOperatorError('noProviders');
       io.write(catalog.providers.map((entry, index) => `${index + 1}. ${terminalText(entry.name)}\n`).join(''));
       const selection = await io.readPrivate('Select the provider number.', signal);
       provider = /^[1-9][0-9]*$/u.test(selection) ? catalog.providers[Number(selection) - 1] : undefined;
     }
-    if (!provider) throw new Error('Provider login is unavailable in this Pi SDK. Use supported host configuration.');
+    if (!provider) throw new ProviderLoginOperatorError('unsupportedProvider');
     let method = requested.method;
     if (!method) {
       if (provider.methods.length === 1) method = provider.methods[0];
@@ -91,7 +106,7 @@ export async function runProviderLogin(client: HostAdminClient, requested: { rea
         method = /^[1-9][0-9]*$/u.test(selection) ? provider.methods[Number(selection) - 1] : undefined;
       }
     }
-    if (!method || !provider.methods.includes(method)) throw new Error('This login method is unavailable. Use Pi-supported host configuration.');
+    if (!method || !provider.methods.includes(method)) throw new ProviderLoginOperatorError('unsupportedMethod');
     const input: ProviderLoginStartInput = { providerId: provider.id, method };
     let started = false;
     let read: { id: string; controller: AbortController; result: Promise<{ kind: 'input'; value: string }> } | null = null;
@@ -102,9 +117,9 @@ export async function runProviderLogin(client: HostAdminClient, requested: { rea
       started = true;
       for (;;) {
         if (signal.aborted) throw cancelled();
-        if (state.status === 'error') throw new Error('Provider login failed. Check the provider page and supported host configuration.');
+        if (state.status === 'error') throw new ProviderLoginOperatorError('failed');
         if (state.status === 'idle') {
-          if (state.providers.find((entry) => entry.id === provider.id)?.configured !== true) throw new Error('Provider login did not complete.');
+          if (state.providers.find((entry) => entry.id === provider.id)?.configured !== true) throw new ProviderLoginOperatorError('incomplete');
           io.write('Provider login completed. The SDK reports configured authorization.\n');
           return;
         }

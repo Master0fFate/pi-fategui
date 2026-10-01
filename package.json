@@ -56,6 +56,8 @@
     "dist": "pnpm verify:speech-runtime && pnpm prepare:yt-dlp && pnpm build && electron-builder --publish never",
     "build:cli": "vite build --config vite.cli.config.ts",
     "test:remote": "node scripts/test-remote.mjs",
+    "check:windows-launcher": "node scripts/check-windows-launcher.mjs",
+    "check:windows-tty": "node scripts/check-windows-tty.mjs",
     "package:server": "node scripts/package-server.mjs",
     "smoke:server-package": "node scripts/smoke-server-package.mjs"
   },

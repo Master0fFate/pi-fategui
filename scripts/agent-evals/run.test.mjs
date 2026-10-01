@@ -9,7 +9,8 @@ import { evaluate } from './run.mjs';
 import { cases } from './cases.mjs';
 
 const roots = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true,
+  maxRetries: process.platform === 'win32' ? 3 : 0, retryDelay: 100 }))); });
 async function workspace(source) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-eval-test-'));
   roots.push(root);
@@ -80,6 +81,20 @@ describe('offline agent task grader', () => {
     const root = await workspace('export function recoverMessages() {}\nprocess.on("SIGTERM", () => {}); while (true) {}');
     const result = await evaluate({ caseId: 'delivery-recovery', workspace: root, timeout: 200 });
     expect(result).toMatchObject({ success: false, timedOut: true });
+  });
+
+  it('confirms the actual stalled candidate process has exited before returning its workspace', async () => {
+    const root = await workspace(`import { writeFileSync } from 'node:fs';
+writeFileSync(new URL('candidate.pid', import.meta.url), String(process.pid));
+export function recoverMessages() {}
+process.on('SIGTERM', () => {}); while (true) {}`);
+    const result = await evaluate({ caseId: 'delivery-recovery', workspace: root, timeout: 1500 });
+    expect(result).toMatchObject({ success: false, timedOut: true });
+    const pid = Number(await fs.readFile(path.join(root, 'candidate.pid'), 'utf8'));
+    expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+    expect(() => process.kill(pid, 0)).toThrow();
+    await fs.rm(root, { recursive: true, force: true, maxRetries: process.platform === 'win32' ? 3 : 0, retryDelay: 100 });
+    await expect(fs.stat(root)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('validates reported metrics and rejects incompatible baselines', async () => {

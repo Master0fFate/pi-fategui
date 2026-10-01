@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { hasNewInstanceFlag } from './launchProject';
 
 interface InstanceProfileApp {
   getPath(name: 'userData'): string;
@@ -25,6 +26,16 @@ export function instanceUserDataPath(primaryUserDataPath: string, slot: number):
   if (!Number.isSafeInteger(slot) || slot < 1) throw new Error('The Fate UI instance slot must be a positive safe integer.');
   const primary = path.resolve(primaryUserDataPath);
   return slot === 1 ? primary : path.join(primary, 'instances', String(slot));
+}
+
+/** Occupied Chromium-slot probes must not focus or retarget the current owner.
+ * acquireInstanceProfile labels environment-only multi launches in additionalData;
+ * argv is a fallback for launchers which do not provide that metadata.
+ */
+export function isMultiInstanceProbe(commandLine: readonly string[], additionalData: unknown): boolean {
+  return hasNewInstanceFlag(commandLine)
+    || (typeof additionalData === 'object' && additionalData !== null
+      && 'mode' in additionalData && additionalData.mode === 'multi');
 }
 
 /**

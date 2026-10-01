@@ -33,9 +33,9 @@ export function DesktopPlatformRoot() {
   };
   const key = state ? `${state.kind}:${state.generation}:${state.profile?.id ?? ''}:${state.serverEpoch ?? ''}` : 'selection-unconfirmed';
   return <div className="desktop-platform-root">
-    {connections && <ConnectionProfileEditor api={connections} onSaved={async () => setProfiles(await connections.listConnectionProfiles())} />}
-    {connections && (profiles.length > 0 || state?.kind !== 'local') && <section className="desktop-host-selector" aria-label="Execution host">
-      <label>Execution host <select aria-label="Execution host" disabled={busy} value={state?.kind === 'local' ? 'local' : state?.profile?.id ?? ''}
+    {connections && <section className="desktop-host-selector" aria-label="Execution host">
+      <ConnectionProfileEditor api={connections} onSaved={async () => setProfiles(await connections.listConnectionProfiles())} />
+      {(profiles.length > 0 || state?.kind !== 'local') && <><label>Execution host <select aria-label="Execution host" disabled={busy} value={state?.kind === 'local' ? 'local' : state?.profile?.id ?? ''}
         onChange={(event) => { const id = event.target.value; void run(() => connections.selectConnectionProfile(id === 'local' ? { kind: 'local' } : { kind: 'remote', profileId: id })); }}>
         {(!state || state.kind === 'remote' && !profiles.some((profile) => profile.id === state.profile?.id)) &&
           <option value={state?.profile?.id ?? ''} disabled>{state?.profile?.label ?? 'Selection unconfirmed'} — remote unavailable; no local execution</option>}
@@ -45,6 +45,7 @@ export function DesktopPlatformRoot() {
       {state?.kind === 'remote' && <><ConnectionFeedback state={state} /><span>Remote files are not local files.</span>
         <button type="button" disabled={busy} onClick={() => void run(() => getFateApiOptional()!.remote!.connect())}>Connect selected host</button>
         <button type="button" disabled={busy} onClick={() => void run(() => getFateApiOptional()!.remote!.disconnect())}>Disconnect selected host</button></>}
+      </>}
       {error && <p role="alert">{error}</p>}
     </section>}
     {initialized ? <App key={key} /> : <p role="status">Checking the saved execution host. Local execution has not started.</p>}

@@ -198,7 +198,9 @@ describe('T18 workspace-bound project data and client preferences', () => {
       await writeFile(path.join(f.a, '.git', 'refs', 'heads', branch), `${'0'.repeat(40)}\n`);
       const scoped = createScopedGitHandlers(f.ha, f.authorize(f.ha));
       await expect(scoped.history({})).rejects.toThrow();
-      await rm(path.join(f.a, '.git'), { recursive: true });
+      // Real Windows handles can briefly delay unlink; keep bounded retries
+      // without replacing the corrupt/absent repository checks.
+      await rm(path.join(f.a, '.git'), { recursive: true, maxRetries: 3 });
       expect(await scoped.history({})).toEqual({ head: null, commits: [], truncated: false });
     } finally { await f.dispose(); }
   });

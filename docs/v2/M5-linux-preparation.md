@@ -1,4 +1,16 @@
-# M5 Linux preparation - not accepted
+# M5 preparation - not accepted
+
+## Windows continuation (local, unaccepted)
+
+Windows repairs are prepared on `windows-m5-verification`, based on retrieved Linux head `1ef706036ff62fd1be5f129851c102cac77db1ae`. Publication of this source-only preparation branch is authorized for the next Linux session; it is not approval to merge main or accept M5. The SSH editor now uses the existing Team-style four-card modal, with explicit trust, private opaque file selection and truthful error recovery. Current recorded V2 739/no skips, units 2602/four existing skips, network 40/one existing skip, browser nine and JS builds have separate exact source bindings in the private plans pack.
+
+The later full Electron attempt failed two cases. Both have subsequent real focused passes: compact inspector labels fit at the icon breakpoint without hiding icons, and native Settings Close receives trusted owned-window pointer events. The native helper now refuses unowned foreground before input and does not attach to another process's input thread or inject a blind activation click. These focused results do not by themselves establish a complete current aggregate suite, installed-product/new-instance behavior or native remote acceptance. Practical source review also identifies a pre-existing blank-tab conflict at inspector widths259px or less and a stale native DOM-sample geometry risk under external resize/DPI change; neither was live-reproduced here. Both remain explicit follow-ups in the handoff, not claimed fixes or passes.
+
+Complete production-installed/new-instance/native-picker, real SSH/active recovery, non-root Linux service/logout and exact web-notice gates remain open. Added Chromium slots still collide with the canonical desktop ownership root. The documented independent-process/shared-session contract needs a reviewed compatible design; silently changing new instances to empty independent profiles is not authorized. The strict notice writer still refuses unavailable exact `react-remove-scroll-bar@2.3.8` terms; demonstrated emitted helper/HTML/mandatory-text-copy defects are repaired but this is not full notice closure. T50 now has guarded executable external-fixture source, not a real remote pass. See [the Linux handoff](M5-linux-handoff.md).
+
+The requested shutdown already succeeded. **Do not execute machine shutdown again**, even on failure. Preserve all input archives/plans locally; never upload them. Keep macOS outside this task's scope. No main merge, executable/package/release build or T51. Full updated plans and evidence are delivered separately from Git; historical Linux results below are not results for the newer Windows-repaired tree.
+
+## Historical Linux evidence (preserved)
 
 Branch: `v2-preparation-linux`. Published code commit: `f43f7b5fb96b2ff9d50f761848e8d8ecf6aa7073`. Its Git tree `5e766bcc19be87839605bd796e2bdb818553a0ba` is byte-identical to the tested local code commit `1fac11899d324293db3ed83cf62f56ae296bf5f0`; GitHub connector publication changes commit metadata, not source bytes.
 

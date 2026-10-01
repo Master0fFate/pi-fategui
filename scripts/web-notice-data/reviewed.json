@@ -1,0 +1,666 @@
+{
+  "schema": 1,
+  "scope": "Conservative exact-version text/byte attribution review, not legal certification. Changed or unknown forms/contributions require new review.",
+  "packages": {
+    "@fontsource-variable/inter@5.3.0": {
+      "declaration": "OFL-1.1",
+      "integrity": "sha512-OupL48va4JNofb97w6NYeF9S7W/kHNKM0Er8Dem5nqi4jeOLrVJDoE8tZEpnMJmtkvNbB1EIPPwHcdkF6b1oUA==",
+      "manifestSha256": "1075dffa0a9ec739bdee2af296b481d2867d305d41be9e0439ca3313d3ad1298",
+      "licenses": [
+        "OFL-1.1"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, OFL 1.1 preamble, definitions, all five conditions, termination and complete disclaimer reviewed."
+    },
+    "@fontsource-variable/jetbrains-mono@5.3.0": {
+      "declaration": "OFL-1.1",
+      "integrity": "sha512-F32xpS2NsGYoQi2ADSkKTgpJj7ozajsGgDJ8woTnqjmIB+dxDIqImjl4pXZVEExu8UFZ2ndhmX18EBS/hdz3Lw==",
+      "manifestSha256": "68c4e5a9a0cdafbb8c8f2f992b35a0691451735f164a78948a47ea90eb5e57ab",
+      "licenses": [
+        "OFL-1.1"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "403581b69dac5cff4079205e01c6b467e56af449ecbd7247693ddb1baafa005b"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, OFL 1.1 preamble, definitions, all five conditions, termination and complete disclaimer reviewed."
+    },
+    "@fontsource-variable/montserrat@5.3.0": {
+      "declaration": "OFL-1.1",
+      "integrity": "sha512-7PaZoxaxrWLAyrhO46v65An9LhUhfkTExWLhfbywYZCnZEgg/W1rEHnlNmZKjNZ3nJTVYyicqxlJt10z/26yTA==",
+      "manifestSha256": "3e293ffad1125825073bb103c6f778dd6ea7ad6b3b1b4f9fb34ba7888cc4430b",
+      "licenses": [
+        "OFL-1.1"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "f429f739351287574c0c3175a9222bb3e49c7cad3f568a04f2c08d74c107724e"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, OFL 1.1 preamble, definitions, all five conditions, termination and complete disclaimer reviewed."
+    },
+    "@fontsource-variable/noto-sans-mono@5.3.0": {
+      "declaration": "OFL-1.1",
+      "integrity": "sha512-EgozyWG4nG2U1OT+zfdyHP1L8O0fUFMUBOilVF9urTshqIdfeGV9/FUQxaNHdPvHtV1cQCs1Ql0W1q93SiPK2w==",
+      "manifestSha256": "68d21006aeb14dee538163ad1a55e8f53aa4b7131c99f49d6e1fdf3b04dc7195",
+      "licenses": [
+        "OFL-1.1"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "9e73c367ca79c54f9bce96d879b7a7f7fa279119ed4b3e61299f061b34f361cb"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, OFL 1.1 preamble, definitions, all five conditions, termination and complete disclaimer reviewed."
+    },
+    "@fontsource-variable/noto-sans@5.3.0": {
+      "declaration": "OFL-1.1",
+      "integrity": "sha512-e3ZuxzY9AL2psXPZlhwhnYrHUHv6PMoyK9MQ7croF0CUgURLqu9EMjW7q2FgVLwij1tjLsIHQrnwQ8aUcg4BiA==",
+      "manifestSha256": "0fe282cf8aa68d205c5da233ddc103dead038f3dbb5f13e17a2cbbb540876c46",
+      "licenses": [
+        "OFL-1.1"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "54ec7b5a35310ad66f9f3091426f7028484cbf9ae1ab5da30122ee412a3009e1"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, OFL 1.1 preamble, definitions, all five conditions, termination and complete disclaimer reviewed."
+    },
+    "@fontsource-variable/roboto-flex@5.3.0": {
+      "declaration": "OFL-1.1",
+      "integrity": "sha512-bOxckUy0qXNRjhV6e4pcHGSvptix4ZRD1uaj5Za8h+p3qrb2GL4U4TQdpVmPSy0SmqwldfD+JJqEKdF68EyiAw==",
+      "manifestSha256": "4ef4833594f229670817fe1a67bc563e318a7c31e641a6fe4e4bf19da88f32e0",
+      "licenses": [
+        "OFL-1.1"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "9d1e34d7081410f85bc1bf4805ce076a16fb1a2306661aef9a7bee72fffb5e23"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, OFL 1.1 preamble, definitions, all five conditions, termination and complete disclaimer reviewed."
+    },
+    "@fontsource/poppins@5.3.0": {
+      "declaration": "OFL-1.1",
+      "integrity": "sha512-cms1nM7U6SN8epIV1WMVOV8VsA645aSm3wHfzIQnkk188U341ThbJGSl2Sv54V29gnDbT2arMPfLzvVIIVCceQ==",
+      "manifestSha256": "e038edc73e6c893aba2f46b15f94a055175b063766cfd895ec66a4a1a2381e3e",
+      "licenses": [
+        "OFL-1.1"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "5c4a92c8f8ce0ab211f4c72889d82383c9644546115d9ba39a4f2d5b8f37014b"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, OFL 1.1 preamble, definitions, all five conditions, termination and complete disclaimer reviewed."
+    },
+    "@ungap/structured-clone@1.3.3": {
+      "declaration": "ISC",
+      "integrity": "sha512-60YRaenCQcVjYEKOcG824+DRGGIQ3VKErcBoAEDJZz5bKIs2ZG+X/H9Nk+Q6EVkwJk5QNApxbrc5QtBSwtrXAg==",
+      "manifestSha256": "b788dd5af217ffc1dc4e07aab670c3d2c702a8d95aeec3224b5810284ff9746c",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "dc6d4961d8b6ee747231582ae9c53ce1d66bf76bc9f5a28f554c0e97210953bf"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-array@2.12.1": {
+      "declaration": "BSD-3-Clause",
+      "integrity": "sha512-B0ErZK/66mHtEsR1TkPEEkwdy+WDesimkM5gpZr5Dsg54BiTA5RXtYW5qTLIAcekaS9xfZrzBLF/OAkB3Qn1YQ==",
+      "manifestSha256": "0a5cb18279a6b414607e0120d604adc9055a923a42e20d44a190ef97d5ee24b7",
+      "licenses": [
+        "BSD-3-Clause"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "0747bebeb06b10954913149be9b9a8bdf6fad3e6fdcbd9f9524e7a94c13d2cea"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, all three redistribution conditions and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-array@3.2.4": {
+      "declaration": "ISC",
+      "integrity": "sha512-tdQAmyA18i4J7wprpYq8ClcxZy3SC31QMeByyCFyRt7BVHdREQZ5lpzoe5mFEYZUWe+oq8HBvk9JjpibyEV4Jg==",
+      "manifestSha256": "f9e9dc28e2a9bfe32a0a80dda5c9f8bb49758ee112f4418e2b5662787f1bf500",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "3e6849627f74ff73c257a3ae1efb574015d94fc1035c05ec3c15805165efcbc4"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-axis@3.0.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-IH5tgjV4jE/GhHkRV0HiVYPDtvfjHQlQfJHs0usq7M30XcSBvOotpmH1IgkcXsO/5gEQZD43B//fc7SRT5S+xw==",
+      "manifestSha256": "0589f34ffb722e637370fdd1b15add37e495908cffed3400f7c7a6f4c3f61b4a",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-brush@3.0.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-ALnjWlVYkXsVIGlOsuWH1+3udkYFI48Ljihfnh8FZPF2QS9o+PzGLBslO0PjzVoHLZ2KCVgAM8NVkXPJB2aNnQ==",
+      "manifestSha256": "9f48acbb467528d508b56d698f8c2a5ae10596b2f13b673ae55332f84d2ed1ff",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-color@3.1.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-zg/chbXyeBtMQ1LbD/WSoW2DpC3I0mpmPdW+ynRTj/x2DAWYrIY7qeZIHidozwV24m4iavr15lNwIwLxRmOxhA==",
+      "manifestSha256": "3de1c3c467f09ffc0372c8b765f8981535c22e1d9f944d17a35ee37df1033516",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "faa682e3e430941f958d26180458f5934a62f58dac4d70ccdd15608c15d0f884"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-dispatch@3.0.1": {
+      "declaration": "ISC",
+      "integrity": "sha512-rzUyPU/S7rwUflMyLc1ETDeBj0NRuHKKAcvukozwhshr6g6c5d8zh4c2gQjY2bZ0dXeGLWc1PF174P2tVvKhfg==",
+      "manifestSha256": "6d9bb49819ec45e2187304df1b25e731c246d646cd2eb5aa2fe06e6c9cc7ad84",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-ease@3.0.1": {
+      "declaration": "BSD-3-Clause",
+      "integrity": "sha512-wR/XK3D3XcLIZwpbvQwQ5fK+8Ykds1ip7A2Txe0yxncXSdq1L9skcG7blcedkOX+ZcgxGAmLX1FrRGbADwzi0w==",
+      "manifestSha256": "393518c7886852c8cdeae42a54065c3ba54eddb701dd2da98c6d048f92cbc91c",
+      "licenses": [
+        "BSD-3-Clause"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "b989d9085148d21ff64a75e14462aefa06b2589a55553b07b1460c70081c7d08"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, all three redistribution conditions and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-format@3.1.2": {
+      "declaration": "ISC",
+      "integrity": "sha512-AJDdYOdnyRDV5b6ArilzCPPwc1ejkHcoyFarqlPqT7zRYjhavcT3uSrqcMvsgh2CgoPbK3RCwyHaVyxYcP2Arg==",
+      "manifestSha256": "0227cabd3bc479f158f6a7435cafdbdeaed76d35b8917cf3fcfe2c367e46e37e",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "2a6d2d5f32ba0b755ddbc1c833f766e30cdbe6ebe9a6d4e3e24427721f0b63d3"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-hierarchy@3.1.2": {
+      "declaration": "ISC",
+      "integrity": "sha512-FX/9frcub54beBdugHjDCdikxThEqjnR93Qt7PvQTOHxyiNCAlvMrHhclk3cD5VeAaq9fxmfRp+CnWw9rEMBuA==",
+      "manifestSha256": "5b3864284fb2b406f453a0eddd475f4fcd15c9a5302ff76cdce5d95442d93168",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-interpolate@3.0.1": {
+      "declaration": "ISC",
+      "integrity": "sha512-3bYs1rOD33uo8aqJfKP3JWPAibgw8Zm2+L9vBKEHJ2Rg+viTR7o5Mmv5mZcieN+FRYaAOWX5SJATX6k1PWz72g==",
+      "manifestSha256": "3e2ce33f9d7072b6bfedbae949c1df546e187994e44b6f4b3795abeb63914613",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-path@1.0.9": {
+      "declaration": "BSD-3-Clause",
+      "integrity": "sha512-VLaYcn81dtHVTjEHd8B+pbe9yHWpXKZUC87PzoFmsFrJqgFwDe/qxfp5MlfsfM1V5E/iVt0MmEbWQ7FVIXh/bg==",
+      "manifestSha256": "706ea3f593b24b6e212afac23ce215bad68ed2962eec5b4f6ede66699dc8892d",
+      "licenses": [
+        "BSD-3-Clause"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "b8265327ab678f554800e71188b1cc6b1ff57522e292d2b1c0be66f27cf328b6"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, all three redistribution conditions and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-path@3.1.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-p3KP5HCf/bvjBSSKuXid6Zqijx7wIfNW+J/maPs+iwR35at5JCbLUT0LzF1cnjbCHWhqzQTIN2Jpe8pRebIEFQ==",
+      "manifestSha256": "1aae497436309c84e7db7e5a2a11b1cc78bbba98f26088e4e71079cd725bdc89",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "a09b0d6d76e768fca2085fad05743ee81ddd11946bcda160a3cf5e1081a479aa"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-sankey@0.12.3": {
+      "declaration": "BSD-3-Clause",
+      "integrity": "sha512-nQhsBRmM19Ax5xEIPLMY9ZmJ/cDvd1BG3UVvt5h3WRxKg5zGRbvnteTyWAbzeSvlh3tW7ZEmq4VwR5mB3tutmQ==",
+      "manifestSha256": "aa6b0219ffc5d7c957d3a47b063cea5e40dd1cb6427d04308e15634dcf2b22a2",
+      "licenses": [
+        "BSD-3-Clause"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "2bf785e778d67a4f5266cffcd4f2cc5bb98cde73791666e7efeb8002ba32dfa5"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, all three redistribution conditions and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-scale-chromatic@3.1.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-A3s5PWiZ9YCXFye1o246KoscMWqf8BsD9eRiJ3He7C9OBaxKhAd5TFCdEx/7VbKtxxTsu//1mMJFrEt572cEyQ==",
+      "manifestSha256": "9d60cf2445659495a3698fa2d8d643a6eb7febcf3ebcede83c3feb260cfa6f82",
+      "licenses": [
+        "ISC",
+        "Apache-2.0"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "0986d93944902cca9af86824b6a641b4b7c2d10602fc510c433a8bcd443919fe"
+        }
+      ],
+      "supplemental": [
+        {
+          "source": "Apache-2.0.txt",
+          "storedAs": "Apache-2.0.txt.base64",
+          "encoding": "base64",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+          "license": "Apache-2.0"
+        }
+      ],
+      "review": "Exact published LICENSE contains full ISC plus ColorBrewer Apache-2.0 attribution/header, not full Apache terms. Retain those bytes AND the exact canonical Apache 2.0 text obtained from its publisher."
+    },
+    "d3-scale@4.0.2": {
+      "declaration": "ISC",
+      "integrity": "sha512-GZW464g1SH7ag3Y7hXjf8RoUuAFIqklOAq3MRl4OaWabTFJY9PN/E1YklhXLh+OQ3fM9yS2nOkCoS+WLZ6kvxQ==",
+      "manifestSha256": "75f7dfe869b2e6d1cbecd380f939f218ca046a26313c4e623aa52d6352a9b51b",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-selection@3.0.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-fmTRWbNMmsmWq6xJV8D19U/gw/bwrHfNXxrIN+HfZgnzqTHp9jOmKMhsTUjXOJnZOdZY9Q28y4yebKzqDKlxlQ==",
+      "manifestSha256": "adbb86f6d93c60a3789af9be6f6cdc40127ce15f63187a1e94c46fe26b0776ec",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-shape@1.3.7": {
+      "declaration": "BSD-3-Clause",
+      "integrity": "sha512-EUkvKjqPFUAZyOlhY5gzCxCeI0Aep04LwIRpsZ/mLFelJiUfnK56jo5JMDSE7yyP2kLSb6LtF+S5chMk7uqPqw==",
+      "manifestSha256": "3b576e17e95aa1a499f6ef44b75d29e08b2f3f040c2dfa84408dd40c22ac9a5b",
+      "licenses": [
+        "BSD-3-Clause"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "7eea8533ea92bd8c32a901e89ecb0305890905bb12711449565ddff96891146d"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, all three redistribution conditions and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-shape@3.2.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-SaLBuwGm3MOViRq2ABk3eLoxwZELpH6zhl3FbAoJ7Vm1gofKx6El1Ib5z23NUEhF9AsGl7y+dzLe5Cw2AArGTA==",
+      "manifestSha256": "c3d084a64bc3c85c407db4282be588a42484c4dc2639bb0a21424fe29ff38335",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "faa682e3e430941f958d26180458f5934a62f58dac4d70ccdd15608c15d0f884"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-time-format@4.1.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-dJxPBlzC7NugB2PDLwo9Q8JiTR3M3e4/XANkreKSUxF8vvXKqm1Yfq4Q5dl8budlunRVlUUaDUgFt7eA8D6NLg==",
+      "manifestSha256": "98ffed8c2cf40a4d279b4346b73c09e38cbce40a96fa11caa69a174dea7cbf55",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-time@3.1.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-VqKjzBLejbSMT4IgbmVgDjpkYrNWUYJnbCGo874u7MMKIWsILRX+OpX/gTk8MqjpT1A/c6HY2dCA77ZN0lkQ2Q==",
+      "manifestSha256": "f145cd8f545cc98527d75c3717be9159616680fe5ba312c350828b44857e1ee6",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "faa682e3e430941f958d26180458f5934a62f58dac4d70ccdd15608c15d0f884"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-timer@3.0.1": {
+      "declaration": "ISC",
+      "integrity": "sha512-ndfJ/JxxMd3nw31uyKoY2naivF+r29V+Lc0svZxe1JvvIRmi8hUsrMvdOwgS1o6uBHmiz91geQ0ylPP0aj1VUA==",
+      "manifestSha256": "d2b6cb2200728b60982aa30c4caf787f0bda2c066ef9176282ab54ba656403cb",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-transition@3.0.1": {
+      "declaration": "ISC",
+      "integrity": "sha512-ApKvfjsSR6tg06xrL434C0WydLr7JewBB3V+/39RMHsaXTOG0zmt/OAXeng5M5LBm0ojmxJrpomQVZ1aPvBL4w==",
+      "manifestSha256": "6ee7ce4fb0e59ee6be93d5a5fb33db804add32dbb3afb6c753659b99084fde84",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3-zoom@3.0.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-b8AmV3kfQaqWAuacbPuNbL6vahnOJflOhexLzMMNLga62+/nh0JzvJ0aO/5a5MVgUFGS7Hu1P9P03o3fJkDCyw==",
+      "manifestSha256": "0adc45c5f4e5830e8c639c3953761e73e9493f1cb5f3dea6abc2249adb8ff2a9",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "d3@7.9.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-e1U46jVP+w7Iut8Jt8ri1YsPOvFpg46k+K8TpCb0P+zjCkjkPnV7WzfDJzMHy1LnA+wj5pLT1wjO901gLXeEhA==",
+      "manifestSha256": "7b8169c299e9b62e31dd518dfff1f5cc456856f0fd6a1afcfcd5f260317beb88",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "3e6849627f74ff73c257a3ae1efb574015d94fc1035c05ec3c15805165efcbc4"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "dompurify@3.4.12": {
+      "declaration": "(MPL-2.0 OR Apache-2.0)",
+      "integrity": "sha512-zQvGet8Z2sWbQhCmfFz/T5QWH2oBmjnqK3qvOjaqaNLrLEF912WamU+ohnTp0TCep/MFVHpdJuCZEdFOdTnEFg==",
+      "manifestSha256": "8ed5edd4c92752c82da8616ea314025014e834546567bdaae61d7036962c0824",
+      "licenses": [
+        "Apache-2.0",
+        "MPL-2.0"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "source": "LICENSE-MPL",
+          "sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85"
+        }
+      ],
+      "review": "Exact published alternatives: full Apache 2.0 sections 1-9 and appendix; full MPL 2.0 sections 1-10 and both exhibits reviewed. Both original files retained; no legal election asserted."
+    },
+    "dompurify@3.4.14": {
+      "declaration": "(MPL-2.0 OR Apache-2.0)",
+      "integrity": "sha512-dVoH9z+MY+C9IilgGCk3YfFqjLi3fChm2OiKJMzh6axrJ5qwxqWaZamgmHrpv22CN/KdbZJuGEGgfQoL00LTdg==",
+      "manifestSha256": "3b33adf1d09d69dbb3174650e8e6786d55ec2a74d31ec8365a2f285e42cc04a8",
+      "licenses": [
+        "Apache-2.0",
+        "MPL-2.0"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "source": "LICENSE-MPL",
+          "sha256": "fab3dd6bdab226f1c08630b1dd917e11fcb4ec5e1e020e2c16f83a0a13863e85"
+        }
+      ],
+      "review": "Exact published alternatives: full Apache 2.0 sections 1-9 and appendix; full MPL 2.0 sections 1-10 and both exhibits reviewed. Both original files retained; no legal election asserted."
+    },
+    "internmap@2.0.3": {
+      "declaration": "ISC",
+      "integrity": "sha512-5Hh7Y1wQbvY5ooGgPbDaL5iYLAPzMTUrjMulskHLH6wnv/A+1q5rgEaiuqEjB+oxGXIVZs1FF+R/KPN3ZSQYYg==",
+      "manifestSha256": "b94bd846fb96743a86d527a3d0a3ad1bd5b1ffd3cd1109e6b115ebaef59dd195",
+      "licenses": [
+        "ISC"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "9ea8903938dab5f12c4572d60725069bec2d1b0dc3bcc210b09bae946a5ebb1f"
+        }
+      ],
+      "review": "Exact published LICENSE: copyright attribution, full permission/notice condition and complete warranty/liability disclaimer reviewed."
+    },
+    "khroma@2.1.0": {
+      "declaration": null,
+      "integrity": "sha512-Ls993zuzfayK269Svk9hzpeGUKob/sIgZzyHYdjQoAdQetRKpOLj+k/QQQ/6Qi0Yz65mlROrfd+Ev+1+7dz9Kw==",
+      "manifestSha256": "0d2145738d3cab828da4c5724b45e0dd2577c0ce84503c956d76897e93fa7de2",
+      "licenses": [
+        "MIT"
+      ],
+      "files": [
+        {
+          "source": "license",
+          "sha256": "66b333b0f66759a0b710459e03f7029abe17f4358114a128d2c972e642961b49"
+        }
+      ],
+      "review": "Exact published license contains full MIT grant, retention condition and disclaimer with Fabio Spampinato/Andrew Maney attribution despite absent manifest declaration."
+    },
+    "lucide-react@1.40.0": {
+      "declaration": "ISC",
+      "integrity": "sha512-MaG+8WnOXkDWz9XeElj7TnQ890tTZUB0a36i03aRRCKGWE6e7jJpmdCvtxxuxcjjdqyN6m4sL6qlHVuSUDtYgg==",
+      "manifestSha256": "0754c52a02208f855e609151bbad580002e3b5526362c6752643a0b5b8289c82",
+      "licenses": [
+        "ISC",
+        "MIT"
+      ],
+      "files": [
+        {
+          "source": "LICENSE",
+          "sha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
+        }
+      ],
+      "review": "Exact published LICENSE contains the complete ISC text and full Feather-derived icon MIT text, author attributions and derived-icon list."
+    },
+    "tslib@2.8.1": {
+      "declaration": "0BSD",
+      "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
+      "manifestSha256": "f02b4851df316f29bdfcd404aa1eb41e4e216b5859015f81fcd3e91caf8be931",
+      "licenses": [
+        "0BSD"
+      ],
+      "files": [
+        {
+          "source": "LICENSE.txt",
+          "sha256": "210b19e543130388c68654b7497e967119ce17145f66ab7d85688fbd70f08751"
+        }
+      ],
+      "review": "Exact published LICENSE.txt: copyright attribution, unconditional use/copy/modify/distribute grant and complete warranty/liability disclaimer reviewed."
+    }
+  },
+  "generated": [
+    {
+      "id": "\u0000rolldown/runtime.js",
+      "tool": {
+        "package": "rolldown@1.2.4",
+        "name": "rolldown",
+        "integrity": "sha512-rSr7irW0K7QRWzjdJXqZowkcRdDtjRduh43rBltnVKd0VFq839l1lJoDvGJb6gl7+4rTTCrPWu+YfujUL8Ug7w==",
+        "manifestSha256": "cea38cd16412ee2464164a9d70550fdf07c9039bc563aa6bde7f9566e6fc7baf",
+        "source": "dist/experimental-runtime-base.mjs",
+        "sourceSha256": "43e801e2a0ea81a50cfd48f9eb7659c5db77f4f0fd507c894d0b925fe3343982",
+        "noticeFiles": [
+          { "source": "LICENSE", "sha256": "23ecfff35a5a2e80d92142f75228912c3b1abc4b5a8337a821ff4397e2f9f734" },
+          { "source": "THIRD-PARTY-LICENSE", "sha256": "a877291d800ed43692f3f9ae09d8e01cc6f7293ad39d43896059c188ffbb8b7c" }
+        ]
+      },
+      "codeSha256": null,
+      "outputSha256": [
+        "580ad8c58061a4dde99bde0a56905e382f0568516ee2f5b84dbfb52085709021",
+        "9d34135ce4ca010c793cef3c2eb2eb1614abe03585e70e2bffa4e27d37791b70"
+      ],
+      "upstream": {
+        "url": "https://raw.githubusercontent.com/rolldown/rolldown/483c64833c0fb0d1b75f1339accf781c0a09b335/crates/rolldown/src/runtime/runtime-base.js",
+        "sha256": "43e801e2a0ea81a50cfd48f9eb7659c5db77f4f0fd507c894d0b925fe3343982"
+      },
+      "review": "Rolldown 1.2.4 exact tag source matches installed runtime-base byte-for-byte. Reviewed minified __commonJSMin, __exportAll, __copyProps and __toESM in the runtime-only chunk, and __exportAll in the TypeScript worker. Retain exact Rolldown, Rollup-contributor and Evan Wallace full MIT texts. ModuleInfo.code is null: accept only these exact reviewed complete output hashes, never a runtime prefix/name or a changed output."
+    },
+    {
+      "id": "\u0000vite/modulepreload-polyfill.js",
+      "tool": {
+        "package": "rolldown@1.2.4",
+        "name": "rolldown",
+        "integrity": "sha512-rSr7irW0K7QRWzjdJXqZowkcRdDtjRduh43rBltnVKd0VFq839l1lJoDvGJb6gl7+4rTTCrPWu+YfujUL8Ug7w==",
+        "manifestSha256": "cea38cd16412ee2464164a9d70550fdf07c9039bc563aa6bde7f9566e6fc7baf",
+        "source": "dist/plugins-index.mjs",
+        "sourceSha256": "7ea0031bc672cebbb82623c94cac87d03207c5bc605f19ff1263afc8917944da",
+        "noticeFiles": [
+          { "source": "LICENSE", "sha256": "23ecfff35a5a2e80d92142f75228912c3b1abc4b5a8337a821ff4397e2f9f734" },
+          { "source": "THIRD-PARTY-LICENSE", "sha256": "a877291d800ed43692f3f9ae09d8e01cc6f7293ad39d43896059c188ffbb8b7c" }
+        ]
+      },
+      "codeSha256": "dd838b55e315f155e8a0093fdc4a80b2da5f069c433fc49a15b9962807791374",
+      "upstream": {
+        "url": "https://raw.githubusercontent.com/rolldown/rolldown/483c64833c0fb0d1b75f1339accf781c0a09b335/crates/rolldown_plugin_vite_module_preload_polyfill/src/module-preload-polyfill.js",
+        "sha256": "dd838b55e315f155e8a0093fdc4a80b2da5f069c433fc49a15b9962807791374"
+      },
+      "review": "Vite 8.2.2 invokes the locked Rolldown 1.2.4 built-in plugin. Exact generated module code matches the exact 1.2.4 source bytes, not a Vite virtual-module prefix."
+    },
+    {
+      "id": "\u0000vite/preload-helper.js",
+      "tool": {
+        "package": "vite@8.2.2",
+        "name": "vite",
+        "integrity": "sha512-cFKLV/PRgAUlIRm5WjMjJ86jrftzpqcgH+Us+DS8mI3CDNiH30Whrz8uHL3+MOLPAgqbMBAqWdAHAphOAM+z/Q==",
+        "manifestSha256": "4e41dd20c7a12e7e70915b235c0bf5b5158ec6709c1390804128af0867d6d6d9",
+        "source": "dist/node/chunks/node.js",
+        "sourceSha256": "f64038f08022030b77efee87b6baa81933a7b77d820aaa64bc3262fda44d80b0",
+        "noticeFiles": [
+          { "source": "LICENSE.md", "sha256": "387dd7baa307083401a27c58c362c30832f5ba1dba84f10cc22c33401523f45c" }
+        ]
+      },
+      "codeSha256": "05855045b81092e251467bcc931dcbc286ad9244262689f717e5bd365d083530",
+      "upstream": {
+        "url": "https://raw.githubusercontent.com/vitejs/vite/de1111ab0be00879b404e7ed3b2a80e264edddc1/packages/vite/src/node/plugins/importAnalysisBuild.ts",
+        "sha256": "f8578a73cd04624556c13d13a094128b25a84d598ef8b921d90ce8aa17a2373e"
+      },
+      "review": "Exact Vite 8.2.2 tag implementation getPreloadCode/preload reviewed against installed node.js and captured code, including modulepreload option and base /. Require both installed implementation bytes and complete captured generated-code hash."
+    }
+  ]
+}

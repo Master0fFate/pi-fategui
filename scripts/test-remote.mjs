@@ -1,45 +1,70 @@
-import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { createIsolatedEnvironment } from './run-v2-tests.mjs';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { activationPhrase, Evidence, validateFixture, sshExecutable } from '../tests/remote/fixture-lib.mjs';
+import { assertNoIndirectFixturePath, assertPrivateFixtureStorage } from '../tests/remote/fixture-private-storage.mjs';
 
-/** A real OpenSSH preflight. Failure is a failed gate, never a mocked acceptance. */
-export async function preflightOpenSsh(env, root) {
-  const fixture = path.join(root, 'openssh');
-  await fs.mkdir(fixture, { mode: 0o700 });
-  const run = (file, args) => new Promise((resolve, reject) => {
-    const child = spawn(file, args, { cwd: fixture, env, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
-    let output = '';
-    child.stdout.on('data', (bytes) => { output = (output + bytes).slice(-8192); });
-    child.stderr.on('data', (bytes) => { output = (output + bytes).slice(-8192); });
-    child.once('error', reject); child.once('close', (code) => resolve({ code, output }));
-  });
-  const version = await run('ssh', ['-V']);
-  if (version.code !== 0) throw new Error('REMOTE_FIXTURE_UNAVAILABLE: system OpenSSH client missing.');
-  const key = await run('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', 'host-key']);
-  if (key.code !== 0) throw new Error('REMOTE_FIXTURE_UNAVAILABLE: test-only host key creation failed.');
-  await fs.writeFile(path.join(fixture, 'sshd_config'), [
-    'ListenAddress 127.0.0.1', 'Port 49281', 'HostKey ./host-key', 'PidFile ./daemon.pid',
-    'AuthorizedKeysFile ./authorized_keys', 'PasswordAuthentication no', 'KbdInteractiveAuthentication no',
-    'PermitRootLogin prohibit-password', 'UsePAM no', 'AllowTcpForwarding local', 'GatewayPorts no',
-    'PermitTTY no', 'X11Forwarding no', 'AllowAgentForwarding no',
-  ].join('\n') + '\n', { mode: 0o600 });
-  // Validate actual daemon prerequisites before any host workspace or provider exists.
-  const daemon = await run('/usr/sbin/sshd', ['-t', '-f', './sshd_config']);
-  const evidence = { node: process.version, platform: process.platform, arch: process.arch,
-    sshVersion: version.output.trim(), command: '/usr/sbin/sshd -t -f ./sshd_config',
-    exitCode: daemon.code, diagnostic: daemon.output.trim(), requiredWorkflowExecuted: false };
-  process.stdout.write(`${JSON.stringify(evidence)}\n`);
-  if (daemon.code !== 0) throw new Error('REMOTE_FIXTURE_UNAVAILABLE: real OpenSSH daemon preflight failed.');
-  return evidence;
+/** No local daemon provisioning, fake SSH, implicit deployment, or gate changes.
+ * The operator must explicitly supply a preinstalled disposable Linux fixture.
+ */
+export async function main(args = process.argv.slice(2)) {
+  let evidence;
+  try {
+    const readArg = flag => { const index = args.indexOf(flag); return index >= 0 ? args[index + 1] : undefined; };
+    const fixtureFile = readArg('--fixture'); const output = readArg('--evidence');
+    if (!fixtureFile || !output) throw new Error('REMOTE_FIXTURE_UNAVAILABLE: supply --fixture <private JSON> --evidence <new directory>; no supported external fixture configured.');
+    const f = validateFixture(JSON.parse(await fs.readFile(fixtureFile, 'utf8')));
+    if (!args.includes('--activate') || process.env.FATE_T50_ACTIVATION_APPROVAL !== activationPhrase) {
+      throw new Error('REMOTE_ACTIVATION_REFUSED: source preparation only; explicit supported fixture and separate operator activation approval required. T48/T49/T50 gates are never changed by this runner.');
+    }
+    // Read-only prerequisite gate. The fixture manifest/approval phrase cannot
+    // replace real plan acceptance or make a missing review into a passing gate.
+    const planRoot = fileURLToPath(new URL('../plans/', import.meta.url));
+    const progressBytes = await fs.readFile(path.join(planRoot, 'progress.json')).catch(() => { throw new Error('REMOTE_ACTIVATION_REFUSED: prerequisite ledger unavailable'); });
+    const progress = JSON.parse(progressBytes.toString('utf8'));
+    const prerequisiteEvidence = [];
+    for (const id of ['T48', 'T49']) {
+      const task = progress.tasks?.[id];
+      if (task?.status !== 'accepted' || typeof task.report !== 'string' || !task.report) throw new Error(`REMOTE_ACTIVATION_REFUSED: ${id} is not independently accepted`);
+      const report = path.resolve(planRoot, task.report);
+      if (!report.startsWith(planRoot)) throw new Error('REMOTE_ACTIVATION_REFUSED: prerequisite report escapes plan directory');
+      const bytes = await fs.readFile(report).catch(() => { throw new Error(`REMOTE_ACTIVATION_REFUSED: ${id} review report unavailable`); });
+      if (!bytes.length || typeof task.reviewer !== 'string' || !task.reviewer) throw new Error(`REMOTE_ACTIVATION_REFUSED: ${id} independent review unavailable`);
+      prerequisiteEvidence.push({ id, report: task.report, sha256: createHash('sha256').update(bytes).digest('hex') });
+    }
+    const privateStorageProofs = [];
+    for (const credential of [fixtureFile, f.identityFile, f.knownHostsFile, f.reviewedBindingFile]) privateStorageProofs.push(await assertPrivateFixtureStorage(credential));
+    const reviewedBytes = await fs.readFile(f.reviewedBindingFile);
+    f.reviewedBinding = { manifest: JSON.parse(reviewedBytes.toString('utf8')), digest: createHash('sha256').update(reviewedBytes).digest('hex') };
+    await assertNoIndirectFixturePath(output, { missingLeaf: true });
+    privateStorageProofs.push(await assertPrivateFixtureStorage(path.dirname(path.resolve(output)), { directory: true }));
+    await fs.mkdir(path.resolve(output), { mode: 0o700 }); // exclusive fresh evidence, no overwrite
+    // On Windows this is actual read-only NTFS SID/DACL verification. Mode
+    // 0700 alone is not privacy evidence. Refuse before any credential/log write.
+    privateStorageProofs.push(await assertPrivateFixtureStorage(path.resolve(output), { directory: true }));
+    evidence = new Evidence(path.resolve(output));
+    await evidence.record('private-storage-preflight', { proofs: privateStorageProofs });
+    await evidence.record('reviewed-binding-input', { path: f.reviewedBindingFile, sha256: f.reviewedBinding.digest, manifest: f.reviewedBinding.manifest });
+    await evidence.record('activation-input', { fixtureFile: path.resolve(fixtureFile), node: process.version, platform: process.platform,
+      sshHost: f.host, sshPort: f.sshPort, localPort: f.localPort, hostPort: f.hostPort, requiredWorkflowExecuted: false,
+      prerequisiteEvidence, progressDigest: createHash('sha256').update(progressBytes).digest('hex') });
+    const version = await evidence.run(sshExecutable(), ['-V']); if (version.code !== 0) throw new Error('REMOTE_FIXTURE_UNAVAILABLE: real OpenSSH client missing');
+    const { executeRemoteWorkflow } = await import('../tests/remote/workflow.mjs');
+    await executeRemoteWorkflow(f, evidence);
+    const finalStorageProof = await assertPrivateFixtureStorage(evidence.root, { directory: true, tree: true });
+    await evidence.record('private-storage-final', { proof: finalStorageProof });
+    await evidence.record('workflow-complete', { acceptance: 'not asserted; independent gate review required', cleanup: 'verified', privateStorage: 'verified' });
+    process.stdout.write('Remote fixture assertions executed. NOT gate acceptance; independent review required.\n');
+    return 0;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = evidence ? evidence.redact(detail) : detail;
+    if (evidence) {
+      try { await evidence.record('failed-unfinished', { message, acceptance: false }); }
+      catch (logError) { process.stderr.write(`Failure evidence unavailable: ${String(logError)}\n`); }
+    }
+    process.stderr.write(`${message}\n`); return 1;
+  }
 }
-
-const isolated = await createIsolatedEnvironment();
-try {
-  await preflightOpenSsh(isolated.env, isolated.root);
-  // Do not activate T50 workflow behind unresolved package/native/service acceptance.
-  throw new Error('REMOTE_ACCEPTANCE_PENDING: T48 Windows and T49 non-root user-service gates require review before T50 activation.');
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : 'REMOTE_FIXTURE_UNAVAILABLE'}\n`);
-  process.exitCode = 1;
-} finally { await isolated.cleanup(); }
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = await main();
