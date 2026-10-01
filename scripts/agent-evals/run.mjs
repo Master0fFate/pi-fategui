@@ -8,14 +8,29 @@ import { cases } from './cases.mjs';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const reporter = fileURLToPath(new URL('./reporter.mjs', import.meta.url));
+// Keep reporter records separate from candidate stdout/stderr even though the
+// single acceptance suite runs in the directly owned child process.
+const ipcReporter = `data:text/javascript,${encodeURIComponent(`
+import report from ${JSON.stringify(pathToFileURL(reporter).href)};
+const send = process.send.bind(process);
+export default async function* reportToParent(events) {
+  for await (const line of report(events)) {
+    await new Promise((resolve, reject) => send(line, error => error ? reject(error) : resolve()));
+  }
+}
+`)}`;
 
 function runSuite(target, workspace, timeout) {
   return new Promise((resolve, reject) => {
     const environment = { ...process.env };
     delete environment.NODE_TEST_CONTEXT;
     delete environment.NODE_OPTIONS;
-    const child = spawn(process.execPath, ['--test', `--test-reporter=${pathToFileURL(reporter).href}`, target], {
-      cwd: workspace, env: environment, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
+    // There is only one suite. Avoid an extra test-coordinator process: killing
+    // it together with its candidate can orphan the candidate before it is
+    // reaped. With no inner isolation, close confirms the actual candidate was
+    // reaped by us. The experimental spelling also supports our Node 22 floor.
+    const child = spawn(process.execPath, ['--test', '--experimental-test-isolation=none', `--test-reporter=${ipcReporter}`, target], {
+      cwd: workspace, env: environment, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
     let output = '';
     let diagnostics = '';
@@ -25,8 +40,8 @@ function runSuite(target, workspace, timeout) {
       if (terminationReason) return;
       terminationReason = reason;
       if (process.platform === 'win32') {
-        // The Node test coordinator can close before taskkill finishes its
-        // owned descendants. Keep the workspace until the tree command exits.
+        // The candidate can close before taskkill finishes its owned
+        // descendants. Keep the workspace until the tree command exits.
         treeTermination = new Promise((settled) => {
           execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 2_000 }, () => {
             if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
@@ -36,8 +51,14 @@ function runSuite(target, workspace, timeout) {
       } else { try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); } }
     };
     const timer = setTimeout(() => stop('timeout'), timeout);
-    child.stdout.on('data', (chunk) => { output += chunk.toString(); if (Buffer.byteLength(output) > 1_000_000) { output = output.slice(-64_000); stop('output-limit'); } });
-    child.stderr.on('data', (chunk) => { diagnostics += chunk.toString(); if (Buffer.byteLength(diagnostics) > 1_000_000) { diagnostics = diagnostics.slice(-64_000); stop('output-limit'); } });
+    child.on('message', (line) => {
+      if (typeof line !== 'string') return;
+      output += line;
+      if (Buffer.byteLength(output) > 1_000_000) { output = output.slice(-64_000); stop('output-limit'); }
+    });
+    const captureDiagnostics = (chunk) => { diagnostics += chunk.toString(); if (Buffer.byteLength(diagnostics) > 1_000_000) { diagnostics = diagnostics.slice(-64_000); stop('output-limit'); } };
+    child.stdout.on('data', captureDiagnostics);
+    child.stderr.on('data', captureDiagnostics);
     child.once('error', (error) => { clearTimeout(timer); reject(error); });
     child.once('close', async (code) => {
       clearTimeout(timer);

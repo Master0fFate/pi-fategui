@@ -101,6 +101,7 @@ async function inspect() {
     selectionRevision: handle.admission.snapshot().selectionRevision, running: runtime.getState(false).activeSessionRunning,
     text: control.text, invocationCount: ledger.filter(entry => entry.kind === 'prompt').length, ledger,
     sentinelBase64: (await fs.readFile(path.join(workspace, 'sentinel.txt'))).toString('base64'),
+    head: execFileSync('git', ['-C', workspace, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
     diff: execFileSync('git', ['-C', workspace, 'diff', '--no-ext-diff', '--', 'sentinel.txt'], { encoding: 'utf8' }),
     profileLocks: locks.filter(name => name.startsWith('profile-')), lockRecords, checkoutOwned: server.core.runtime.ownsCheckout(workspace),
     recovery: server.core.recovered, lifecycle: await server.core.recovery.repository.read(), snapshot: runtime.getState(true),

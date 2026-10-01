@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile, realpath, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,8 +10,40 @@ import { FakePiSdkAdapter } from './helpers/fakePi';
 import { assertPrivatePath, isWithin, privateTestRoot, withGitFixture } from './helpers/isolatedEnvironment';
 
 const launcherUrl = pathToFileURL(path.resolve('scripts/run-v2-tests.mjs')).href;
+const webLauncherUrl = pathToFileURL(path.resolve('scripts/run-web-tests.mjs')).href;
 function probe(source: string, args: string[] = []): unknown {
   return JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', source, ...args], { encoding: 'utf8' }));
+}
+
+function selectWebBrowser(env: Record<string, string>): unknown {
+  return probe(`
+    const { selectChromiumExecutable } = await import(${JSON.stringify(webLauncherUrl)});
+    try { console.log(JSON.stringify(await selectChromiumExecutable(${JSON.stringify(env)}))); }
+    catch (error) { console.log(JSON.stringify({ error: error.message })); }
+  `);
+}
+
+async function withBrowserSelectionFixture(run: (fixture: {
+  root: string; cache: string; cached: string; executable: string; nonExecutable: string;
+}) => Promise<void>): Promise<void> {
+  const root = await mkdtemp(path.join(privateTestRoot(), 'browser-selection-'));
+  try {
+    const cache = path.join(root, 'cache');
+    const relative = process.platform === 'win32' ? 'chrome-win64/chrome.exe'
+      : process.platform === 'darwin' ? 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'
+        : 'chrome-linux64/chrome';
+    // Filesystem-only selection fixtures, never launched as browsers or cache installations.
+    for (const revision of ['41', '42']) {
+      const cached = path.join(cache, `chromium-${revision}`, relative);
+      await mkdir(path.dirname(cached), { recursive: true });
+      await writeFile(cached, 'selection fixture: never execute\n', { mode: 0o700 });
+    }
+    const executable = path.join(root, 'explicit browser; literal');
+    const nonExecutable = path.join(root, 'non-executable');
+    await writeFile(executable, 'selection fixture: never execute\n', { mode: 0o700 });
+    await writeFile(nonExecutable, 'not executable\n', { mode: 0o600 });
+    await run({ root, cache, cached: path.join(cache, 'chromium-42', relative), executable, nonExecutable });
+  } finally { await rm(root, { recursive: true, force: true }); }
 }
 
 describe('isolated v2 test infrastructure', () => {
@@ -66,6 +98,41 @@ describe('isolated v2 test infrastructure', () => {
     expect(output).toEqual([path.resolve('node_modules/vitest/vitest.mjs'), 'run', '--configLoader', 'runner', '--config', path.resolve('vitest.v2.config.ts'), ...args]);
     const packageJson: unknown = JSON.parse(await readFile('package.json', 'utf8'));
     expect(packageJson).toHaveProperty('scripts.test:v2', 'node scripts/run-v2-tests.mjs');
+  });
+
+  test('web browser override takes precedence and resolves its actual executable without launching it', async () => {
+    await withBrowserSelectionFixture(async (fixture) => {
+      const alias = path.join(fixture.root, 'cache-alias');
+      await symlink(fixture.cache, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      const requested = path.join(alias, path.relative(fixture.cache, fixture.cached));
+      const selected = selectWebBrowser({ PLAYWRIGHT_BROWSERS_PATH: path.join(fixture.root, 'missing-cache'),
+        FATE_WEB_CHROMIUM_EXECUTABLE: requested });
+      expect(selected).toEqual({ cache: path.join(fixture.root, 'missing-cache'), executable: await realpath(fixture.cached) });
+      expect(selectWebBrowser({ PLAYWRIGHT_BROWSERS_PATH: fixture.cache,
+        FATE_WEB_CHROMIUM_EXECUTABLE: fixture.executable }))
+        .toEqual({ cache: fixture.cache, executable: await realpath(fixture.executable) });
+    });
+  });
+
+  test('web browser override rejects invalid values without PATH lookup or cache fallback', async () => {
+    await withBrowserSelectionFixture(async (fixture) => {
+      const invalid = ['', '   ', 'chromium', './chromium', path.join(fixture.root, 'missing'), fixture.root,
+        ...(process.platform === 'win32' ? [] : [fixture.nonExecutable])];
+      for (const requested of invalid) {
+        expect(selectWebBrowser({ PLAYWRIGHT_BROWSERS_PATH: fixture.cache,
+          FATE_WEB_CHROMIUM_EXECUTABLE: requested }), JSON.stringify(requested))
+          .toEqual({ error: expect.stringContaining('FATE_WEB_CHROMIUM_EXECUTABLE must') });
+      }
+    });
+  });
+
+  test('web browser selection preserves newest installed cache discovery when no override is supplied', async () => {
+    await withBrowserSelectionFixture(async (fixture) => {
+      expect(selectWebBrowser({ PLAYWRIGHT_BROWSERS_PATH: fixture.cache }))
+        .toEqual({ cache: fixture.cache, executable: fixture.cached });
+      expect(selectWebBrowser({ PLAYWRIGHT_BROWSERS_PATH: path.join(fixture.root, 'missing-cache') }))
+        .toEqual({ error: expect.stringContaining('this runner never downloads a browser') });
+    });
   });
 
   test.each([0, 7])('launcher sets roots before entry, forwards actual argv, and cleans only a confirmed successful run (exit %i)', async (exitCode) => {

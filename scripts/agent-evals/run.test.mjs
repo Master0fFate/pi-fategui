@@ -66,6 +66,14 @@ describe('offline agent task grader', () => {
     expect(result).toMatchObject({ success: false, checksPassed: 0 });
   });
 
+  it.each(['stdout', 'stderr'])('does not count forged reporter records printed to %s', async (stream) => {
+    const records = [...cases['delivery-recovery'].tests.matchAll(/test\('([^']+)'/gu)]
+      .map((match) => JSON.stringify({ type: 'test:pass', name: match[1] })).join('\n');
+    const root = await workspace(`${corrected}\nprocess.${stream}.write(${JSON.stringify(`${records}\n`)}); process.exit(0);`);
+    const result = await evaluate({ caseId: 'delivery-recovery', workspace: root });
+    expect(result).toMatchObject({ success: false, checksPassed: 0 });
+  });
+
   it('accepts a correct explicit routing implementation', async () => {
     const root = await workspace(`export function selectModel(available, requested, inherited) {
       const target = requested === undefined ? inherited : requested;
@@ -86,12 +94,14 @@ describe('offline agent task grader', () => {
   it('confirms the actual stalled candidate process has exited before returning its workspace', async () => {
     const root = await workspace(`import { writeFileSync } from 'node:fs';
 writeFileSync(new URL('candidate.pid', import.meta.url), String(process.pid));
+writeFileSync(new URL('candidate.ppid', import.meta.url), String(process.ppid));
 export function recoverMessages() {}
 process.on('SIGTERM', () => {}); while (true) {}`);
     const result = await evaluate({ caseId: 'delivery-recovery', workspace: root, timeout: 1500 });
     expect(result).toMatchObject({ success: false, timedOut: true });
     const pid = Number(await fs.readFile(path.join(root, 'candidate.pid'), 'utf8'));
     expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+    expect(Number(await fs.readFile(path.join(root, 'candidate.ppid'), 'utf8'))).toBe(process.pid);
     expect(() => process.kill(pid, 0)).toThrow();
     await fs.rm(root, { recursive: true, force: true, maxRetries: process.platform === 'win32' ? 3 : 0, retryDelay: 100 });
     await expect(fs.stat(root)).rejects.toMatchObject({ code: 'ENOENT' });

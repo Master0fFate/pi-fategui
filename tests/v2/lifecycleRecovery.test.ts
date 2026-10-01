@@ -144,13 +144,15 @@ describe('T28 bounded cold recovery', () => {
   it('bounds private Pi directory enumeration and refuses uncertain catalog identity', async () => {
     const f = await fixture();
     const directory = path.dirname(f.target);
-    await fs.rename(f.target, path.join(directory, '000-session.jsonl'));
+    const real = new PiSessionRepository(undefined, path.join(f.root, 'pi', 'sessions'));
+    // Directory order is unspecified: prove the real catalog identity before
+    // overflow, then require cold recovery to reject the now-uncertain catalog.
+    expect((await real.list(f.project, null)).some((item) => item.id === f.sessionId)).toBe(true);
+    expect(await real.readColdTeams(f.project, f.sessionId)).toMatchObject({ state: 'ok' });
     for (let offset = 0; offset < 10_001; offset += 64) {
       await Promise.all(Array.from({ length: Math.min(64, 10_001 - offset) }, (_, index) =>
         fs.writeFile(path.join(directory, `noise-${offset + index}.txt`), '')));
     }
-    const real = new PiSessionRepository(undefined, path.join(f.root, 'pi', 'sessions'));
-    expect((await real.list(f.project, null)).some((item) => item.id === f.sessionId)).toBe(true);
     expect(await real.readColdTeams(f.project, f.sessionId)).toMatchObject({ state: 'unknown', reason: 'oversized' });
   }, 15_000);
   it('separates incomplete tail from corrupt interior, and bounds oversized transcripts', async () => {

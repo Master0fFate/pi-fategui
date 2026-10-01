@@ -8,7 +8,8 @@ import path from 'node:path';
 import { Evidence } from './fixture-lib.mjs';
 import { appendInvocationLedger, readInvocationLedger } from './fixture-ledger.mjs';
 import { withFixtureCleanup } from './fixture-cleanup.mjs';
-import { assertPrivateFixtureStorage } from './fixture-private-storage.mjs';
+import { assertPrivateFixtureStorage, restrictGeneratedFixtureFile } from './fixture-private-storage.mjs';
+import { assertRemoteSentinelEffect } from './workflow.mjs';
 
 // Actual local filesystem/process/helper checks only. No SDK/provider/SSH host
 // or substituted remote transport is executed by these infrastructure tests.
@@ -101,4 +102,57 @@ test('actual root/file ACL decisions match independent read-only NTFS inspection
     }
     await assert.rejects(assertPrivateFixtureStorage(root), /not a regular/u);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+test('new synthetic public-key output gets private POSIX mode without byte changes; Windows retains read-only ACL enforcement', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 't50-generated-file-'));
+  try {
+    const file = path.join(root, 'wrong-key.pub'); const bytes = Buffer.from('synthetic public-key DATA only\n');
+    await fs.writeFile(file, bytes, { mode: 0o600, flag: 'wx' });
+    if (process.platform === 'win32') {
+      // A fresh scratch parent can have broad inherited ACLs. Restricting a
+      // generated POSIX mode must never turn that into a Windows privacy pass.
+      const [before] = await Promise.allSettled([assertPrivateFixtureStorage(file)]);
+      const [after] = await Promise.allSettled([restrictGeneratedFixtureFile(file)]);
+      assert.equal(after.status, before.status);
+      if (before.status === 'rejected' && after.status === 'rejected') assert.equal(after.reason.cause?.code, before.reason.cause?.code);
+    } else {
+      await fs.chmod(file, 0o644); // ssh-keygen-style generated public output.
+      await assert.rejects(assertPrivateFixtureStorage(file), /must be private/u);
+      await restrictGeneratedFixtureFile(file);
+      assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+      await assertPrivateFixtureStorage(root, { directory: true, tree: true });
+    }
+    assert.deepEqual(await fs.readFile(file), bytes);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+test('generated-file restriction refuses nonregular, linked and indirect paths without changing the existing target', async () => {
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 't50-generated-path-'));
+  try {
+    const directory = path.join(root, 'real'); await fs.mkdir(directory, { mode: 0o700 });
+    const original = path.join(directory, 'existing-data'); await fs.writeFile(original, 'untouched fixture DATA\n', { mode: 0o600 });
+    const originalMode = (await fs.stat(original)).mode;
+    await assert.rejects(restrictGeneratedFixtureFile(directory), /regular/u);
+    const linked = path.join(root, 'hard-linked.pub'); await fs.link(original, linked);
+    await assert.rejects(restrictGeneratedFixtureFile(linked), /regular/u);
+    const alias = path.join(root, 'alias'); await fs.symlink(directory, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    await assert.rejects(restrictGeneratedFixtureFile(path.join(alias, 'existing-data')), /indirect ancestor/u);
+    assert.equal((await fs.stat(original)).mode, originalMode);
+    assert.equal(await fs.readFile(original, 'utf8'), 'untouched fixture DATA\n');
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+test('remote sentinel evidence requires exact expected bytes, unchanged Git HEAD and an actual matching diff', () => {
+  // Pure assertion inputs, not remote evidence and not a substituted SSH run.
+  const before = { head: 'a'.repeat(40), sentinelBase64: Buffer.from('remote preimage\n').toString('base64'), diff: '' };
+  for (const name of ['tunnel', 'crash', 'stall']) {
+    const observed = { head: before.head, sentinelBase64: Buffer.from(`remote ${name} effect\n`).toString('base64'),
+      diff: `diff --git a/sentinel.txt b/sentinel.txt\n--- a/sentinel.txt\n+++ b/sentinel.txt\n@@ -1 +1 @@\n-remote preimage\n+remote ${name} effect\n` };
+    assertRemoteSentinelEffect(name, before, observed);
+    for (const changes of [{ head: 'b'.repeat(40) }, { head: undefined }, { diff: '' },
+      { sentinelBase64: Buffer.from(`remote ${name} effect\nunexpected extra bytes\n`).toString('base64') }]) {
+      assert.throws(() => assertRemoteSentinelEffect(name, before, { ...observed, ...changes }));
+    }
+    assert.throws(() => assertRemoteSentinelEffect(name, { ...before, sentinelBase64: observed.sentinelBase64 }, observed));
+    assert.throws(() => assertRemoteSentinelEffect(name, { ...before, diff: 'dirty preimage' }, observed));
+    assert.throws(() => assertRemoteSentinelEffect('unknown', before, observed));
+  }
 });

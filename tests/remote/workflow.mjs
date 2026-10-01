@@ -5,10 +5,22 @@ import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
 import { quote, sshArgs, until, sshExecutable, sshKeygenExecutable } from './fixture-lib.mjs';
 import { withFixtureCleanup } from './fixture-cleanup.mjs';
-import { assertPrivateFixtureStorage } from './fixture-private-storage.mjs';
+import { assertPrivateFixtureStorage, restrictGeneratedFixtureFile } from './fixture-private-storage.mjs';
 import { assertOriginalBrowserSession } from './fixture-session.mjs';
 import { verifyReviewedBinding } from './fixture-binding.mjs';
 import { awaitOwnedProcess } from './fixture-process.mjs';
+
+/** Evidence assertions only; this helper never executes a fixture or transport. */
+export function assertRemoteSentinelEffect(name, before, observed) {
+  assert(['tunnel', 'crash', 'stall'].includes(name), 'Unknown remote fixture case');
+  assert.equal(before.sentinelBase64, Buffer.from('remote preimage\n').toString('base64'), 'Require exact original remote bytes');
+  assert.equal(before.diff, '', 'Remote fixture must start clean');
+  assert.match(before.head, /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u, 'Require the actual original Git HEAD');
+  assert.equal(observed.head, before.head, 'Remote effect must preserve the original Git HEAD');
+  assert.equal(observed.sentinelBase64, Buffer.from(`remote ${name} effect\n`).toString('base64'), 'Require exact expected remote effect bytes');
+  assert(observed.diff.includes('diff --git a/sentinel.txt b/sentinel.txt\n')
+    && observed.diff.includes('-remote preimage\n') && observed.diff.includes(`+remote ${name} effect\n`), 'Require real sentinel preimage/effect Git diff');
+}
 
 export async function executeRemoteWorkflow(f, evidence) {
   assert(f.reviewedBinding?.manifest && f.reviewedBinding?.digest, 'Missing independently reviewed fixture hash binding');
@@ -151,6 +163,7 @@ export async function executeRemoteWorkflow(f, evidence) {
         assert.equal(barrier.responseReleased, false); assert.equal(barrier.pid, host.pid);
         assert.equal(responseSettled, false, 'Original HTTP response must still be unresolved at the effect barrier');
         const effect = await control('inspect', name); assert.equal(effect.invocationCount, 1); assert(effect.diff.includes('+remote crash effect'));
+        assertRemoteSentinelEffect(name, before, effect);
         assert(effect.journalRecords.some(record => record.requestId === request.requestId && record.state === 'admitted'), 'Kill barrier requires the ORIGINAL admitted journal record, not just file bytes');
         await evidence.record('crash-effect-before-kill', { before, effect, requestId: request.requestId, barrier });
         assert.equal(responseSettled, false, 'Original response must remain unresolved immediately before host kill');
@@ -165,28 +178,35 @@ export async function executeRemoteWorkflow(f, evidence) {
         assert.equal(status.ok, true); assert.equal(status.result.state, 'outcome_unknown'); assert.equal(status.result.receipt, null);
         await assertDistinctPrincipalDenied(name, c, request.requestId);
         assert.equal(host.invocationCount, 1); assert.equal(host.running, false);
-        assert(host.recovery.records.some(record => ['interrupted', 'unknown'].includes(record.status)), 'Restart must preserve a truthful cold lifecycle record');
+        assert(host.recovery.records.some(record => ['interrupted', 'unknown'].includes(record.status)
+          && record.record.reference.sessionId === oldHost.sessionId && record.record.reference.workspaceId === oldHost.workspaceId), 'Restart must preserve a truthful cold lifecycle record for the original session/workspace');
         // Status only; never resubmit the old prompt (nor a fresh request ID).
         const final = await control('inspect', name); assert.equal(final.invocationCount, 1);
+        assertRemoteSentinelEffect(name, before, final);
         assert.equal(final.sentinelBase64, effect.sentinelBase64); assert.equal(final.diff, effect.diff);
         await evidence.record('restart-no-replay', { original: oldHost, restarted: final, originalRequestId: request.requestId, status });
       } else {
         const accepted = await pending; assert(accepted.value?.ok, 'Original prompt must be admitted');
         const active = await until(() => control('inspect', name), v => v.running && v.invocationCount === 1 && v.diff.includes(`+remote ${name} effect`), 'active real sentinel effect');
+        assertRemoteSentinelEffect(name, before, active);
         assert.notEqual(active.sentinelBase64, before.sentinelBase64);
         await evidence.record('remote-effect', { before, active, receipt: accepted.value, requestId: request.requestId });
         if (name === 'tunnel') {
           c.socket.terminate(); await stopTunnel(tunnel); tunnel = null;
           const disconnected = await control('inspect', name); assert.equal(disconnected.running, true);
           assert.equal(disconnected.pid, host.pid); assert.equal(disconnected.startIdentity, host.startIdentity); assert.equal(disconnected.invocationCount, 1);
+          assertRemoteSentinelEffect(name, before, disconnected);
           await control('release', name);
           const finished = await until(() => control('inspect', name), v => !v.running && v.ledger.some(e => e.kind === 'settled'), 'original run settles with tunnel absent');
+          assert.equal(finished.pid, host.pid); assert.equal(finished.startIdentity, host.startIdentity); assert.equal(finished.invocationCount, 1);
+          assertRemoteSentinelEffect(name, before, finished);
           tunnel = await openTunnel(p => { tunnel = p; }); c = await login(name, c.auth);
           const status = await c.send(c.scoped('command.status', { requestId: request.requestId })); assert.equal(status.ok, true);
           assert.equal(status.result.state, 'settled'); assert.deepEqual(status.result.receipt, accepted.value.result);
           await assertDistinctPrincipalDenied(name, c, request.requestId);
           const snapshot = await c.send(c.scoped('workspace.snapshot')); assert.equal(snapshot.ok, true);
-          const result = await control('inspect', name); assert.equal(result.pid, host.pid); assert.equal(result.invocationCount, 1);
+          const result = await control('inspect', name); assert.equal(result.pid, host.pid); assert.equal(result.startIdentity, host.startIdentity); assert.equal(result.invocationCount, 1);
+          assertRemoteSentinelEffect(name, before, result);
           assert(JSON.stringify(snapshot.result).includes('original tunnel fixture result'), 'Authenticated reconnect snapshot must contain the actual SDK result');
           assert(JSON.stringify(result.snapshot).includes('original tunnel fixture result'), 'Host and network results must agree');
           await evidence.record('tunnel-reconnect-original-result', { disconnected, finished, result, status, snapshot });
@@ -199,6 +219,7 @@ export async function executeRemoteWorkflow(f, evidence) {
           const key = path.join(evidence.root, 'wrong-key');
           assert.equal((await evidence.run(sshKeygenExecutable(), ['-q', '-t', 'ed25519', '-N', '', '-f', key])).code, 0);
           await assertPrivateFixtureStorage(key);
+          await restrictGeneratedFixtureFile(`${key}.pub`);
           const wrong = await evidence.run(sshExecutable(), forwardingArgs({ identityFile: key }));
           assert.notEqual(wrong.code, 0); assert(/Permission denied/u.test(wrong.stderr));
           const pub = (await fs.readFile(`${key}.pub`, 'utf8')).trim().split(' ').slice(0, 2).join(' ');
@@ -227,6 +248,7 @@ export async function executeRemoteWorkflow(f, evidence) {
           await control('release', name);
           const settled = await until(() => control('inspect', name), v => !v.running && v.ledger.some(e => e.kind === 'settled'), 'stalled provider eventual settlement');
           assert.equal(settled.invocationCount, 1);
+          assertRemoteSentinelEffect(name, before, settled);
           await evidence.record('stalled-stop-ownership', { stopped, settled });
         }
       }
