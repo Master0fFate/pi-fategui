@@ -80,6 +80,43 @@ async function settled(service: AgentsService, id: string): Promise<AgentRun> {
 }
 
  describe('Agents production service boundaries', () => {
+  it('shares one capped monitor read across concurrent clients and retries after read failure', async () => {
+    const { service, projectPath, repository } = await fixture();
+    const list = vi.spyOn(repository, 'list');
+    const results = await Promise.all(Array.from({ length: 24 }, () => service.monitorRuns(projectPath)));
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(results.every((value) => value === results[0])).toBe(true);
+    expect(results[0]!.runs.length).toBeLessThanOrEqual(1000);
+    const oldNow = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(oldNow + 31_000);
+    list.mockRejectedValueOnce(new Error('synthetic read failure'));
+    await expect(service.monitorRuns(projectPath)).rejects.toThrow('synthetic read failure');
+    const recovered = await service.monitorRuns(projectPath);
+    expect(recovered.partial).toBe(false);
+    expect(list).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not cache or publish stale monitor results when definitions change during a read', async () => {
+    const { service, projectPath, repository } = await fixture();
+    const original = repository.list.bind(repository);
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const list = vi.spyOn(repository, 'list').mockImplementationOnce(async (project) => {
+      const value = await original(project); entered(); await held; return value;
+    });
+    const reading = service.monitorRuns(projectPath);
+    const rejected = expect(reading).rejects.toThrow('changed while the monitor was reading');
+    await started;
+    await service.saveTask({ expected: null, value: { name: 'Changed while reading', scope: 'project', prompt: 'Synthetic', enabled: true, permissionCeiling: 'edit' } });
+    release();
+    await rejected;
+    // saveTask legitimately inspects affected runs; count the fresh monitor read separately.
+    list.mockClear();
+    await expect(service.monitorRuns(projectPath)).resolves.toMatchObject({ partial: false });
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses a saved foreground prompt when storage fails during session creation', async () => {
     const { service, agent, task, host, accepted } = await fixture();
     let blocked = false;

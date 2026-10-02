@@ -202,6 +202,14 @@ export class WorkspaceSnapshotService {
     return snapshotPageSchema.parse(JSON.parse(tx.pages[index]!));
   }
 
+  /** Host-only retained wire-size inspection. Expiry also releases idle captures. */
+  inspectBuffers(): { transactionCount: number; pageCount: number; bytes: number } {
+    this.prune(this.now());
+    let retainedBytes = 0;
+    for (const transaction of this.transactions.values()) for (const page of transaction.pages) retainedBytes += Buffer.byteLength(page, 'utf8');
+    return { transactionCount: this.transactions.size, pageCount: this.pageOwners.size, bytes: retainedBytes };
+  }
+
   private prune(now: number): void { for (const [id, tx] of this.transactions) if (tx.expiresAt <= now) this.evict(id); }
   private evict(id: string): void { const tx = this.transactions.get(id); if (!tx) return; tx.ids.forEach((pageId) => this.pageOwners.delete(pageId)); this.transactions.delete(id); }
 }

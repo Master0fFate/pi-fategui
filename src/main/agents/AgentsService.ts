@@ -49,7 +49,8 @@ export class AgentsService {
   private ticking = false;
   private stopping = false;
   private readonly monitorRunsCache = new Map<string, { loadedAt: number; value: MonitorRunsSource }>();
-  private changed: (change: AgentChange) => void = (change) => { this.monitorRunsCache.delete(change.projectPath); };
+  private readonly monitorReads = new Map<string, { promise: Promise<MonitorRunsSource>; valid: { current: boolean } }>();
+  private changed: (change: AgentChange) => void = (change) => { this.invalidateMonitor(change.projectPath); };
   private readonly processId = randomUUID();
 
   constructor(
@@ -59,7 +60,7 @@ export class AgentsService {
     private readonly execute: (input: AgentExecutionInput) => Promise<AgentExecutionHandle> = createAgentExecution,
   ) {}
   setChangeSink(sink: (change: AgentChange) => void): void {
-    this.changed = (change) => { this.monitorRunsCache.delete(change.projectPath); sink(change); };
+    this.changed = (change) => { this.invalidateMonitor(change.projectPath); sink(change); };
   }
   start(): void {
     if (this.timer) return;
@@ -117,17 +118,36 @@ export class AgentsService {
       this.monitorRunsCache.set(projectPath, cached);
       return cached.value;
     }
-    const library = await this.listProject({ path: projectPath, trusted: true });
-    const retentionNotice = 'Showing the latest 1,000 runs.';
-    if (library.diagnostics.some((message) => !message.startsWith(retentionNotice))) throw new Error('Run records could not be read completely.');
-    const agents = new Map(library.agents.map((agent) => [agent.id, agent.name]));
-    const tasks = new Map(library.tasks.map((task) => [task.id, task.name]));
-    const value: MonitorRunsSource = { runs: library.runs, checkedAt: Date.now(), partial: library.diagnostics.some((message) => message.startsWith(retentionNotice)),
-      names: Object.fromEntries(library.runs.map((run) => [run.id,
-      `${tasks.get(run.taskTemplateId) ?? 'Deleted task'} · ${agents.get(run.agentId) ?? 'Deleted agent'}`])) };
-    this.monitorRunsCache.set(projectPath, { loadedAt: value.checkedAt, value });
-    while (this.monitorRunsCache.size > 32) this.monitorRunsCache.delete(this.monitorRunsCache.keys().next().value!);
-    return value;
+    const existing = this.monitorReads.get(projectPath);
+    if (existing) return existing.promise;
+    if (this.monitorReads.size >= 32) throw new Error('Monitor reads are busy. Retry after the pending reads settle.');
+    const valid = { current: true };
+    // Publish the in-flight entry before reading so simultaneous 15-second polls
+    // share one capped query instead of independently scanning every run journal.
+    const promise: Promise<MonitorRunsSource> = Promise.resolve().then(async () => {
+      const library = await this.listProject({ path: projectPath, trusted: true });
+      const retentionNotice = 'Showing the latest 1,000 runs.';
+      if (library.diagnostics.some((message) => !message.startsWith(retentionNotice))) throw new Error('Run records could not be read completely.');
+      const agents = new Map(library.agents.map((agent) => [agent.id, agent.name]));
+      const tasks = new Map(library.tasks.map((task) => [task.id, task.name]));
+      const value: MonitorRunsSource = { runs: library.runs, checkedAt: Date.now(), partial: library.diagnostics.some((message) => message.startsWith(retentionNotice)),
+        names: Object.fromEntries(library.runs.map((run) => [run.id,
+          `${tasks.get(run.taskTemplateId) ?? 'Deleted task'} · ${agents.get(run.agentId) ?? 'Deleted agent'}`])) };
+      // A write during the awaited query invalidates its result, not only the
+      // previous cache. Report unknown instead of publishing stale normal work.
+      if (!valid.current) throw new Error('Run records changed while the monitor was reading. Retry the monitor read.');
+      this.monitorRunsCache.set(projectPath, { loadedAt: value.checkedAt, value });
+      while (this.monitorRunsCache.size > 32) this.monitorRunsCache.delete(this.monitorRunsCache.keys().next().value!);
+      return value;
+    }).finally(() => { if (this.monitorReads.get(projectPath)?.promise === promise) this.monitorReads.delete(projectPath); });
+    this.monitorReads.set(projectPath, { promise, valid });
+    return promise;
+  }
+
+  private invalidateMonitor(projectPath: string): void {
+    this.monitorRunsCache.delete(projectPath);
+    const pending = this.monitorReads.get(projectPath);
+    if (pending) pending.valid.current = false;
   }
 
   private async listProject(project: AgentProject, routineId?: string): Promise<AgentLibrary> {

@@ -29,6 +29,7 @@ class Subscription implements EventSubscription {
   constructor(readonly scope: SnapshotScope, readonly streamId: string, private readonly limitCount: number,
     private readonly limitBytes: number, private readonly remove: (subscription: Subscription) => void) {}
   get active(): boolean { return !this.failed && !this.closed; }
+  usage(): { count: number; bytes: number } { return { count: this.pending.length, bytes: this.bytes }; }
   push(item: Stored): void {
     if (!this.active) return;
     if (this.pending.length >= this.limitCount || this.bytes + item.bytes > this.limitBytes) { this.fail(); return; }
@@ -83,6 +84,13 @@ export class WorkspaceEventHub {
     this.publish(event);
   }
   get subscriberCount(): number { return this.listeners.size; }
+  /** Host-only numeric diagnostics: no workspace IDs, transcript text, or consumer references. */
+  inspectBuffers(): { streamCount: number; subscriptionCount: number; retainedCount: number; retainedBytes: number; pendingCount: number; pendingBytes: number } {
+    let retainedCount = 0, retainedBytes = 0, pendingCount = 0, pendingBytes = 0;
+    for (const stream of this.streams.values()) { retainedCount += stream.ring.length; retainedBytes += stream.bytes; }
+    for (const subscription of this.listeners) { const usage = subscription.usage(); pendingCount += usage.count; pendingBytes += usage.bytes; }
+    return { streamCount: this.streams.size, subscriptionCount: this.listeners.size, retainedCount, retainedBytes, pendingCount, pendingBytes };
+  }
   /** Retained wire bytes, including framing; oldest is the first still available envelope. */
   retained(scope: SnapshotScope): { count: number; bytes: number; oldest: number } {
     const stream = this.lookup(scope);
