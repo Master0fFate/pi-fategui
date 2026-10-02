@@ -1,8 +1,9 @@
 import { ChevronDown, ChevronRight, ExternalLink, File, FileWarning, Folder, FolderOpen, Search } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { AppTooltip } from '../../components/AppTooltip';
 import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
+import { usePaneResize } from '../../components/usePaneResize';
 import { selectFileRows, useWorkspaceStore, type FileTreeRow } from '../../stores/workspaceStore';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { LazyFileViewer } from './LazyMonaco';
@@ -58,13 +59,7 @@ export function FilesPanel() {
   const hostFiles = useWorkspaceStore((state) => state.hostFiles);
   const initializeHostFiles = useWorkspaceStore((state) => state.initializeHostFiles);
   const resetHostFiles = useWorkspaceStore((state) => state.resetHostFiles);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const [treeHeight, setTreeHeight] = useState(240);
-  const resizeTree = (height: number) => {
-    const panelHeight = panelRef.current?.clientHeight ?? 0;
-    const maximum = Math.max(100, (panelHeight > 0 ? panelHeight : 900) - 180);
-    setTreeHeight(Math.min(maximum, Math.max(100, height)));
-  };
+  const { panelRef, height: treeHeight, minimum, maximum, resize: resizeTree } = usePaneResize(100, 180);
   const directories = useWorkspaceStore((state) => state.directories);
   const expanded = useWorkspaceStore((state) => state.expanded);
   const loadingDirectories = useWorkspaceStore((state) => state.loadingDirectories);
@@ -115,7 +110,7 @@ export function FilesPanel() {
       {!web && searchTruncated && <div className="bounded-note">Search is incomplete because a result or directory limit was reached</div>}
       {!web && !query.trim() && treeTruncated.size > 0 && <div className="bounded-note">Some directories contain more than 2,000 entries and are shown partially</div>}
     </div>
-    <HorizontalResizeHandle label="Resize file tree and preview" value={treeHeight} minimum={100} maximum={720} onChange={resizeTree} onReset={() => resizeTree(240)} />
+    <HorizontalResizeHandle label="Resize file tree and preview" value={treeHeight} minimum={minimum} maximum={maximum} onChange={resizeTree} onReset={() => resizeTree(240)} />
     {web ? <div className="file-preview"><div className="preview-heading">Text preview · host file</div>
       <pre className="preview-body">{hostFiles.previewLoading ? 'Reading host file…' : hostFiles.preview
         ? hostFiles.preview.content + (hostFiles.preview.truncated ? '\n… Text preview truncated by the host.' : '') : 'Select a supported text file to read it.'}</pre></div> : <PreviewState />}

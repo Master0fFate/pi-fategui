@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
+import { clampResizeValue, resizeBounds } from './resizeBounds';
 
 interface HorizontalResizeHandleProps {
   label: string;
@@ -21,6 +22,8 @@ export function HorizontalResizeHandle({
 }: HorizontalResizeHandleProps) {
   const start = useRef({ y: 0, value: 0 });
   const activePointer = useRef<number>();
+  const bounds = resizeBounds(minimum, maximum);
+  const boundedValue = clampResizeValue(value, bounds);
 
   const finish = useCallback(() => {
     activePointer.current = undefined;
@@ -35,21 +38,21 @@ export function HorizontalResizeHandle({
       role="separator"
       aria-label={label}
       aria-orientation="horizontal"
-      aria-valuemin={minimum}
-      aria-valuemax={maximum}
-      aria-valuenow={Math.round(value)}
+      aria-valuemin={bounds.minimum}
+      aria-valuemax={bounds.maximum}
+      aria-valuenow={clampResizeValue(Math.round(boundedValue), bounds)}
       tabIndex={0}
       onDoubleClick={onReset}
       onPointerDown={(event) => {
         event.preventDefault();
-        start.current = { y: event.clientY, value };
+        start.current = { y: event.clientY, value: boundedValue };
         activePointer.current = event.pointerId;
         event.currentTarget.setPointerCapture(event.pointerId);
         document.body.classList.add('is-resizing-horizontal-pane');
       }}
       onPointerMove={(event) => {
         if (activePointer.current !== event.pointerId) return;
-        onChange(start.current.value + (event.clientY - start.current.y) * direction);
+        onChange(clampResizeValue(start.current.value + (event.clientY - start.current.y) * direction, bounds));
       }}
       onPointerUp={(event) => {
         if (activePointer.current !== event.pointerId) return;
@@ -62,7 +65,7 @@ export function HorizontalResizeHandle({
         if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
         event.preventDefault();
         const delta = event.key === 'ArrowDown' ? 16 : -16;
-        onChange(value + delta * direction);
+        onChange(clampResizeValue(boundedValue + delta * direction, bounds));
       }}
     />
   );

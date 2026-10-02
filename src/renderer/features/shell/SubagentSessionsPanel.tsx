@@ -37,6 +37,7 @@ import type {
 import { subagentDisplayName, subagentHandle } from '../../../shared/subagentIdentity';
 import { AssistantMarkdown, MessageImages } from '../chat/RichMessageContent';
 import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
+import { usePaneResize } from '../../components/usePaneResize';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { useSkinComponents } from '../../skins/SkinProvider';
 import { canMutateNetwork, currentNetworkScope, useRuntimeStore, type NetworkTeam } from '../../stores/runtimeStore';
@@ -810,13 +811,7 @@ function DesktopSubagentSessionsPanel() {
   const toolProjection = useRuntimeStore(useShallow((state) => ({ toolsById: state.toolsById, version: state.toolsVersion })));
   const toolsById = toolProjection.toolsById;
   const selectedAgent = useUiStore((state) => state.selectedAgent);
-  const panelRef = useRef<HTMLElement>(null);
-  const [previewHeight, setPreviewHeight] = useState(260);
-  const resizePreview = (height: number) => {
-    const panelHeight = panelRef.current?.clientHeight ?? 0;
-    const maximum = Math.max(140, (panelHeight > 0 ? panelHeight : 900) - 180);
-    setPreviewHeight(Math.min(maximum, Math.max(140, height)));
-  };
+  const { panelRef, height: previewHeight, minimum, maximum, resize: resizePreview } = usePaneResize(140, 180, 260);
   const goalProjection = useGoalMaxStore(useShallow((state) => ({
     hasGoal: Boolean(state.goal),
     criteria: state.goal?.criteria,
@@ -939,7 +934,7 @@ function DesktopSubagentSessionsPanel() {
           ))}
         </div>
       )}
-      <HorizontalResizeHandle label="Resize sub-agent chat preview" value={previewHeight} minimum={140} maximum={720} direction={-1} onChange={resizePreview} onReset={() => resizePreview(260)} />
+      <HorizontalResizeHandle label="Resize sub-agent chat preview" value={previewHeight} minimum={minimum} maximum={maximum} direction={-1} onChange={resizePreview} onReset={() => resizePreview(260)} />
       <SubagentChatPreview
         runId={selectedRunId}
         teamSelection={selectedTeamNode}

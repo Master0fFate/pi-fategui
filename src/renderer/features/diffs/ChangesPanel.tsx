@@ -37,6 +37,7 @@ import type { GitChange, GitCommitDetails, GitCommitSummary } from '../../../sha
 import { AppTooltip } from '../../components/AppTooltip';
 import { useSkinComponents } from '../../skins/SkinProvider';
 import { HorizontalResizeHandle } from '../../components/HorizontalResizeHandle';
+import { usePaneResize } from '../../components/usePaneResize';
 import { writeClipboardText } from '../../lib/clipboard';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
@@ -363,13 +364,7 @@ export function ChangesPanel() {
   const requestFlightDeckJump = useUiStore((state) => state.requestFlightDeckJump);
   const clearFlightDeckJump = useUiStore((state) => state.clearFlightDeckJump);
   const requestComposerDraft = useUiStore((state) => state.requestComposerDraft);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const [listHeight, setListHeight] = useState(240);
-  const resizeList = (height: number) => {
-    const panelHeight = panelRef.current?.clientHeight ?? 0;
-    const maximum = Math.max(90, (panelHeight > 0 ? panelHeight : 900) - 200);
-    setListHeight(Math.min(maximum, Math.max(90, height)));
-  };
+  const { panelRef, height: listHeight, minimum, maximum, resize: resizeList } = usePaneResize(90, 200);
   const [view, setView] = useState<ChangesView>('diff');
   const [focusedChangeIndex, setFocusedChangeIndex] = useState(0);
   const changesListRef = useRef<VirtuosoHandle>(null);
@@ -579,7 +574,7 @@ export function ChangesPanel() {
             </div>
           </div>
         ) : null}
-        <HorizontalResizeHandle label="Resize changes list and preview" value={listHeight} minimum={90} maximum={700} onChange={resizeList} onReset={() => resizeList(240)} />
+        <HorizontalResizeHandle label="Resize changes list and preview" value={listHeight} minimum={minimum} maximum={maximum} onChange={resizeList} onReset={() => resizeList(240)} />
         <DiffPreview origins={origins} onOrigin={(origin) => openTarget(origin.target)} />
       </div>
   );
