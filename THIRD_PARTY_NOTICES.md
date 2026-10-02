@@ -6,9 +6,9 @@ Fate UI includes third-party software. This file records license notices that mu
 
 Fate UI bundles local Fontsource assets, including Roboto Flex (`@fontsource-variable/roboto-flex` 5.3.0) for the M3 Expressive skin and JetBrains Mono for Angelcore and code. These fonts are distributed under SIL OFL 1.1. Copyright notices and the complete license are included in [FONT_LICENSES.md](FONT_LICENSES.md), which accompanies packaged distributions. No Google brand font or remote font service is required.
 
-## Pi coding agent
+## Pi native runtime
 
-Fate UI includes and interoperates with `@earendil-works/pi-coding-agent`, from the [Pi repository](https://github.com/earendil-works/pi). Pi is distributed under the following MIT License:
+Fate UI includes and interoperates with `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-durable`, and `@earendil-works/chord`, all pinned to `1.0.0`, from the [Pi repository](https://github.com/earendil-works/pi). Each exact published package declares MIT. The full terms below were verified against [the upstream license at release commit a13d35a742c6ef8462812a28fbe1d8c8b7431c32](https://github.com/earendil-works/pi/blob/a13d35a742c6ef8462812a28fbe1d8c8b7431c32/LICENSE). Fate carries two scoped SDK patches described in [SDK compatibility](docs/sdk-compatibility.md). Pi is distributed under the following MIT License:
 
 ```text
 MIT License

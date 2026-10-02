@@ -30,14 +30,36 @@ describe('independent server package closure and artifact boundaries', () => {
     const processResult = runNode([packageScript, '--inspect-lock', '--with-terminal']);
     expect(processResult.status, processResult.stderr).toBe(0);
     const result = projectionSchema.parse(JSON.parse(processResult.stdout));
-    expect(result.roots).toEqual({ '@earendil-works/pi-ai': '0.87.1', '@earendil-works/pi-coding-agent': '0.87.1',
+    expect(result.roots).toEqual({ '@earendil-works/chord': '1.0.0', '@earendil-works/pi-ai': '1.0.0', '@earendil-works/pi-coding-agent': '1.0.0', '@earendil-works/pi-durable': '1.0.0',
       '@modelcontextprotocol/sdk': '1.25.2', ws: '8.22.0', 'node-pty': '1.1.0' });
-    expect(result.packageKeys).toContain('@earendil-works/pi-agent-core@0.87.1');
+    expect(result.packageKeys).toContain('@earendil-works/pi-agent-core@1.0.0');
     expect(result.packageKeys.some(key => /^(electron|transcribe-cpp|uiohook-napi|koffi)(?:@|\/)/u.test(key))).toBe(false);
-    expect(result.patches).toEqual({ '@earendil-works/pi-ai@0.87.1': 'patches/@earendil-works__pi-ai@0.87.1.patch',
-      '@earendil-works/pi-coding-agent@0.87.1': 'patches/@earendil-works__pi-coding-agent@0.87.1.patch', 'node-pty@1.1.0': 'patches/node-pty@1.1.0.patch' });
+    expect(result.patches).toEqual({ '@earendil-works/pi-ai@1.0.0': 'patches/@earendil-works__pi-ai@1.0.0.patch',
+      '@earendil-works/pi-coding-agent@1.0.0': 'patches/@earendil-works__pi-coding-agent@1.0.0.patch', 'node-pty@1.1.0': 'patches/node-pty@1.1.0.patch' });
     expect(result.sourceHashes.lock).toBe(sha(await readFile(path.join(root, 'pnpm-lock.yaml'), 'utf8')));
     expect(result.sourceHashes.workspace).toBe(sha(await readFile(path.join(root, 'pnpm-workspace.yaml'), 'utf8')));
+  });
+
+  it('retains exact upstream Pi terms and fails closed on missing provenance, changed terms, or unreviewed versions', async () => {
+    const noticePath = path.join(root, 'THIRD_PARTY_NOTICES.md');
+    const script = `import {retainedPiLicenseNotice} from ${JSON.stringify(packageImport)};
+import {readFileSync} from 'node:fs'; import assert from 'node:assert/strict';
+const text=readFileSync(${JSON.stringify(noticePath)},'utf8');
+const roots={'@earendil-works/chord':'1.0.0','@earendil-works/pi-ai':'1.0.0','@earendil-works/pi-coding-agent':'1.0.0','@earendil-works/pi-durable':'1.0.0'};
+const note=retainedPiLicenseNotice(text,roots);
+assert.equal(retainedPiLicenseNotice(text.replaceAll('\\n','\\r\\n'),roots),note);
+assert.throws(()=>retainedPiLicenseNotice(text.replace('Copyright (c) 2025 Mario Zechner','Copyright altered'),roots),/verified upstream terms/);
+assert.throws(()=>retainedPiLicenseNotice(text.replaceAll('a13d35a742c6ef8462812a28fbe1d8c8b7431c32','unverified'),roots),/tagged Pi license provenance/);
+assert.throws(()=>retainedPiLicenseNotice(text,{...roots,'@earendil-works/pi-durable':'1.0.1'}),/Unverified Pi license version/);
+assert.throws(()=>retainedPiLicenseNotice('',roots),/Missing maintained Pi/);
+process.stdout.write(note);`;
+    const result = runNode(['--input-type=module', '-e', script]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Copyright (c) 2025 Mario Zechner');
+    expect(result.stdout).toContain('Permission is hereby granted, free of charge');
+    expect(result.stdout).toContain('THE SOFTWARE IS PROVIDED "AS IS"');
+    expect(result.stdout).toContain('a13d35a742c6ef8462812a28fbe1d8c8b7431c32/LICENSE');
+    expect(result.stdout).not.toContain('react-remove-scroll-bar');
   });
 
   it('omits node-pty and its patch unless terminal packaging is explicit', () => {

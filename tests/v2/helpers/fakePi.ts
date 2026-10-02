@@ -163,7 +163,7 @@ export class FakePiSdkAdapter implements PiSdkAdapter {
         await control.barriers.wait('accept');
         streaming = true;
         this.record({ kind: 'accepted', sessionId, turnId });
-        options?.preflightResult?.(true);
+        options?.preflightResult?.('started');
         emit({ type: 'agent_start' });
         await control.barriers.wait('emit');
         if (!cancelled) {

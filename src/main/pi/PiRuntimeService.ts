@@ -6,6 +6,7 @@ import type { LearningProvider } from '../learning/LearningGenerator';
 import { projectLearningKey } from '../learning/LearningRepository';
 import { fateProviderStoragePaths } from './FateProviderStorage';
 import { ProviderFileSync } from './ProviderFileSync';
+import { piPromptDisposition, type PiPromptDisposition } from './PiSdkCompatibility';
 import { McpConfigService } from './McpConfigService';
 import { createMcpTool } from './McpService';
 import { promises as fs, realpathSync } from 'node:fs';
@@ -445,6 +446,8 @@ interface RuntimeSlot {
   compactionDispatchId: string | null;
   compactionReleaseTimer: ReturnType<typeof setTimeout> | null;
   recentlyDequeued: QueuedMessageRecord[];
+  /** Reserved queued input that native preflight instead admitted as a fresh turn. */
+  startingQueuedMessage: QueuedMessageRecord | null;
   queueMutationActive: boolean;
   queueMutationQueue: Promise<void>;
   permissionLevel: PermissionLevel;
@@ -608,7 +611,7 @@ export const createDefaultModelRuntime = async (paths?: FatePaths): Promise<Mode
 };
 
 export const createPiSdkAdapter = (paths?: FatePaths): PiSdkAdapter => ({
-  // Verified against SDK 0.83.0: clone is runtime.fork(currentLeaf, { position: 'at' }).
+  // Pi 1.0 uses the public runtime fork-at-leaf API for an exact clone.
   supportsClone: true,
   supportsDirectSessionRuntime: true,
   createModelRuntime: () => createDefaultModelRuntime(paths),
@@ -1287,6 +1290,7 @@ export class PiRuntimeService {
   private status: RuntimeState['status'] = 'disconnected';
   private fallbackStateError: AppError | null = null;
   private permissionStoreFailure: AppError | null = null;
+  private sdkCompatibilityFailure: AppError | null = null;
   private readonly unsubscribePermissionFailure: () => void;
   private eventSink: (events: PiEvent[]) => void = () => undefined;
   private scopedPiSink: (event: PiEvent, sessionId: string | null) => void = noopScopedPiSink;
@@ -2279,7 +2283,9 @@ export class PiRuntimeService {
     if (slot.promptEpoch !== promptEpoch) throw this.replacementSuperseded();
     validatePromptImages(input.images);
     const images = input.images?.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType }));
-    const queuedBehavior = session.isStreaming && effectiveBehavior !== 'prompt' ? effectiveBehavior : null;
+    // SDK input hooks can change streaming state before native admission. Reserve
+    // every queue-capable request before entry, even when the snapshot is idle.
+    const queuedBehavior = effectiveBehavior !== 'prompt' ? effectiveBehavior : null;
     if (queuedBehavior && slot.queuedMessages.length + slot.recoveredMessages.length + slot.heldCompactionMessages.length - (replayedMessage ? 1 : 0) >= MAX_QUEUED_MESSAGES) {
       throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'The message queue is full. Cancel or wait for a queued message before adding another.', retryable: true });
     }
@@ -2356,11 +2362,11 @@ export class PiRuntimeService {
       }
     };
     const clearRunReservation = (): void => {
-      if (!startsRun || slot.activeRunId !== runId) return;
+      if (slot.activeRunId !== runId) return;
       slot.activeRunId = null;
       slot.objective = '';
     };
-    const isFirstUserPrompt = startsRun && !slot.firstTitleStarted && !sessionHistory(session).some((message) => (
+    const isFirstUserPrompt = !slot.firstTitleStarted && !sessionHistory(session).some((message) => (
       Boolean(message) && typeof message === 'object' && (message as { role?: unknown }).role === 'user'
     ));
     if (startsRun) {
@@ -2395,11 +2401,6 @@ export class PiRuntimeService {
       throw this.replacementSuperseded();
     }
 
-    const queuedCountBefore = queuedBehavior === 'steer'
-      ? session.getSteeringMessages?.().length ?? 0
-      : queuedBehavior === 'followUp'
-        ? session.getFollowUpMessages?.().length ?? 0
-        : 0;
     const queuedRecord: QueuedMessageRecord | null = queuedBehavior
       ? {
           id: replayedMessage?.id ?? randomUUID(),
@@ -2508,7 +2509,9 @@ export class PiRuntimeService {
         if (startsRun && stagedThinkingLevel) restoreStagedThinkingLevel(stagedThinkingLevel);
         clearRunReservation();
       };
-      const accept = (accepted: boolean) => {
+      const accept = (value: PiPromptDisposition | false) => {
+        const disposition = piPromptDisposition(value);
+        const accepted = disposition !== null;
         if (settled) return;
         settled = true;
         if (!ownsSlot()) {
@@ -2517,21 +2520,36 @@ export class PiRuntimeService {
           return;
         }
         if (accepted) {
-          if (queuedRecord && queuedBehavior) {
+          if (disposition === 'handled') {
+            // An extension consumed the input without admitting a model turn.
+            // Restore staged choices and discard provisional queue/learning
+            // state; the caller still gets a successful command acknowledgment.
+            rejectReservation();
+          } else if (disposition === 'queued' && queuedRecord && queuedBehavior) {
+            // Native disposition, not the earlier streaming snapshot, owns the
+            // queue outcome. A continuation may already have consumed the item.
+            clearRunReservation();
             const queuedTexts = queuedBehavior === 'steer' ? session.getSteeringMessages?.() ?? [] : session.getFollowUpMessages?.() ?? [];
-            if (queuedTexts.length > queuedCountBefore) {
-              queuedRecord.transportText = queuedTexts.at(-1) ?? queuedRecord.transportText;
+            queuedRecord.transportText = queuedTexts.at(-1) ?? queuedRecord.transportText;
+            queuedReservationActive = false;
+            if (!slot.acknowledgedQueueIds.has(queuedRecord.id)) {
+              if (queuedRecord.boundModel) restoreStagedModel(queuedRecord.boundModel);
+              if (queuedRecord.boundThinkingLevel) restoreStagedThinkingLevel(queuedRecord.boundThinkingLevel);
+            }
+            this.checkpointQueue(slot);
+          } else if (disposition === 'started') {
+            slot.activeRunId = runId;
+            slot.objective = input.text.trim().slice(0, 500);
+            if (queuedRecord && !slot.acknowledgedQueueIds.has(queuedRecord.id)) {
+              // The old stream ended in an SDK hook. Keep the reservation and
+              // bind it by identity to the next user message, even if a hook
+              // transformed its text. The model boundary consumes its settings.
+              slot.startingQueuedMessage = queuedRecord;
               queuedReservationActive = false;
-              this.checkpointQueue(slot);
-            } else {
-              // Extension commands execute immediately even when a streaming
-              // behavior is supplied; they must not leave a phantom queue item
-              // or consume the model staged for the next actual user turn.
-              releaseQueuedReservation(true);
             }
           }
           slot.modifiedAt = new Date().toISOString();
-          if (isFirstUserPrompt) {
+          if (isFirstUserPrompt && disposition === 'started') {
             slot.firstTitleStarted = true;
             slot.firstPromptText = input.text;
             const title = this.generateFirstPromptTitle(slot, session, input.text, initialization);
@@ -2552,7 +2570,18 @@ export class PiRuntimeService {
       void session.prompt(promptText, {
         ...(images ? { images } : {}),
         ...(effectiveBehavior === 'prompt' ? {} : { streamingBehavior: effectiveBehavior }),
-        preflightResult: accept,
+        preflightResult: (value) => {
+          const disposition = piPromptDisposition(value);
+          if (!disposition || disposition === 'queued' && !queuedRecord) {
+            const failure = this.fenceSdkCompatibilityFailure();
+            // Throw before native Pi enters its model loop. Cancellation is a
+            // best-effort cleanup; neither rejection nor a hung abort clears
+            // the sticky admission/model/tool fence.
+            void Promise.resolve().then(() => session.abort()).catch(() => undefined);
+            throw new PiDesktopError(failure);
+          }
+          accept(disposition);
+        },
       }).catch((error: unknown) => {
         if (!ownsSlot()) {
           accept(false);
@@ -2564,7 +2593,15 @@ export class PiRuntimeService {
         slot.runFailed = true;
         if (this.selectedSlot === slot) this.emitError(normalized);
       }).finally(() => {
-        if (startsRun && slot.activeRunId === runId) slot.activeRunId = null;
+        if (slot.activeRunId === runId) slot.activeRunId = null;
+        if (queuedRecord && slot.startingQueuedMessage === queuedRecord) {
+          slot.startingQueuedMessage = null;
+          slot.queuedMessages = slot.queuedMessages.filter((item) => item.id !== queuedRecord.id);
+          if (ownsSlot() && !slot.acknowledgedQueueIds.has(queuedRecord.id)) {
+            this.retainEditingDraft(slot, queuedRecord);
+            this.checkpointQueue(slot);
+          }
+        }
         if (ownsSlot()) this.goalMax.reconcileRuntime(session.sessionId);
         if (ownsSlot() && this.selectedSlot === slot) this.emitState();
       });
@@ -2795,6 +2832,7 @@ export class PiRuntimeService {
   }
 
   async setPermissionLevel(level: PermissionLevel): Promise<RuntimeState> {
+    if (this.sdkCompatibilityFailure) throw new PiDesktopError(this.sdkCompatibilityFailure);
     const project = this.project;
     if (!project?.trusted) throw new PiDesktopError({ code: 'PROJECT_NOT_TRUSTED', message: 'Open and trust a project before changing permissions.', retryable: true });
     if (this.resolveHealthyPermission(undefined, level) !== level) throw new Error('The requested permission exceeds the host permission ceiling.');
@@ -2914,7 +2952,25 @@ export class PiRuntimeService {
     this.emitState();
   }
 
+  private fenceSdkCompatibilityFailure(): AppError {
+    if (this.sdkCompatibilityFailure) return this.sdkCompatibilityFailure;
+    const failure = normalizeError(new Error('Incompatible Pi prompt acknowledgment. Execution is blocked until the host restarts with a compatible SDK. Stop settlement may be unconfirmed.'));
+    this.sdkCompatibilityFailure = failure;
+    this.fallbackStateError = failure;
+    for (const slot of this.liveSlots) {
+      if (slot.disposed) continue;
+      slot.stateError = failure;
+      this.revokeSlotToolAccess(slot);
+      this.agentAuthorityVersions.set(slot.runtime.session.sessionId, (this.agentAuthorityVersions.get(slot.runtime.session.sessionId) ?? 0) + 1);
+      try { slot.runtime.session.setActiveToolsByName(filterAgentSessionTools(slot.runtime.session, activeToolsForPermission(slot.runtime.session.getActiveToolNames(), 'read-only'))); } catch { /* Retained write handles are revoked independently. */ }
+      try { this.agentTeams.lowerRootPermission(slot.runtime.session.sessionId, 'read-only'); } catch { /* Fence every root even if a descendant failed. */ }
+      try { this.subagents.capDelegationPermission(slot.runtime.session.sessionId, 'read-only'); } catch { /* Fence every root even if a descendant failed. */ }
+    }
+    return failure;
+  }
+
   private assertPermissionPublication(): void {
+    if (this.sdkCompatibilityFailure) throw new PiDesktopError(this.sdkCompatibilityFailure);
     this.sessionPermissions.assertHealthy();
     if (this.permissionStoreFailure) throw new PiDesktopError(this.permissionStoreFailure);
   }
@@ -4036,6 +4092,7 @@ export class PiRuntimeService {
       compactionDispatchId: null,
       compactionReleaseTimer: null,
       recentlyDequeued: [],
+      startingQueuedMessage: null,
       queueMutationActive: false,
       queueMutationQueue: Promise.resolve(),
       permissionLevel: 'read-only',
@@ -4129,6 +4186,7 @@ export class PiRuntimeService {
     if (slot.compactionReleaseTimer) clearTimeout(slot.compactionReleaseTimer);
     slot.compactionReleaseTimer = null;
     slot.recentlyDequeued = [];
+    slot.startingQueuedMessage = null;
     slot.queueMutationActive = false;
     slot.queueMutationQueue = Promise.resolve();
     slot.permissionLevel = 'read-only';
@@ -4346,7 +4404,12 @@ export class PiRuntimeService {
         return;
       }
       slot.boundaryModelOverride = null;
-      let queued = slot.recentlyDequeued.shift();
+      let queued = slot.startingQueuedMessage ?? slot.recentlyDequeued.shift();
+      if (slot.startingQueuedMessage) {
+        slot.startingQueuedMessage = null;
+        slot.queuedMessages = slot.queuedMessages.filter((item) => item.id !== queued!.id);
+        slot.recentlyDequeued = slot.recentlyDequeued.filter((item) => item.id !== queued!.id);
+      }
       if (!queued) {
         const text = messageText(event.message);
         const index = slot.queuedMessages.findIndex((item) => item.transportText === text);

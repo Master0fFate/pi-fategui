@@ -1,8 +1,7 @@
 diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
-index b1beb1a..5def3f8 100644
 --- a/dist/api/openai-completions.js
 +++ b/dist/api/openai-completions.js
-@@ -695,8 +695,8 @@ function buildParams(model, context, options, compat = getCompat(model), cacheRe
+@@ -685,8 +685,8 @@
                  effort: model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort,
              };
          }

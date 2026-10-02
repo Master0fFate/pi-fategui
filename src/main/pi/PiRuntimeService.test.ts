@@ -9,6 +9,7 @@ import {
   Theme,
   type AgentSessionRuntime,
   type ModelRuntime,
+  type PromptOptions,
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -83,10 +84,10 @@ function fixture(availableModels: typeof model[] = [model]) {
       sessionListeners.add(listener);
       return vi.fn(() => { sessionListeners.delete(listener); });
     }),
-    prompt: vi.fn((_text: string, options: { preflightResult: (accepted: boolean) => void; streamingBehavior?: 'steer' | 'followUp' }) => {
+    prompt: vi.fn((_text: string, options: { preflightResult: NonNullable<PromptOptions['preflightResult']>; streamingBehavior?: 'steer' | 'followUp' }) => {
       if (options.streamingBehavior === 'steer') steeringMessages.push(_text);
       if (options.streamingBehavior === 'followUp') followUpMessages.push(_text);
-      options.preflightResult(true);
+      options.preflightResult(streaming && options.streamingBehavior ? 'queued' : 'started');
       if (options.streamingBehavior) return Promise.resolve();
       streaming = true;
       return new Promise<void>((resolve) => { settleRun = () => { streaming = false; resolve(); }; });
@@ -1918,7 +1919,7 @@ describe('PiRuntimeService', () => {
   it('keeps a rejected first prompt out of the session list', async () => {
     const fake = fixture();
     const source = { list: vi.fn(async () => []), rename: vi.fn() };
-    fake.session.prompt.mockImplementationOnce(async (_text, options) => { options.preflightResult(false); });
+    fake.session.prompt.mockImplementationOnce(async () => { throw new Error('rejected before native admission'); });
     const service = new PiRuntimeService(fake.adapter, new PiSessionRepository(source));
     await service.openProject({ path: '/project', name: 'project', trusted: true });
 
@@ -2368,14 +2369,111 @@ describe('PiRuntimeService', () => {
     const service = new PiRuntimeService(fake.adapter);
     await service.openProject({ path: '/project', name: 'project', trusted: true });
     await service.setModel('test', 'fast');
-    fake.session.prompt.mockImplementationOnce((_text, options) => {
-      options.preflightResult(false);
-      return Promise.reject(new Error('rejected by input gate'));
-    });
+    fake.session.prompt.mockImplementationOnce(() => Promise.reject(new Error('rejected by input gate')));
 
     await expect(service.prompt({ text: 'blocked', behavior: 'prompt' })).resolves.toMatchObject({ accepted: false });
     expect(service.getState(false)).toMatchObject({ pendingModel: { id: 'fast' } });
     expect(service.getState(false).objective).toBeUndefined();
+    await service.dispose();
+  });
+
+  it.each(['settled', 'rejected', 'hung'] as const)('keeps unknown SDK acknowledgments fenced when abort is %s', async (abortOutcome) => {
+    const fake = fixture();
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    fake.session.abort.mockImplementationOnce(() => abortOutcome === 'hung' ? new Promise<void>(() => undefined)
+      : abortOutcome === 'rejected' ? Promise.reject(new Error('abort failed')) : Promise.resolve());
+    fake.session.prompt.mockImplementationOnce(async (_text, options) => {
+      options.preflightResult('incompatible' as Parameters<NonNullable<PromptOptions['preflightResult']>>[0]);
+    });
+
+    await expect(service.prompt({ text: 'must not run unacknowledged', behavior: 'prompt' })).resolves.toMatchObject({ accepted: false });
+    expect(fake.session.abort).toHaveBeenCalledOnce();
+    await expect(service.prompt({ text: 'must stay fenced', behavior: 'prompt' })).rejects.toThrow(/Incompatible Pi/);
+    await expect(service.setPermissionLevel('full-access')).rejects.toThrow(/Incompatible Pi/);
+    expect(() => fake.agent.streamFunction(model, { messages: [] })).toThrow(/Incompatible Pi/);
+    expect(service.getState(false)).toMatchObject({ permissionLevel: 'read-only', error: { message: expect.stringContaining('Incompatible Pi') } });
+    expect(fake.session.prompt).toHaveBeenCalledOnce();
+    await service.dispose();
+  });
+
+  it('retains a durable bound queue reservation when an idle request becomes queued in native hooks', async () => {
+    const alternate = { ...model, id: 'fast', name: 'Fast Model' };
+    const fake = fixture([model, alternate]);
+    fake.modelRuntime.getModel.mockImplementation((_provider: string, id: string) => id === 'fast' ? alternate : model);
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.setModel('test', 'fast');
+    service.setThinkingLevel('high');
+    fake.session.prompt.mockImplementationOnce(async (_text, options) => {
+      fake.setStreaming(true);
+      fake.setQueue([], ['transformed queued input']);
+      options.preflightResult('queued');
+    });
+
+    await expect(service.prompt({ text: 'original queued input', behavior: 'followUp' })).resolves.toMatchObject({ accepted: true });
+    expect(service.getState(false).queue?.items).toEqual([expect.objectContaining({ text: 'original queued input', requestedModel: { provider: 'test', id: 'fast' }, requestedThinkingLevel: 'high' })]);
+    expect(service.getState(false).pendingModel?.id).toBe('fast');
+    fake.setQueue([], []);
+    fake.emitSession({ type: 'queue_update', steering: [], followUp: [] });
+    await fake.emitAgent({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'transformed queued input' }] } });
+    expect(service.getState(false).queue?.items).toEqual([]);
+    expect(service.getState(false).pendingModel).toBeNull();
+    expect(service.getState(false).pendingThinkingLevel).toBeNull();
+    fake.setStreaming(false);
+    await service.dispose();
+  });
+
+  it('binds a queue-to-started race by identity even when native hooks transform the user text', async () => {
+    const alternate = { ...model, id: 'fast', name: 'Fast Model' };
+    const fake = fixture([model, alternate]);
+    const originalStream = fake.agent.streamFunction;
+    fake.modelRuntime.getModel.mockImplementation((_provider: string, id: string) => id === 'fast' ? alternate : model);
+    const service = new PiRuntimeService(fake.adapter);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.prompt({ text: 'previous work', behavior: 'prompt' });
+    await service.setModel('test', 'fast');
+    service.setThinkingLevel('high');
+    let finish!: () => void;
+    fake.session.prompt.mockImplementationOnce((_text, options) => {
+      fake.settle();
+      options.preflightResult('started');
+      fake.setStreaming(true);
+      return new Promise<void>((resolve) => { finish = resolve; });
+    });
+
+    await expect(service.prompt({ text: 'original new turn', behavior: 'followUp' })).resolves.toMatchObject({ accepted: true });
+    expect(service.getState(false).activeSessionRunning).toBe(true);
+    expect(fake.session.setModel).not.toHaveBeenCalled();
+    await fake.emitAgent({ type: 'agent_start' });
+    await fake.emitAgent({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'hook transformed new turn' }] } });
+    expect(service.getState(false).queue?.items).toEqual([]);
+    expect(service.getState(false).pendingModel).toBeNull();
+    expect(service.getState(false).pendingThinkingLevel).toBeNull();
+    const context = { messages: [] };
+    fake.agent.streamFunction(model, context, { apiKey: 'captured-old-provider-key', reasoning: 'low' });
+    expect(originalStream).toHaveBeenLastCalledWith(alternate, context, { reasoning: 'high' });
+    finish();
+    fake.setStreaming(false);
+    await Promise.resolve();
+    await service.dispose();
+  });
+
+  it('acknowledges native handled input without consuming the staged first turn or title', async () => {
+    const alternate = { ...model, id: 'fast', name: 'Fast Model' };
+    const fake = fixture([model, alternate]);
+    fake.modelRuntime.getModel.mockImplementation((_provider: string, id: string) => id === 'fast' ? alternate : model);
+    const titleGenerator: SessionTitleGenerator = { generate: vi.fn(async () => 'Must not be generated') };
+    const service = new PiRuntimeService(fake.adapter, undefined, undefined, titleGenerator);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    await service.setModel('test', 'fast');
+    service.setThinkingLevel('high');
+    fake.session.prompt.mockImplementationOnce(async (_text, options) => { options.preflightResult('handled'); });
+
+    await expect(service.prompt({ text: 'consumed by extension', behavior: 'prompt' })).resolves.toMatchObject({ accepted: true });
+    expect(service.getState(false)).toMatchObject({ pendingModel: { id: 'fast' }, pendingThinkingLevel: 'high', activeSessionRunning: false });
+    expect(service.getState(false).queue?.items).toEqual([]);
+    expect(titleGenerator.generate).not.toHaveBeenCalled();
     await service.dispose();
   });
 
@@ -2388,7 +2486,7 @@ describe('PiRuntimeService', () => {
     await service.prompt({ text: 'current work', behavior: 'prompt' });
     await service.setModel('test', 'fast');
     fake.session.prompt.mockImplementationOnce((_text, options) => {
-      options.preflightResult(true);
+      options.preflightResult('handled');
       return Promise.resolve();
     });
 
@@ -2472,7 +2570,7 @@ describe('PiRuntimeService', () => {
     const fake = fixture();
     let resolveSdkPrompt: (() => void) | undefined;
     fake.session.prompt.mockImplementationOnce((_text, options) => {
-      options.preflightResult(true);
+      options.preflightResult('started');
       return new Promise<void>((resolve) => { resolveSdkPrompt = resolve; });
     });
     const events: PiEvent[] = [];

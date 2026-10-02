@@ -1,32 +1,36 @@
 diff --git a/dist/core/package-manager.d.ts b/dist/core/package-manager.d.ts
 --- a/dist/core/package-manager.d.ts
 +++ b/dist/core/package-manager.d.ts
-@@ -69,5 +69,7 @@ interface PackageManagerOptions {
+@@ -67,6 +67,8 @@
+     getInstalledPath(source: string, scope: "user" | "project"): string | undefined;
+ }
+ interface PackageManagerOptions {
++    /** Default true. Server profiles exclude HOME and ancestor skills before discovery. */
++    includeHomeAgentSkills?: boolean;
      cwd: string;
      agentDir: string;
      settingsManager: SettingsManager;
-+    /** Default true. Server profiles can exclude HOME/.agents/skills before discovery. */
-+    includeHomeAgentSkills?: boolean;
- }
- type SourceScope = "user" | "project" | "temporary";
 diff --git a/dist/core/package-manager.js b/dist/core/package-manager.js
 --- a/dist/core/package-manager.js
 +++ b/dist/core/package-manager.js
-@@ -604,11 +604,13 @@ export class DefaultPackageManager {
+@@ -608,6 +608,7 @@
      cwd;
      agentDir;
      settingsManager;
 +    includeHomeAgentSkills;
+     builtinExtensions;
      globalNpmRoot;
      globalNpmRootCommandKey;
-     progressCallback;
-     constructor(options) {
+@@ -616,6 +617,7 @@
          this.cwd = resolvePath(options.cwd);
          this.agentDir = resolvePath(options.agentDir);
          this.settingsManager = options.settingsManager;
 +        this.includeHomeAgentSkills = options.includeHomeAgentSkills !== false;
+         this.builtinExtensions = options.builtinExtensions ?? [];
      }
-@@ -1976,8 +1978,10 @@ export class DefaultPackageManager {
+     setProgressCallback(callback) {
+@@ -2020,10 +2022,12 @@
+             prompts: join(projectBaseDir, "prompts"),
              themes: join(projectBaseDir, "themes"),
          };
 -        const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
@@ -39,7 +43,9 @@ diff --git a/dist/core/package-manager.js b/dist/core/package-manager.js
 +                : [join(this.cwd, ".agents", "skills")]
              : [];
          const addResources = (resourceType, paths, metadata, overrides, baseDir) => {
-@@ -2010,10 +2014,12 @@ export class DefaultPackageManager {
+             const target = this.getTargetMap(accumulator, resourceType);
+@@ -2055,13 +2059,15 @@
+         addResources("extensions", collectAutoExtensionEntries(userDirs.extensions), userMetadata, userOverrides.extensions, globalBaseDir);
          // User skills from ~/.pi/agent/
          addResources("skills", collectAutoSkillEntries(userDirs.skills, "pi"), userMetadata, userOverrides.skills, globalBaseDir);
 -        // User skills from ~/.agents/ (with its own baseDir)
@@ -50,7 +56,7 @@ diff --git a/dist/core/package-manager.js b/dist/core/package-manager.js
 -        };
 -        addResources("skills", collectAutoSkillEntries(userAgentsSkillsDir, "agents"), userAgentsMetadata, userOverrides.skills, userAgentsBaseDir);
 +        if (this.includeHomeAgentSkills) {
-+            // User skills from ~/.agents/ (with its own baseDir). Disabled server profiles never inspect it.
++            // Disabled server profiles never inspect HOME/.agents or cwd ancestors.
 +            const userAgentsBaseDir = dirname(userAgentsSkillsDir);
 +            const userAgentsMetadata = {
 +                ...userMetadata,
@@ -59,22 +65,28 @@ diff --git a/dist/core/package-manager.js b/dist/core/package-manager.js
 +            addResources("skills", collectAutoSkillEntries(userAgentsSkillsDir, "agents"), userAgentsMetadata, userOverrides.skills, userAgentsBaseDir);
 +        }
          addResources("prompts", collectAutoPromptEntries(userDirs.prompts), userMetadata, userOverrides.prompts, globalBaseDir);
+         addResources("themes", collectAutoThemeEntries(userDirs.themes), userMetadata, userOverrides.themes, globalBaseDir);
+     }
 diff --git a/dist/core/resource-loader.d.ts b/dist/core/resource-loader.d.ts
 --- a/dist/core/resource-loader.d.ts
 +++ b/dist/core/resource-loader.d.ts
-@@ -70,4 +70,6 @@ export interface DefaultResourceLoaderOptions {
+@@ -68,6 +68,8 @@
+     content: string;
+ }>;
+ export interface DefaultResourceLoaderOptions {
++    /** Default true; false excludes HOME and ancestor skills before filesystem discovery. */
++    includeHomeAgentSkills?: boolean;
+     cwd: string;
      agentDir: string;
      settingsManager?: SettingsManager;
-     eventBus?: EventBus;
-+    /** Default true; false prevents HOME/.agents/skills discovery before any filesystem read. */
-+    includeHomeAgentSkills?: boolean;
-     additionalExtensionPaths?: string[];
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
-@@ -160,4 +160,5 @@ export class DefaultResourceLoader {
+@@ -245,6 +245,7 @@
+         this.extensionFactories = factories.filter((input) => !isBuiltinExtension(input));
+         this.builtinExtensions = new Map(factories.filter(isBuiltinExtension).map((input) => [input.name, input]));
          this.packageManager = new DefaultPackageManager({
++            includeHomeAgentSkills: options.includeHomeAgentSkills,
              cwd: this.cwd,
              agentDir: this.agentDir,
-+            includeHomeAgentSkills: options.includeHomeAgentSkills,
              settingsManager: this.settingsManager,
