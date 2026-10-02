@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PiRuntimeService } from './PiRuntimeService';
 import { InMemorySessionPermissionStore, SessionPermissionStore } from './SessionPermissionStore';
 import { AppLogService } from '../logging/AppLogService';
+import { PiDesktopError } from './errors';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -26,6 +27,29 @@ async function isolatedRoot() {
 }
 
 describe('real SDK root permission fencing (no provider requests)', () => {
+  it('preserves structured host denial details and synchronous shell refusal on retained tools', async () => {
+    const root = await isolatedRoot();
+    const service = new PiRuntimeService();
+    try {
+      await service.openProject({ path: root, name: 'fixture', trusted: true });
+      await service.setPermissionLevel('full-access');
+      const session = (service as unknown as { selectedSlot: { runtime: AgentSessionRuntime } }).selectedSlot.runtime.session;
+      const write = session.agent.state.tools.find((tool) => tool.name === 'write')!;
+      const bash = session.agent.state.tools.find((tool) => tool.name === 'bash')!;
+      const target = path.join(root, 'sentinel.txt');
+      await fs.writeFile(target, 'unchanged');
+      const denial = { code: 'INVALID_REQUEST' as const, message: 'Execution requires a fresh review.', retryable: false, actionable: 'Review the retained execution first.' };
+      service.setExecutionAdmissionGuard(() => { throw new PiDesktopError(denial); });
+      const expected = { ...denial, message: `Tool execution authority is unavailable. ${denial.message}` };
+      await expect(write.execute('denied-write', { path: target, content: 'not allowed' })).rejects.toMatchObject({ normalized: expected });
+      let thrown: unknown;
+      try { bash.execute('denied-bash', { command: 'echo must-not-execute' }); } catch (error) { thrown = error; }
+      expect(thrown).toBeInstanceOf(PiDesktopError);
+      expect(thrown).toMatchObject({ normalized: expected });
+      expect(await fs.readFile(target, 'utf8')).toBe('unchanged');
+    } finally { await service.dispose(); }
+  });
+
   it('starts edit, persists before escalation, and revokes retained write/bash handles on reduction', async () => {
     const root = await isolatedRoot();
     const permissions = new InMemorySessionPermissionStore();

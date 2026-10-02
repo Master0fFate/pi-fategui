@@ -44,6 +44,13 @@ function fixture(permissionBySession?: Record<string, 'read-only' | 'full-access
   return { host, attach, emit, history, syncService, setRoot: (next: Root) => { root = next; } };
 }
 
+// These tests exercise state/lease logic, not native Chromium creation.
+vi.mock('electron', () => ({
+  app: { getPath: () => { throw new Error('Native app paths are outside this unit fixture.'); } },
+  dialog: { showSaveDialog: () => { throw new Error('Native dialogs are outside this unit fixture.'); } },
+  WebContentsView: class { constructor() { throw new Error('Native views are outside this unit fixture.'); } },
+}));
+
 describe('BrowserHost session isolation', () => {
   it('returns only the foreground service to UI and looks up background sessions explicitly', async () => {
     const { host, attach, setRoot } = fixture();

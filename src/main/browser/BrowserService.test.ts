@@ -8,6 +8,13 @@ import { BrowserError } from './BrowserErrors';
 import { BrowserService, projectProfilePartition } from './BrowserService';
 import type { LocalPageRegistry } from './LocalPageRegistry';
 
+// These tests exercise state/lease logic, not native Chromium creation.
+vi.mock('electron', () => ({
+  app: { getPath: () => { throw new Error('Native app paths are outside this unit fixture.'); } },
+  dialog: { showSaveDialog: () => { throw new Error('Native dialogs are outside this unit fixture.'); } },
+  WebContentsView: class { constructor() { throw new Error('Native views are outside this unit fixture.'); } },
+}));
+
 describe('BrowserService visibility safety', () => {
   it('uses distinct persistent Chromium partitions for every project/session/profile tuple', () => {
     const first = projectProfilePartition('/project', 'project', 'session-1');

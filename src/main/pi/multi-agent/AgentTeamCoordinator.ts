@@ -8,7 +8,7 @@ import type { AgentSession, AgentSessionEvent, ModelRuntime, ToolDefinition } fr
 import type { ModelInfo, PermissionLevel, ThinkingLevel } from '../../../shared/contracts/ipc';
 import { AGENT_TEAM_MAX_WAIT_MS, defaultAgentWorkspacePolicy, type AgentTeam, type AgentTeamControlInput, type AgentTeamEnvelope, type AgentTeamEnvelopeDelivery, type AgentTeamNode, type AgentTeamTask, type AgentWorkspacePolicy, type AgentWorkspaceRequest } from '../../../shared/contracts/multiAgent';
 import type { ToolActor } from '../../../shared/contracts/provenance';
-import { addUsage, createSdkChildSession, emptyUsage, finalAssistant, usageFromMessages, type SubagentChildSessionFactory } from '../SubagentSessionFactory';
+import { addUsage, createSdkChildSession, installChildExecutionAdmission, emptyUsage, finalAssistant, usageFromMessages, type SubagentChildSessionFactory } from '../SubagentSessionFactory';
 import { assertContextTransfer } from '../SubagentContext';
 import { requiredPermissionForTool, toolNamesForPermission } from '../PiToolPolicy';
 import { scheduleLongTimeout, type CancelableTimer } from '../SubagentTimer';
@@ -16,6 +16,7 @@ import { createToolProvenance } from '../ToolProvenance';
 import { discoverSubagentProfiles, resolveSubagentProfile } from '../SubagentProfiles';
 import { assertSkillTools, selectSubagentSkills } from '../SubagentSkills';
 import { childToolNames, modelInfo, modelThinkingLevels, permissions, thinkingLevels, type ChildToolName, type ParentModel } from '../SubagentProtocol';
+import { NativeEffectNotStartedError } from '../durable/NativeExecutionFence';
 import { disabledModelMessage, isModelDisabled, visibleModels } from '../../../shared/modelVisibility';
 import { createAgentCollaborationTools } from './AgentCollaborationTools';
 import { sanitizedRecentTurns } from './AgentContextForker';
@@ -136,28 +137,42 @@ export class AgentTeamCoordinator {
   }
 
   private async spawnInternal(callerNodeId: string, raw: unknown, operationId: string, modelRuntime: ModelRuntime, signal: AbortSignal | undefined, options: SpawnAgentOptions) {
-    const request = this.normalizeSpawn(raw);
-    if (options.idleReleaseMs !== undefined && (!Number.isSafeInteger(options.idleReleaseMs) || options.idleReleaseMs <= 0 || options.idleReleaseMs > Number.MAX_SAFE_INTEGER - Date.now())) {
-      throw new Error('idleReleaseMs must be a positive safe integer duration with a representable deadline.');
+    let request: SpawnAgentRequest;
+    let runtime: AgentTeamRuntime;
+    let receiptKey: string;
+    let caller: AgentTeamNode;
+    let prepared: PreparedAgentRequest;
+    try {
+      request = this.normalizeSpawn(raw);
+      if (options.idleReleaseMs !== undefined && (!Number.isSafeInteger(options.idleReleaseMs) || options.idleReleaseMs <= 0 || options.idleReleaseMs > Number.MAX_SAFE_INTEGER - Date.now())) {
+        throw new Error('idleReleaseMs must be a positive safe integer duration with a representable deadline.');
+      }
+      runtime = this.runtimeForCaller(callerNodeId);
+      this.host.assertExecutionAdmission?.(runtime.state.rootSessionId);
+      receiptKey = operationKey(callerNodeId, operationId);
+      const previous = runtime.operationReceipts.get(receiptKey) as AgentTeam['operationReceipts'][number] | undefined;
+      if (previous?.operation === 'spawn') {
+        const node = runtime.nodes.get(previous.entityId);
+        if (node) return this.nodeReceipt(node);
+      }
+      caller = this.requireNode(runtime, callerNodeId);
+      const rootPolicy = this.host.resolveRoot(runtime.state.rootSessionId)?.agentStrategy;
+      if (rootPolicy === 'off' && options.bypassGoalPolicy !== true) throw new Error('Goal agent strategy is off; complete this turn with the root agent.');
+      if (runtime.state.status !== 'active' && runtime.state.status !== 'restored-interrupted') throw new Error(`Agent team ${runtime.state.name} (${runtime.state.id}) is ${runtime.state.status} and cannot accept new work.`);
+      if (caller.status === 'closed' || caller.status === 'released' || caller.status === 'failed') throw new Error(`Caller ${caller.path} is not reusable.`);
+      if (caller.depth >= runtime.state.limits.maxDepth) throw new Error(`Agent team ${runtime.state.id} maximum descendant depth is ${runtime.state.limits.maxDepth}.`);
+      if (Buffer.byteLength(request.task, 'utf8') > runtime.state.limits.maxMessageBytes) throw new Error(`Agent team messages are limited to ${runtime.state.limits.maxMessageBytes} UTF-8 bytes.`);
+      prepared = await this.prepareRequest(runtime, caller, request, modelRuntime, options.bypassGoalPolicy === true);
+      if (signal?.aborted) throw Object.assign(new Error('Spawn cancelled.'), { name: 'AbortError' });
+      const currentCaller = this.requireNode(runtime, callerNodeId);
+      if ((runtime.state.status !== 'active' && runtime.state.status !== 'restored-interrupted') || currentCaller.status === 'closing' || currentCaller.status === 'closed' || currentCaller.status === 'released' || currentCaller.status === 'failed') throw new Error(`Agent team ${runtime.state.id} or caller ${caller.path} stopped accepting work during spawn preparation.`);
+    } catch (error) {
+      // This boundary performs only normalization, policy, model availability and
+      // resource reads. No node/workspace/session is created before it returns.
+      const denied = new NativeEffectNotStartedError(error instanceof Error ? error.message : String(error));
+      denied.cause = error;
+      throw denied;
     }
-    const runtime = this.runtimeForCaller(callerNodeId);
-    const receiptKey = operationKey(callerNodeId, operationId);
-    const previous = runtime.operationReceipts.get(receiptKey) as AgentTeam['operationReceipts'][number] | undefined;
-    if (previous?.operation === 'spawn') {
-      const node = runtime.nodes.get(previous.entityId);
-      if (node) return this.nodeReceipt(node);
-    }
-    const caller = this.requireNode(runtime, callerNodeId);
-    const rootPolicy = this.host.resolveRoot(runtime.state.rootSessionId)?.agentStrategy;
-    if (rootPolicy === 'off' && options.bypassGoalPolicy !== true) throw new Error('Goal agent strategy is off; complete this turn with the root agent.');
-    if (runtime.state.status !== 'active' && runtime.state.status !== 'restored-interrupted') throw new Error(`Agent team ${runtime.state.name} (${runtime.state.id}) is ${runtime.state.status} and cannot accept new work.`);
-    if (caller.status === 'closed' || caller.status === 'released' || caller.status === 'failed') throw new Error(`Caller ${caller.path} is not reusable.`);
-    if (caller.depth >= runtime.state.limits.maxDepth) throw new Error(`Agent team ${runtime.state.id} maximum descendant depth is ${runtime.state.limits.maxDepth}.`);
-    if (Buffer.byteLength(request.task, 'utf8') > runtime.state.limits.maxMessageBytes) throw new Error(`Agent team messages are limited to ${runtime.state.limits.maxMessageBytes} UTF-8 bytes.`);
-    const prepared = await this.prepareRequest(runtime, caller, request, modelRuntime, options.bypassGoalPolicy === true);
-    if (signal?.aborted) throw Object.assign(new Error('Spawn cancelled.'), { name: 'AbortError' });
-    const currentCaller = this.requireNode(runtime, callerNodeId);
-    if ((runtime.state.status !== 'active' && runtime.state.status !== 'restored-interrupted') || currentCaller.status === 'closing' || currentCaller.status === 'closed' || currentCaller.status === 'released' || currentCaller.status === 'failed') throw new Error(`Agent team ${runtime.state.id} or caller ${caller.path} stopped accepting work during spawn preparation.`);
     const usedPaths = new Set([...runtime.nodes.values()].map((node) => node.path));
     const usedHandles = new Set([...runtime.nodes.values()].map((node) => node.handle));
     const reserved = reserveAgentPath(caller.path, request.name ?? prepared.role, usedPaths, usedHandles);
@@ -1580,7 +1595,11 @@ export class AgentTeamCoordinator {
     await fs.mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
     const collaborationTools = allowDelegation ? createAgentCollaborationTools(this, node.id, modelRuntime) : [];
     const parent = this.requireNode(runtime, node.parentNodeId!);
+    const assertExecutionAdmission = this.host.assertExecutionAdmission
+      ? () => this.host.assertExecutionAdmission!(runtime.state.rootSessionId) : undefined;
+    assertExecutionAdmission?.();
     const session = await this.childSessionFactory({
+      ...(assertExecutionAdmission ? { assertExecutionAdmission } : {}),
       projectPath: workspacePath,
       settingsProjectPath: root.projectPath,
       approvedSkills: root.session.resourceLoader.getSkills().skills,
@@ -1600,6 +1619,7 @@ export class AgentTeamCoordinator {
       collaborationTools,
       teamIdentity: { path: node.path, parentPath: parent.path, depth: node.depth, maxDepth: runtime.state.limits.maxDepth, teamId: runtime.state.id, nodeId: node.id },
     });
+    if (assertExecutionAdmission) installChildExecutionAdmission(session, assertExecutionAdmission);
     return {
       session,
       ...(session.sessionFile ? { sessionFile: session.sessionFile } : {}),
@@ -1649,7 +1669,11 @@ export class AgentTeamCoordinator {
     const parent = this.requireNode(runtime, node.parentNodeId!);
     const allowDelegation = existing?.allowDelegation !== false;
     const collaborationTools = allowDelegation ? createAgentCollaborationTools(this, node.id, modelRuntime) : [];
+    const assertExecutionAdmission = this.host.assertExecutionAdmission
+      ? () => this.host.assertExecutionAdmission!(runtime.state.rootSessionId) : undefined;
+    assertExecutionAdmission?.();
     const session = await this.childSessionFactory({
+      ...(assertExecutionAdmission ? { assertExecutionAdmission } : {}),
       projectPath: workspacePath,
       settingsProjectPath: root.projectPath,
       approvedSkills: root.session.resourceLoader.getSkills().skills,
@@ -1670,6 +1694,7 @@ export class AgentTeamCoordinator {
       collaborationTools,
       teamIdentity: { path: node.path, parentPath: parent.path, depth: node.depth, maxDepth: runtime.state.limits.maxDepth, teamId: runtime.state.id, nodeId: node.id },
     });
+    if (assertExecutionAdmission) installChildExecutionAdmission(session, assertExecutionAdmission);
     const reopened: AgentNodeRuntime = {
       session,
       sessionFile,
@@ -1824,6 +1849,7 @@ export class AgentTeamCoordinator {
         node.lastError = task.error;
         return;
       }
+      this.host.assertExecutionAdmission?.(runtime.state.rootSessionId);
       await session.prompt(prompt);
       // An explicit interrupt is durable even when prompt resolves normally after abort.
       if (turnStopped()) return;

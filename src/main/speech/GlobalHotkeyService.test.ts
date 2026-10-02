@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { UiohookKey } from 'uiohook-napi';
 import { parseAccelerator } from './GlobalHotkeyService';
+
+// Parsing accelerators must not load or download an Electron executable.
+vi.mock('electron', () => ({ globalShortcut: {} }));
 
 describe('GlobalHotkeyService.parseAccelerator', () => {
   it('maps a CommandOrControl combo to the platform primary modifier', () => {

@@ -123,7 +123,7 @@ export class TaskService {
     return structuredClone(list);
   }
 
-  async create(projectPath: string, sessionId: string, input: TaskCreateInput): Promise<TaskList> {
+  async create(projectPath: string, sessionId: string, input: TaskCreateInput, assertAdmission?: () => void): Promise<TaskList> {
     const parsed = taskCreateInputSchema.parse(input);
     await this.ensure(projectPath, sessionId);
     await this.mutate(projectPath, sessionId, (list, now) => {
@@ -146,11 +146,11 @@ export class TaskService {
       };
       const tasks = [...list.tasks, task];
       return { ...list, tasks, currentTaskId: recomputeCurrent(tasks) };
-    });
+    }, assertAdmission);
     return this.requireList(projectPath, sessionId);
   }
 
-  async update(projectPath: string, sessionId: string, input: TaskUpdateInput): Promise<TaskList> {
+  async update(projectPath: string, sessionId: string, input: TaskUpdateInput, assertAdmission?: () => void): Promise<TaskList> {
     const parsed = taskUpdateInputSchema.parse(input);
     await this.ensure(projectPath, sessionId);
     await this.mutate(projectPath, sessionId, (list, now) => {
@@ -176,7 +176,7 @@ export class TaskService {
         };
       });
       return { ...list, tasks, currentTaskId: recomputeCurrent(tasks) };
-    });
+    }, assertAdmission);
     return this.requireList(projectPath, sessionId);
   }
 
@@ -201,7 +201,7 @@ export class TaskService {
     return this.requireList(projectPath, sessionId);
   }
 
-  async delete(projectPath: string, sessionId: string, input: TaskDeleteInput): Promise<TaskList> {
+  async delete(projectPath: string, sessionId: string, input: TaskDeleteInput, assertAdmission?: () => void): Promise<TaskList> {
     const parsed = taskDeleteInputSchema.parse(input);
     await this.ensure(projectPath, sessionId);
     await this.mutate(projectPath, sessionId, (list, now) => {
@@ -210,7 +210,7 @@ export class TaskService {
       if (existing.source === 'goalmax') throw new Error('GoalMax tasks are managed by the active goal. Edit or clear the goal instead.');
       const tasks = list.tasks.filter((task) => task.id !== parsed.id).map((task, index) => ({ ...task, order: index }));
       return { ...list, tasks, currentTaskId: recomputeCurrent(tasks), updatedAt: now };
-    });
+    }, assertAdmission);
     return this.requireList(projectPath, sessionId);
   }
 
@@ -348,8 +348,10 @@ export class TaskService {
     projectPath: string,
     sessionId: string,
     operation: (list: TaskList, now: number) => TaskList,
+    assertAdmission?: () => void,
   ): Promise<void> {
     return this.serialize(sessionId, async () => {
+      assertAdmission?.();
       const expected = this.states.get(listKey(projectPath, sessionId))?.revision ?? null;
       const current = structuredClone(this.requireList(projectPath, sessionId));
       const now = Date.now();
@@ -357,15 +359,16 @@ export class TaskService {
       if (next.projectPath !== current.projectPath || next.sessionId !== current.sessionId || next.revision !== current.revision + 1) {
         throw new Error('Task list mutations must preserve identity and increment one revision.');
       }
-      await this.commit(next, expected);
+      await this.commit(next, expected, assertAdmission);
     });
   }
 
-  private async commit(next: TaskList, expectedRevision: number | null): Promise<void> {
+  private async commit(next: TaskList, expectedRevision: number | null, assertAdmission?: () => void): Promise<void> {
     const parsed = taskListSchema.parse(next);
     // revision 0 is an in-memory placeholder; the first durable commit (advancing
     // 0 -> 1) is a repository create, so it must present a null expected revision.
     const repoExpected = expectedRevision === 0 ? null : expectedRevision;
+    assertAdmission?.();
     await this.repository.save(parsed, repoExpected);
     this.states.set(listKey(parsed.projectPath, parsed.sessionId), parsed);
     this.sessionKeys.set(parsed.sessionId, listKey(parsed.projectPath, parsed.sessionId));

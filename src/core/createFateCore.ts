@@ -1,3 +1,4 @@
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AgentWorkspaceGitService } from '../main/git/AgentWorkspaceGitService';
@@ -30,6 +31,12 @@ import { PiThemeService } from '../main/settings/PiThemeService';
 import { SettingsService } from '../main/settings/SettingsService';
 import { enabledModelIdentity } from '../shared/modelVisibility';
 import type { FateCore } from './FateCore';
+import { openFateDurableStore } from './durable/FateDurableStore';
+import { DurableStorageCloseUncertainError } from './durable/OwnedDurableStorage';
+import { createOwnedNativeWorkflowSchedulerFactory } from '../main/pi/durable/NativeWorkflowScheduler';
+import { NativeExecutionUnknownError } from '../main/pi/durable/NativeExecutionFence';
+import { inspectOwnedNativeWorkflowRecovery } from './recovery/NativeWorkflowRecovery';
+import { resolveStatePersistenceBackend, type StatePersistenceBackend } from '../shared/v2FeaturePolicy';
 import { CoreLifecycle, type CoreClientResources } from './lifecycle/CoreLifecycle';
 import { WorkspaceEventHub } from './events/WorkspaceEventHub';
 import { FatePaths } from './FatePaths';
@@ -43,6 +50,8 @@ import type { PermissionHostPolicy } from './security/PermissionPolicy';
 
 export interface FateCoreOptions {
   readonly paths: FatePathConfiguration;
+  /** Explicit process-start choice; no live switch or automatic failed-native fallback. */
+  readonly statePersistence?: StatePersistenceBackend;
   readonly logs?: AppLogService;
   /** Only APIs which already support a clock (themes and model metadata) use this clock. */
   readonly clock?: ClockPort;
@@ -105,6 +114,10 @@ function assertDefaultSdkPaths(paths: FatePaths): void {
  */
 export async function createFateCore(options: FateCoreOptions): Promise<FateCore> {
   const paths = new FatePaths(options.paths);
+  let statePersistence = resolveStatePersistenceBackend(options.statePersistence);
+  if (statePersistence === 'native-durable' && (options.persistence?.createQueue || options.persistence?.createGoals || options.persistence?.createTasks)) {
+    throw new Error('Native state must have one authoritative store; separate queue, task, or goal overrides are not permitted.');
+  }
   if (Boolean(options.workspaceRegistration) !== Boolean(options.workspaceMembership)) throw new Error('Workspace registration and membership must be supplied together.');
   const slot = options.instanceSlot ?? 1;
   if (!Number.isSafeInteger(slot) || slot < 1) throw new Error('A positive core instance slot is required.');
@@ -121,6 +134,7 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
   let recoveryGate: RecoveryCoordinator | null = null;
   let disposal: Promise<void> | null = null;
   let admissionFenceFailed = false;
+  let storageStartupUncertain = false;
   const disposeOwned = (): Promise<void> => {
     return disposal ??= Promise.resolve().then(async () => {
     const failures: unknown[] = [];
@@ -130,6 +144,7 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
     // A failed runtime/registry teardown may still own live work. Never release
     // its profile lock merely because later cleanup callbacks ran.
     if (admissionFenceFailed) failures.push(new Error('Core admission fencing was incomplete.'));
+    if (storageStartupUncertain) failures.push(new Error('Native durable startup could not confirm storage shutdown; profile ownership retained.'));
     if (failures.length > 0) throw new AggregateError(failures, 'Fate core shutdown was incomplete; profile ownership retained.');
     await profile?.release();
     });
@@ -138,11 +153,54 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
   try {
     // Acquire outside dataRoot before any provider first-run mkdir or writable repository.
     profile = await OwnerLock.acquire(paths.lockRoot, 'profile', await canonicalFuturePath(paths.profileKind === 'server' ? path.dirname(paths.dataRoot) : paths.dataRoot));
+    // Successful migration activates the versioned namespace. Normal subsequent
+    // launches select it under the profile lock without a second hidden flag.
+    if (options.statePersistence === undefined) {
+      try { await fs.lstat(path.join(paths.dataRoot, 'durable', 'v1', 'state.sqlite')); statePersistence = 'native-durable'; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
+    if (statePersistence === 'native-durable' && (options.persistence?.createQueue || options.persistence?.createGoals || options.persistence?.createTasks)) {
+      throw new Error('Native state must have one authoritative store; separate queue, task, or goal overrides are not permitted.');
+    }
+    if (statePersistence === 'native-durable') {
+      // Inspect committed workflow policy before constructing any SDK runtime.
+      // A different fresh graph ID cannot bypass an earlier uncertain effect.
+      const workflows = await inspectOwnedNativeWorkflowRecovery({ dataRoot: paths.dataRoot, profileOwner: profile, maxFiles: 1024 }).catch((error: unknown) => {
+        if (error instanceof DurableStorageCloseUncertainError) storageStartupUncertain = true;
+        throw error;
+      });
+      if (workflows.uncertainProfile || workflows.blocked.length > 0) {
+        throw new NativeExecutionUnknownError('Native workflow history requires stopped-owner review before a new request. No runtime or workflow was resumed; retained records are unchanged.');
+      }
+    }
+    // A previous native activation cannot silently reopen stale legacy snapshots.
+    // Rollback quarantines that namespace only under the same stopped-owner lock.
+    if (statePersistence === 'legacy-json') {
+      try {
+        await fs.lstat(path.join(paths.dataRoot, 'durable', 'v1', 'state.sqlite'));
+        throw new Error('Native durable state exists. Select native-durable or perform the reviewed stopped-owner rollback before using legacy state.');
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
     const checkoutOwnership = hostCheckoutOwnership();
     // Preserve the current desktop-compatible first-run policy BEFORE settings or
     // any other writer can create dataRoot. No path constructor pre-creates it.
     // A separate server credential-import policy is deliberately still T26 work.
     await prepareFateProviderStorage({ dataRoot: paths.dataRoot, piAgentDir: paths.piAgentDir, legacyImport: paths.profileKind === 'desktop' });
+    const durable = statePersistence === 'native-durable' ? await openFateDurableStore({ dataRoot: paths.dataRoot, profileOwner: profile }).catch((error: unknown) => {
+      // Factory failure can precede cleanup registration. A typed uncertain close
+      // must retain ownership even when no usable store handle was returned.
+      if (error instanceof DurableStorageCloseUncertainError) storageStartupUncertain = true;
+      throw error;
+    }) : null;
+    // Reverse-order cleanup settles runtime/recovery before SQLite, then releases ownership.
+    if (durable) owned.push(() => durable.close());
+    const createGoals = options.persistence?.createGoals ?? (durable ? () => durable.createGoals()
+      : () => new GoalMaxRepository(logs, path.join(paths.dataRoot, 'goalmaxxing', 'v1')));
+    const createQueue = options.persistence?.createQueue ?? (durable ? () => durable.createQueue(slot)
+      : () => new SessionQueueRepository(path.join(paths.dataRoot, 'session-queues', 'v1'), slot));
+    const createTasks = options.persistence?.createTasks ?? (durable ? () => durable.createTasks()
+      : paths.profileKind === 'server' ? () => new TaskRepository(logs, path.join(paths.dataRoot, 'tasks', 'v1')) : undefined);
+
     const settings = options.settings ?? new SettingsService(logs, paths.dataRoot,
       new PiThemeService({ agentDir: paths.piAgentDir, now: () => clock.now() }), paths.piAgentDir);
     if (!options.settings) owned.push(() => settings.flush());
@@ -155,8 +213,25 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
     if (!options.persistence?.attestations) owned.push(async () => { attestations.dispose(); await attestations.flush(); });
     const projects = new ProjectTrustService(paths.dataRoot);
     let savedAgents: AgentsService | null = null;
+    let runtimeOwner: MultiProjectPiRuntime | null = null;
+    const fenceUnsafeWorkflow = (error: unknown): void => {
+      if (!(error instanceof NativeExecutionUnknownError) && !(error instanceof DurableStorageCloseUncertainError)) return;
+      // A failed native effect/commit must not become a tool error followed by an
+      // automatic parent model retry. Fence the existing SDK owner's capabilities.
+      for (const fence of [() => runtimeOwner?.beginShutdown(), () => workspaces?.sealForHostShutdown(), () => savedAgents?.beginShutdown()]) {
+        try { fence(); } catch { admissionFenceFailed = true; }
+      }
+      logs.write('error', 'recovery', 'A native workflow outcome is uncertain. New execution is fenced; inspect the retained history before a new request.');
+    };
+    const nativeWorkflowSchedulerFactory = durable ? createOwnedNativeWorkflowSchedulerFactory({
+      dataRoot: paths.dataRoot, profileOwner: profile,
+      onCloseUncertain: (error) => { storageStartupUncertain = true; fenceUnsafeWorkflow(error); },
+      onUnsafeFailure: fenceUnsafeWorkflow,
+      onReport: () => logs.write('warn', 'durable', 'Native workflow reported an execution diagnostic; inspect its retained workflow state.'),
+    }) : undefined;
     const dependencies: MultiProjectPiRuntimeDeps = {
       adapter: options.adapter ?? createPiSdkAdapter(paths),
+      ...(nativeWorkflowSchedulerFactory ? { nativeWorkflowSchedulerFactory } : {}),
       paths,
       checkoutOwnership,
       learning,
@@ -165,13 +240,9 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
       getImageGenerationSettings: () => settings.get().imageGeneration,
       getDisabledModels: () => settings.get().disabledModels ?? [],
       getAgentWorkspacePolicy: () => settings.get().agentWorkspace,
-      createGoalPersistence: options.persistence?.createGoals ?? (() => new GoalMaxRepository(logs, path.join(paths.dataRoot, 'goalmaxxing', 'v1'))),
-      createQueuePersistence: options.persistence?.createQueue ?? (() => new SessionQueueRepository(path.join(paths.dataRoot, 'session-queues', 'v1'), slot)),
-      ...(options.persistence?.createTasks
-        ? { createTaskPersistence: options.persistence.createTasks }
-        : paths.profileKind === 'server'
-          ? { createTaskPersistence: () => new TaskRepository(logs, path.join(paths.dataRoot, 'tasks', 'v1')) }
-          : {}),
+      createGoalPersistence: createGoals,
+      createQueuePersistence: createQueue,
+      ...(createTasks ? { createTaskPersistence: createTasks } : {}),
       createSessionRepository: () => new PiSessionRepository(undefined, paths.sessionsRoot),
       createModelsDevService: () => new ModelsDevService({ store: new ModelsDevStore(paths.dataRoot), now: () => clock.now(), log: (message) => logs.write('warn', 'models', message) }),
       browserIntegration: options.browserIntegration ?? null,
@@ -192,6 +263,7 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
       },
     };
     const runtime = options.createRuntime ? options.createRuntime(dependencies) : new MultiProjectPiRuntime(dependencies);
+    runtimeOwner = runtime;
     owned.push(() => runtime.dispose());
     const events = new WorkspaceEventHub(runtime.scopedEvents);
     owned.push(() => events.dispose());
@@ -202,7 +274,7 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
     if (registry) owned.push(() => registry.dispose());
     await settings.load();
     const coldSessions = new PiSessionRepository(undefined, paths.sessionsRoot);
-    const coldTasks = new TaskRepository(logs, path.join(paths.dataRoot, 'tasks', 'v1'));
+    const coldTasks = durable?.createTasks() ?? new TaskRepository(logs, path.join(paths.dataRoot, 'tasks', 'v1'));
     const coldGit = paths.profileKind === 'server'
       ? new AgentWorkspaceGitService(path.join(paths.dataRoot, 'agent-team-worktrees'), paths.attachmentRoot)
       : new AgentWorkspaceGitService();
@@ -210,8 +282,8 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
     const recovery = new RecoveryCoordinator(new LifecycleRepository(path.join(paths.dataRoot, 'lifecycle', 'v1')), {
       readSession: async (projectPath, sessionId) => Boolean(await coldSessions.resolve(projectPath, sessionId)),
       readTeams: (projectPath, sessionId) => coldSessions.readColdTeams(projectPath, sessionId),
-      goals: options.persistence?.createGoals?.() ?? new GoalMaxRepository(logs, path.join(paths.dataRoot, 'goalmaxxing', 'v1')),
-      queue: options.persistence?.createQueue?.() ?? new SessionQueueRepository(path.join(paths.dataRoot, 'session-queues', 'v1'), slot),
+      goals: createGoals(),
+      queue: createQueue(),
       readTasks: (projectPath, sessionId) => coldTasks.loadHealth(projectPath, sessionId),
       commandStatus: (requestId, workspaceId, principalId) => coldCommands.status(requestId, workspaceId, principalId),
       validateWorktree: async (tree, owner) => { await coldGit.validate(tree.path, tree.parentPath, tree.branch, tree.baseCommit, tree.commonDirectory, owner); },
@@ -275,7 +347,7 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
       lifecycle.shutdownCore();
       return lifecycle.settled()!;
     };
-    return { paths, recovery, recovered, logs, settings, projects, learning, sessionPermissions, attestations, runtime, events,
+    return { paths, statePersistence, recovery, recovered, logs, settings, projects, learning, sessionPermissions, attestations, runtime, events,
       workspaces, savedAgents, lifecycle, createClient: (resources?: CoreClientResources) => lifecycle.createClient(resources),
       disposeClient: (client) => lifecycle.disposeClient(client), shutdownCore: () => lifecycle.shutdownCore(), dispose };
   } catch (error) {

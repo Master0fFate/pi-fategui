@@ -154,6 +154,12 @@ describe('T17 canonical goal, task, Team and monitor handlers', () => {
         if (!execution.context().trusted) throw new Error('The owning trusted project or session is no longer available.');
         return execution.readMonitorDashboard!(query);
       });
+      // Compare the same settled projection. A run finishing during an awaited
+      // read deliberately invalidates that read to unknown rather than stale success.
+      await vi.waitFor(async () => {
+        const current = (await agents.list()).runs.find((item) => item.id === run.id);
+        expect(['succeeded', 'failed']).toContain(current?.status);
+      });
       const query = { section: 'runs' as const, limit: 1 };
       const live = await createScopedAgentHandlers(f.handle, f.authorize, f.rootSessionId).monitor(query);
       const scheduled = await tool.execute('read', query, undefined, undefined,
@@ -165,10 +171,6 @@ describe('T17 canonical goal, task, Team and monitor handlers', () => {
       expect(scheduledDashboard.total).toBe(live.total);
       expect(scheduledDashboard.items).toHaveLength(1);
       expect(scheduledDashboard.items[0]?.ref).toMatchObject({ kind: 'run', id: run.id });
-      await vi.waitFor(async () => {
-        const current = (await agents.list()).runs.find((item) => item.id === run.id);
-        expect(['succeeded', 'failed']).toContain(current?.status);
-      });
       await f.service.createGoalMax({ objective: 'Inspect the current project monitor', verificationLevel: 'normal', agentStrategy: 'off', tokenLimit: null, timeLimitMs: null });
       const withAgentsOff = monitorDashboardSchema.parse((await tool.execute('goal-off', query, undefined, undefined,
         { sessionManager: { getSessionId: () => 'scheduled-child-not-root' } } as never)).details);

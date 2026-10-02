@@ -30,6 +30,8 @@ const SUBAGENT_TOOL_NAMES = ['subagent', 'subagent_start', 'subagent_manage', 's
 
 export interface ChildSessionInput {
   projectPath: string;
+  /** Current host/provider authority; synchronous so no gap is introduced at request dispatch. */
+  assertExecutionAdmission?: () => void;
   /** Settings are inherited from the approved parent checkout, never from a newly checked-out base ref. */
   settingsProjectPath?: string;
   agentDir?: string;
@@ -101,7 +103,63 @@ export function subagentChildBoundary(
   ].join('\n');
 }
 
+const toolAdmissionGuards = new WeakMap<ToolDefinition, Set<() => void>>();
+/** Mutate the actual definition in place so SDK and retained handles keep identity. */
+export function installToolExecutionAdmission(tool: ToolDefinition, assertAdmission: () => void): void {
+  const existing = toolAdmissionGuards.get(tool);
+  if (existing) { existing.add(assertAdmission); return; }
+  const guards = new Set([assertAdmission]);
+  toolAdmissionGuards.set(tool, guards);
+  const execute = tool.execute;
+  tool.execute = async (...args) => { for (const guard of guards) guard(); return execute.apply(tool, args); };
+}
+
+const childAdmissionGuards = new WeakMap<AgentSession, Set<() => void>>();
+
+/** Guard the actual SDK session, including retained/queued turns and every provider stream. */
+export function installChildExecutionAdmission(session: AgentSession, assertAdmission: () => void): void {
+  const existing = childAdmissionGuards.get(session);
+  if (existing) { existing.add(assertAdmission); return; }
+  const guards = new Set([assertAdmission]);
+  childAdmissionGuards.set(session, guards);
+  const check = () => { for (const guard of guards) guard(); };
+  const prompt = session.prompt.bind(session);
+  session.prompt = async (...args) => { check(); return prompt(...args); };
+  for (const method of ['steer', 'followUp', 'compact'] as const) {
+    const original = session[method];
+    if (typeof original !== 'function') continue;
+    // Each public method keeps its exact SDK signature and receiver.
+    Object.defineProperty(session, method, { configurable: true, writable: true, value: async (...args: unknown[]) => {
+      check(); return Reflect.apply(original, session, args);
+    } });
+  }
+  const send = session.sendCustomMessage;
+  if (typeof send === 'function') session.sendCustomMessage = async (...args) => { check(); return send.apply(session, args); };
+  if (typeof session.getAllTools === 'function' && typeof session.getToolDefinition === 'function') {
+    for (const { name } of session.getAllTools()) {
+      const definition = session.getToolDefinition(name);
+      if (definition) installToolExecutionAdmission(definition, check);
+    }
+  }
+  const agent = session.agent;
+  if (agent) {
+    const beforeToolCall = agent.beforeToolCall;
+    agent.beforeToolCall = async (...args) => {
+      check();
+      const result = await beforeToolCall?.(...args);
+      check();
+      return result;
+    };
+  }
+  if (agent && typeof agent.streamFunction === 'function') {
+    const stream = agent.streamFunction;
+    agent.streamFunction = (...args) => { check(); return stream(...args); };
+  }
+  // Abort/dispose remain available. This is admission, not cancellation or auth emulation.
+}
+
 export async function createSdkChildSession(input: ChildSessionInput): Promise<AgentSession> {
+  input.assertExecutionAdmission?.();
   const settingsManager = isolatedSettingsManager(input.settingsProjectPath ?? input.projectPath, input.agentDir);
   const selectedNames = input.selectedSkills.map((skill) => skill.name);
   const appendSystemPrompt = [
@@ -145,6 +203,7 @@ export async function createSdkChildSession(input: ChildSessionInput): Promise<A
     return 'full-access';
   };
   const access: ProjectToolAccess = {
+    ...(input.assertExecutionAdmission ? { assertExecutionAdmission: input.assertExecutionAdmission } : {}),
     get fullAccess() { return currentPermission() === 'full-access'; },
     get permissionLevel() { return currentPermission(); },
   };
@@ -181,6 +240,7 @@ export async function createSdkChildSession(input: ChildSessionInput): Promise<A
     try { created.session.dispose(); } catch { /* Fail closed even if cleanup is partial. */ }
     throw new Error(`Pi refused to start the Agent Team child because another tool replaced Fate UI's owned ${tool.name} capability.`);
   }
+  if (input.assertExecutionAdmission) installChildExecutionAdmission(created.session, input.assertExecutionAdmission);
   return created.session;
 }
 

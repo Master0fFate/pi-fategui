@@ -240,3 +240,10 @@
   :root[data-skin="m3-expressive"] .inspector-secondary-trigger { gap: 3px; padding-inline: 3px; }
   :root[data-skin="m3-expressive"] .inspector-secondary-trigger > svg { display: none; }
 }
+/* Global inspector labels disappear here; retain their visible icon counterpart. */
+@container (max-width: 259px) {
+  :root[data-skin="m3-expressive"] .inspector-secondary-trigger > svg { display: block; }
+  :root[data-skin="m3-expressive"] .inspector-secondary-tabs { gap: 2px; padding-inline: 4px; }
+  :root[data-skin="m3-expressive"] .inspector-secondary-tooltip { flex: 1 1 0; }
+  :root[data-skin="m3-expressive"] .inspector-secondary-trigger { width: 100%; padding: 0; }
+}

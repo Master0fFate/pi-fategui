@@ -100,8 +100,9 @@ import { buildChildAttestationSink, buildRootAttestationSink, type ChildAttestat
 import { validatePromptImages } from './PiPromptImages';
 import { appendProjectResourceContext, hasProjectResourceTags } from './ProjectResourceTags';
 import { SubagentCoordinator } from './SubagentCoordinator';
+import type { NativeWorkflowSchedulerFactory } from './durable/NativeWorkflowScheduler';
 import { AgentWorkflowCoordinator } from './AgentWorkflowCoordinator';
-import { createSdkChildSession, finalAssistant, type SubagentChildSessionFactory } from './SubagentSessionFactory';
+import { createSdkChildSession, installToolExecutionAdmission, finalAssistant, type SubagentChildSessionFactory } from './SubagentSessionFactory';
 import type { ImageGenerationSettingsResolver } from './PiImageTool';
 import { defaultImageGenerationSettings } from '../../shared/imageGeneration';
 import { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
@@ -520,7 +521,7 @@ function goalObservationFromRuntimeTool(tool: RuntimeTool): GoalMaxRuntimeChildO
   };
 }
 
-const toolAccessBySession = new WeakMap<AgentSession, ProjectToolAccess & { permissionLevel: PermissionLevel }>();
+const toolAccessBySession = new WeakMap<AgentSession, ProjectToolAccess & { permissionLevel: PermissionLevel; assertExecutionAdmission?: () => void }>();
 const ownedCustomToolsBySession = new WeakMap<AgentSession, readonly ToolDefinition[]>();
 
 export function assertOwnedToolDefinitions(
@@ -660,7 +661,7 @@ export const createPiSdkAdapter = (paths?: FatePaths): PiSdkAdapter => ({
       }
       // Every root has a live tool-call ceiling, including retained tool handles
       // offered before a reduction. Slot binding grants authority after restore.
-      const toolAccess: ProjectToolAccess & { permissionLevel: PermissionLevel } = { fullAccess: false, permissionLevel: 'read-only' };
+      const toolAccess: ProjectToolAccess & { permissionLevel: PermissionLevel; assertExecutionAdmission?: () => void } = { fullAccess: false, permissionLevel: 'read-only' };
       const confinedTools = await createProjectConfinedTools(
         effectiveCwd,
         toolAccess,
@@ -699,6 +700,7 @@ export const createPiSdkAdapter = (paths?: FatePaths): PiSdkAdapter => ({
         excludeTools: ['powershell'],
         ...(sessionStartEvent ? { sessionStartEvent } : {}),
       });
+      if (mcpTool) installToolExecutionAdmission(mcpTool, () => toolAccess.assertExecutionAdmission?.());
       toolAccessBySession.set(created.session, toolAccess);
       ownedCustomToolsBySession.set(created.session, [...ownedTools, ...(mcpTool ? [mcpTool] : [])]);
       if (preset) bindAgentSessionPreset(created.session, preset, allTools.map((tool) => tool.name));
@@ -1353,6 +1355,7 @@ export class PiRuntimeService {
   hasProviderLoginOwnership(): boolean { return this.providerLoginAbort !== null || this.providerLoginSettlement !== null; }
 
   private trackModelOperation<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.hostStopping) throw new Error('The core is shutting down; auxiliary model admission is closed.');
     this.executionAdmissionGuard();
     const pending = operation();
     this.pendingModelOperations.add(pending);
@@ -1451,6 +1454,7 @@ export class PiRuntimeService {
     permissionHost: PermissionHostPolicy = {},
     private readonly providerAuthUrlPresenter: ProviderAuthUrlPort | null = null,
     private readonly paths?: FatePaths,
+    nativeWorkflowSchedulerFactory?: NativeWorkflowSchedulerFactory,
   ) {
     const checkoutOwnership = paths ? hostCheckoutOwnership() : undefined;
     this.goalReviewGit = paths && paths.profileKind === 'server'
@@ -1484,12 +1488,22 @@ export class PiRuntimeService {
         : undefined;
       return createSdkChildSession({
         ...input,
+        assertExecutionAdmission: () => {
+          if (this.hostStopping) throw new Error('The core is shutting down; child model admission is closed.');
+          this.executionAdmissionGuard();
+          input.assertExecutionAdmission?.();
+        },
         ...(this.paths ? { agentDir: this.paths.piAgentDir, serverProfile: this.paths.profileKind === 'server' } : {}),
         getImageGenerationSettings: this.getImageGenerationSettings,
         ...(sink && handle ? { attestationSink: sink, attestationSessionHandle: handle } : {}),
       });
     };
     this.agentTeams = new AgentTeamCoordinator({
+      assertExecutionAdmission: (sessionId) => {
+        const slot = this.findLiveSlot(sessionId);
+        if (!slot || !this.project?.trusted) throw new Error('The owning trusted parent session is unavailable.');
+        this.assertPermissionAdmission(slot);
+      },
       resolveRoot: (sessionId) => {
         const slot = this.findLiveSlot(sessionId);
         if (!slot || !this.project || slot.permissionError || slot.permissionChange) return null;
@@ -1578,7 +1592,7 @@ export class PiRuntimeService {
         if (this.selectedSlot === slot) this.emitState();
         else if (!this.hasOwnedAgentWork(parentSessionId) && !this.goalMax.hasRunnableGoal(parentSessionId) && !this.sessionHasActiveWork(slot.runtime.session)) this.settleInactiveSlot(slot);
       },
-    });
+    }, nativeWorkflowSchedulerFactory);
     this.subagents = new SubagentCoordinator({
       resolveParent: (sessionId) => {
         const slot = this.findLiveSlot(sessionId);
@@ -2150,6 +2164,10 @@ export class PiRuntimeService {
     // A research failure degrades to the standard rewrite instead of failing
     // the whole request, so the user always gets an improved prompt.
     const session = await this.researchSessionFactory({
+      assertExecutionAdmission: () => {
+        if (this.hostStopping) throw new Error('The core is shutting down; research model admission is closed.');
+        this.executionAdmissionGuard();
+      },
       projectPath: this.project.path,
       modelRuntime,
       model,
@@ -4251,6 +4269,15 @@ export class PiRuntimeService {
       && runtime.session === session;
     const access = toolAccessBySession.get(session);
     if (access) {
+      access.assertExecutionAdmission = () => {
+        try {
+          if (!ownsSession()) throw this.replacementSuperseded();
+          this.assertPermissionAdmission(slot);
+        } catch (error) {
+          const denied = error instanceof PiDesktopError ? error.normalized : normalizeError(error);
+          throw new PiDesktopError({ ...denied, message: `Tool execution authority is unavailable. ${denied.message}` });
+        }
+      };
       access.fullAccess = false;
       access.permissionLevel = 'read-only';
     }
@@ -4392,6 +4419,16 @@ export class PiRuntimeService {
       return learningStream(staged.model, context, nextOptions);
     };
     agent.streamFunction = wrappedStreamFunction;
+    const originalBeforeToolCall = agent.beforeToolCall;
+    const guardedBeforeToolCall: NonNullable<typeof agent.beforeToolCall> = async (...args) => {
+      if (!ownsSession()) throw this.replacementSuperseded();
+      this.assertPermissionAdmission(slot);
+      const result = await originalBeforeToolCall?.(...args);
+      if (!ownsSession()) throw this.replacementSuperseded();
+      this.assertPermissionAdmission(slot);
+      return result;
+    };
+    agent.beforeToolCall = guardedBeforeToolCall;
     const unsubscribe = agent.subscribe(async (event) => {
       if (!ownsSession()) return;
       if (event.type === 'agent_start' || event.type === 'agent_end') {
@@ -4457,6 +4494,10 @@ export class PiRuntimeService {
       if (slot.learningContext === learningContext) slot.learningContext = null;
       unsubscribe();
       if (agent.streamFunction === wrappedStreamFunction) agent.streamFunction = originalStreamFunction;
+      if (agent.beforeToolCall === guardedBeforeToolCall) {
+        if (originalBeforeToolCall === undefined) delete agent.beforeToolCall;
+        else agent.beforeToolCall = originalBeforeToolCall;
+      }
     };
   }
 
@@ -5672,14 +5713,20 @@ export class PiRuntimeService {
       return {
         projectPath: project.path,
         sessionId,
-        isCurrent: () => this.project === project && !slot.disposed && !slot.sessionInvalidated
+        isCurrent: () => !this.hostStopping && this.project === project && !slot.disposed && !slot.sessionInvalidated
           && slot.sessionGeneration === generation && slot.runtime.session === session && session.sessionId === sessionId,
       };
     });
-    return [...agents, workflow, catalog, createMonitorDashboardTool((input, sessionId) => this.getMonitorDashboard(input, sessionId)), this.questionnaires.createTool((sessionId) => {
+    const tools = [...agents, workflow, catalog, createMonitorDashboardTool((input, sessionId) => this.getMonitorDashboard(input, sessionId)), this.questionnaires.createTool((sessionId) => {
       const slot = this.findLiveSlot(sessionId);
       return Boolean(this.project?.trusted && slot && !slot.sessionInvalidated && slot.runtime.session.sessionId === sessionId);
     }), ...this.createSessionMessagingTools(), ...this.goalMax.createTools(), ...taskTools, ...browser];
+    for (const tool of tools) installToolExecutionAdmission(tool, () => {
+      if (this.hostStopping) throw new Error('The core is shutting down; a live root session cannot admit retained tools.');
+      this.executionAdmissionGuard();
+      this.assertPermissionPublication();
+    });
+    return tools;
   }
 
   /**

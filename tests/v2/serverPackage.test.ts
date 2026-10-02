@@ -31,6 +31,7 @@ describe('independent server package closure and artifact boundaries', () => {
     expect(processResult.status, processResult.stderr).toBe(0);
     const result = projectionSchema.parse(JSON.parse(processResult.stdout));
     expect(result.roots).toEqual({ '@earendil-works/chord': '1.0.0', '@earendil-works/pi-ai': '1.0.0', '@earendil-works/pi-coding-agent': '1.0.0', '@earendil-works/pi-durable': '1.0.0',
+      '@earendil-works/pi-client': '1.0.0', '@earendil-works/pi-protocol': '1.0.0', '@earendil-works/pi-server': '1.0.0',
       '@modelcontextprotocol/sdk': '1.25.2', ws: '8.22.0', 'node-pty': '1.1.0' });
     expect(result.packageKeys).toContain('@earendil-works/pi-agent-core@1.0.0');
     expect(result.packageKeys.some(key => /^(electron|transcribe-cpp|uiohook-napi|koffi)(?:@|\/)/u.test(key))).toBe(false);
@@ -45,12 +46,13 @@ describe('independent server package closure and artifact boundaries', () => {
     const script = `import {retainedPiLicenseNotice} from ${JSON.stringify(packageImport)};
 import {readFileSync} from 'node:fs'; import assert from 'node:assert/strict';
 const text=readFileSync(${JSON.stringify(noticePath)},'utf8');
-const roots={'@earendil-works/chord':'1.0.0','@earendil-works/pi-ai':'1.0.0','@earendil-works/pi-coding-agent':'1.0.0','@earendil-works/pi-durable':'1.0.0'};
+const roots={'@earendil-works/chord':'1.0.0','@earendil-works/pi-ai':'1.0.0','@earendil-works/pi-coding-agent':'1.0.0','@earendil-works/pi-durable':'1.0.0','@earendil-works/pi-client':'1.0.0','@earendil-works/pi-protocol':'1.0.0','@earendil-works/pi-server':'1.0.0'};
 const note=retainedPiLicenseNotice(text,roots);
 assert.equal(retainedPiLicenseNotice(text.replaceAll('\\n','\\r\\n'),roots),note);
 assert.throws(()=>retainedPiLicenseNotice(text.replace('Copyright (c) 2025 Mario Zechner','Copyright altered'),roots),/verified upstream terms/);
 assert.throws(()=>retainedPiLicenseNotice(text.replaceAll('a13d35a742c6ef8462812a28fbe1d8c8b7431c32','unverified'),roots),/tagged Pi license provenance/);
 assert.throws(()=>retainedPiLicenseNotice(text,{...roots,'@earendil-works/pi-durable':'1.0.1'}),/Unverified Pi license version/);
+assert.throws(()=>retainedPiLicenseNotice(text,{...roots,'@earendil-works/pi-server':'1.0.1'}),/Unverified Pi license version/);
 assert.throws(()=>retainedPiLicenseNotice('',roots),/Missing maintained Pi/);
 process.stdout.write(note);`;
     const result = runNode(['--input-type=module', '-e', script]);

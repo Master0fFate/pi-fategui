@@ -1,3 +1,4 @@
+import { resolveStatePersistenceBackend } from '../shared/v2FeaturePolicy';
 import { app, BrowserWindow, dialog, protocol, session, shell, systemPreferences } from 'electron';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { createFateCore } from '../core/createFateCore';
@@ -372,6 +373,7 @@ app.whenReady().then(async () => {
   if (!connections.isLocal) dispatcher.setPendingProjectPath(null);
   coreStartup = createFateCore({
     paths: createDesktopFatePaths({ piAgentDir: getAgentDir() }),
+    ...(process.env.FATE_STATE_PERSISTENCE === undefined ? {} : { statePersistence: resolveStatePersistenceBackend(process.env.FATE_STATE_PERSISTENCE) }),
     instanceSlot: instanceProfile.slot,
     logs,
     settings,

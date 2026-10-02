@@ -63,12 +63,15 @@ function isContained(root: string, candidate: string): boolean {
 }
 
 export interface ProjectToolAccess {
+  /** A live host fence independent of file permission level; includes read/image tools. */
+  readonly assertExecutionAdmission?: () => void;
   fullAccess: boolean;
   /** A live ceiling for managed sessions; omitted for existing foreground callers. */
   readonly permissionLevel?: PermissionLevel;
 }
 
 function assertWritePermission(access: ProjectToolAccess): void {
+  access.assertExecutionAdmission?.();
   if (access.permissionLevel === 'read-only') {
     throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Live session authority no longer permits file changes.', retryable: false });
   }
@@ -435,7 +438,9 @@ export async function createProjectConfinedTools(
   const { attestations, maxPreHashBytes = MAX_PRE_HASH_BYTES } = options;
   const policy = await ProjectPathPolicy.create(canonicalCwd, access, readableRoots);
   const withReadable = async (filePath: string, read: boolean, maxBytes?: number): Promise<Buffer | undefined> => {
+    access.assertExecutionAdmission?.();
     const target = await policy.readable(filePath);
+    access.assertExecutionAdmission?.();
     const handle = await fs.open(target, 'r');
     try {
       const stat = await handle.stat();
@@ -525,17 +530,31 @@ export async function createProjectConfinedTools(
   const bash = createBashToolDefinition(canonicalCwd);
   const executeBash = bash.execute;
   bash.execute = (...args) => {
+    // Shell authority has always refused synchronously. Keep that contract at
+    // the actual capability boundary, including after a host admission fence.
+    access.assertExecutionAdmission?.();
     if (access.permissionLevel !== undefined && access.permissionLevel !== 'full-access') {
       throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'Live session authority no longer permits shell execution.', retryable: false });
     }
     return executeBash(...args);
   };
-  return [
+  const guardedImageFetch: typeof fetch = (request, init) => { access.assertExecutionAdmission?.(); return fetch(request, init); };
+  const tools = [
     bash,
     createReadToolDefinition(canonicalCwd, { operations: readOperations }),
     createWriteToolDefinition(canonicalCwd, { operations: writeOperations }),
     createEditToolDefinition(canonicalCwd, { operations: { ...readOperations, writeFile: (filePath: string, content: string) => secureWriteFile(filePath, content, 'edit') } }),
-    createGenerateImageTool(createConfiguredImageGenerator(options.getImageGenerationSettings), options.imageAgentDir ? createGeneratedImageStore(options.imageAgentDir) : undefined),
+    createGenerateImageTool(createConfiguredImageGenerator(options.getImageGenerationSettings, guardedImageFetch), options.imageAgentDir ? createGeneratedImageStore(options.imageAgentDir) : undefined),
     ...searchTools,
   ];
+  for (const tool of tools) {
+    if (tool === bash) continue; // Already guarded by its synchronous wrapper.
+    const execute = tool.execute;
+    tool.execute = ((...args: Parameters<typeof execute>) => {
+      try { access.assertExecutionAdmission?.(); } catch (error) { return Promise.reject(error); }
+      // Preserve the original SDK/permission method's sync-vs-async behavior.
+      return Reflect.apply(execute, tool, args);
+    }) as typeof tool.execute;
+  }
+  return tools;
 }

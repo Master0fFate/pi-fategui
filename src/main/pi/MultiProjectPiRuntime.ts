@@ -1,4 +1,5 @@
 import type { PermissionHostPolicy } from '../../core/security/PermissionPolicy';
+import type { NativeWorkflowSchedulerFactory } from './durable/NativeWorkflowScheduler';
 import type { LearningService } from '../learning/LearningService';
 import type { GoalMaxEvent } from '../../shared/contracts/goalmaxxing';
 import type { PiEvent, ProjectState, RuntimeState, SessionSummary } from '../../shared/contracts/ipc';
@@ -100,6 +101,8 @@ export function backgroundAttentionUpdate(events: readonly PiEvent[]): SessionSu
  * their progress surfaces via the on-disk session listing.
  */
 export interface MultiProjectPiRuntimeDeps {
+  /** Profile-owned native scheduling for new DAGs; restored native graphs never fall back. */
+  nativeWorkflowSchedulerFactory?: NativeWorkflowSchedulerFactory;
   adapter?: PiSdkAdapter;
   paths?: FatePaths;
   /** Same process-wide host namespace used by desktop Git and Team. */
@@ -515,8 +518,10 @@ export class MultiProjectPiRuntime {
       this.deps.permissionHost,
       this.deps.providerAuthUrlPresenter,
       this.deps.paths,
+      this.deps.nativeWorkflowSchedulerFactory,
     );
     service.setExecutionAdmissionGuard(() => {
+      if (this.stopping) throw new Error('The runtime host is stopping; all retained execution admission is closed.');
       if (this.bootService?.hasProviderLoginOwnership()) throw new PiDesktopError({ code: 'RUN_ACTIVE',
         message: 'Wait for host provider login to settle before starting Pi work.', retryable: true });
     });

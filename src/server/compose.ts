@@ -50,6 +50,7 @@ export async function startNodeServerWithFactory(
   try {
     core = await makeCore({
       paths: config.paths,
+      ...(config.statePersistence === undefined ? {} : { statePersistence: config.statePersistence }),
       workspaceRegistration: { isRegistered },
       // The default denies all membership. Only a trusted network adapter may
       // supply a live credential-to-workspace resolver; request JSON never can.

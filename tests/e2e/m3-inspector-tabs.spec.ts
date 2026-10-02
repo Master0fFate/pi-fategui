@@ -64,6 +64,26 @@ test('M3 resized Run tabs keep full labels and icons at the responsive boundary'
         expect(geometry.iconsVisible).toBe(true);
       }
     }
+    // At the application's minimum width the inspector is only 186 CSS pixels.
+    // Label hiding must reveal icons, and all five targets must still fit.
+    for (const width of [835, 800, 600]) {
+      await app.evaluate(({ BrowserWindow }, nextWidth) => BrowserWindow.getAllWindows()[0]!.setSize(nextWidth, 760), width);
+      await expect.poll(() => tabs.evaluate(list => {
+        const boundary = list.getBoundingClientRect();
+        const inspector = list.closest('.inspector')!.getBoundingClientRect();
+        const buttons = [...list.querySelectorAll<HTMLElement>('[role="tab"]')];
+        return inspector.width <= 259 && buttons.length === 5 && buttons.every(button => {
+          const label = button.querySelector<HTMLElement>('.inspector-secondary-label');
+          const icon = button.querySelector('svg');
+          if (!label || !icon || !button.getAttribute('aria-label')) return false;
+          const box = button.getBoundingClientRect(), ink = icon.getBoundingClientRect();
+          return getComputedStyle(label).display === 'none' && getComputedStyle(icon).display !== 'none'
+            && ink.width > 0 && ink.height > 0 && box.width >= 24
+            && ink.left >= box.left && ink.right <= box.right && ink.top >= box.top && ink.bottom <= box.bottom
+            && box.left >= boundary.left && box.right <= boundary.right;
+        });
+      })).toBe(true);
+    }
     passed = true;
   } finally {
     await app.close();

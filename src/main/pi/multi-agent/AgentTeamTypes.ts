@@ -92,6 +92,8 @@ export interface PreparedAgentRequest extends SpawnAgentRequest {
 }
 
 export interface AgentTeamCoordinatorHost {
+  /** Checked at actual SDK child turn/provider admission, including already queued work. */
+  assertExecutionAdmission?: (rootSessionId: string) => void;
   resolveRoot(sessionId: string): { projectPath: string; session: AgentSession; permissionLevel: PermissionLevel; agentStrategy?: 'auto' | 'off' | 'read-only' } | null;
   getDisabledModels?: (sessionId?: string) => readonly string[];
   /** Live global policy. Omission is intentionally fail-safe worktree/soft for standalone callers. */

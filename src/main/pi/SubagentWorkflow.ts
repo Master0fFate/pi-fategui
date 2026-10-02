@@ -1,5 +1,5 @@
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { subagentWorkflowSchema } from '../../shared/contracts/ipc';
+import { subagentWorkflowSchema, subagentRunSchema } from '../../shared/contracts/ipc';
 import type {
   SubagentBudget,
   SubagentNotification,
@@ -9,6 +9,7 @@ import type {
   SubagentWorkflow as SubagentWorkflowView,
 } from '../../shared/contracts/ipc';
 import { allocateSubagentIdentity, ensureSubagentIdentity } from '../../shared/subagentIdentity';
+import { nativeWorkflowValue, type NativeWorkflowScheduler, type NativeWorkflowNodeResult } from './durable/NativeWorkflowScheduler';
 import { safeText } from './PiEventNormalizer';
 import { emptyUsage, addUsage } from './SubagentSessionFactory';
 import {
@@ -46,6 +47,8 @@ export interface SubagentWorkflow {
   parentSessionId: string;
   parentToolCallId: string;
   execution?: SubagentWorkflowExecutionBinding;
+  /** This selects the sole scheduling authority; it is retained in SDK history snapshots. */
+  scheduler?: { kind: 'native-pi-durable'; id: string };
   status: SubagentWorkflowStatus;
   maxConcurrency: number;
   notification: SubagentNotification;
@@ -66,6 +69,7 @@ export interface SubagentWorkflowSnapshot {
 }
 
 interface WorkflowHost {
+  createScheduler?: (workflow: SubagentWorkflow, modelRuntime: ModelRuntime) => Promise<NativeWorkflowScheduler>;
   launchNode: (
     workflow: SubagentWorkflow,
     node: SubagentWorkflowNode,
@@ -211,6 +215,10 @@ export class SubagentWorkflowEngine {
   ): SubagentWorkflow {
     const id = deterministicWorkflowId(parentSessionId, parentToolCallId);
     if (this.active.has(this.key(parentSessionId, id))) throw new Error(`Subagent workflow ${id} is already running.`);
+    const retained = this.workflowsByParent.get(parentSessionId)?.get(id);
+    // A repeated tool-call identity is inspection, never permission to downgrade
+    // a native graph to legacy execution or replace its historical outcome.
+    if (retained?.scheduler?.kind === 'native-pi-durable') return cloneWorkflow(retained);
     const now = Date.now();
     const usedHandles = new Set([
       ...this.host.usedHandles(parentSessionId),
@@ -230,6 +238,7 @@ export class SubagentWorkflowEngine {
       parentSessionId,
       parentToolCallId,
       ...(execution ? { execution: { ...execution } } : {}),
+      ...(this.host.createScheduler ? { scheduler: { kind: 'native-pi-durable' as const, id } } : {}),
       status: 'running',
       maxConcurrency: request.maxConcurrency,
       notification: request.notification,
@@ -262,6 +271,7 @@ export class SubagentWorkflowEngine {
 
   async resume(parentSessionId: string, workflowId: string, modelRuntime: ModelRuntime, execution?: SubagentWorkflowExecutionBinding): Promise<SubagentWorkflow> {
     const workflow = this.requireWorkflow(parentSessionId, workflowId);
+    if (workflow.scheduler?.kind === 'native-pi-durable') throw new Error('Native workflow history cannot be replayed. Review the retained SDK child sessions and start an explicitly reviewed new workflow.');
     if (workflow.status !== 'paused') throw new Error(`Subagent workflow ${workflowId} is not paused.`);
     if (execution) workflow.execution = { ...execution };
     workflow.status = 'running';
@@ -357,6 +367,7 @@ export class SubagentWorkflowEngine {
         ...(candidate.budget ? { budget: candidate.budget } : {}),
       });
       if (!normalized || normalized.nodes.length !== candidate.nodes.length) continue;
+      if (candidate.scheduler !== undefined && (candidate.scheduler.kind !== 'native-pi-durable' || candidate.scheduler.id !== candidate.id)) continue;
       let restored: SubagentWorkflow;
       try { restored = cloneWorkflow(candidate); } catch { continue; }
       restored.parentSessionId = parentSessionId;
@@ -386,7 +397,9 @@ export class SubagentWorkflowEngine {
       if (!subagentWorkflowSchema.safeParse(workflowView(restored)).success) continue;
       if (restored.status === 'running') {
         restored.status = 'paused';
-        restored.error = 'Fate UI restarted while this workflow was active. Resume it explicitly to continue pending nodes.';
+        restored.error = restored.scheduler?.kind === 'native-pi-durable'
+          ? 'Fate UI restarted while native workflow execution was unresolved. Review the retained SDK sessions and start a new reviewed workflow; historical tasks will not replay.'
+          : 'Fate UI restarted while this workflow was active. Resume it explicitly to continue pending nodes.';
         restored.updatedAt = Date.now();
         for (const node of restored.nodes) if (node.status === 'running' || node.status === 'pending') node.status = 'interrupted';
       }
@@ -409,7 +422,6 @@ export class SubagentWorkflowEngine {
   }
 
   private async execute(workflow: SubagentWorkflow, modelRuntime: ModelRuntime, signal: AbortSignal): Promise<SubagentWorkflow> {
-    const running = new Map<string, Promise<void>>();
     const nodesById = new Map(workflow.nodes.map((node) => [node.id, node]));
     let softTurnThreshold = workflow.budget?.maxTurns;
     const reportedResources = new Set<string>();
@@ -523,6 +535,66 @@ export class SubagentWorkflowEngine {
       // Workflow liveness is inspector telemetry, never a queued model turn.
     };
     try {
+      if (workflow.scheduler?.kind === 'native-pi-durable') {
+        if (!this.host.createScheduler) throw new Error('Native workflow scheduler is unavailable; legacy execution fallback is prohibited.');
+        const scheduler = await this.host.createScheduler(workflow, modelRuntime);
+        const projected = new Set<string>();
+        const projectResult = (result: NativeWorkflowNodeResult): void => {
+          if (projected.has(result.id)) return;
+          const node = nodesById.get(result.id);
+          if (!node) throw new Error('Native workflow projected an unknown node.');
+          if (result.value?.run !== undefined) {
+            const run = subagentRunSchema.parse(result.value.run);
+            node.runId = run.id;
+            if (run.result === undefined) delete node.result; else node.result = run.result;
+            if (run.error === undefined) delete node.error; else node.error = run.error;
+            node.endedAt = run.endedAt ?? Date.now();
+            workflow.usage = addUsage(workflow.usage, run.usage);
+          } else {
+            if (result.error === undefined) delete node.error; else node.error = result.error;
+            node.endedAt = Date.now();
+          }
+          node.status = result.status;
+          projected.add(result.id);
+          workflow.updatedAt = Date.now();
+          this.store(workflow);
+          reportSoftTurnThreshold();
+          reportResourceThresholds();
+        };
+        const graph = await scheduler.run({
+          nodes: workflow.nodes.map((node) => ({ id: node.id, dependsOn: [...node.dependsOn], dependencyFailure: node.request.dependencyFailure })),
+          concurrency: () => Math.max(1, Math.min(workflow.maxConcurrency, this.host.executionConcurrency?.(workflow) ?? workflow.maxConcurrency)),
+          started: (id) => {
+            const node = nodesById.get(id)!;
+            node.status = 'running'; node.startedAt = Date.now(); workflow.updatedAt = node.startedAt;
+            this.store(workflow);
+          },
+          execute: async (id, dependencies, nativeSignal) => {
+            const node = nodesById.get(id)!;
+            // Dependency inputs come from native receipts, never timing-sensitive UI projections.
+            const dependencyView = cloneWorkflow(workflow);
+            for (const [dependencyId, result] of Object.entries(dependencies)) {
+              const dependency = dependencyView.nodes.find((candidate) => candidate.id === dependencyId)!;
+              dependency.status = result.status;
+              if (result.value?.run !== undefined) {
+                const run = subagentRunSchema.parse(result.value.run);
+                if (run.result === undefined) delete dependency.result; else dependency.result = run.result;
+                if (run.error === undefined) delete dependency.error; else dependency.error = run.error;
+              } else if (result.error !== undefined) dependency.error = result.error;
+            }
+            const request = { ...node.request, task: dependencyContext(dependencyView, node) };
+            const child = await this.host.launchNode(workflow, node, request, modelRuntime, nativeSignal);
+            node.runId = child.runId; workflow.updatedAt = Date.now(); this.store(workflow);
+            const run = await child.completion;
+            return { id, status: run.status === 'completed' ? 'completed' : run.status === 'cancelled' ? 'cancelled' : 'error', value: { run: nativeWorkflowValue(run) } };
+          },
+          settled: projectResult,
+        }, signal);
+        // Final projection is checked, not best-effort. A failed callback must not
+        // manufacture a completed workflow with still-running UI nodes.
+        for (const result of Object.values(graph.nodes)) projectResult(result);
+      } else {
+      const running = new Map<string, Promise<void>>();
       while (workflow.nodes.some((node) => !terminalNode(node.status))) {
         if (signal.aborted) throw Object.assign(new Error(String(signal.reason || 'Workflow cancelled.')), { name: 'AbortError' });
 
@@ -597,6 +669,7 @@ export class SubagentWorkflowEngine {
         }
       }
       await Promise.allSettled(running.values());
+      }
       if (signal.aborted) throw Object.assign(new Error(String(signal.reason || 'Workflow cancelled.')), { name: 'AbortError' });
       const failed = workflow.nodes.some((node) => node.status === 'error' || node.status === 'cancelled');
       workflow.status = failed ? 'error' : 'completed';

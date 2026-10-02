@@ -1,3 +1,4 @@
+import { statePersistenceBackendSchema, type StatePersistenceBackend } from '../shared/v2FeaturePolicy';
 import path from 'node:path';
 import { z } from 'zod';
 import { canonicalizeProjectPath } from '../core/projects/ProjectTrustService';
@@ -13,6 +14,7 @@ const profileSchema = z.object({
 
 const serverConfigSchema = z.object({
   profile: profileSchema,
+  statePersistence: statePersistenceBackendSchema.optional(),
   workspaces: z.array(z.string().min(1).max(32_768)).min(1).max(8),
   host: z.literal('127.0.0.1'),
   port: z.number().int().safe().min(1).max(65_535),
@@ -28,6 +30,7 @@ const serverConfigSchema = z.object({
 
 export interface ServerConfig {
   readonly paths: FatePaths;
+  readonly statePersistence?: StatePersistenceBackend;
   readonly workspaces: readonly string[];
   readonly host: '127.0.0.1';
   readonly port: number;
@@ -67,6 +70,6 @@ export async function parseServerConfig(input: unknown): Promise<ServerConfig> {
     || browserOrigins.some((origin) => { const port = Number(origin.slice(origin.lastIndexOf(':') + 1)); return port < 1 || port > 65_535; })) {
     throw new Error('Browser origins must be unique numeric-loopback HTTP origins with valid ports.');
   }
-  return Object.freeze({ paths, workspaces: Object.freeze(workspaces), host: parsed.host, port: parsed.port,
+  return Object.freeze({ paths, ...(parsed.statePersistence === undefined ? {} : { statePersistence: parsed.statePersistence }), workspaces: Object.freeze(workspaces), host: parsed.host, port: parsed.port,
     browserOrigins: Object.freeze(browserOrigins), flags: Object.freeze(parsed.flags), maxPermission: parsed.maxPermission });
 }

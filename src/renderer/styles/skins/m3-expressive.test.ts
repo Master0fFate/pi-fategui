@@ -23,3 +23,13 @@ describe('M3 Expressive image viewer styles', () => {
     expect(closeRule?.[1]).toMatch(/(?:^|;)\s*border-radius:\s*50%\s*;?/u);
   });
 });
+
+describe('M3 narrow inspector tabs', () => {
+  it('restores icons after the label-only breakpoint before global labels disappear', () => {
+    const hideAt340 = stylesheet.indexOf('@container (max-width: 340px)');
+    const iconsAt259 = /@container\s*\(max-width:\s*259px\)\s*\{\s*:root\[data-skin="m3-expressive"\]\s+\.inspector-secondary-trigger\s*>\s*svg\s*\{([^}]*)\}/u.exec(stylesheet);
+    expect(hideAt340).toBeGreaterThanOrEqual(0);
+    expect(iconsAt259?.index).toBeGreaterThan(hideAt340);
+    expect(iconsAt259?.[1]).toMatch(/(?:^|;)\s*display:\s*block\s*;?/u);
+  });
+});

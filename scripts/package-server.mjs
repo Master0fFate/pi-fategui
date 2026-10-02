@@ -12,7 +12,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const isWithin = (parent, target) => target === parent || target.startsWith(parent + path.sep);
 const desktopPackages = /^(?:electron(?:-builder|-updater)?|transcribe-cpp|uiohook-napi|koffi)(?:@|\/|$)/u;
-const rootPackages = ['@earendil-works/chord', '@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', '@earendil-works/pi-durable', '@modelcontextprotocol/sdk', 'ws'];
+const rootPackages = ['@earendil-works/chord', '@earendil-works/pi-ai', '@earendil-works/pi-client', '@earendil-works/pi-coding-agent', '@earendil-works/pi-durable', '@earendil-works/pi-protocol', '@earendil-works/pi-server', '@modelcontextprotocol/sdk', 'ws'];
 const packageVersion = reference => reference.split('(')[0];
 
 /** Build tool only. It reads the installed YAML parser; no parser is added to the server solely for staging. */
@@ -117,7 +117,7 @@ async function walk(directory, prefix = '') {
 // exact tagged upstream terms, not merely their package.json declarations.
 const piLicenseSource = 'https://github.com/earendil-works/pi/blob/a13d35a742c6ef8462812a28fbe1d8c8b7431c32/LICENSE';
 const piLicenseSha256 = '0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48';
-const piLicenseRoots = ['@earendil-works/chord', '@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', '@earendil-works/pi-durable'];
+const piLicenseRoots = ['@earendil-works/chord', '@earendil-works/pi-ai', '@earendil-works/pi-client', '@earendil-works/pi-coding-agent', '@earendil-works/pi-durable', '@earendil-works/pi-protocol', '@earendil-works/pi-server'];
 
 /** Source-only license closure check; an SDK upgrade must reverify this provenance. */
 export function retainedPiLicenseNotice(sourceNotices, roots) {

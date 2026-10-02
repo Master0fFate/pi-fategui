@@ -8,6 +8,7 @@ import { emptyUsage, addUsage } from './SubagentSessionFactory';
 import { scheduleLongTimeout, type CancelableTimer } from './SubagentTimer';
 import { workflowToolResult } from './SubagentPresentation';
 import { normalizeWorkflowStart, workflowParameters, type ModelSelection, type WorkflowNodeRequest } from './SubagentProtocol';
+import type { NativeWorkflowSchedulerFactory } from './durable/NativeWorkflowScheduler';
 import { SubagentWorkflowEngine, workflowView, type SubagentWorkflow, type SubagentWorkflowExecutionBinding, type SubagentWorkflowNode, type SubagentWorkflowSnapshot } from './SubagentWorkflow';
 import type { AgentTeamCoordinator } from './multi-agent/AgentTeamCoordinator';
 
@@ -109,8 +110,14 @@ export class AgentWorkflowCoordinator {
   constructor(
     private readonly teams: AgentTeamCoordinator,
     private readonly host: AgentWorkflowCoordinatorHost,
+    nativeWorkflowSchedulerFactory?: NativeWorkflowSchedulerFactory,
   ) {
     this.workflows = new SubagentWorkflowEngine({
+      ...(nativeWorkflowSchedulerFactory ? { createScheduler: async (workflow: SubagentWorkflow, models: ModelRuntime) => {
+        const parent = this.host.resolveParent(workflow.parentSessionId);
+        if (!parent) throw new Error('Native workflow owner is unavailable. No legacy fallback was used.');
+        return nativeWorkflowSchedulerFactory({ id: workflow.id, parentSessionId: workflow.parentSessionId, cwd: parent.projectPath, models });
+      } } : {}),
       launchNode: (workflow, node, request, modelRuntime, signal) => this.launchNode(workflow, node, request, modelRuntime, signal),
       cancelRuns: async (parentSessionId, runIds, reason) => {
         const teams = this.teams.getTeams(parentSessionId);
@@ -151,7 +158,7 @@ export class AgentWorkflowCoordinator {
         'Node IDs and dependencies define the graph. includeDependencyResults is the only automatic result transfer and is opt-in per node.',
         'Requested permissions, models, thinking, tools, skills, instructions, routing attempts, and workspace are passed to Agent Team admission. Workspace and permission safety policies remain enforced; no arbitrary team-size ceiling is imposed.',
         'dependencyFailure controls whether a node skips or runs after a failed dependency. Fallback models are used only when explicitly configured.',
-        'Budget thresholds are advisory telemetry. A recovered running graph is paused and continues only through resume.',
+        'Budget thresholds are advisory telemetry. Native workflow tasks never replay after interruption; review retained child sessions and start a reviewed new graph. Legacy graphs require explicit resume.',
       ],
       parameters: workflowParameters,
       executionMode: 'sequential',
@@ -291,7 +298,13 @@ export class AgentWorkflowCoordinator {
       for (let attempt = initialAttempt; attempt <= request.routing.maxAttempts; attempt += 1) {
         this.activeTeamNodeByRun.set(logicalRunId, current.nodeId);
         const previousUsage = attempts.reduce((sum, previous) => addUsage(sum, previous.usage), emptyUsage());
-        const settled = await this.awaitAttempt(root, current.nodeId, workflow, node, request, signal, attempt, previousUsage);
+        let settled: Attempt;
+        try { settled = await this.awaitAttempt(root, current.nodeId, workflow, node, request, signal, attempt, previousUsage); }
+        finally {
+          // A logical Team 'interrupted' receipt or cancelled wait does not prove
+          // its SDK prompt stopped. Native task evidence must retain the actual lease.
+          if (workflow.scheduler?.kind === 'native-pi-durable') await this.awaitNativePhysicalSettlement(root, current.nodeId);
+        }
         attempts.push(settled);
         if (settled.status !== 'completed' || request.mailboxTtlMs === 0) {
           // Team settlement is authoritative. Cleanup races with an accepted follow-up
@@ -381,6 +394,24 @@ export class AgentWorkflowCoordinator {
       // aborting the completion wait. Keep the alias until that interrupt resolves.
       if (!signal.aborted) this.activeTeamNodeByRun.delete(logicalRunId);
     }
+  }
+
+  private async awaitNativePhysicalSettlement(root: string, nodeId: string): Promise<void> {
+    const stillOwned = (): boolean => {
+      const resources = this.teams.inspectNode(root, nodeId).resources;
+      if (!resources) throw new Error('Actual SDK child settlement cannot be verified.');
+      return resources.turnActive || resources.leaseHeld || resources.streaming;
+    };
+    if (!stillOwned()) return;
+    await new Promise<void>((resolve, reject) => {
+      let unsubscribe = () => {};
+      const check = () => {
+        try { if (stillOwned()) return; unsubscribe(); resolve(); }
+        catch (error) { unsubscribe(); reject(error); }
+      };
+      unsubscribe = this.teams.subscribeNodeActivity(root, nodeId, check);
+      check();
+    });
   }
 
   private spawnAttempt(

@@ -54,6 +54,9 @@ export function createTaskTools(
     if (!owner.isCurrent()) throw new Error('The calling root session changed while loading its tasks.');
     return owner;
   };
+  const assertCurrent = (owner: TaskToolSession) => {
+    if (!owner.isCurrent()) throw new Error('The calling root session cannot admit task effects.');
+  };
   const title = Type.String({ minLength: 1, maxLength: TASK_TITLE_LIMIT });
   const detail = Type.String({ maxLength: TASK_DETAIL_LIMIT, description: 'Task details and observable completion condition.' });
   const status = Type.Unsafe<'todo' | 'in-progress' | 'done' | 'blocked'>({
@@ -83,7 +86,7 @@ export function createTaskTools(
       execute: async (_id, params, signal, _update, context) => {
         const input = createInput.parse(params);
         const owner = await prepare(context.sessionManager.getSessionId(), signal);
-        return result(await tasks.create(owner.projectPath, owner.sessionId, input));
+        return result(await tasks.create(owner.projectPath, owner.sessionId, input, () => assertCurrent(owner)));
       },
     }),
     defineTool({
@@ -96,7 +99,7 @@ export function createTaskTools(
       execute: async (_id, params, signal, _update, context) => {
         const input = updateInput.parse(params);
         const owner = await prepare(context.sessionManager.getSessionId(), signal);
-        return result(await tasks.update(owner.projectPath, owner.sessionId, input));
+        return result(await tasks.update(owner.projectPath, owner.sessionId, input, () => assertCurrent(owner)));
       },
     }),
     defineTool({
@@ -108,7 +111,7 @@ export function createTaskTools(
       executionMode: 'sequential',
       execute: async (_id, params, signal, _update, context) => {
         const owner = await prepare(context.sessionManager.getSessionId(), signal);
-        return result(await tasks.delete(owner.projectPath, owner.sessionId, params));
+        return result(await tasks.delete(owner.projectPath, owner.sessionId, params, () => assertCurrent(owner)));
       },
     }),
   ] as ToolDefinition[];

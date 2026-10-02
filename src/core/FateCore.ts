@@ -1,3 +1,4 @@
+import type { StatePersistenceBackend } from '../shared/v2FeaturePolicy';
 import type { AgentsService } from '../main/agents/AgentsService';
 import type { LearningService } from '../main/learning/LearningService';
 import type { AppLogService } from '../main/logging/AppLogService';
@@ -15,6 +16,7 @@ import type { CoreClient, CoreClientResources, CoreLifecycle, CoreShutdownResult
 /** Host-internal handles, not an RPC surface or a generic service reflection API. */
 export interface FateCore {
   readonly paths: FatePaths;
+  readonly statePersistence: StatePersistenceBackend;
   /** Read-only startup projection; never permission to resume an uncertain run. */
   readonly recovery: RecoveryCoordinator;
   readonly recovered: RecoveryResult;
