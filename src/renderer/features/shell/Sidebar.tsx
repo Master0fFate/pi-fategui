@@ -25,7 +25,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { type DragEvent as ReactDragEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type DragEvent as ReactDragEvent, type KeyboardEvent, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { useShallow } from 'zustand/react/shallow';
 import type { SessionBranch, SessionSummary } from '../../../shared/contracts/ipc';
@@ -33,6 +33,7 @@ import { serializeSessionReference, SESSION_REFERENCE_TRANSFER_TYPE } from '../.
 import { AppTooltip } from '../../components/AppTooltip';
 import { IconButton } from '../../components/IconButton';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { DeferredPanel } from '../../components/DeferredPanel';
 import { useSkinComponents } from '../../skins/SkinProvider';
 import { SelectControl } from '../../components/SelectControl';
 import { formatRelativeTime } from '../../lib/relativeTime';
@@ -40,10 +41,11 @@ import { useRuntimeStore } from '../../stores/runtimeStore';
 import { useUiStore } from '../../stores/uiStore';
 import { projectPathKey, useProjectStore, type KnownProject } from '../../stores/projectStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
-import { SidebarAgents } from '../agents/SidebarAgents';
 import { openAgentNotice, useAgentsStore } from '../../stores/agentsStore';
 import { SidebarResources } from '../resources/SidebarResources';
 import { ConversationPaths, conversationPathViews, type ForkAction } from './ConversationPaths';
+
+const SidebarAgents = lazy(() => import('../agents/SidebarAgents').then((module) => ({ default: module.SidebarAgents })));
 
 interface SidebarProps {
   collapsed: boolean;
@@ -1431,7 +1433,7 @@ function DesktopSidebar({ collapsed, onToggle }: SidebarProps) {
             )}
           </div>
             </Tabs.Content>
-            <Tabs.Content value="agents" className="sidebar-tab-content"><SidebarAgents /></Tabs.Content>
+            <Tabs.Content value="agents" className="sidebar-tab-content"><DeferredPanel label="agents" className="empty-sessions"><SidebarAgents /></DeferredPanel></Tabs.Content>
             <Tabs.Content value="resources" className="sidebar-tab-content"><SidebarResources onOpenProject={selectProject} projectSelectionBusy={replacementBusy} /></Tabs.Content>
             <Tabs.List className="sidebar-primary-nav" aria-label="Sidebar destinations">
               <Tabs.Trigger value="sessions" className="sidebar-primary-trigger" aria-label="Sessions" onPointerDown={noteSidebarTabInteraction}><TabContent label="Sessions" active={sidebarTab === 'sessions'} /></Tabs.Trigger>

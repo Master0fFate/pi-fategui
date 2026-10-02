@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { bundleMonacoFallbackWorker, findMissingEmittedModules, verifyEmittedRendererModules } from '../vite.renderer.config.ts';
+import { bundleMonacoFallbackWorker, findMissingEmittedModules, verifyEmittedRendererModules } from './renderer-build-plugins.ts';
+import rendererConfig from '../vite.renderer.config.ts';
+import webConfig from '../vite.web.config.ts';
 
 describe('renderer emitted-module integrity', () => {
   it('rejects the unbundled Monaco fallback that a successful Vite build used to copy', () => {
@@ -60,5 +62,20 @@ describe('Monaco fallback worker bundling', () => {
 
   it('requires review if the targeted upstream worker expression changes', () => {
     expect(() => bundleMonacoFallbackWorker().transform.call(context, 'const worker = {};', id)).toThrow('Monaco fallback worker entry changed');
+  });
+});
+
+describe('renderer build target parity', () => {
+  it.each([
+    ['desktop', rendererConfig({ command: 'build', mode: 'production' })],
+    ['web', webConfig],
+  ])('bundles and verifies fallback workers for the %s renderer', (_target, config) => {
+    const plugins = config.plugins.flat(Infinity).filter(Boolean);
+    const fallback = plugins.find(({ name }) => name === 'fate-bundle-monaco-fallback-worker');
+    const integrity = plugins.find(({ name }) => name === 'fate-verify-emitted-renderer-modules');
+    expect(fallback?.apply).toBe('build');
+    expect(fallback?.enforce).toBe('pre');
+    expect(integrity?.apply).toBe('build');
+    expect(integrity?.enforce).toBe('post');
   });
 });

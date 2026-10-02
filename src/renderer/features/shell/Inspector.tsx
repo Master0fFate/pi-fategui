@@ -1,9 +1,10 @@
 import * as Tabs from '@radix-ui/react-tabs';
 import { Activity, Files, GitCompareArrows, Info, ListChecks, MessagesSquare, LayoutDashboard, Sparkles, Target } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { lazy, useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { useShallow } from 'zustand/react/shallow';
 import { AppTooltip } from '../../components/AppTooltip';
+import { DeferredPanel } from '../../components/DeferredPanel';
 import { ToolCard } from '../chat/ToolCard';
 import { ChangesPanel } from '../diffs/ChangesPanel';
 import { FilesPanel } from '../files/FilesPanel';
@@ -12,13 +13,15 @@ import { ResourcesPanel } from '../resources/ResourcesPanel';
 import { ContextPanel } from './ContextPanel';
 import { ActivityPanel } from './ActivityPanel';
 import { MonitorDashboardPanel } from './MonitorDashboardPanel';
-import { SubagentSessionsPanel } from './SubagentSessionsPanel';
 import { currentNetworkScope, useRuntimeStore, type ReadView } from '../../stores/runtimeStore';
 import { selectGitStatusView, useWorkspaceStore } from '../../stores/workspaceStore';
 import { getWebApiOptional } from '../../platform/api';
 import { inspectorDestinationForTab, useUiStore } from '../../stores/uiStore';
 import { GoalMaxInspector } from '../goalmaxxing/GoalMaxInspector';
 import { useSkinComponents } from '../../skins/SkinProvider';
+
+const SubagentSessionsPanel = lazy(() => import('./SubagentSessionsPanel').then((module) => ({ default: module.SubagentSessionsPanel })));
+
 interface InspectorProps { onCollapse?: () => void }
 const destinations = [
   { value: 'work', label: 'Work', tabs: [{ value: 'changes', label: 'Changes', icon: GitCompareArrows }, { value: 'files', label: 'Files', icon: Files }] },
@@ -129,7 +132,7 @@ export function Inspector(_props: InspectorProps = {}) {
           <TabContent label={label} active={activeTab === value} labelClassName="inspector-secondary-label" icon={<Icon size={13} strokeWidth={1.75} aria-hidden="true" />} /></Tabs.Trigger></AppTooltip>)}</Tabs.List>
       <Tabs.Content value="changes" className="tab-content">{web ? <HostGitDetails /> : <ChangesPanel />}</Tabs.Content>
       <Tabs.Content value="files" className="tab-content"><FilesPanel /></Tabs.Content>
-      <Tabs.Content value="sessions" className="tab-content"><SubagentSessionsPanel key={web ? confirmed?.header.snapshotId : undefined} /></Tabs.Content>
+      <Tabs.Content value="sessions" className="tab-content"><DeferredPanel label="agent sessions" className="inspector-empty"><SubagentSessionsPanel key={web ? confirmed?.header.snapshotId : undefined} /></DeferredPanel></Tabs.Content>
       <Tabs.Content value="monitor" className="tab-content">{web && !confirmed ? <p className="inspector-empty" role="status">Monitor is not current. Last confirmed {snapshot ? new Date(snapshot.header.capturedAt).toLocaleString() : 'unknown'}; host work may continue. Reconnect or refresh before review.</p>
         : web && !webScope ? <p className="inspector-empty">Monitor requires a confirmed selected session. Unknown does not mean no active work.</p>
           : <MonitorDashboardPanel key={web ? confirmed?.header.snapshotId : undefined} {...(webScope ? { webScope } : {})} />}</Tabs.Content>

@@ -663,6 +663,7 @@ body.is-resizing-composer { cursor: ns-resize; user-select: none; }
 .app-toast span { color: var(--theme-muted); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 .app-toast button { display: grid; width: 24px; height: 24px; margin: -3px -2px 0 0; place-items: center; padding: 0; border-radius: 6px; color: var(--theme-muted); background: transparent; cursor: pointer; }
 .app-toast button:hover { color: var(--theme-text); background: var(--theme-border); }
+.app-toast .agent-notice-action { display: inline-flex; align-self: flex-start; width: auto; max-width: 100%; height: auto; margin: 0; padding: 0; border-radius: var(--surface-control-radius, 0); color: var(--theme-accent); font: inherit; font-size: var(--surface-font-size, .8em); line-height: 1.5; text-decoration: underline; }
 @keyframes app-toast-in { from { opacity: .35; transform: translateY(-5px) scale(.985); } }
 .settings-error { color: var(--theme-danger) !important; }
 

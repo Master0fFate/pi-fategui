@@ -255,8 +255,6 @@
 .agent-library-check input { accent-color: var(--theme-accent); }
 .agent-library-dialog footer { justify-content: flex-end; padding-top: 4px; border-top: 1px solid var(--agent-rule); }
 
-.app-toast .agent-notice-action { display: inline-flex; align-self: flex-start; width: auto; max-width: 100%; height: auto; margin: 0; padding: 0; border-radius: var(--surface-control-radius, 0); color: var(--theme-accent); font: inherit; font-size: var(--surface-font-size, .8em); line-height: 1.5; text-decoration: underline; }
-
 /* Angelcore/dreamcore stays flat, square, mono, and hairline-driven. */
 :root[data-skin="dreamcore"] :is(.sidebar-agent-library, .agent-library-dialog, .agent-library-menu) { font-family: var(--font-code); }
 :root[data-skin="dreamcore"] :is(.sidebar-agent-library, .agent-library-dialog) button:not(.sidebar-toolbar-action button) { border-radius: 0; font-family: var(--font-code); }
