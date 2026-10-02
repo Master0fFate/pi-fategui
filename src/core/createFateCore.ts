@@ -34,8 +34,8 @@ import type { FateCore } from './FateCore';
 import { openFateDurableStore } from './durable/FateDurableStore';
 import { DurableStorageCloseUncertainError } from './durable/OwnedDurableStorage';
 import { createOwnedNativeWorkflowSchedulerFactory } from '../main/pi/durable/NativeWorkflowScheduler';
-import { NativeExecutionUnknownError } from '../main/pi/durable/NativeExecutionFence';
-import { inspectOwnedNativeWorkflowRecovery } from './recovery/NativeWorkflowRecovery';
+import { NativeExecutionUnknownError, NativeEffectNotStartedError } from '../main/pi/durable/NativeExecutionFence';
+import { inspectOwnedNativeWorkflowReview, assertNativeWorkflowIdentityNotRetired, NativeWorkflowPermanentlyRetiredError } from './recovery/NativeWorkflowReview';
 import { resolveStatePersistenceBackend, type StatePersistenceBackend } from '../shared/v2FeaturePolicy';
 import { CoreLifecycle, type CoreClientResources } from './lifecycle/CoreLifecycle';
 import { WorkspaceEventHub } from './events/WorkspaceEventHub';
@@ -135,6 +135,7 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
   let disposal: Promise<void> | null = null;
   let admissionFenceFailed = false;
   let storageStartupUncertain = false;
+  let explicitWorkOnly = false;
   const disposeOwned = (): Promise<void> => {
     return disposal ??= Promise.resolve().then(async () => {
     const failures: unknown[] = [];
@@ -153,25 +154,43 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
   try {
     // Acquire outside dataRoot before any provider first-run mkdir or writable repository.
     profile = await OwnerLock.acquire(paths.lockRoot, 'profile', await canonicalFuturePath(paths.profileKind === 'server' ? path.dirname(paths.dataRoot) : paths.dataRoot));
-    // Successful migration activates the versioned namespace. Normal subsequent
-    // launches select it under the profile lock without a second hidden flag.
-    if (options.statePersistence === undefined) {
-      try { await fs.lstat(path.join(paths.dataRoot, 'durable', 'v1', 'state.sqlite')); statePersistence = 'native-durable'; }
+    // Selection cannot depend only on the state file: missing state beside
+    // retained native execution/review evidence is data loss, never a rollback.
+    const nativeNamespace = path.join(paths.dataRoot, 'durable', 'v1');
+    let nativeStateExists = false;
+    try { await fs.lstat(path.join(nativeNamespace, 'state.sqlite')); nativeStateExists = true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    let nativeEvidenceExists = nativeStateExists;
+    if (!nativeEvidenceExists) {
+      try {
+        const stat = await fs.lstat(nativeNamespace);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Native durable namespace is unsafe; stopped-owner review is required.');
+        const entries = await fs.opendir(nativeNamespace);
+        try { nativeEvidenceExists = await entries.read() !== null; } finally { await entries.close(); }
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      try { await fs.lstat(path.join(paths.dataRoot, 'workflow-reviews')); nativeEvidenceExists = true; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     }
+    if (nativeEvidenceExists && !nativeStateExists) {
+      throw new NativeExecutionUnknownError('Native state is missing while retained durable or review evidence exists. Startup is fenced; restore and review the original state before admitting work.');
+    }
+    // Successful migration activates the versioned namespace without a hidden flag.
+    if (options.statePersistence === undefined && nativeStateExists) statePersistence = 'native-durable';
     if (statePersistence === 'native-durable' && (options.persistence?.createQueue || options.persistence?.createGoals || options.persistence?.createTasks)) {
       throw new Error('Native state must have one authoritative store; separate queue, task, or goal overrides are not permitted.');
     }
     if (statePersistence === 'native-durable') {
       // Inspect committed workflow policy before constructing any SDK runtime.
       // A different fresh graph ID cannot bypass an earlier uncertain effect.
-      const workflows = await inspectOwnedNativeWorkflowRecovery({ dataRoot: paths.dataRoot, profileOwner: profile, maxFiles: 1024 }).catch((error: unknown) => {
+      const workflows = await inspectOwnedNativeWorkflowReview({ paths, profileOwner: profile, maxFiles: 1024 }).catch((error: unknown) => {
         if (error instanceof DurableStorageCloseUncertainError) storageStartupUncertain = true;
         throw error;
       });
       if (workflows.uncertainProfile || workflows.blocked.length > 0) {
         throw new NativeExecutionUnknownError('Native workflow history requires stopped-owner review before a new request. No runtime or workflow was resumed; retained records are unchanged.');
       }
+      explicitWorkOnly = workflows.explicitWorkOnly;
+      if (explicitWorkOnly) logs.write('warn', 'recovery', 'Reviewed native UNKNOWN history remains retained. Saved schedules stay disabled and recovered goals require explicit new intent.');
     }
     // A previous native activation cannot silently reopen stale legacy snapshots.
     // Rollback quarantines that namespace only under the same stopped-owner lock.
@@ -225,6 +244,14 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
     };
     const nativeWorkflowSchedulerFactory = durable ? createOwnedNativeWorkflowSchedulerFactory({
       dataRoot: paths.dataRoot, profileOwner: profile,
+      assertStorageAdmission: async (filename) => {
+        try { await assertNativeWorkflowIdentityNotRetired({ paths, profileOwner: profile! }, filename); }
+        catch (error) {
+          if (error instanceof NativeWorkflowPermanentlyRetiredError) throw new NativeEffectNotStartedError(error.message);
+          const failure = new NativeExecutionUnknownError('Reviewed native history changed or cannot be verified. No new graph is admitted.');
+          failure.cause = error; throw failure;
+        }
+      },
       onCloseUncertain: (error) => { storageStartupUncertain = true; fenceUnsafeWorkflow(error); },
       onUnsafeFailure: fenceUnsafeWorkflow,
       onReport: () => logs.write('warn', 'durable', 'Native workflow reported an execution diagnostic; inspect its retained workflow state.'),
@@ -232,6 +259,7 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
     const dependencies: MultiProjectPiRuntimeDeps = {
       adapter: options.adapter ?? createPiSdkAdapter(paths),
       ...(nativeWorkflowSchedulerFactory ? { nativeWorkflowSchedulerFactory } : {}),
+      requireFreshExecutionIntent: explicitWorkOnly,
       paths,
       checkoutOwnership,
       learning,
@@ -325,7 +353,7 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
         ...(options.savedAgents.notify ? { notify: options.savedAgents.notify } : {}),
       }, new AgentRepository(path.join(paths.dataRoot, 'agents', 'v1')), options.savedAgents.legacy);
       owned.push(() => agents.dispose());
-      if (options.savedAgents.scheduleRoutines && recovered.admissionsAllowed) agents.start();
+      if (options.savedAgents.scheduleRoutines && recovered.admissionsAllowed && !explicitWorkOnly) agents.start();
       savedAgents = agents;
     }
     const lifecycle = new CoreLifecycle({
@@ -347,7 +375,7 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
       lifecycle.shutdownCore();
       return lifecycle.settled()!;
     };
-    return { paths, statePersistence, recovery, recovered, logs, settings, projects, learning, sessionPermissions, attestations, runtime, events,
+    return { paths, statePersistence, executionRecoveryMode: explicitWorkOnly ? 'explicit-work-only' : 'ordinary', recovery, recovered, logs, settings, projects, learning, sessionPermissions, attestations, runtime, events,
       workspaces, savedAgents, lifecycle, createClient: (resources?: CoreClientResources) => lifecycle.createClient(resources),
       disposeClient: (client) => lifecycle.disposeClient(client), shutdownCore: () => lifecycle.shutdownCore(), dispose };
   } catch (error) {

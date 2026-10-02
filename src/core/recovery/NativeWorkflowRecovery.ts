@@ -89,19 +89,20 @@ function document(db: DatabaseSync, kind: string, inspect?: (value: unknown) => 
 }
 
 function executionReason(db: DatabaseSync): string | null {
+  let reason: string | null = null;
   const tasks = rows<{ id: number; conversation_id: number; status: string; record: string }>(db, 'SELECT id,conversation_id,status,record FROM tasks ORDER BY id LIMIT ?', MAX_ROWS + 1);
   for (const row of tasks) {
     const task = z.object({ id: z.number().int().positive().safe(), conversationId: z.number().int().positive().safe(), state: z.object({ status: z.enum(['pending', 'running', 'waiting', 'completing', 'terminal']), outcome: z.unknown().optional() }).passthrough() }).passthrough().parse(JSON.parse(row.record));
     if (task.id !== row.id || task.conversationId !== row.conversation_id || task.state.status !== row.status) throw new Error('Native workflow task indexes disagree with committed records.');
-    if (task.state.status !== 'terminal') return 'Native workflow has nonterminal tasks; automatic continuation is prohibited.';
-    z.object({ status: z.enum(['completed', 'failed', 'aborted', 'orphaned', 'faulted']) }).passthrough().parse(task.state.outcome);
+    if (task.state.status !== 'terminal') reason ??= 'Native workflow has nonterminal tasks; automatic continuation is prohibited.';
+    else z.object({ status: z.enum(['completed', 'failed', 'aborted', 'orphaned', 'faulted']) }).passthrough().parse(task.state.outcome);
   }
   for (const row of rows<{ id: number; conversation_id: number; status: string; record: string }>(db, 'SELECT id,conversation_id,status,record FROM submissions ORDER BY id LIMIT ?', MAX_ROWS + 1)) {
     const submission = z.object({ id: z.number().int().positive().safe(), conversationId: z.number().int().positive().safe(), status: z.enum(['queued', 'placed', 'done', 'unanswered']) }).passthrough().parse(JSON.parse(row.record));
     if (submission.id !== row.id || submission.conversationId !== row.conversation_id || submission.status !== row.status) throw new Error('Native workflow submission indexes disagree with committed records.');
-    if (submission.status === 'queued' || submission.status === 'placed') return 'Native workflow has unsettled submissions; automatic continuation is prohibited.';
+    if (submission.status === 'queued' || submission.status === 'placed') reason ??= 'Native workflow has unsettled submissions; automatic continuation is prohibited.';
   }
-  return null;
+  return reason;
 }
 
 /**
@@ -177,8 +178,11 @@ export async function inspectOwnedNativeWorkflowRecovery(options: InspectOwnedNa
         || `workflow-${createHash('sha256').update(`${identity.cwd}\0${identity.parentSessionId}\0${identity.workflowId}`).digest('hex')}.sqlite` !== name) { identity = undefined; throw new Error('Native workflow identity does not match its storage address.'); }
       let historicalUnknown = false;
       const fence = fenceSchema.parse(document(db, 'fate.execution.fence', (value) => { if (fenceSchema.parse(value).state === 'UNKNOWN') historicalUnknown = true; }));
+      // Review eligibility requires every bounded execution record to validate,
+      // even when a retained UNKNOWN/active fence already blocks ordinary startup.
+      const execution = executionReason(db);
       const reason = historicalUnknown ? 'Native workflow has retained UNKNOWN evidence; automatic continuation is prohibited.'
-        : fence.state !== 'idle' ? 'Native workflow was active at shutdown; automatic continuation is prohibited.' : executionReason(db);
+        : fence.state !== 'idle' ? 'Native workflow was active at shutdown; automatic continuation is prohibited.' : execution;
       if (reason) blocked.push({ filename, ...identity, reason });
       if (!sameFile(before, await fs.lstat(filename, { bigint: true }))) throw new Error('Native workflow file changed during read-only inspection.');
       for (const suffix of ['-wal', '-shm', '-journal']) {

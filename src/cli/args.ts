@@ -1,9 +1,9 @@
-export type CliMode = 'init' | 'serve' | 'web' | 'provider' | 'auth-code' | 'access-key' | 'doctor' | 'migrate';
+export type CliMode = 'init' | 'serve' | 'web' | 'provider' | 'auth-code' | 'access-key' | 'doctor' | 'migrate' | 'workflow-review';
 export type CliCommand =
   | { readonly mode: 'desktop'; readonly project: string | null; readonly newInstance: boolean }
   | { readonly mode: 'connect'; readonly profile: string }
   | { readonly mode: CliMode; readonly profile: string; readonly verb: string | null; readonly options: Readonly<Record<string, string | true>> };
-const modes = new Set(['init', 'serve', 'web', 'connect', 'provider', 'auth-code', 'access-key', 'doctor', 'migrate']);
+const modes = new Set(['init', 'serve', 'web', 'connect', 'provider', 'auth-code', 'access-key', 'doctor', 'migrate', 'workflow-review']);
 const profilePattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/u;
 export class CliUsageError extends Error {
   constructor(scope: 'arguments' | 'desktop' = 'arguments') {
@@ -18,6 +18,7 @@ const flags: Record<CliMode | 'desktop' | 'connect', readonly string[]> = {
   provider: ['profile', 'provider-id', 'method'], 'auth-code': ['profile', 'out-file'],
   'access-key': ['profile', 'workspace', 'out-file', 'client-id'],
   migrate: ['profile', 'desktop', 'backup-root', 'source-version', 'out-file', 'plan-file', 'plan-digest', 'confirm-apply', 'confirm-rollback'],
+  'workflow-review': ['profile', 'desktop', 'out-file', 'plan-file', 'plan-digest', 'acknowledge-unknown'],
 };
 /** Pure parsing. No process, profile, credential or filesystem is touched here. */
 export function parseCliArgs(argv: readonly string[], entry: 'desktop' | 'server' = 'desktop'): CliCommand {
@@ -37,6 +38,10 @@ export function parseCliArgs(argv: readonly string[], entry: 'desktop' | 'server
     verb = argv[index] && !argv[index]!.startsWith('--') ? argv[index++]! : 'dry-run';
     if (!['dry-run', 'prepare', 'apply', 'rollback'].includes(verb)) fail();
   }
+  if (mode === 'workflow-review') {
+    verb = argv[index] && !argv[index]!.startsWith('--') ? argv[index++]! : 'inspect';
+    if (!['inspect', 'prepare', 'acknowledge'].includes(verb)) fail();
+  }
   const options: Record<string, string | true> = {}, positional: string[] = [];
   let literal = false;
   for (; index < argv.length; index++) {
@@ -45,7 +50,7 @@ export function parseCliArgs(argv: readonly string[], entry: 'desktop' | 'server
     if (!literal && token.startsWith('--')) {
       const split = token.indexOf('='), name = token.slice(2, split < 0 ? undefined : split);
       if (!flags[mode].includes(name) || Object.hasOwn(options, name)) fail();
-      if (['new-instance', 'trust-workspace', 'desktop', 'confirm-apply', 'confirm-rollback'].includes(name)) {
+      if (['new-instance', 'trust-workspace', 'desktop', 'confirm-apply', 'confirm-rollback', 'acknowledge-unknown'].includes(name)) {
         if (split >= 0) fail(); options[name] = true;
       } else {
         const value = split < 0 ? argv[++index] : token.slice(split + 1);
@@ -60,7 +65,7 @@ export function parseCliArgs(argv: readonly string[], entry: 'desktop' | 'server
   }
   if (mode === 'connect') { if (positional.length !== 1 || !profilePattern.test(positional[0]!)) fail(); return { mode, profile: positional[0]! }; }
   if (positional.length) fail();
-  const profile = typeof options.profile === 'string' ? options.profile : mode === 'web' ? 'default' : mode === 'migrate' && options.desktop === true ? 'desktop' : '';
+  const profile = typeof options.profile === 'string' ? options.profile : mode === 'web' ? 'default' : (mode === 'migrate' || mode === 'workflow-review') && options.desktop === true ? 'desktop' : '';
   if (!profilePattern.test(profile)) fail();
   if ((mode === 'init' || mode === 'web') && (!options.workspace || options['trust-workspace'] !== true)) fail();
   if (options.port && (!/^[1-9][0-9]{0,4}$/u.test(String(options.port)) || Number(options.port) > 65535)) fail();
@@ -76,6 +81,12 @@ export function parseCliArgs(argv: readonly string[], entry: 'desktop' | 'server
         || (verb === 'prepare' ? !options['out-file'] : options['out-file'])) fail();
     } else if (!options['plan-file'] || !/^[a-f0-9]{64}$/u.test(String(options['plan-digest'])) || options['out-file']
       || (verb === 'apply' ? options['confirm-apply'] !== true || options['confirm-rollback'] : options['confirm-rollback'] !== true || options['confirm-apply'])) fail();
+  }
+  if (mode === 'workflow-review') {
+    if (Boolean(options.desktop) === Boolean(options.profile)) fail();
+    if (verb === 'inspect' || verb === 'prepare') {
+      if (options['plan-file'] || options['plan-digest'] || options['acknowledge-unknown'] || (verb === 'prepare' ? !options['out-file'] : options['out-file'])) fail();
+    } else if (!options['plan-file'] || !/^[a-f0-9]{64}$/u.test(String(options['plan-digest'])) || options['acknowledge-unknown'] !== true || options['out-file']) fail();
   }
   return { mode, profile, verb, options: Object.freeze(options) };
 }

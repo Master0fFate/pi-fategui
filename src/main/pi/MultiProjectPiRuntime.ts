@@ -103,6 +103,7 @@ export function backgroundAttentionUpdate(events: readonly PiEvent[]): SessionSu
 export interface MultiProjectPiRuntimeDeps {
   /** Profile-owned native scheduling for new DAGs; restored native graphs never fall back. */
   nativeWorkflowSchedulerFactory?: NativeWorkflowSchedulerFactory;
+  requireFreshExecutionIntent?: boolean;
   adapter?: PiSdkAdapter;
   paths?: FatePaths;
   /** Same process-wide host namespace used by desktop Git and Team. */
@@ -519,6 +520,7 @@ export class MultiProjectPiRuntime {
       this.deps.providerAuthUrlPresenter,
       this.deps.paths,
       this.deps.nativeWorkflowSchedulerFactory,
+      this.deps.requireFreshExecutionIntent,
     );
     service.setExecutionAdmissionGuard(() => {
       if (this.stopping) throw new Error('The runtime host is stopping; all retained execution admission is closed.');

@@ -109,6 +109,8 @@ export interface GoalMaxDiagnosticResult {
 }
 
 export interface GoalMaxCoordinatorHost {
+  allowsAutomaticContinuation?(sessionId: string): boolean;
+  explicitIntentAdmitted?(sessionId: string): void;
   runtime(sessionId: string): GoalMaxRuntimeSnapshot | null;
   startGoal(sessionId: string, objective: string, capsule: string): Promise<boolean>;
   continueGoal(sessionId: string, capsule: string, goalId: string, revision: number): Promise<void>;
@@ -253,8 +255,8 @@ export class GoalMaxCoordinator {
     this.states.set(key, goal);
     this.loadedBindings.set(sessionId, key);
     const retainedInhibition = this.failClosedStates.get(sessionId);
-    const visibleGoal = retainedInhibition?.id === goal.id && retainedInhibition.projectPath === goal.projectPath ? retainedInhibition : goal;
-    this.host.emit(snapshotEvent(visibleGoal));
+    const visibleGoal = this.recoveryView(retainedInhibition?.id === goal.id && retainedInhibition.projectPath === goal.projectPath ? retainedInhibition : goal);
+    this.emitGoalEvent(snapshotEvent(visibleGoal));
     // Re-bind the canonical task list after restart, including achieved goals.
     // This repairs a completion projection that could not be written before the
     // prior process exited. Cancelled goals are detached only by explicit clear.
@@ -281,7 +283,7 @@ export class GoalMaxCoordinator {
     const goal = this.states.get(goalKey(projectPath, sessionId));
     if (!goal) return null;
     const failClosed = this.failClosedStates.get(sessionId);
-    return structuredClone(failClosed?.id === goal.id && failClosed.projectPath === goal.projectPath ? failClosed : goal);
+    return structuredClone(this.recoveryView(failClosed?.id === goal.id && failClosed.projectPath === goal.projectPath ? failClosed : goal));
   }
 
   async create(inputValue: GoalMaxCreateInput): Promise<GoalMaxState> {
@@ -357,7 +359,8 @@ export class GoalMaxCoordinator {
     this.states.set(key, goal);
     this.sessionKeys.set(runtime.sessionId, key);
     this.host.persistSessionEvent(runtime.sessionId, goal);
-    this.host.emit(snapshotEvent(goal));
+    this.host.explicitIntentAdmitted?.(runtime.sessionId);
+    this.emitGoalEvent(snapshotEvent(goal));
     // Bind the canonical task list to this goal's required criteria on creation.
     this.taskService?.syncGoal(runtime.projectPath, runtime.sessionId, goal).catch(() => undefined);
     try {
@@ -436,6 +439,7 @@ export class GoalMaxCoordinator {
           continuation: { ...current.continuation, pending: false, reason: 'Resumed by the user.' },
         }, 'goal.resumed', 'Goal resumed with current runtime policy.', now);
       });
+      this.host.explicitIntentAdmitted?.(runtime.sessionId);
       this.clearFailClosedState(runtime.sessionId, true);
       this.schedule(this.requireState(runtime.sessionId), 'user-resume');
     } else if (input.action === 'checkpoint') {
@@ -655,7 +659,7 @@ export class GoalMaxCoordinator {
     await this.taskService?.detachGoal(goal.projectPath, goal.sessionId, goal.id).catch(() => undefined);
     this.states.delete(goalKey(goal.projectPath, goal.sessionId));
     this.sessionKeys.delete(goal.sessionId);
-    this.host.emit({ type: 'goalmax.cleared', projectPath: goal.projectPath, sessionId: goal.sessionId, goalId: goal.id, timestamp: Date.now() });
+    this.emitGoalEvent({ type: 'goalmax.cleared', projectPath: goal.projectPath, sessionId: goal.sessionId, goalId: goal.id, timestamp: Date.now() });
     return { cleared: true, archivedGoalId: goal.id };
   }
 
@@ -679,7 +683,7 @@ export class GoalMaxCoordinator {
     await this.flushObservations(sessionId);
     const stored = this.requireState(sessionId);
     const failClosed = this.failClosedStates.get(sessionId);
-    const goal = failClosed?.id === stored.id ? failClosed : stored;
+    const goal = this.recoveryView(failClosed?.id === stored.id ? failClosed : stored);
     return { text: goalMaxCapsule(goal), details: structuredClone(goal) };
   }
 
@@ -1377,7 +1381,7 @@ export class GoalMaxCoordinator {
     this.failClosedStates.set(sessionId, failClosed);
     this.controlPersistenceInhibitions.add(sessionId);
     try { this.host.persistSessionEvent(sessionId, failClosed); } catch { /* Best-effort volatile inhibition checkpoint. */ }
-    try { this.host.emit(snapshotEvent(failClosed)); } catch { /* Runtime reads still expose the blocked projection. */ }
+    try { this.emitGoalEvent(snapshotEvent(failClosed)); } catch { /* Runtime reads still expose the blocked projection. */ }
   }
 
   private async blockAfterRootSettlementFailure(sessionId: string, error: unknown): Promise<void> {
@@ -1405,7 +1409,7 @@ export class GoalMaxCoordinator {
       const latest = this.stateForSession(sessionId);
       if (!latest) return;
       if (latest.status === 'blocked' || isGoalMaxTerminal(latest.status)) {
-        try { this.host.emit(snapshotEvent(latest)); } catch { /* The authoritative state is already non-runnable. */ }
+        try { this.emitGoalEvent(snapshotEvent(latest)); } catch { /* The authoritative state is already non-runnable. */ }
         return;
       }
       if (latest.status !== 'active' && latest.status !== 'verifying') return;
@@ -1421,7 +1425,7 @@ export class GoalMaxCoordinator {
       }, 'goal.blocked', failClosedReason, now)));
       this.failClosedStates.set(sessionId, failClosed);
       try { this.host.persistSessionEvent(sessionId, failClosed); } catch { /* Best-effort session checkpoint. */ }
-      try { this.host.emit(snapshotEvent(failClosed)); } catch { /* Runtime reads still expose the blocked projection. */ }
+      try { this.emitGoalEvent(snapshotEvent(failClosed)); } catch { /* Runtime reads still expose the blocked projection. */ }
     }
   }
 
@@ -1879,8 +1883,30 @@ export class GoalMaxCoordinator {
     return selected;
   }
 
+  private emitGoalEvent(event: GoalMaxEvent): void {
+    if (event.type === 'goalmax.snapshot') {
+      this.host.emit({ ...event, goal: this.recoveryView(event.goal) }); return;
+    }
+    if (event.type === 'goalmax.status' && this.host.allowsAutomaticContinuation?.(event.sessionId) === false) {
+      const current = this.stateForSession(event.sessionId);
+      if (current && current.id === event.goalId) {
+        const view = this.recoveryView(current);
+        this.host.emit({ ...event, status: view.status, executionState: view.executionState, blockedReason: view.blockedReason }); return;
+      }
+    }
+    this.host.emit(event);
+  }
+
+  /** A live policy projection only; reviewed UNKNOWN never rewrites a goal as completed. */
+  private recoveryView(goal: GoalMaxState): GoalMaxState {
+    if (isGoalMaxTerminal(goal.status) || this.host.allowsAutomaticContinuation?.(goal.sessionId) !== false) return goal;
+    const reason = 'Reviewed UNKNOWN history requires an explicit new prompt or Resume before automatic goal continuation.';
+    return { ...goal, status: 'paused', executionState: 'idle', blockedReason: reason,
+      continuation: { ...goal.continuation, pending: false, reason } };
+  }
+
   private executionInhibited(sessionId: string): boolean {
-    return this.controlPersistenceInhibitions.has(sessionId) || this.failClosedStates.has(sessionId);
+    return this.host.allowsAutomaticContinuation?.(sessionId) === false || this.controlPersistenceInhibitions.has(sessionId) || this.failClosedStates.has(sessionId);
   }
 
   private clearFailClosedState(sessionId: string, explicitResume = false): void {
@@ -1888,7 +1914,7 @@ export class GoalMaxCoordinator {
     if (explicitResume) this.controlPersistenceInhibitions.delete(sessionId);
     if (!this.failClosedStates.delete(sessionId)) return;
     const current = this.stateForSession(sessionId);
-    if (current) this.host.emit(snapshotEvent(current));
+    if (current) this.emitGoalEvent(snapshotEvent(current));
   }
 
   private stateForSession(sessionId: string): GoalMaxState | null {
@@ -1993,13 +2019,13 @@ export class GoalMaxCoordinator {
     this.states.set(goalKey(committed.projectPath, committed.sessionId), committed);
     this.sessionKeys.set(committed.sessionId, goalKey(committed.projectPath, committed.sessionId));
     this.host.persistSessionEvent(committed.sessionId, visible);
-    if (failClosed?.id === committed.id || emitSnapshot) this.host.emit(snapshotEvent(visible));
+    if (failClosed?.id === committed.id || emitSnapshot) this.emitGoalEvent(snapshotEvent(visible));
     else {
-      if (!previous || previous.status !== visible.status || previous.executionState !== visible.executionState || previous.blockedReason !== visible.blockedReason) this.host.emit(statusEvent(visible));
-      if (!previous || previous.phase !== visible.phase) this.host.emit(phaseEvent(visible));
-      if (!previous || previous.tokensUsed !== visible.tokensUsed || previous.elapsedMs !== visible.elapsedMs) this.host.emit(usageEvent(visible));
+      if (!previous || previous.status !== visible.status || previous.executionState !== visible.executionState || previous.blockedReason !== visible.blockedReason) this.emitGoalEvent(statusEvent(visible));
+      if (!previous || previous.phase !== visible.phase) this.emitGoalEvent(phaseEvent(visible));
+      if (!previous || previous.tokensUsed !== visible.tokensUsed || previous.elapsedMs !== visible.elapsedMs) this.emitGoalEvent(usageEvent(visible));
     }
-    for (const event of additionalEvents) this.host.emit({ ...event, revision: committed.revision } as GoalMaxEvent);
+    for (const event of additionalEvents) this.emitGoalEvent({ ...event, revision: committed.revision } as GoalMaxEvent);
     if (guardFailure) throw guardFailure;
   }
 

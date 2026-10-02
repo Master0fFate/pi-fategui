@@ -101,6 +101,7 @@ import { validatePromptImages } from './PiPromptImages';
 import { appendProjectResourceContext, hasProjectResourceTags } from './ProjectResourceTags';
 import { SubagentCoordinator } from './SubagentCoordinator';
 import type { NativeWorkflowSchedulerFactory } from './durable/NativeWorkflowScheduler';
+import { RecoveredExecutionPolicy } from './RecoveredExecutionPolicy';
 import { AgentWorkflowCoordinator } from './AgentWorkflowCoordinator';
 import { createSdkChildSession, installToolExecutionAdmission, finalAssistant, type SubagentChildSessionFactory } from './SubagentSessionFactory';
 import type { ImageGenerationSettingsResolver } from './PiImageTool';
@@ -406,6 +407,7 @@ type SessionCustomMessage = Parameters<AgentSession['sendCustomMessage']>[0];
 type ActiveCustomMessageDelivery = 'steer' | 'followUp';
 type SessionTurnPhase = 'idle' | 'active' | 'ending';
 interface DeferredChildMessage {
+  triggerWhenIdle: boolean;
   message: SessionCustomMessage;
   activeDelivery: ActiveCustomMessageDelivery;
 }
@@ -442,6 +444,9 @@ interface RuntimeSlot {
   queuedMessages: QueuedMessageRecord[];
   recoveredMessages: QueuedMessage[];
   acknowledgedQueueIds: Set<string>;
+  /** Current-process user intent only; never serialized into recovered drafts. */
+  freshIntentQueueIds: Set<string>;
+  pendingDirectIntentIds: Set<string>;
   promptEpoch: number;
   compactionReleaseActive: boolean;
   compactionDispatchId: string | null;
@@ -1307,6 +1312,7 @@ export class PiRuntimeService {
   private readonly agentTeams: AgentTeamCoordinator;
   private readonly agentWorkflows: AgentWorkflowCoordinator;
   private readonly goalMax: GoalMaxCoordinator;
+  private readonly recoveredExecution: RecoveredExecutionPolicy;
   private readonly tasks: TaskService;
   private monitorRunsSource: ((projectPath: string) => Promise<MonitorRunsSource>) | null = null;
   private readonly monitorEvents = new Map<string, Array<{ id: string; title: string; detail: string; state: 'normal' | 'attention'; timestamp: number }>>();
@@ -1455,7 +1461,9 @@ export class PiRuntimeService {
     private readonly providerAuthUrlPresenter: ProviderAuthUrlPort | null = null,
     private readonly paths?: FatePaths,
     nativeWorkflowSchedulerFactory?: NativeWorkflowSchedulerFactory,
+    requireFreshExecutionIntent = false,
   ) {
+    this.recoveredExecution = new RecoveredExecutionPolicy(requireFreshExecutionIntent);
     const checkoutOwnership = paths ? hostCheckoutOwnership() : undefined;
     this.goalReviewGit = paths && paths.profileKind === 'server'
       ? new AgentWorkspaceGitService(path.join(paths.dataRoot, 'agent-team-worktrees'), paths.attachmentRoot, checkoutOwnership)
@@ -1666,6 +1674,8 @@ export class PiRuntimeService {
     }, childSessionFactory, this.paths?.piAgentDir);
     this.tasks = new TaskService({ emit: (event) => this.handleTaskEvent(event) }, taskPersistence);
     this.goalMax = new GoalMaxCoordinator({
+      allowsAutomaticContinuation: (sessionId) => this.allowsRecoveredContinuation(sessionId),
+      explicitIntentAdmitted: (sessionId) => this.recordFreshExecutionIntent(sessionId),
       runtime: (sessionId) => this.goalRuntimeSnapshot(sessionId),
       startGoal: (sessionId, objective, capsule) => this.startGoalTurn(sessionId, objective, capsule),
       continueGoal: (sessionId, capsule, goalId, revision) => this.continueGoalTurn(sessionId, capsule, goalId, revision),
@@ -2231,6 +2241,21 @@ export class PiRuntimeService {
     }
   }
 
+  private allowsRecoveredContinuation(sessionId: string): boolean {
+    if (!this.recoveredExecution.requiresFreshIntent) return true;
+    const slot = this.findLiveSlot(sessionId);
+    return Boolean(slot && !slot.disposed && slot.projectGeneration === this.initialization
+      && this.recoveredExecution.allowsAutomaticContinuation(sessionId, slot.projectGeneration, slot.sessionGeneration));
+  }
+
+  private recordFreshExecutionIntent(sessionId: string): void {
+    if (!this.recoveredExecution.requiresFreshIntent) return;
+    const slot = this.findLiveSlot(sessionId);
+    if (!slot || slot.disposed || slot.projectGeneration !== this.initialization) throw this.replacementSuperseded();
+    this.assertPermissionAdmission(slot);
+    this.recoveredExecution.recordExplicitIntent(sessionId, slot.projectGeneration, slot.sessionGeneration);
+  }
+
   async prompt(input: PromptInput, skipCommandExpansion = false, preparedPrompt = false, replayedMessage?: QueuedMessageRecord,
     assertSavedAgentAdmission?: () => void): Promise<PromptAcceptance> {
     if (this.hostStopping) throw new Error('The core is shutting down; prompts are closed.');
@@ -2347,6 +2372,7 @@ export class PiRuntimeService {
         slot.heldCompactionMessages = slot.heldCompactionMessages.filter((item) => item.id !== heldRecord.id);
         throw error;
       }
+      if (!replayedMessage && !assertSavedAgentAdmission && !promptStartsWithCommand) slot.freshIntentQueueIds.add(heldRecord.id);
       slot.modifiedAt = new Date().toISOString();
       this.mergeLiveSessionSummaries();
       if (this.selectedSlot === slot) {
@@ -2521,6 +2547,7 @@ export class PiRuntimeService {
         if (restoreModel && queuedRecord.boundThinkingLevel) restoreStagedThinkingLevel(queuedRecord.boundThinkingLevel);
       };
       const rejectReservation = (): void => {
+        if (replayedMessage) slot.freshIntentQueueIds.delete(replayedMessage.id);
         slot.learningContext?.cancel(runId);
         releaseQueuedReservation(true);
         if (startsRun && stagedModel) restoreStagedModel(stagedModel);
@@ -2538,6 +2565,11 @@ export class PiRuntimeService {
           return;
         }
         if (accepted) {
+          if (disposition !== 'handled' && (!replayedMessage || slot.freshIntentQueueIds.has(replayedMessage.id)) && !assertSavedAgentAdmission && !promptStartsWithCommand) {
+            try { this.recordFreshExecutionIntent(session.sessionId); }
+            catch (error) { rejectReservation(); resolve({ accepted: false, runId }); throw error; }
+          }
+          if (replayedMessage) slot.freshIntentQueueIds.delete(replayedMessage.id);
           if (disposition === 'handled') {
             // An extension consumed the input without admitting a model turn.
             // Restore staged choices and discard provisional queue/learning
@@ -2732,6 +2764,9 @@ export class PiRuntimeService {
     slot.queuedMessages = [];
     slot.recentlyDequeued = [];
     slot.heldCompactionMessages = [];
+    slot.freshIntentQueueIds.clear();
+    slot.deferredChildMessages = slot.deferredChildMessages.filter((item) => this.pendingDirectIntent(slot, item.message) === null);
+    slot.pendingDirectIntentIds.clear();
     slot.heldGoalMessages = [];
     const savedQueue = this.persistQueue(slot);
     // Observe persistence failure immediately while cancellation still takes priority.
@@ -3771,14 +3806,17 @@ export class PiRuntimeService {
     if (this.selectedSlot === slot) {
       throw new PiDesktopError({ code: 'INVALID_REQUEST', message: 'This is the active session. Send the message here instead of mentioning it.', retryable: true });
     }
+    const directRequestId = this.recoveredExecution.requiresFreshIntent ? randomUUID() : undefined;
     const message: SessionCustomMessage = {
       customType: 'fate-direct-session-message',
       content: [{ type: 'text', text }],
       display: true,
-      details: { kind: 'direct-session-message', createdAt: Date.now() },
+      details: { kind: 'direct-session-message', createdAt: Date.now(), ...(directRequestId ? { directRequestId } : {}) },
     };
     const ownsSlot = () => this.initialization === slot.projectGeneration && !slot.disposed && this.liveSlots.has(slot);
-    await this.sendChildGeneratedMessage(slot, session, message, behavior === 'steer' ? 'steer' : 'followUp', true);
+    if (directRequestId) slot.pendingDirectIntentIds.add(directRequestId);
+    try { await this.sendChildGeneratedMessage(slot, session, message, behavior === 'steer' ? 'steer' : 'followUp', true); }
+    catch (error) { if (directRequestId) slot.pendingDirectIntentIds.delete(directRequestId); throw error; }
     // The message has been handed to Pi. A background rebind or replacement
     // after this point does not undo delivery, so report success rather than
     // failing a send that already went out.
@@ -4041,6 +4079,7 @@ export class PiRuntimeService {
   beginHostShutdown(): void {
     if (this.hostStopping) return;
     this.hostStopping = true;
+    this.recoveredExecution.clear();
     this.cancelProviderLogin();
     for (const slot of this.liveSlots) {
       this.revokeSlotToolAccess(slot);
@@ -4105,6 +4144,8 @@ export class PiRuntimeService {
       queuedMessages: [],
       recoveredMessages: [],
       acknowledgedQueueIds: new Set(),
+      freshIntentQueueIds: new Set(),
+      pendingDirectIntentIds: new Set(),
       promptEpoch: 0,
       compactionReleaseActive: false,
       compactionDispatchId: null,
@@ -4175,6 +4216,7 @@ export class PiRuntimeService {
   private invalidateSession(slot: RuntimeSlot | null = this.selectedSlot): void {
     if (!slot) return;
     const invalidatedSession = slot.boundSession ?? slot.runtime.session;
+    this.recoveredExecution.forget(invalidatedSession.sessionId);
     if (this.project) this.browserIntegration?.revokeSession?.({ projectPath: this.project.path, sessionId: invalidatedSession.sessionId });
     this.revokeSlotToolAccess(slot);
     slot.learningContext?.dispose();
@@ -4222,6 +4264,8 @@ export class PiRuntimeService {
     slot.deferredChildMessages = [];
     slot.heldGoalMessages = [];
     slot.heldCompactionMessages = [];
+    slot.freshIntentQueueIds.clear();
+    slot.pendingDirectIntentIds.clear();
     slot.firstPromptText = '';
     slot.firstTitleStarted = false;
     slot.createdAt = new Date().toISOString();
@@ -4501,6 +4545,12 @@ export class PiRuntimeService {
     };
   }
 
+  private pendingDirectIntent(slot: RuntimeSlot, message: { customType?: unknown; details?: unknown }): string | null {
+    if (message.customType !== 'fate-direct-session-message' || !message.details || typeof message.details !== 'object') return null;
+    const id = (message.details as { directRequestId?: unknown }).directRequestId;
+    return typeof id === 'string' && slot.pendingDirectIntentIds.has(id) ? id : null;
+  }
+
   private sendChildGeneratedMessage(
     slot: RuntimeSlot,
     session: AgentSession,
@@ -4514,9 +4564,10 @@ export class PiRuntimeService {
       // Pi's loop has emitted agent_end but AgentSession still reports streaming
       // until agent_settled. Queueing a steer/follow-up in this window makes the
       // SDK call continue() with an assistant as the final context message.
-      slot.deferredChildMessages.push({ message, activeDelivery });
+      slot.deferredChildMessages.push({ message, activeDelivery, triggerWhenIdle });
       return Promise.resolve();
     }
+    triggerWhenIdle = triggerWhenIdle && (this.allowsRecoveredContinuation(session.sessionId) || this.pendingDirectIntent(slot, message) !== null);
     return session.sendCustomMessage(
       message,
       session.isStreaming
@@ -4547,7 +4598,7 @@ export class PiRuntimeService {
           for (const item of pending) {
             if (!ownsSession()) return;
             this.assertPermissionAdmission(slot);
-            await session.sendCustomMessage(item.message, { triggerTurn: true, deliverAs: item.activeDelivery });
+            await session.sendCustomMessage(item.message, { triggerTurn: item.triggerWhenIdle && (this.allowsRecoveredContinuation(session.sessionId) || this.pendingDirectIntent(slot, item.message) !== null), deliverAs: item.activeDelivery });
             submitted += 1;
           }
           return;
@@ -4557,7 +4608,9 @@ export class PiRuntimeService {
           this.assertPermissionAdmission(slot);
           // Append every deferred report before waking the model once. This
           // preserves all child results without racing multiple parent turns.
-          await session.sendCustomMessage(pending[index]!.message, { triggerTurn: index === pending.length - 1 });
+          await session.sendCustomMessage(pending[index]!.message, { triggerTurn: index === pending.length - 1
+            && pending.some((item) => item.triggerWhenIdle) && (this.allowsRecoveredContinuation(session.sessionId)
+              || pending.some((item) => this.pendingDirectIntent(slot, item.message) !== null)) });
           submitted = index + 1;
         }
       } catch (error) {
@@ -4568,6 +4621,8 @@ export class PiRuntimeService {
         let fallbackFailed = false;
         for (const item of pending.slice(submitted)) {
           if (!ownsSession()) return;
+          const deniedIntent = this.pendingDirectIntent(slot, item.message);
+          if (deniedIntent) slot.pendingDirectIntentIds.delete(deniedIntent);
           try {
             await session.sendCustomMessage(item.message, { triggerTurn: false, deliverAs: 'nextTurn' });
           } catch {
@@ -4586,6 +4641,10 @@ export class PiRuntimeService {
 
   private handleSessionEvent(slot: RuntimeSlot, session: AgentSession, generation: number, event: AgentSessionEvent): void {
     if (this.initialization !== slot.projectGeneration || slot.disposed || generation !== slot.sessionGeneration || slot.runtime.session !== session) return;
+    if (event.type === 'message_start' && event.message.role === 'custom') {
+      const admitted = this.pendingDirectIntent(slot, event.message);
+      if (admitted) { slot.pendingDirectIntentIds.delete(admitted); this.recordFreshExecutionIntent(session.sessionId); }
+    }
     this.goalMax.observeSessionEvent(session.sessionId, event);
     if (event.type === 'message_end') this.agentTeams.observeDeliveredMessage(session.sessionId, session, event.message);
     if (event.type === 'agent_start') {
@@ -5049,6 +5108,9 @@ export class PiRuntimeService {
         : current.map((item) => item.id === input.id ? { ...item, behavior: input.action === 'steer' ? 'steer' as const : 'followUp' as const } : item);
       if (heldCollection === 'compaction') slot.heldCompactionMessages = next;
       else slot.heldGoalMessages = next;
+      // A failed cancellation may restore the editable draft, but never restores
+      // execution consent that the user just withdrew.
+      if (input.action === 'cancel' || input.action === 'edit') slot.freshIntentQueueIds.delete(input.id);
       try { await this.persistQueue(slot); }
       catch (error) {
         if (ownsSession()) {
@@ -5058,6 +5120,7 @@ export class PiRuntimeService {
         throw error;
       }
       if (!ownsSession()) throw this.replacementSuperseded();
+      if (input.action === 'cancel' || input.action === 'edit') slot.freshIntentQueueIds.delete(input.id);
       if (input.action === 'cancel' && target.boundModel && slot.pendingModel?.token === target.boundModel.token) slot.pendingModel = null;
       if (input.action === 'cancel' && target.boundThinkingLevel && slot.pendingThinkingLevel?.token === target.boundThinkingLevel.token) slot.pendingThinkingLevel = null;
       if (input.action === 'edit' && target.boundModel && !slot.pendingModel) slot.pendingModel = target.boundModel;
@@ -5420,6 +5483,7 @@ export class PiRuntimeService {
   }
 
   private async continueGoalTurn(sessionId: string, capsule: string, goalId: string, revision: number): Promise<void> {
+    if (!this.allowsRecoveredContinuation(sessionId)) throw new Error('Reviewed recovery requires explicit new intent before GoalMax continuation.');
     if (this.hostStopping) throw new Error('The core is shutting down; goal continuation is closed.');
     const slot = this.findLiveSlot(sessionId);
     const current = this.project ? this.goalMax.get(this.project.path, sessionId) : null;
@@ -5437,6 +5501,7 @@ export class PiRuntimeService {
     if (!refreshed || refreshed.id !== goalId || refreshed.revision !== revision || refreshed.status !== 'active' || this.sessionHasActiveWork(session) || this.agentWorkflows.hasActive(sessionId) || slot.activeRunId !== null || slot.sessionTurnPhase !== 'idle' || slot.queuedMessages.length > 0 || slot.heldCompactionMessages.length > 0 || (session.getSteeringMessages?.().length ?? 0) > 0 || (session.getFollowUpMessages?.().length ?? 0) > 0) {
       throw new Error('The goal continuation lost its idle runtime lease.');
     }
+    if (!this.allowsRecoveredContinuation(sessionId)) throw new Error('Reviewed recovery requires explicit new intent before GoalMax continuation.');
     await session.sendCustomMessage({
       customType: 'fate-goalmax-continuation',
       content: [{ type: 'text', text: capsule }],

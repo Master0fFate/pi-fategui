@@ -294,7 +294,7 @@ export function nativeWorkflowValue(value: unknown): JsonObject {
   return result;
 }
 
-export function createOwnedNativeWorkflowSchedulerFactory(owner: Pick<OwnedDurableStorageOptions, 'dataRoot' | 'profileOwner'> & Pick<NativeWorkflowSchedulerOptions, 'onCloseUncertain' | 'onFailure' | 'onUnsafeFailure' | 'onReport'>): NativeWorkflowSchedulerFactory {
+export function createOwnedNativeWorkflowSchedulerFactory(owner: Pick<OwnedDurableStorageOptions, 'dataRoot' | 'profileOwner'> & Pick<NativeWorkflowSchedulerOptions, 'onCloseUncertain' | 'onFailure' | 'onUnsafeFailure' | 'onReport'> & { readonly assertStorageAdmission?: (filename: string) => Promise<void> }): NativeWorkflowSchedulerFactory {
   const active = new Set<string>();
   return async (input) => {
     if (!/^[A-Za-z0-9_-]{1,100}$/u.test(input.id) || !input.parentSessionId || input.parentSessionId.length > 500 || !path.isAbsolute(input.cwd) || !path.isAbsolute(owner.dataRoot)) {
@@ -316,11 +316,20 @@ export function createOwnedNativeWorkflowSchedulerFactory(owner: Pick<OwnedDurab
       try { owner.onFailure?.(failure); } catch { /* Retain original error. */ }
       throw failure;
     };
+    const assertAdmission = async (): Promise<void> => {
+      try { await owner.assertStorageAdmission?.(filename); }
+      catch (error) {
+        if (error instanceof NativeEffectNotStartedError) { active.delete(identity); throw error; }
+        storageFailure(error);
+      }
+    };
+    await assertAdmission();
     const open = async (): Promise<Storage> => {
       try {
+        await assertAdmission();
         owned = await openOwnedDurableStorage({ dataRoot: owner.dataRoot, profileOwner: owner.profileOwner, filename });
         return owned.storage;
-      } catch (error) { return storageFailure(error); }
+      } catch (error) { if (error instanceof NativeEffectNotStartedError) throw error; return storageFailure(error); }
     };
     try {
       try { await fs.lstat(path.join(owner.dataRoot, 'durable', 'v1', filename)); prior = 'existing'; }

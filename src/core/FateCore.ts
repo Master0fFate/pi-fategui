@@ -17,6 +17,7 @@ import type { CoreClient, CoreClientResources, CoreLifecycle, CoreShutdownResult
 export interface FateCore {
   readonly paths: FatePaths;
   readonly statePersistence: StatePersistenceBackend;
+  readonly executionRecoveryMode: 'ordinary' | 'explicit-work-only';
   /** Read-only startup projection; never permission to resume an uncertain run. */
   readonly recovery: RecoveryCoordinator;
   readonly recovered: RecoveryResult;
