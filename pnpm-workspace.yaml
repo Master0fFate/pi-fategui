@@ -1,5 +1,6 @@
 confirmModulesPurge: false
 overrides:
+  'react-remove-scroll@2.7.2>react-remove-scroll-bar': '-'
   'ws@>=8.0.0 <8.21.0': 8.21.0
   'brace-expansion@<1.1.18': 1.1.18
   'brace-expansion@>=2.0.0 <2.1.4': 2.1.4
@@ -22,6 +23,7 @@ allowBuilds:
   protobufjs: false
   uiohook-napi: true
 patchedDependencies:
+  'react-remove-scroll@2.7.2': patches/react-remove-scroll@2.7.2.patch
   '@earendil-works/pi-ai@1.0.0': patches/@earendil-works__pi-ai@1.0.0.patch
   '@earendil-works/pi-coding-agent@1.0.0': patches/@earendil-works__pi-coding-agent@1.0.0.patch
   node-pty@1.1.0: patches/node-pty@1.1.0.patch

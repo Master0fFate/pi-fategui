@@ -1,0 +1,140 @@
+diff --git a/dist/es5/UI.js b/dist/es5/UI.js
+--- a/dist/es5/UI.js
++++ b/dist/es5/UI.js
+@@ -3,7 +3,6 @@
+ exports.RemoveScroll = void 0;
+ var tslib_1 = require("tslib");
+ var React = tslib_1.__importStar(require("react"));
+-var constants_1 = require("react-remove-scroll-bar/constants");
+ var use_callback_ref_1 = require("use-callback-ref");
+ var medium_1 = require("./medium");
+ var nothing = function () {
+@@ -33,7 +32,8 @@
+     removeScrollBar: true,
+     inert: false,
+ };
++// Retain the public class names; Fate's fixed viewport has no body scrollbar gap.
+ RemoveScroll.classNames = {
+-    fullWidth: constants_1.fullWidthClassName,
+-    zeroRight: constants_1.zeroRightClassName,
++    fullWidth: "width-before-scroll-bar",
++    zeroRight: "right-scroll-bar-position",
+ };
+diff --git a/dist/es5/SideEffect.js b/dist/es5/SideEffect.js
+--- a/dist/es5/SideEffect.js
++++ b/dist/es5/SideEffect.js
+@@ -3,7 +3,6 @@
+ exports.RemoveScrollSideCar = exports.getDeltaXY = exports.getTouchXY = void 0;
+ var tslib_1 = require("tslib");
+ var React = tslib_1.__importStar(require("react"));
+-var react_remove_scroll_bar_1 = require("react-remove-scroll-bar");
+ var react_style_singleton_1 = require("react-style-singleton");
+ var aggresiveCapture_1 = require("./aggresiveCapture");
+ var handleScroll_1 = require("./handleScroll");
+@@ -151,10 +150,11 @@
+             document.removeEventListener('touchstart', scrollTouchStart, aggresiveCapture_1.nonPassive);
+         };
+     }, []);
+-    var removeScrollBar = props.removeScrollBar, inert = props.inert;
++    // Fate UI permanently locks html/body/#root in its shared stylesheet.
++    // Keep wheel/touch/shard isolation; omit only redundant body scrollbar mutation.
++    var inert = props.inert;
+     return (React.createElement(React.Fragment, null,
+-        inert ? React.createElement(Style, { styles: generateStyle(id) }) : null,
+-        removeScrollBar ? React.createElement(react_remove_scroll_bar_1.RemoveScrollBar, { noRelative: props.noRelative, gapMode: props.gapMode }) : null));
++        inert ? React.createElement(Style, { styles: generateStyle(id) }) : null));
+ }
+ exports.RemoveScrollSideCar = RemoveScrollSideCar;
+ function getOutermostShadowParent(node) {
+diff --git a/dist/es2015/UI.js b/dist/es2015/UI.js
+--- a/dist/es2015/UI.js
++++ b/dist/es2015/UI.js
+@@ -1,6 +1,5 @@
+ import { __assign, __rest } from "tslib";
+ import * as React from 'react';
+-import { fullWidthClassName, zeroRightClassName } from 'react-remove-scroll-bar/constants';
+ import { useMergeRefs } from 'use-callback-ref';
+ import { effectCar } from './medium';
+ var nothing = function () {
+@@ -29,8 +28,9 @@
+     removeScrollBar: true,
+     inert: false,
+ };
++// Retain the public class names; Fate's fixed viewport has no body scrollbar gap.
+ RemoveScroll.classNames = {
+-    fullWidth: fullWidthClassName,
+-    zeroRight: zeroRightClassName,
++    fullWidth: "width-before-scroll-bar",
++    zeroRight: "right-scroll-bar-position",
+ };
+ export { RemoveScroll };
+diff --git a/dist/es2015/SideEffect.js b/dist/es2015/SideEffect.js
+--- a/dist/es2015/SideEffect.js
++++ b/dist/es2015/SideEffect.js
+@@ -1,6 +1,5 @@
+ import { __spreadArray } from "tslib";
+ import * as React from 'react';
+-import { RemoveScrollBar } from 'react-remove-scroll-bar';
+ import { styleSingleton } from 'react-style-singleton';
+ import { nonPassive } from './aggresiveCapture';
+ import { handleScroll, locationCouldBeScrolled } from './handleScroll';
+@@ -146,10 +145,11 @@
+             document.removeEventListener('touchstart', scrollTouchStart, nonPassive);
+         };
+     }, []);
+-    var removeScrollBar = props.removeScrollBar, inert = props.inert;
++    // Fate UI permanently locks html/body/#root in its shared stylesheet.
++    // Keep wheel/touch/shard isolation; omit only redundant body scrollbar mutation.
++    var inert = props.inert;
+     return (React.createElement(React.Fragment, null,
+-        inert ? React.createElement(Style, { styles: generateStyle(id) }) : null,
+-        removeScrollBar ? React.createElement(RemoveScrollBar, { noRelative: props.noRelative, gapMode: props.gapMode }) : null));
++        inert ? React.createElement(Style, { styles: generateStyle(id) }) : null));
+ }
+ function getOutermostShadowParent(node) {
+     var shadowParent = null;
+diff --git a/dist/es2019/UI.js b/dist/es2019/UI.js
+--- a/dist/es2019/UI.js
++++ b/dist/es2019/UI.js
+@@ -1,5 +1,4 @@
+ import * as React from 'react';
+-import { fullWidthClassName, zeroRightClassName } from 'react-remove-scroll-bar/constants';
+ import { useMergeRefs } from 'use-callback-ref';
+ import { effectCar } from './medium';
+ const nothing = () => {
+@@ -34,8 +33,9 @@
+     removeScrollBar: true,
+     inert: false,
+ };
++// Retain the public class names; Fate's fixed viewport has no body scrollbar gap.
+ RemoveScroll.classNames = {
+-    fullWidth: fullWidthClassName,
+-    zeroRight: zeroRightClassName,
++    fullWidth: "width-before-scroll-bar",
++    zeroRight: "right-scroll-bar-position",
+ };
+ export { RemoveScroll };
+diff --git a/dist/es2019/SideEffect.js b/dist/es2019/SideEffect.js
+--- a/dist/es2019/SideEffect.js
++++ b/dist/es2019/SideEffect.js
+@@ -1,5 +1,4 @@
+ import * as React from 'react';
+-import { RemoveScrollBar } from 'react-remove-scroll-bar';
+ import { styleSingleton } from 'react-style-singleton';
+ import { nonPassive } from './aggresiveCapture';
+ import { handleScroll, locationCouldBeScrolled } from './handleScroll';
+@@ -144,10 +143,11 @@
+             document.removeEventListener('touchstart', scrollTouchStart, nonPassive);
+         };
+     }, []);
+-    const { removeScrollBar, inert } = props;
++    // Fate UI permanently locks html/body/#root in its shared stylesheet.
++    // Keep wheel/touch/shard isolation; omit only redundant body scrollbar mutation.
++    const { inert } = props;
+     return (React.createElement(React.Fragment, null,
+-        inert ? React.createElement(Style, { styles: generateStyle(id) }) : null,
+-        removeScrollBar ? React.createElement(RemoveScrollBar, { noRelative: props.noRelative, gapMode: props.gapMode }) : null));
++        inert ? React.createElement(Style, { styles: generateStyle(id) }) : null));
+ }
+ function getOutermostShadowParent(node) {
+     let shadowParent = null;
