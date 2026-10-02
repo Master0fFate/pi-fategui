@@ -1,4 +1,8 @@
-# M5 Linux handoff - preparation, not acceptance
+# Historical M5 Linux handoff - preparation, not acceptance
+
+> **Historical checkpoint. Do not execute this as the current handoff.** The record below retains its original commits, results and task scope. The `windows-m5-verification` and `v2-preparation-linux` branches were intentionally deleted. Current work is on `v2-native-pi-durable`; `main` and `backup/main-before-m4-02518314500b` are the other retained branches. Use [current candidate status](current-status.md) and [candidate setup](quickstart.md).
+>
+> The old narrow-tab issue has a current source repair, and the old scrollbar dependency has been removed from the current dependency graph. Neither updates old artifact receipts or establishes current platform/package acceptance. Historical counts and restrictions below remain attributed only to their original source checkpoints; missing older unpublished source is not recovered evidence.
 
 Continue from the **source-only `windows-m5-verification` branch** in `Master0fFate/pi-fategui`, not main or the older Linux candidate. Check its exact remote commit against the separately delivered publication receipt. Its base is Linux work head `1ef706036ff62fd1be5f129851c102cac77db1ae`, which descends from accepted M4 `8b4f3ea7565375fd6d86a0d8950fcd9ffb6baebc`.
 

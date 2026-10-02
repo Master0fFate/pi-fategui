@@ -182,7 +182,7 @@ Implement the change, run the relevant checks, and show me what changed.
 Preserve existing behavior outside the requested scope.
 ```
 
-Later `fate` launches reuse the running workspace. **File → New Window** opens another synced view; `--new-instance` creates a separate process/profile when you need one. [Sessions and processes →](docs/sessions-and-processes.md)
+Later `fate` launches reuse the running workspace. **File → New Window** opens another synced view. In the current V2 candidate, `--new-instance` selects a separate Chromium profile slot, but startup is refused while another core owns the same canonical Fate data root. Independent shared-data runtimes remain an unresolved ownership requirement. [Sessions and processes →](docs/sessions-and-processes.md) · [V2 candidate status →](docs/v2/current-status.md)
 
 ## Local-first, with explicit boundaries
 
@@ -214,6 +214,7 @@ Fate UI is an independent community project, not an official Pi distribution.
 | Customize the interface | [Skins](docs/skins.md) · [Themes](docs/themes.md) |
 | Review and save useful project knowledge | [Memory Learning](docs/project-learning.md) |
 | Build or stage a release | [Development and release](docs/development.md) |
+| Evaluate the V2 desktop/web/remote candidate | [Status and support matrix](docs/v2/current-status.md) · [Setup](docs/v2/quickstart.md) · [Limits](docs/v2/security-and-limits.md) |
 | Report a security issue | [Security policy](SECURITY.md) |
 
 ## Build with us

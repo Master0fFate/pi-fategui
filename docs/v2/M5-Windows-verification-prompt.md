@@ -1,4 +1,8 @@
-# Copyable Windows verification prompt
+# Historical Windows verification prompt
+
+> **Historical checkpoint. Do not copy this as the current verification request.** The prompt below retains its original source and acceptance boundaries. Its `windows-m5-verification` and `v2-preparation-linux` branches were intentionally deleted. Current work is on `v2-native-pi-durable`; `main` and `backup/main-before-m4-02518314500b` are the other retained branches. Start with [current candidate status](current-status.md), [candidate setup](quickstart.md), and [verification limits](verification.md).
+>
+> Windows-native checks remain necessary, but cannot supply missing shared-instance ownership, history/permission integration, Windows Job Object supervision or native server CI implementation. The old counts and results below do not accept the Pi 1.0/Durable candidate. Missing older unpublished source has not been recovered.
 
 Keep the required Linux gates separate. Current local Windows results are in the ignored `plans/reports/M5-windows-verification/README.md`; they do not accept M5. Preserve original archives and never add plans/ZIP/RAR/7z/tar handoff inputs to Git. Use private independently installed Windows source, not Linux dependencies.
 

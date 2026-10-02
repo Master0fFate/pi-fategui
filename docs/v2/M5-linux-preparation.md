@@ -1,4 +1,8 @@
-# M5 preparation - not accepted
+# Historical M5 preparation - not accepted
+
+> **Historical evidence only.** Preserve the commits, counts and archive hash below as receipts for those checkpoints, not as current candidate results. The `windows-m5-verification` and `v2-preparation-linux` branches were intentionally deleted. Current work is on `v2-native-pi-durable`; `main` and `backup/main-before-m4-02518314500b` are the other retained branches. Read [current candidate status](current-status.md) for present setup, capability and validation boundaries.
+>
+> Current source removes the old scrollbar dependency and repairs the historical narrow-tab issue. This does not repair older built artifacts, establish current notice closure, or refresh full native acceptance. Later missing unpublished source has not been recovered or included. All instructions and status claims below belong to the historical record.
 
 ## Windows continuation (local, unaccepted)
 

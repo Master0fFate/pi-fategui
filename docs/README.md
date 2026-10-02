@@ -16,6 +16,15 @@ This directory holds the focused guides referenced by the [project README](../RE
 - **Understand the embedded runtime** — [Pi SDK compatibility](sdk-compatibility.md).
 - **Review trust, permissions, and isolation** — [Architecture and security](architecture.md) and [SECURITY.md](../SECURITY.md).
 - **Build, package, or cut a release** — [Development and release](development.md).
+- **Evaluate the V2 candidate** — [Current source, capabilities and validation status](v2/current-status.md), [desktop/web/remote setup](v2/quickstart.md), [security and limits](v2/security-and-limits.md), and [troubleshooting](v2/troubleshooting.md). This candidate is not an accepted V2 release; command-example and platform acceptance remain pending.
+
+## V2 operator reference
+
+- [Native state migration](v2/migration.md) and [host-local migration commands](v2/migration-cli.md)
+- [Native workflow uncertainty review](v2/native-workflow-review.md)
+- [Independent Linux host service](v2/remote-host-service.md)
+- [Node companion package](../build/server-package/README.md) and [source verification](v2/verification.md)
+- Historical only: [M5 Linux handoff](v2/M5-linux-handoff.md), [Windows verification prompt](v2/M5-Windows-verification-prompt.md), and [M5 preparation receipts](v2/M5-linux-preparation.md). Their old branches and gate statements are superseded by the current candidate guide.
 
 ## By audience
 
