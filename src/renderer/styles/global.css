@@ -128,7 +128,9 @@
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 button, input, textarea { color: inherit; font: inherit; }
 button { border: 0; }
-button:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+/* Search focus must outrank the later class-scoped input resets. */
+button:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible,
+.sidebar-search input:focus-visible, .file-search input:focus-visible {
   outline: 2px solid var(--theme-accent);
   outline-offset: 2px;
 }
