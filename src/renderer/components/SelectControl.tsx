@@ -127,6 +127,7 @@ export function SelectControl({
     if (first) {
       onValueChange(first.value);
       setOpen(false);
+      setQuery('');
     }
   };
 

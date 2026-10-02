@@ -1,5 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { SelectControl } from './SelectControl';
 
@@ -125,6 +126,43 @@ describe('SelectControl searchable filter', () => {
     await user.keyboard('{Enter}');
     expect(onValueChange).toHaveBeenCalledWith('openai/gpt-4o');
     await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+  });
+
+  it('reopens with an empty filter and all options after selecting a match with Enter', async () => {
+    const user = userEvent.setup();
+    function StatefulSelect() {
+      const [value, setValue] = useState('alpha');
+      return (
+        <SelectControl
+          label="Model"
+          value={value}
+          options={[
+            { value: 'alpha', label: 'Alpha' },
+            { value: 'beta', label: 'Beta' },
+            { value: 'gamma', label: 'Gamma' },
+          ]}
+          searchable
+          searchPlaceholder="Filter by name or provider"
+          onValueChange={setValue}
+        />
+      );
+    }
+    render(<StatefulSelect />);
+    const { input, listbox } = await openSearchable(user);
+
+    await user.type(input, 'beta');
+    expect(within(listbox()).queryByRole('option', { name: 'Gamma' })).not.toBeInTheDocument();
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveTextContent('Beta');
+
+    const reopened = await openSearchable(user);
+    expect(reopened.input).toHaveValue('');
+    const items = within(reopened.listbox());
+    expect(items.getAllByRole('option')).toHaveLength(3);
+    expect(items.getByRole('option', { name: 'Alpha' })).toBeInTheDocument();
+    expect(items.getByRole('option', { name: 'Beta' })).toHaveAttribute('data-state', 'checked');
+    expect(items.getByRole('option', { name: 'Gamma' })).toBeInTheDocument();
   });
 
   it('does not render a filter input for non-searchable selects', async () => {
