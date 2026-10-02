@@ -9,7 +9,7 @@ function Symbol({ text }: SymbolProps) {
   return <span className="terminal-symbol" aria-hidden="true">{text}</span>;
 }
 function TabContent({ label, active, labelClassName }: TabProps) {
-  return <span className="terminal-tab" data-active={active}><span className="terminal-tab-marker" aria-hidden="true">{active ? '>' : ' '}</span><span className={labelClassName}>{label}</span></span>;
+  return <span className="terminal-tab" data-active={active}><span className="terminal-tab-marker" aria-hidden="true">{active ? '>' : ' '}</span><span className={labelClassName}>{label}</span><span className="terminal-tab-short" aria-hidden="true">{label.slice(0, 2)}</span></span>;
 }
 function PromptHeading({ target, hint }: PromptProps) {
   return <div className="terminal-prompt-heading"><span>message <span aria-hidden="true">/</span> <strong>{target}</strong></span><small>{hint}</small></div>;

@@ -22,7 +22,13 @@
 .terminal-symbol { display: inline-block; flex: none; min-width: 1ch; text-align: center; font: inherit; line-height: 1.4; white-space: pre; }
 .terminal-tab { display: inline-flex; min-width: 0; align-items: baseline; gap: 5px; }
 .terminal-tab-marker { flex: none; width: 1ch; color: var(--theme-accent); }
+.terminal-tab-short { display: none; }
 .terminal-tab[data-active="true"] { color: var(--theme-text); }
+/* Preserve a text counterpart when the global inspector hides full labels. */
+@container (max-width: 259px) {
+  :root[data-skin="dreamcore"] .inspector-secondary-trigger .terminal-tab { gap: 2px; }
+  :root[data-skin="dreamcore"] .inspector-secondary-trigger .terminal-tab-short { display: inline; }
+}
 :root[data-skin="dreamcore"] .icon-button {
   width: auto; min-width: 28px; height: 28px; flex-basis: auto; padding: 0 3px;
   border-radius: 0; font: 11px var(--font-code); transform: none;

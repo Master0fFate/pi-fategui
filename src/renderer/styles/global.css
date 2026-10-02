@@ -1581,8 +1581,9 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 }
 @container (max-width: 259px) {
   .inspector-secondary-tabs { gap: 8px; }
-  .inspector-secondary-tooltip { flex: 0 0 38px; }
-  .inspector-secondary-trigger { width: 38px; padding: 0; }
+  /* Five Run tabs must also fit the 186px viewport-capped inspector. */
+  .inspector-secondary-tooltip { flex: 0 1 38px; }
+  .inspector-secondary-trigger { width: 100%; padding: 0; }
   .inspector-secondary-label { display: none; }
 }
 .tab-content { min-height: 0; flex: 1; outline: 0; overflow: auto; }
