@@ -18,6 +18,10 @@ const windowsTest = process.platform === 'win32' ? test : test.skip;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const windowsOptions = { timeout: 180_000 };
 
+test('standalone node:test suite is not discovered by the legacy Vitest script glob', () => {
+  assert(!path.basename(fileURLToPath(import.meta.url)).endsWith('.test.mjs'));
+});
+
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'fate-verifier-synthetic-'));
   const home = path.join(root, 'private home Ω'); await mkdir(home);

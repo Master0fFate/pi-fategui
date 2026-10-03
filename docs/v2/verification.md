@@ -42,7 +42,7 @@ optional execution timeout begins after the suspended child is acknowledged and
 resumed; it does not charge compilation time to the test's execution budget.
 
 The helper's dependency-free synthetic suite is
-`node --test scripts/windows-verification-process.test.mjs`. Windows runtime cases
+`node --test scripts/windows-verification-process.node-test.mjs`. Windows runtime cases
 are skipped on other systems; a Linux source/test pass is not Windows evidence.
 The exact candidate still requires a real native Windows test run and the user's
 separate final platform acceptance. These checks do not change release readiness.

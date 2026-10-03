@@ -9,7 +9,7 @@ on:
       - .github/workflows/windows-verification-supervisor.yml
       - scripts/owned-verification-process.mjs
       - scripts/windows-verification-process.mjs
-      - scripts/windows-verification-process.test.mjs
+      - scripts/windows-verification-process.node-test.mjs
       - scripts/windows-verification-job.cs
       - scripts/windows-verification-job.ps1
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
       - name: Verify native target
         run: node -e "if(process.platform!=='win32'||process.arch!=='x64')throw Error('Expected native Windows x64')"
       - name: Test only disposable verifier children
-        run: node --test scripts/windows-verification-process.test.mjs
+        run: node --test scripts/windows-verification-process.node-test.mjs
       - name: Record exact limited scope
         if: always()
         shell: pwsh
