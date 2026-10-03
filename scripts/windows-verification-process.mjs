@@ -8,7 +8,7 @@ const directory = path.dirname(fileURLToPath(import.meta.url));
 const maxReceiptBytes = 8192;
 
 export function validateWindowsLaunch({ args, cwd = process.cwd(), env = process.env, stdio = 'inherit',
-  startupTimeoutMs = 30_000, settlementTimeoutMs = 5_000, descendantGraceMs = 500, timeoutMs = 0 }) {
+  startupTimeoutMs = 90_000, settlementTimeoutMs = 5_000, descendantGraceMs = 500, timeoutMs = 0 }) {
   if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string' || arg.includes('\0'))) throw new TypeError('Verification args must be NUL-free strings.');
   if (typeof cwd !== 'string' || cwd.includes('\0') || !path.isAbsolute(cwd)) throw new TypeError('Verification cwd must be absolute.');
   if (!env || typeof env !== 'object' || Array.isArray(env)) throw new TypeError('Verification env must be an object.');
@@ -129,7 +129,12 @@ export async function runWindowsVerificationProcess(options, signal) {
             catch { callbackFailed = true; stop('start-reporting-failure'); }
             // The native child is still suspended. Its output cannot race ahead
             // of these listeners or Node's post-exit automatic stream drain.
-            if (requestedCancellation === null && !signal?.aborted) socket.write('resume\n');
+            if (requestedCancellation === null && !signal?.aborted) {
+              // Execution time starts only when the admitted test is resumed.
+              // Cold OS PowerShell/C# startup has its own bounded deadline.
+              if (settings.timeoutMs) deadlineTimer = setTimeout(() => { timedOut = true; stop('timeout'); }, settings.timeoutMs);
+              socket.write('resume\n');
+            }
             else socket.write('cancel\n');
           } else {
             clearTimeout(startupTimer); receipt = next; pid ??= next.pid;
@@ -163,7 +168,6 @@ export async function runWindowsVerificationProcess(options, signal) {
       tryComplete();
     });
     startupTimer = setTimeout(() => { timedOut = true; failProtocol('Windows supervisor startup timed out.'); killSupervisor(); }, settings.startupTimeoutMs);
-    if (settings.timeoutMs) deadlineTimer = setTimeout(() => { timedOut = true; stop('timeout'); }, settings.timeoutMs);
     if (signal?.aborted) onAbort();
     const end = await completed;
     const confirmed = receipt && !protocolFailure && !end.supervisorUnconfirmed && end.supervisorCode === 0 && end.supervisorSignal === null;

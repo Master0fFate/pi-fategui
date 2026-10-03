@@ -37,6 +37,9 @@ job handle, reported as a failed gate, and never selected by PID or process name
 Missing/invalid receipts, unsupported job APIs, or local PowerShell compilation
 policy failures fail closed. No policy overrides, elevation or app imports are
 used. The callback exposes PID and standard streams, not a Node IPC channel.
+Cold OS PowerShell/C# startup has a separate bounded 90-second deadline. The
+optional execution timeout begins after the suspended child is acknowledged and
+resumed; it does not charge compilation time to the test's execution budget.
 
 The helper's dependency-free synthetic suite is
 `node --test scripts/windows-verification-process.test.mjs`. Windows runtime cases

@@ -16,7 +16,7 @@ import { parseWindowsReceipt, validateWindowsLaunch } from './windows-verificati
 
 const windowsTest = process.platform === 'win32' ? test : test.skip;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const windowsOptions = { timeout: 45_000 };
+const windowsOptions = { timeout: 180_000 };
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'fate-verifier-synthetic-'));
@@ -138,9 +138,14 @@ windowsTest('native invalid cwd fails closed without a running test child', wind
 
 function treeProgram(marker, { rootExits = false, natural = false } = {}) {
   const leaf = natural ? `setTimeout(()=>process.exit(0),80)` :
-    `process.stdout.write('leaf-ready\\n');setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(marker)},'unexpected'),1800);setTimeout(()=>process.exit(0),8000)`;
-  const middle = `const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(leaf)}],{stdio:'inherit'});${natural ? '' : 'setTimeout(()=>process.exit(0),8000)'};`;
-  return `const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(middle)}],{stdio:'inherit'});${rootExits ? 'c.unref();setTimeout(()=>process.exit(0),200)' : natural ? '' : 'setTimeout(()=>process.exit(0),8000)'}`;
+    `require('node:fs').writeFileSync(${JSON.stringify(marker + '.ready')},'ready');process.stdout.write('leaf-ready\\n');setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(marker)},'unexpected'),1800);setTimeout(()=>process.exit(0),8000)`;
+  // On Windows, libuv otherwise adds children to its own kill-on-parent-exit
+  // job, invalidating a surviving-descendant fixture. detached does NOT request
+  // CREATE_BREAKAWAY_FROM_JOB; our outer non-breakaway job still owns the tree.
+  const spawnOptions = `{stdio:'inherit',detached:process.platform==='win32'}`;
+  const middle = `const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(leaf)}],${spawnOptions});${natural ? '' : 'setTimeout(()=>process.exit(0),8000)'};`;
+  const exitAfterReady = `c.unref();const ready=setInterval(()=>{if(require('node:fs').existsSync(${JSON.stringify(marker + '.ready')})){clearInterval(ready);setTimeout(()=>process.exit(0),100)}},10);setTimeout(()=>process.exit(2),8000)`;
+  return `const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(middle)}],${spawnOptions});${rootExits ? exitAfterReady : natural ? '' : 'setTimeout(()=>process.exit(0),8000)'}`;
 }
 
 windowsTest('native naturally exiting descendants and grandchildren settle before success', windowsOptions, async (t) => {
@@ -153,12 +158,17 @@ windowsTest('native cancellation stops only the owned child, descendant and gran
   const state = await fixture(t); const marker = path.join(state.root, 'late-effect');
   const unrelatedMarker = path.join(state.root, 'unrelated-completed');
   // A separate disposable sibling is deliberately outside the supervisor job.
-  state.active++;
-  const sibling = spawn(process.execPath, ['-e', `process.stdin.resume();process.stdin.once('end',()=>{require('node:fs').writeFileSync(${JSON.stringify(unrelatedMarker)},'ok');process.exit(0)});setTimeout(()=>process.exit(2),15000)`], { env: state.env, stdio: ['pipe', 'ignore', 'ignore'] });
-  sibling.stdin.on('error', () => {});
-  const siblingClosed = once(sibling, 'close').then((result) => { state.active--; return result; });
+  let sibling, siblingClosed;
   const controller = new AbortController();
-  const result = await run(state, ['-e', treeProgram(marker)], { onStarted: (child) => child.stdout.once('data', () => controller.abort('SIGINT')) }, controller.signal);
+  const result = await run(state, ['-e', treeProgram(marker)], { onStarted: (child) => {
+    // Start the sibling after cold compilation, so its safety deadline cannot
+    // expire before the supervised payload has even been admitted.
+    state.active++;
+    sibling = spawn(process.execPath, ['-e', `process.stdin.resume();process.stdin.once('end',()=>{require('node:fs').writeFileSync(${JSON.stringify(unrelatedMarker)},'ok');process.exit(0)});setTimeout(()=>process.exit(2),15000)`], { env: state.env, stdio: ['pipe', 'ignore', 'ignore'] });
+    sibling.stdin.on('error', () => {});
+    siblingClosed = once(sibling, 'close').then((result) => { state.active--; return result; });
+    child.stdout.once('data', () => controller.abort('SIGINT'));
+  } }, controller.signal);
   assert.equal(result.cancelled, 'SIGINT'); assert.notEqual(result.code, 0); assert.equal(result.ownership, 'settled', JSON.stringify(result));
   sibling.stdin.end(); assert.equal((await siblingClosed)[0], 0);
   assert.equal(await readFile(unrelatedMarker, 'utf8'), 'ok');
@@ -170,6 +180,7 @@ windowsTest('native root exit does not certify a surviving descendant; cleanup f
   const result = await run(state, ['-e', treeProgram(marker, { rootExits: true })], { descendantGraceMs: 100 });
   assert.equal(result.code, 0); assert.equal(result.ownership, 'settled', JSON.stringify(result));
   assert.match(result.failure, /descendant outlived/u);
+  assert.equal(await readFile(marker + '.ready', 'utf8'), 'ready');
   await delay(2000); await assert.rejects(access(marker), { code: 'ENOENT' });
 });
 
@@ -215,41 +226,42 @@ windowsTest('native immediate-cancellation races never turn cancellation into a 
   }
 });
 
-windowsTest('native nested verifier jobs stay compatible with an existing Windows job chain', windowsOptions, async (t) => {
+windowsTest('native nested verifier jobs stay compatible with an existing Windows job chain', { timeout: 240_000 }, async (t) => {
   const state = await fixture(t);
   const helper = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'owned-verification-process.mjs')).href;
   const script = path.join(state.root, 'nested.mjs');
-  await writeFile(script, `import {runOwnedVerificationProcess} from ${JSON.stringify(helper)};const r=await runOwnedVerificationProcess({args:['-e','process.exitCode=0'],cwd:process.cwd(),env:process.env,stdio:'ignore',timeoutMs:15000});console.log(JSON.stringify(r));process.exitCode=r.code===0&&r.ownership==='settled'?0:1;`);
-  const result = await run(state, [script], { timeoutMs: 25_000 });
+  await writeFile(script, `import {runOwnedVerificationProcess} from ${JSON.stringify(helper)};const r=await runOwnedVerificationProcess({args:['-e','process.exitCode=0'],cwd:process.cwd(),env:process.env,stdio:'ignore',timeoutMs:2000});console.log(JSON.stringify(r));process.exitCode=r.code===0&&r.ownership==='settled'?0:1;`);
+  const result = await run(state, [script], { timeoutMs: 120_000 });
   assert.equal(result.code, 0, JSON.stringify(result)); assert.equal(result.ownership, 'settled');
   const nested = JSON.parse(result.stdout); assert.equal(nested.code, 0); assert.equal(nested.ownership, 'settled');
 });
 
-for (const mode of ['crash', 'omit-resume']) windowsTest(`native direct supervisor ${mode} keeps ownership honest`, windowsOptions, async (t) => {
+for (const mode of ['crash', 'owner-eof', 'omit-resume']) windowsTest(`native direct supervisor ${mode} keeps ownership honest`, windowsOptions, async (t) => {
   const state = await fixture(t); const marker = path.join(state.root, 'late-effect');
   state.retained = true;
   const directory = path.dirname(fileURLToPath(import.meta.url));
   const pipeName = `fate-verifier-crash-test-${randomBytes(16).toString('hex')}`;
   const nonce = randomBytes(32).toString('hex');
   const lines = [], sockets = new Set();
-  let channelEnd;
+  let channelEnd, controlSocket;
   const ended = new Promise((resolve) => { channelEnd = resolve; });
   const server = createServer((socket) => {
     sockets.add(socket); let buffer = '', authenticated = false;
     socket.setEncoding('utf8'); socket.on('error', () => {});
     socket.on('end', channelEnd);
+    socket.on('close', channelEnd);
     socket.on('data', (chunk) => {
       buffer += chunk;
       let end;
       while ((end = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, end).replace(/\r$/u, ''); buffer = buffer.slice(end + 1);
         if (!authenticated) {
-          assert.equal(line, nonce); authenticated = true;
+          assert.equal(line, nonce); authenticated = true; controlSocket = socket;
           socket.write(JSON.stringify({ version: 1, executable: process.execPath, args: ['-e', treeProgram(marker)],
             cwd: state.root, env: state.env, descendantGraceMs: 500, settlementTimeoutMs: 5000 }) + '\n');
         } else {
           const receipt = parseWindowsReceipt(line); lines.push(receipt);
-          if (receipt.kind === 'started' && mode === 'crash') socket.write('resume\n');
+          if (receipt.kind === 'started' && mode !== 'omit-resume') socket.write('resume\n');
         }
       }
     });
@@ -261,9 +273,11 @@ for (const mode of ['crash', 'omit-resume']) windowsTest(`native direct supervis
     { env: state.env, cwd: state.root, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
   let closed = false; const closing = once(supervisor, 'close').then((result) => { closed = true; return result; });
   t.after(() => { if (!closed) supervisor.kill('SIGKILL'); });
-  if (mode === 'crash') {
+  if (mode !== 'omit-resume') {
     await Promise.race([once(supervisor.stdout, 'data'), closing.then(() => { throw Error('Supervisor exited before synthetic tree readiness.'); })]);
-    supervisor.kill('SIGKILL'); await closing; await ended;
+    if (mode === 'crash') supervisor.kill('SIGKILL');
+    else controlSocket.destroy();
+    await closing; await ended;
     await delay(2400);
     assert(lines.some((line) => line.kind === 'started'));
     assert(!lines.some((line) => line.kind === 'finished' && line.ownership === 'settled'));
