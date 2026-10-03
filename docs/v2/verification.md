@@ -28,10 +28,21 @@ scrubbed environment and filesystem monitor disabled. Source changes during the
 run fail verification. Interruptions are sticky: a child that handles a signal
 and exits zero does not turn cancellation into a pass. Failed or unconfirmed roots
 are retained. POSIX gates own a process group; deliberately escaping that group is
-outside this cooperative supervisor. The Windows supervisor currently cannot
-prove whole-tree settlement, so it reports unconfirmed and retains fixtures rather
-than certifying a direct child exit. A real Windows Job Object implementation and
-native validation are required before this orchestrator can pass there.
+outside this cooperative supervisor. On Windows 10+/Server 2016+, the standalone
+supervisor uses an unnamed kill-on-close Job Object and atomic create-time job
+membership. It permits only the three standard stream handles to be inherited.
+Root exit alone is insufficient: settlement requires a zero-active-process job
+receipt and a successful supervisor close. Surviving descendants are stopped by
+job handle, reported as a failed gate, and never selected by PID or process name.
+Missing/invalid receipts, unsupported job APIs, or local PowerShell compilation
+policy failures fail closed. No policy overrides, elevation or app imports are
+used. The callback exposes PID and standard streams, not a Node IPC channel.
+
+The helper's dependency-free synthetic suite is
+`node --test scripts/windows-verification-process.test.mjs`. Windows runtime cases
+are skipped on other systems; a Linux source/test pass is not Windows evidence.
+The exact candidate still requires a real native Windows test run and the user's
+separate final platform acceptance. These checks do not change release readiness.
 
 `.github/workflows/v2-server.yml` is manual-only and prepares Linux x64 source
 verification. It leaves the existing desktop workflow unchanged, creates no

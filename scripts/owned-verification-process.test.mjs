@@ -6,7 +6,7 @@ import { runOwnedVerificationProcess } from './owned-verification-process.mjs';
 
 test('owned verification observes an ordinary child and refuses pre-cancelled launch', async () => {
   const normal = await runOwnedVerificationProcess({ args: ['-e', 'process.exitCode=0'], env: process.env, stdio: 'ignore' });
-  assert.equal(normal.code, 0); assert.equal(normal.ownership, process.platform === 'win32' ? 'unconfirmed' : 'settled');
+  assert.equal(normal.code, 0); assert.equal(normal.ownership, 'settled');
   const controller = new AbortController(); controller.abort('SIGINT');
   const cancelled = await runOwnedVerificationProcess({ args: ['-e', 'throw new Error("must not launch")'], env: process.env,
     onStarted: () => assert.fail('Pre-cancelled child started') }, controller.signal);
@@ -19,9 +19,9 @@ test('cancellation stops the owned process tree before a descendant delayed effe
   const marker = path.join(directory, 'descendant-effect');
   const controller = new AbortController();
   const descendant = `setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(marker)},'unexpected'),1000);setInterval(()=>{},1000)`;
-  const wrapper = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'});child.once('spawn',()=>process.send({ready:true}));process.on('SIGINT',()=>process.exit(0));setInterval(()=>{},1000)`;
-  const result = await runOwnedVerificationProcess({ args: ['-e', wrapper], env: process.env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-    onStarted: (child) => child.once('message', () => controller.abort('SIGINT')) }, controller.signal);
+  const wrapper = `const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'});child.once('spawn',()=>process.stdout.write('ready'));process.on('SIGINT',()=>process.exit(0));setInterval(()=>{},1000)`;
+  const result = await runOwnedVerificationProcess({ args: ['-e', wrapper], env: process.env, stdio: ['ignore', 'pipe', 'pipe'],
+    onStarted: (child) => child.stdout.once('data', () => controller.abort('SIGINT')) }, controller.signal);
   assert.equal(result.cancelled, 'SIGINT'); assert.notEqual(result.code, 0);
   await new Promise((resolve) => setTimeout(resolve, 1100));
   await assert.rejects(access(marker), { code: 'ENOENT' });

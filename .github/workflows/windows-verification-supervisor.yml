@@ -1,0 +1,48 @@
+name: Windows verification supervisor
+
+# New branch-local workflows cannot depend on workflow_dispatch being registered
+# on the default branch. This exact-branch/path push trigger runs only this helper.
+on:
+  push:
+    branches: [v2-native-pi-durable]
+    paths:
+      - .github/workflows/windows-verification-supervisor.yml
+      - scripts/owned-verification-process.mjs
+      - scripts/windows-verification-process.mjs
+      - scripts/windows-verification-process.test.mjs
+      - scripts/windows-verification-job.cs
+      - scripts/windows-verification-job.ps1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-verification-supervisor-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  synthetic-windows-job:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+      - name: Verify native target
+        run: node -e "if(process.platform!=='win32'||process.arch!=='x64')throw Error('Expected native Windows x64')"
+      - name: Test only disposable verifier children
+        run: node --test scripts/windows-verification-process.test.mjs
+      - name: Record exact limited scope
+        if: always()
+        shell: pwsh
+        run: |
+          @"
+          Candidate: $env:GITHUB_SHA
+          Scope: standalone Windows verification supervisor and synthetic children only.
+          No application/backend suites, credentials, profiles, installers, releases or artifacts.
+          This does not certify Fate UI, its native integration or final user acceptance.
+          "@ >> $env:GITHUB_STEP_SUMMARY

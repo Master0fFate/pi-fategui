@@ -42,7 +42,7 @@ export function verificationPlan(options, platform = process.platform) {
     script('network', 'run-network-tests.mjs'),
   ];
   const pending = [];
-  if (platform === 'win32') pending.push({ id: 'windows-process-tree', reason: 'This verifier has no independently validated Windows Job Object supervisor. Child exit alone cannot prove tree quiescence, so gates retain their private roots and cannot be certified passed.' });
+  if (platform === 'win32') pending.push({ id: 'windows-process-tree', reason: 'The Windows Job Object supervisor requires native validation on this exact source candidate. Its per-gate receipts require observed zero active job processes; source inspection or a direct child exit is not native validation.' });
   if (level >= 1) gates.push(script('browser', 'run-web-tests.mjs'));
   else pending.push({ id: 'browser', reason: 'Outside selected core scope.' });
   if (level >= 2) {
@@ -146,12 +146,12 @@ export async function main(args = process.argv.slice(2)) {
       if (interrupted) break;
       result = await runOwnedVerificationProcess({ args: gate.args, cwd: root, env: isolated.env,
         onStarted: (child) => { receipt.pid = child.pid; process.stdout.write(`FATE_VERIFY_START ${JSON.stringify(receipt)}\n`); } }, cancellation.signal);
-      const status = interrupted ? 'cancelled' : result.code === 0 && result.signal === null && result.ownership === 'settled' && !result.failure ? 'passed' : 'failed';
+      const status = interrupted ? 'cancelled' : result.code === 0 && result.signal === null && result.cancelled === null && !result.timedOut && result.ownership === 'settled' && !result.failure ? 'passed' : 'failed';
       results.push({ ...receipt, ...result, status, finishedAt: new Date().toISOString() });
     } catch (error) {
       results.push({ ...receipt, code: null, signal: null, status: interrupted ? 'cancelled' : 'failed', failure: error.message, finishedAt: new Date().toISOString() });
     } finally {
-      await isolated.cleanup({ retain: interrupted !== null || result?.code !== 0 || result?.signal !== null || result?.ownership !== 'settled' || Boolean(result?.failure) });
+      await isolated.cleanup({ retain: interrupted !== null || result?.cancelled != null || Boolean(result?.timedOut) || result?.code !== 0 || result?.signal !== null || result?.ownership !== 'settled' || Boolean(result?.failure) });
     }
     process.stdout.write(`FATE_VERIFY_END ${JSON.stringify(results.at(-1))}\n`);
     if (interrupted || results.at(-1).status !== 'passed') break;
