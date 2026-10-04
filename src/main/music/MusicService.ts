@@ -15,6 +15,9 @@ const MAX_TRACKS = 200;
 const METADATA_TIMEOUT_MS = 45_000;
 const STREAM_TIMEOUT_MS = 30_000;
 const DNS_TIMEOUT_MS = 5_000;
+// The bundled yt-dlp unpacks itself on every start. From a freshly mounted macOS disk image on a
+// slow machine that took more than 5 s, and the player then asked for a yt-dlp that was there.
+const VERSION_TIMEOUT_MS = 30_000;
 const JSON_BUFFER_BYTES = 8 * 1024 * 1024;
 const DURATION_BATCH_SIZE = 8;
 const DURATION_BACKOFF_MS = 150;
@@ -126,11 +129,11 @@ export class YtDlpProcessRunner implements MusicProcessRunner {
 
   async getVersion(): Promise<string> {
     if (this.executable) {
-      return this.runWith(this.executable, [...COMMON_ARGS, '--version'], { timeoutMs: 5_000, maxBuffer: 64_000 });
+      return this.runWith(this.executable, [...COMMON_ARGS, '--version'], { timeoutMs: VERSION_TIMEOUT_MS, maxBuffer: 64_000 });
     }
     for (const candidate of executableCandidates()) {
       try {
-        const version = await this.runWith(candidate, [...COMMON_ARGS, '--version'], { timeoutMs: 5_000, maxBuffer: 64_000 });
+        const version = await this.runWith(candidate, [...COMMON_ARGS, '--version'], { timeoutMs: VERSION_TIMEOUT_MS, maxBuffer: 64_000 });
         this.executable = candidate;
         return version;
       } catch {
