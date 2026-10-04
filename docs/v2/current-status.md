@@ -4,7 +4,9 @@
 
 ## Source and version
 
-The published baseline is [`v2-native-pi-durable` commit `dcfadfc83c6be7f654f5fe8013f67eeedff1fc69`](https://github.com/Master0fFate/pi-fategui/commit/dcfadfc83c6be7f654f5fe8013f67eeedff1fc69). The consumer continuation is an **uncommitted working-tree candidate**, identified by source-byte manifests in its verification reports, not by that base commit alone. No release or deployment has been made from it.
+The published baseline is [`v2-native-pi-durable` commit `dcfadfc83c6be7f654f5fe8013f67eeedff1fc69`](https://github.com/Master0fFate/pi-fategui/commit/dcfadfc83c6be7f654f5fe8013f67eeedff1fc69). The consumer continuation is committed on that branch and proposed for `main` in [pull request 49](https://github.com/Master0fFate/pi-fategui/pull/49). Its hosted runs name the exact commit they checked; local verification reports identify their source by a source-byte manifest. No release or deployment has been made from it.
+
+Two defects were found only when the hosted runners packaged V2 for the first time, and both are repaired in source. The installers omitted 165 runtime libraries: pnpm installs two peer variants of one Pi package version and lists the shared subtree under only one of them, and the packager remembered visited packages by name and version alone (`patches/app-builder-lib@26.15.3.patch`). The standard Pi themes were missing on a clean profile: Pi 1.0 writes its bundled themes with `okhsl()` colors, which the theme reader rejected. A developer profile with its own Pi themes hid that defect from the local packaged smoke, so the smoke now requires the two bundled themes by name.
 
 Historical presentation evidence below belongs to [`4238ee090e6a2bb06d6447ae54dc0d5bdf25e0af`](https://github.com/Master0fFate/pi-fategui/commit/4238ee090e6a2bb06d6447ae54dc0d5bdf25e0af) and its parents. It does not refresh execution evidence for later working-tree changes.
 

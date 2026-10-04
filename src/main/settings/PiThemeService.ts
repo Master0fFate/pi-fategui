@@ -8,6 +8,7 @@ import {
   getPackageDir,
 } from '@earendil-works/pi-coding-agent';
 import { themeDefinitionSchema, type ThemeDefinition } from '../../shared/themes';
+import { isPiFunctionColor, piFunctionColorToHex } from './piThemeColor';
 
 export const MAX_PI_THEME_FILE_BYTES = 256 * 1024;
 export const MAX_PI_THEME_CANDIDATES = 128;
@@ -34,6 +35,8 @@ export type PiThemeColorValue = string | number;
 
 export interface PiThemeJson {
   readonly name: string;
+  /** The background the theme declares it is designed for (Pi 1.0). */
+  readonly appearance?: 'dark' | 'light';
   readonly vars?: Readonly<Record<string, PiThemeColorValue>>;
   readonly colors: Readonly<Record<string, PiThemeColorValue>>;
   readonly export?: Readonly<{
@@ -149,9 +152,15 @@ function resolveColorValue(
   assertColorValue(value, 'Color');
   if (typeof value === 'number' || value === '') return value;
   if (value.startsWith('#')) {
-    if (!/^#[0-9a-fA-F]{6}$/u.test(value)) throw new Error(`Invalid six-digit hex color: ${value.slice(0, 32)}`);
+    // Pi accepts #RGB and #RRGGBB. Fate's contract is six digits.
+    const short = /^#([0-9a-fA-F])([0-9a-fA-F])([0-9a-fA-F])$/u.exec(value);
+    if (short) return `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}`.toLowerCase();
+    if (!/^#[0-9a-fA-F]{6}$/u.test(value)) throw new Error(`Invalid hex color: ${value.slice(0, 32)}`);
     return value.toLowerCase();
   }
+  // Pi 1.0 writes its bundled themes with OKHSL and OKLCH function colors. As in Pi, such a
+  // value is a color and never a variable name.
+  if (isPiFunctionColor(value)) return piFunctionColorToHex(value);
   if (depth >= MAX_VARIABLE_DEPTH) throw new Error('Pi theme variable references are too deeply nested.');
   if (visited.has(value)) throw new Error(`Circular Pi theme variable reference: ${value.slice(0, 64)}`);
   if (!Object.hasOwn(vars, value)) throw new Error(`Unknown Pi theme variable: ${value.slice(0, 64)}`);
@@ -206,6 +215,9 @@ export function validatePiThemeJson(input: unknown): PiThemeJson {
   if (typeof input.name !== 'string' || input.name.trim() === '') throw new Error('Pi theme name is required.');
   if (input.name.includes('/')) throw new Error('Pi theme name cannot contain "/".');
   if (input.$schema !== undefined && typeof input.$schema !== 'string') throw new Error('Pi theme $schema must be a string.');
+  if (input.appearance !== undefined && input.appearance !== 'dark' && input.appearance !== 'light') {
+    throw new Error('Pi theme appearance must be "dark" or "light".');
+  }
   if (!isRecord(input.colors)) throw new Error('Pi theme colors must be an object.');
 
   let vars: Record<string, PiThemeColorValue> | undefined;
@@ -255,6 +267,7 @@ export function validatePiThemeJson(input: unknown): PiThemeJson {
 
   return {
     name: input.name,
+    ...(input.appearance ? { appearance: input.appearance } : {}),
     colors,
     ...(vars ? { vars } : {}),
     ...(exportColors ? { export: exportColors } : {}),
@@ -293,6 +306,8 @@ function optionalHex(value: PiThemeColorValue | undefined, vars: Readonly<Record
 }
 
 function inferValidatedTone(theme: PiThemeJson): ThemeDefinition['tone'] {
+  // As in Pi: a declared appearance wins; the tone is detected from colors only when it is omitted.
+  if (theme.appearance) return theme.appearance;
   const vars = theme.vars ?? {};
   const pageBackground = optionalHex(theme.export?.pageBg, vars);
   if (pageBackground) return luminance(pageBackground) >= 0.5 ? 'light' : 'dark';

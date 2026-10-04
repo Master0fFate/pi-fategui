@@ -71,8 +71,10 @@ export async function runProductionSmoke(deps: ProductionSmokeDeps): Promise<voi
       deps.smokeTerminalRuntime(deps.cwd),
     ]);
     if (!musicStatus.available) throw new Error(musicStatus.message ?? 'Bundled yt-dlp is unavailable.');
-    const piThemes = themes.filter((theme) => theme.name.startsWith('Pi · '));
-    if (!piThemes.some((theme) => theme.tone === 'dark') || !piThemes.some((theme) => theme.tone === 'light')) {
+    // The standard themes are the two that Pi bundles. A theme from the operator's own Pi
+    // profile must not satisfy this check, or a broken bundle passes on a developer machine.
+    const standard = (name: string) => themes.some((theme) => theme.name === `Pi · ${name}` && theme.tone === name);
+    if (!standard('dark') || !standard('light')) {
       throw new Error('Standard Pi themes are unavailable.');
     }
     if (deps.streamSmokeEnabled) {

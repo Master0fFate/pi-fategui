@@ -55,8 +55,18 @@ independent Linux x64 Node packages with and without native PTY. Each job
 builds and smokes its own extracted artifact before uploading only its archive
 and checksum. The manifest binds the commit and actual source-byte digest;
 source changes during packaging fail the build. Private profiles and failure
-roots are never uploaded. The desktop workflow is unchanged. No release,
-installer publication or deployment occurs.
+roots are never uploaded. No release, installer publication or deployment
+occurs.
+
+`.github/workflows/cross-platform.yml` is the desktop workflow. For a pull
+request it runs `pnpm verify`, builds and smokes the unpacked application,
+builds the installers, and installs and smokes them on Windows x64, macOS
+arm64, macOS x64 and Linux x64. It publishes nothing unless a version tag is
+pushed. The packaged smoke starts the real application; it passes only when
+the two themes bundled with Pi load, so themes in the operator's own Pi
+profile cannot hide a broken bundle. After a failed first attempt the retries
+of that step cannot pass: the failed process exits without releasing profile
+ownership, and the next start correctly refuses the retained owner.
 
 Workflow source is not evidence of a successful hosted run; consult the run for
 the exact commit and package variant. The local headless smoke exercises both

@@ -19,7 +19,7 @@ function makeDeps(overrides: Partial<ProductionSmokeDeps> = {}): { deps: Product
       transcribe: async () => undefined,
     },
     music: { getStatus: async () => ({ available: true, version: '2024.01.01', message: undefined }) },
-    settings: { loadThemes: async () => [{ name: 'Pi · Midnight', tone: 'dark' }, { name: 'Pi · Daylight', tone: 'light' }] },
+    settings: { loadThemes: async () => [{ name: 'Pi · dark', tone: 'dark' }, { name: 'Pi · light', tone: 'light' }] },
     smokeTerminalRuntime: async () => 'bash',
     smokeRenderer: async () => undefined,
     cwd: '.',
@@ -77,6 +77,15 @@ describe('runProductionSmoke', () => {
   it('fails when standard Pi themes are missing', async () => {
     const { deps, error, exit } = makeDeps({
       settings: { loadThemes: async () => [{ name: 'Custom', tone: 'dark' }] },
+    });
+    await runProductionSmoke(deps);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('Standard Pi themes are unavailable'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('does not accept themes from the operator Pi profile in place of the bundled ones', async () => {
+    const { deps, error, exit } = makeDeps({
+      settings: { loadThemes: async () => [{ name: 'Pi · Midnight', tone: 'dark' }, { name: 'Pi · Daylight', tone: 'light' }] },
     });
     await runProductionSmoke(deps);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Standard Pi themes are unavailable'));

@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { SettingsManager } from '@earendil-works/pi-coding-agent';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -20,11 +21,13 @@ import {
   type PiThemeColorValue,
   type PiThemeJson,
 } from './PiThemeService';
+import { isPiFunctionColor, piFunctionColorToHex } from './piThemeColor';
 
 const temporaryDirectories: string[] = [];
 
 type MutablePiTheme = {
   name: string;
+  appearance?: 'dark' | 'light';
   vars?: Record<string, PiThemeColorValue>;
   colors: Record<string, PiThemeColorValue>;
   export?: { pageBg?: PiThemeColorValue; cardBg?: PiThemeColorValue; infoBg?: PiThemeColorValue };
@@ -130,6 +133,62 @@ describe('Pi theme mapping', () => {
     })).toThrow(/Circular/u);
     expect(() => validatePiThemeJson({ ...themeJson('bad/name') })).toThrow(/cannot contain/u);
   });
+
+  it('maps Pi 1.0 function colors, short hex, and a declared appearance', () => {
+    const input = themeJson('Modern');
+    input.appearance = 'light';
+    input.vars = { violet: 'okhsl(295 50% 67%)' };
+    input.colors.accent = 'violet';
+    input.colors.border = 'oklch(62% 0.2 250)';
+    input.colors.text = '#AbC';
+
+    const mapped = mapPiThemeToFateTheme(input);
+
+    // The backgrounds are dark; the declared appearance still decides, as it does in Pi.
+    expect(mapped.tone).toBe('light');
+    expect(inferPiThemeTone({ ...input, appearance: undefined })).toBe('dark');
+    expect(mapped.colors.accent).toBe(piFunctionColorToHex('okhsl(295 50% 67%)'));
+    expect(mapped.colors.border).toBe(piFunctionColorToHex('oklch(62% 0.2 250)'));
+    expect(mapped.colors.text).toBe('#aabbcc');
+    expect(resolvePiColorValue('violet', input.vars)).toMatch(/^#[0-9a-f]{6}$/u);
+    expect(() => validatePiThemeJson({ ...themeJson('bad'), appearance: 'sepia' })).toThrow(/appearance/u);
+    expect(() => validatePiThemeJson({ ...themeJson('bad'), colors: { ...themeJson('bad').colors, accent: 'okhsl(10 120% 50%)' } })).toThrow(/saturation/u);
+    expect(() => validatePiThemeJson({ ...themeJson('bad'), colors: { ...themeJson('bad').colors, accent: 'oklch(nope)' } })).toThrow(/Invalid Pi theme color value/u);
+    expect(() => validatePiThemeJson({ ...themeJson('bad'), colors: { ...themeJson('bad').colors, accent: `okhsl(${'1'.repeat(200)} 1 1)` } })).toThrow(/too long/u);
+    expect(() => validatePiThemeJson({ ...themeJson('bad'), colors: { ...themeJson('bad').colors, accent: '#abcd' } })).toThrow(/Invalid hex color/u);
+  });
+
+  it('converts OKHSL and OKLCH exactly as the installed Pi package does', async () => {
+    // Pi's converter is a dependency of the SDK, not of Fate. Load it from beside the SDK.
+    const sdkRoot = await realpath(path.resolve('node_modules/@earendil-works/pi-coding-agent'));
+    const pi = await import(pathToFileURL(path.join(sdkRoot, '..', 'pi-tui', 'dist', 'colors.js')).href) as {
+      parseColor(value: string): unknown;
+      colorToHex(color: unknown): string;
+    };
+    const values: string[] = [];
+    for (const name of ['dark', 'light']) {
+      const bundled = JSON.parse(await readFile(path.join(sdkRoot, 'dist', 'modes', 'interactive', 'theme', `${name}.json`), 'utf8')) as PiThemeJson;
+      for (const value of [...Object.values(bundled.vars ?? {}), ...Object.values(bundled.colors)]) {
+        if (typeof value === 'string' && isPiFunctionColor(value)) values.push(value);
+      }
+    }
+    const bundledCount = values.length;
+    for (let hue = 0; hue < 360; hue += 30) {
+      for (const saturation of [0, 35, 79, 80, 81, 100]) {
+        for (const lightness of [0, 12, 50, 88, 100]) values.push(`okhsl(${hue} ${saturation}% ${lightness}%)`);
+      }
+    }
+    for (let hue = 0; hue < 360; hue += 45) {
+      for (const chroma of [0, 0.08, 0.2, 0.4]) {
+        for (const lightness of [0, 0.3, 0.7, 1]) values.push(`oklch(${lightness} ${chroma} ${hue})`);
+      }
+    }
+    values.push('OKHSL(295deg 0.5 0.67)', 'oklch(62% 0.2 250deg)', 'okhsl(-65 50% 67%)', 'oklch(100% 0.3 150)', 'okhsl( 1e1 .5 5e-1 )');
+
+    // The bundled themes must really use function colors, or this test proves nothing about them.
+    expect(bundledCount).toBeGreaterThan(20);
+    for (const value of values) expect(piFunctionColorToHex(value), value).toBe(pi.colorToHex(pi.parseColor(value)));
+  });
 });
 
 describe('PiThemeService', () => {
@@ -218,6 +277,18 @@ describe('PiThemeService', () => {
 
     const trusted = await service.loadThemes({ cwd: projectDir, projectTrusted: true });
     expect(trusted.map((theme) => theme.name)).toEqual(expect.arrayContaining(['Pi · Project auto', 'Pi · Project configured']));
+  });
+
+  it('discovers the standard themes bundled with the installed Pi package on a clean profile', async () => {
+    // No fixture themes: this is the real package a consumer gets, with no Pi profile of their own.
+    const root = await temporaryRoot();
+    vi.stubEnv('HOME', root);
+    const service = new PiThemeService({ agentDir: path.join(root, 'agent'), cacheTtlMs: 0 });
+
+    const result = await service.discover({ cwd: root, projectTrusted: false });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.themes.map((theme) => `${theme.name} (${theme.tone})`)).toEqual(['Pi · dark (dark)', 'Pi · light (light)']);
   });
 
   it('deduplicates concurrent requests and keeps only one short-lived cache entry', async () => {
