@@ -86,7 +86,7 @@ describe('owned native Pi Durable SQLite', () => {
       ]);
       expect(calls).toBe(1);
       expect(noOpRetryCalls).toBe(1);
-      expect(JSON.parse(await fs.readFile(path.join(profileOwner.lockPath, 'owner.json'), 'utf8')).token).toBe(profileOwner.record.token);
+      expect(JSON.parse(await fs.readFile(profileOwner.recordPath, 'utf8')).token).toBe(profileOwner.record.token);
       await expect(open()).rejects.toThrow(/already has an open writer/u);
     } finally { initialize.mockRestore(); close.mockRestore(); }
   });
@@ -175,7 +175,7 @@ describe('owned native Pi Durable SQLite', () => {
         import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
         import { createSession, defineDoc } from '@earendil-works/pi-durable';
         import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
-        if (JSON.parse(readFileSync(${JSON.stringify(path.join(profileOwner.lockPath, 'owner.json'))}, 'utf8')).token !== ${JSON.stringify(profileOwner.record.token)}) throw new Error('owner mismatch');
+        if (JSON.parse(readFileSync(${JSON.stringify(profileOwner.recordPath)}, 'utf8')).token !== ${JSON.stringify(profileOwner.record.token)}) throw new Error('owner mismatch');
         const connection = new DatabaseSync(${JSON.stringify(owned.filename)});
         connection.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=0');
         if (connection.prepare('PRAGMA synchronous').get().synchronous !== 2) throw new Error('not FULL');

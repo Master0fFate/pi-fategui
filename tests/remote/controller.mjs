@@ -119,7 +119,7 @@ if (action === 'supervise') {
   for (const lock of captured) {
     assert.equal(lock.record.pid, barrier.pid); assert(lock.directory.startsWith(path.join(dir, 'home') + path.sep));
     assert.equal(await fs.realpath(lock.directory), lock.directory);
-    assert.deepEqual(JSON.parse(await fs.readFile(path.join(lock.directory, 'owner.json'), 'utf8')), lock.record, 'Owner token/record drift: refuse recovery');
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(lock.directory, `owner-${lock.record.token}.json`), 'utf8')), lock.record, 'Owner token/record drift: refuse recovery');
   }
   const quarantine = path.join(dir, `quarantined-crash-locks-${randomUUID()}`); await fs.mkdir(quarantine, { mode: 0o700 });
   for (const lock of captured) await fs.rename(lock.directory, path.join(quarantine, path.basename(lock.directory)));

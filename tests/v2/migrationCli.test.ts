@@ -122,7 +122,7 @@ describe('host-local native migration CLI', () => {
       await expect(f.execute('apply', String(summary.planDigest))).rejects.toThrow('did not complete');
       await expect(f.invoke('dry-run')).rejects.toThrow('preflight');
       expect(f.output.join('')).toContain('ownership-not-clear');
-      expect(JSON.parse(await fs.readFile(path.join(owner.lockPath, 'owner.json'), 'utf8')).token).toBe(owner.record.token);
+      expect(JSON.parse(await fs.readFile(owner.recordPath, 'utf8')).token).toBe(owner.record.token);
     } finally { await owner.release(); }
     await fs.appendFile(f.transcript, JSON.stringify({ type: 'custom', data: 'changed' }) + '\n');
     await expect(f.execute('apply', String(summary.planDigest))).rejects.toThrow('did not complete');

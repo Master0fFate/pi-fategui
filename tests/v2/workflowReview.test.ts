@@ -164,7 +164,7 @@ describe('explicit native UNKNOWN workflow review', () => {
     const f = await fixture(); const old = await f.create(); const plan = await f.service.prepare();
     await f.withOwner(async (owner) => {
       await expect(f.service.inspect()).rejects.toThrow('Owner already in use'); await expect(f.service.acknowledge(plan)).rejects.toThrow('Owner already in use');
-      expect(JSON.parse(await fs.readFile(path.join(owner.lockPath, 'owner.json'), 'utf8')).token).toBe(owner.record.token);
+      expect(JSON.parse(await fs.readFile(owner.recordPath, 'utf8')).token).toBe(owner.record.token);
     });
     const changed = new NativeWorkflowReviewService({ paths: f.paths, checkpoint: async (phase) => { if (phase === 'before-acknowledgment') await fs.writeFile(`${old.file}-wal`, 'new sidecar', { mode: 0o600 }); } });
     await expect(changed.acknowledge(plan)).rejects.toThrow(); await expect(fs.stat(f.recordRoot)).rejects.toMatchObject({ code: 'ENOENT' });

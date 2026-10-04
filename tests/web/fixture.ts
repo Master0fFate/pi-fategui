@@ -274,11 +274,14 @@ export class WebHost {
         const directory = path.join(namespace, name);
         const stat = await fs.lstat(directory);
         if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe fixture recovery lock.');
-        const record = object(JSON.parse(await fs.readFile(path.join(directory, 'owner.json'), 'utf8')));
+        // The record is named after its owner's token.
+        const recordName = (await fs.readdir(directory)).find((entry) => /^owner-[0-9a-f-]{36}\.json$/u.test(entry));
+        if (!recordName) throw new Error('Fixture recovery lock has no owner record.');
+        const record = object(JSON.parse(await fs.readFile(path.join(directory, recordName), 'utf8')));
         if (record.pid !== deadPid || typeof record.resource !== 'string' || !isWithin(this.repositories.root, record.resource)) {
           throw new Error('Lock does not belong to the killed fixture process.');
         }
-        await fs.unlink(path.join(directory, 'owner.json')); await fs.rmdir(directory);
+        await fs.unlink(path.join(directory, recordName)); await fs.rmdir(directory);
       }
     }
     await this.boot();

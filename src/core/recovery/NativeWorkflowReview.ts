@@ -5,7 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import packageMetadata from '../../../package.json';
 import { FatePaths } from '../FatePaths';
-import { OwnerLock, canonicalFuturePath, lockName } from '../ownership/OwnerLock';
+import { OwnerLock, canonicalFuturePath, lockName, ownerRecordPath } from '../ownership/OwnerLock';
 import { DurableStorageCloseUncertainError } from '../durable/OwnedDurableStorage';
 import { inspectOwnedNativeWorkflowRecovery, type NativeWorkflowRecoveryInspection } from './NativeWorkflowRecovery';
 import { insidePrivateWindowsAclScope, withIndependentWindowsAclQueries, withPrivateWindowsAclScope, WindowsAclUnverifiedError } from '../storage/WindowsPrivateAcl';
@@ -71,7 +71,7 @@ async function assertOwner(options: OwnedWorkflowReviewOptions): Promise<void> {
   const resolved = await canonicalFuturePath(resource(paths));
   if (owner.record.resource !== resolved || owner.lockPath !== path.join(paths.lockRoot, `profile-${lockName(resolved)}.lock`)) throw new Error('Native workflow review requires the exact owning profile lock.');
   await assertPrivateMigrationPath(owner.lockPath, true);
-  const record = z.object({ token: z.string(), resource: z.string() }).passthrough().parse(await readMigrationJson(path.join(owner.lockPath, 'owner.json'), 4096));
+  const record = z.object({ token: z.string(), resource: z.string() }).passthrough().parse(await readMigrationJson(ownerRecordPath(owner.lockPath, owner.record.token), 4096));
   if (record.token !== owner.record.token || record.resource !== owner.record.resource) throw new Error('Native workflow profile owner changed; review and admission are fenced.');
 }
 async function inventory(paths: FatePaths): Promise<MigrationFile[]> {
@@ -195,7 +195,7 @@ export class NativeWorkflowReviewService {
     const owner = await OwnerLock.acquire(this.options.paths.lockRoot, 'profile', await canonicalFuturePath(resource(this.options.paths))); let retain = false;
     try { return await run({ paths: this.options.paths, profileOwner: owner }); }
     catch (error) { retain = error instanceof DurableStorageCloseUncertainError || error instanceof WorkflowReviewCloseUncertainError; throw error; }
-    finally { if (!retain) await owner.release(); }
+    finally { if (retain) await owner.requireOperatorReview().catch(() => undefined); else await owner.release(); }
   }
   /** Mutating verbs fail on any refused query, so they may share one helper.
    * It is joined after the owner decision above, never instead of it. */

@@ -44,7 +44,11 @@ Request deduplication, native task receipts and Durable resume facilities are no
 
 One owner must hold the canonical profile and relevant checkout authority. The current `--new-instance` Chromium slot does not supply a second safe shared-data owner. Do not delete locks, change data roots, or start an older binary to work around an owner conflict.
 
-Stale-lock recovery is an operator-only action after stopping and verifying all possible owners. A PID or old heartbeat alone cannot prove a lock is safe to remove. `doctor` is observational and does not reclaim it. An unconfirmed stop retains the lock and private evidence for review.
+A lock whose owner process no longer exists on this host is recovered automatically at the next start. After a crash, a forced quit or a power loss the application starts again without operator action. The proof is the operating system's own report that the recorded process is gone. On Linux the boot identity, the PID namespace and the kernel start time of the process are also compared, so a restarted host and a reused PID are recognized.
+
+A lock is never taken on a heartbeat or an age. It is also kept when its record names another host or platform, when the record is missing, unreadable or accompanied by an unknown entry, and when any process holds the recorded PID. Windows and macOS cannot tell a reused PID from the owner, so that case waits until the other process ends. A storage close that could not be confirmed marks the lock for review (`review-required.json`), and no later start recovers it. These cases remain an operator-only action after stopping and verifying all possible owners. `doctor` is observational and does not reclaim a lock.
+
+Recovery needs a filesystem with hard links; without them a lock is kept. Windows and macOS do not compare a machine identity, so two machines with the same host name must not share a lock directory. A stop exactly between two file operations of a start or a recovery can leave a lock directory without a readable record; that directory is kept for an operator.
 
 Use the version-matched [migration procedure](migration-cli.md) and [native workflow review](native-workflow-review.md), with the original plan/backup/source identities intact. Migration preserves original Pi sessions, Team history and worktrees. It does not copy provider credentials, import full-access authority or replay old work. Selecting `native-durable` does not perform that migration.
 

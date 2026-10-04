@@ -135,6 +135,16 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
   let disposal: Promise<void> | null = null;
   let admissionFenceFailed = false;
   let storageStartupUncertain = false;
+  // An unconfirmed storage close must wait for an operator, also after this process stops. The
+  // mark is written at once: a forced quit before the end of cleanup must not make the lock
+  // recoverable.
+  let reviewMark: Promise<void> | null = null;
+  const storageCloseUncertain = (): void => {
+    storageStartupUncertain = true;
+    reviewMark ??= Promise.resolve().then(() => profile?.requireOperatorReview()).catch((error: unknown) => {
+      logs.write('error', 'recovery', `The operator review mark could not be written: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  };
   let explicitWorkOnly = false;
   const disposeOwned = (): Promise<void> => {
     return disposal ??= Promise.resolve().then(async () => {
@@ -146,7 +156,15 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
     // its profile lock merely because later cleanup callbacks ran.
     if (admissionFenceFailed) failures.push(new Error('Core admission fencing was incomplete.'));
     if (storageStartupUncertain) failures.push(new Error('Native durable startup could not confirm storage shutdown; profile ownership retained.'));
-    if (failures.length > 0) throw new AggregateError(failures, 'Fate core shutdown was incomplete; profile ownership retained.');
+    if (failures.length > 0) {
+      // This process keeps its lock while it runs. Once it stops, a later start recovers the
+      // lock, except after an unconfirmed storage close: that must wait for an operator.
+      const closeUncertain = (error: unknown): boolean => error instanceof DurableStorageCloseUncertainError
+        || (error instanceof AggregateError && error.errors.some(closeUncertain));
+      if (failures.some(closeUncertain)) storageCloseUncertain();
+      await reviewMark;
+      throw new AggregateError(failures, 'Fate core shutdown was incomplete; profile ownership retained.');
+    }
     await profile?.release();
     });
   };
@@ -183,7 +201,7 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
       // Inspect committed workflow policy before constructing any SDK runtime.
       // A different fresh graph ID cannot bypass an earlier uncertain effect.
       const workflows = await inspectOwnedNativeWorkflowReview({ paths, profileOwner: profile, maxFiles: 1024 }).catch((error: unknown) => {
-        if (error instanceof DurableStorageCloseUncertainError) storageStartupUncertain = true;
+        if (error instanceof DurableStorageCloseUncertainError) storageCloseUncertain();
         throw error;
       });
       if (workflows.uncertainProfile || workflows.blocked.length > 0) {
@@ -208,11 +226,12 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
     const durable = statePersistence === 'native-durable' ? await openFateDurableStore({ dataRoot: paths.dataRoot, profileOwner: profile }).catch((error: unknown) => {
       // Factory failure can precede cleanup registration. A typed uncertain close
       // must retain ownership even when no usable store handle was returned.
-      if (error instanceof DurableStorageCloseUncertainError) storageStartupUncertain = true;
+      if (error instanceof DurableStorageCloseUncertainError) storageCloseUncertain();
       throw error;
     }) : null;
     // Reverse-order cleanup settles runtime/recovery before SQLite, then releases ownership.
-    if (durable) owned.push(() => durable.close());
+    // A close of the store that fails is an unconfirmed close, whatever its error type.
+    if (durable) owned.push(() => durable.close().catch((error: unknown) => { storageCloseUncertain(); throw error; }));
     const createGoals = options.persistence?.createGoals ?? (durable ? () => durable.createGoals()
       : () => new GoalMaxRepository(logs, path.join(paths.dataRoot, 'goalmaxxing', 'v1')));
     const createQueue = options.persistence?.createQueue ?? (durable ? () => durable.createQueue(slot)
@@ -252,7 +271,7 @@ export async function createFateCore(options: FateCoreOptions): Promise<FateCore
           failure.cause = error; throw failure;
         }
       },
-      onCloseUncertain: (error) => { storageStartupUncertain = true; fenceUnsafeWorkflow(error); },
+      onCloseUncertain: (error) => { storageCloseUncertain(); fenceUnsafeWorkflow(error); },
       onUnsafeFailure: fenceUnsafeWorkflow,
       onReport: () => logs.write('warn', 'durable', 'Native workflow reported an execution diagnostic; inspect its retained workflow state.'),
     }) : undefined;

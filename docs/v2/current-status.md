@@ -8,6 +8,10 @@ The published baseline is [`v2-native-pi-durable` commit `dcfadfc83c6be7f654f5fe
 
 Two defects were found only when the hosted runners packaged V2 for the first time, and both are repaired in source. The installers omitted 165 runtime libraries: pnpm installs two peer variants of one Pi package version and lists the shared subtree under only one of them, and the packager remembered visited packages by name and version alone (`patches/app-builder-lib@26.15.3.patch`). The standard Pi themes were missing on a clean profile: Pi 1.0 writes its bundled themes with `okhsl()` colors, which the theme reader rejected. A developer profile with its own Pi themes hid that defect from the local packaged smoke, so the smoke now requires the two bundled themes by name.
 
+The hosted macOS Intel runner then exposed an application that did not quit. Quitting loaded and started the global keyboard hook only to stop it, and that native start (`uiohook-napi`) can block the main thread for good. The hook is now stopped only when push-to-talk started it. A user who turns on push-to-talk still starts that hook once, so the library defect remains reachable there.
+
+A profile or checkout lock left by a crash, a forced quit or a power loss is recovered at the next start; see [ownership and operator recovery](security-and-limits.md#ownership-and-operator-recovery).
+
 Historical presentation evidence below belongs to [`4238ee090e6a2bb06d6447ae54dc0d5bdf25e0af`](https://github.com/Master0fFate/pi-fategui/commit/4238ee090e6a2bb06d6447ae54dc0d5bdf25e0af) and its parents. It does not refresh execution evidence for later working-tree changes.
 
 The combined presentation increment passed 61 focused tests, full TypeScript checking and a web build; 143 emitted JavaScript files had no unresolved local modules. These local checks cover the repaired presentation scope. No browser/native/application run or hosted check/run result was recorded for that increment, and it does not supply full V2, backend or platform acceptance.

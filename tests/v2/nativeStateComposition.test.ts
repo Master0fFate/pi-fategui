@@ -105,6 +105,8 @@ describe('actual native state composition and rollout', () => {
     const locks = await fs.readdir(f.paths.lockRoot);
     expect(locks).toHaveLength(1);
     expect(locks[0]).toMatch(/^profile-.*\.lock$/u);
+    // An unconfirmed storage close must outlive this process: a later start does not recover it.
+    expect((await fs.readdir(path.join(f.paths.lockRoot, locks[0]!))).sort()).toEqual([expect.stringMatching(/^owner-[0-9a-f-]{36}\.json$/u), 'review-required.json']);
     await expect(createFateCore({ ...f, statePersistence: 'native-durable' })).rejects.toThrow('Owner already in use');
     await f.adapter.dispose();
   });

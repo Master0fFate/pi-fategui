@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { OwnerLock, OwnershipConflict, canonicalFuturePath } from '../../src/core/ownership/OwnerLock';
+import { OwnerLock, OwnershipConflict, canonicalFuturePath, findOwnerRecord, lockName } from '../../src/core/ownership/OwnerLock';
 import { CheckoutOwnership } from '../../src/core/ownership/CheckoutOwnership';
 import { AgentWorkspaceGitService } from '../../src/main/git/AgentWorkspaceGitService';
 import { createFateCore } from '../../src/core/createFateCore';
@@ -198,7 +198,7 @@ describe('real Node process ownership', () => {
     first.stdin.write('done\n');
     await new Promise<void>((resolve) => first.once('exit', () => resolve()));
     const next = await OwnerLock.acquire(namespace, 'profile', profile);
-    await fs.writeFile(path.join(next.lockPath, 'owner.json'), JSON.stringify({ ...next.record, pid: process.pid, startedAt: 1, startIdentity: 'old', token: 'not-the-owner' }));
+    await fs.writeFile(next.recordPath, JSON.stringify({ ...next.record, pid: process.pid, startedAt: 1, startIdentity: 'old', token: 'not-the-owner' }));
     await expect(next.release()).rejects.toThrow(/token changed/u);
     await expect(OwnerLock.acquire(namespace, 'profile', profile)).rejects.toBeInstanceOf(OwnershipConflict);
   });
@@ -235,4 +235,127 @@ describe('real Node process ownership', () => {
     first.stdin.write('release\n'); second.stdin.write('release\n');
     await Promise.all(stopped);
   }, 15_000);
+});
+
+describe('recovery after the owner process stopped', () => {
+  /** A real owner in another process that is then killed, so it cannot release its lock. */
+  async function stoppedOwner(): Promise<{ module: string; namespace: string; profile: string; lockPath: string; recordFile: string; content: string }> {
+    const root = await temp();
+    const module = await bundle(root);
+    const namespace = path.join(root, 'private-locks');
+    const profile = await canonicalFuturePath(path.join(root, 'profile', 'data'));
+    const crashed = await owner(module, namespace, profile);
+    const lockPath = path.join(namespace, `profile-${lockName(path.normalize(profile))}.lock`);
+    const recordFile = (await findOwnerRecord(lockPath))!;
+    const content = await fs.readFile(recordFile, 'utf8');
+    const record = JSON.parse(content) as { token: string };
+    expect(record).toMatchObject({ pid: crashed.pid, host: os.hostname(), platform: process.platform });
+    // The name of the record is the token of its owner.
+    expect(path.basename(recordFile)).toBe(`owner-${record.token}.json`);
+    // A running owner is never taken, whatever its record says.
+    await expect(OwnerLock.acquire(namespace, 'profile', profile)).rejects.toBeInstanceOf(OwnershipConflict);
+    const exited = new Promise<void>((resolve) => crashed.once('exit', () => resolve()));
+    crashed.kill('SIGKILL');
+    await exited;
+    expect(await fs.readdir(lockPath)).toEqual([path.basename(recordFile)]);
+    return { module, namespace, profile, lockPath, recordFile, content };
+  }
+
+  it('takes the lock of an owner that was killed and leaves no remains', async () => {
+    const stopped = await stoppedOwner();
+    const next = await OwnerLock.acquire(stopped.namespace, 'profile', stopped.profile);
+    expect(next.record.pid).toBe(process.pid);
+    expect(next.recordPath).not.toBe(stopped.recordFile);
+    expect(await fs.readdir(stopped.namespace)).toEqual([path.basename(stopped.lockPath)]);
+    expect(await fs.readdir(stopped.lockPath)).toEqual([path.basename(next.recordPath)]);
+    await next.release();
+    expect(await fs.readdir(stopped.namespace)).toEqual([]);
+  });
+
+  it('lets exactly one of several simultaneous starts take the lock of a stopped owner', async () => {
+    const stopped = await stoppedOwner();
+    // Each contender is a separate process that takes the lock and keeps it.
+    const starts = await Promise.allSettled(Array.from({ length: 6 }, () => owner(stopped.module, stopped.namespace, stopped.profile)));
+    const winners = starts.filter((start) => start.status === 'fulfilled');
+    expect(winners).toHaveLength(1);
+    const winner = (winners[0] as PromiseFulfilledResult<ChildProcessWithoutNullStreams>).value;
+    const records = await fs.readdir(stopped.lockPath);
+    expect(records).toHaveLength(1);
+    expect(JSON.parse(await fs.readFile(path.join(stopped.lockPath, records[0]!), 'utf8'))).toMatchObject({ pid: winner.pid });
+    await expect(OwnerLock.acquire(stopped.namespace, 'profile', stopped.profile)).rejects.toBeInstanceOf(OwnershipConflict);
+  });
+
+  it('keeps every stopped owner lock that it cannot prove safe to take', async () => {
+    const stopped = await stoppedOwner();
+    const record = JSON.parse(stopped.content) as Record<string, unknown>;
+    const { recordFile, lockPath } = stopped;
+    const write = (value: unknown): Promise<void> => fs.writeFile(recordFile, typeof value === 'string' ? value : JSON.stringify(value));
+    const original = (): Promise<void> => write(stopped.content);
+    const moved = (name: string): [() => Promise<void>, () => Promise<void>] => [
+      () => fs.rename(recordFile, path.join(lockPath, name)), () => fs.rename(path.join(lockPath, name), recordFile)];
+    const variants: Array<[string, () => Promise<void>, () => Promise<void>]> = [
+      ['another host', () => write({ ...record, host: `${String(record.host)}-other` }), original],
+      ['another platform', () => write({ ...record, platform: 'another-system' }), original],
+      ['a record without a platform', () => write({ ...record, platform: undefined }), original],
+      ['a PID that is not a process number', () => write({ ...record, pid: 0 }), original],
+      ['a negative PID', () => write({ ...record, pid: -1 }), original],
+      ['a token that is not the one in the record name', () => write({ ...record, token: '11111111-2222-4333-8444-555555555555' }), original],
+      ['a malformed record', () => write('{'), original],
+      ['an oversized record', () => write({ ...record, padding: 'x'.repeat(5000) }), original],
+      ['a record under a fixed name', ...moved('owner.json')],
+      ['a record under the name of another token', ...moved('owner-11111111-2222-4333-8444-555555555555.json')],
+      ['an operator review marker', () => fs.writeFile(path.join(lockPath, 'review-required.json'), '{}'), () => fs.unlink(path.join(lockPath, 'review-required.json'))],
+      ['an unknown entry', () => fs.writeFile(path.join(lockPath, 'note.txt'), 'x'), () => fs.unlink(path.join(lockPath, 'note.txt'))],
+      ['no record', () => fs.unlink(recordFile), original],
+      ['the claim of a recovery that did not finish', () => fs.link(recordFile, path.join(lockPath, `recovering-${String(record.token)}`)),
+        () => fs.unlink(path.join(lockPath, `recovering-${String(record.token)}`))],
+    ];
+    if (process.platform === 'linux') {
+      const linux = record.linux as Record<string, string>;
+      variants.push(['another PID namespace', () => write({ ...record, linux: { ...linux, pidNamespace: 'pid:[1]' } }), original]);
+      // A different boot identity is a restart only when the machine is provably the same.
+      variants.push(['another machine with the same name', () => write({ ...record, linux: { ...linux, machineId: 'another-machine', bootId: 'another-boot' } }), original]);
+      variants.push(['another boot without a machine identity', () => write({ ...record, linux: { ...linux, machineId: '', bootId: 'another-boot' } }), original]);
+      variants.push(['a record without the Linux identity', () => write({ ...record, linux: undefined }), original]);
+    } else {
+      // Without a kernel start time a live PID is always the owner, this process included.
+      variants.push(['this process as the owner', () => write({ ...record, pid: process.pid }), original]);
+    }
+    for (const [label, change, restore] of variants) {
+      await change();
+      await expect(OwnerLock.acquire(stopped.namespace, 'profile', stopped.profile), label).rejects.toBeInstanceOf(OwnershipConflict);
+      expect(await fs.readdir(stopped.namespace), label).toEqual([path.basename(lockPath)]);
+      await restore();
+    }
+    // The untouched record of the stopped owner is still recoverable afterwards.
+    const next = await OwnerLock.acquire(stopped.namespace, 'profile', stopped.profile);
+    await next.release();
+  });
+
+  it('keeps a lock that its owner marked for operator review, also from that owner', async () => {
+    const root = await temp();
+    const namespace = path.join(root, 'private-locks');
+    const profile = await canonicalFuturePath(path.join(root, 'profile', 'data'));
+    const lock = await OwnerLock.acquire(namespace, 'profile', profile);
+    const expected = [path.basename(lock.recordPath), 'review-required.json'];
+    await lock.requireOperatorReview();
+    expect((await fs.readdir(lock.lockPath)).sort()).toEqual(expected);
+    await expect(lock.release()).rejects.toThrow(/retained for operator review/u);
+    expect((await fs.readdir(lock.lockPath)).sort()).toEqual(expected);
+  });
+
+  it.runIf(process.platform === 'linux')('tells a reused PID from the owner by the kernel start time', async () => {
+    const root = await temp();
+    const module = await bundle(root);
+    const namespace = path.join(root, 'private-locks');
+    const profile = await canonicalFuturePath(path.join(root, 'profile', 'data'));
+    const running = await owner(module, namespace, profile);
+    const recordFile = (await findOwnerRecord(path.join(namespace, `profile-${lockName(path.normalize(profile))}.lock`)))!;
+    const record = JSON.parse(await fs.readFile(recordFile, 'utf8')) as { linux: Record<string, string> };
+    // The PID is alive, but the record belongs to an earlier process that had the same PID.
+    await fs.writeFile(recordFile, JSON.stringify({ ...record, linux: { ...record.linux, startTicks: '1' } }));
+    const next = await OwnerLock.acquire(namespace, 'profile', profile);
+    expect(running.exitCode).toBeNull();
+    await next.release();
+  });
 });

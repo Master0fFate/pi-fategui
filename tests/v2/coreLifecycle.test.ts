@@ -1,3 +1,4 @@
+import { findOwnerRecord } from '../../src/core/ownership/OwnerLock';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -158,7 +159,7 @@ describe('T29 core lifetime', () => {
     const { paths, adapter } = await fixture();
     const core = await createFateCore({ paths, adapter });
     const name = (await readdir(paths.lockRoot)).find((entry) => entry.startsWith('profile-'))!;
-    const recordFile = path.join(paths.lockRoot, name, 'owner.json');
+    const recordFile = (await findOwnerRecord(path.join(paths.lockRoot, name)))!;
     const record: unknown = JSON.parse(await readFile(recordFile, 'utf8'));
     if (!record || typeof record !== 'object' || !('token' in record)) throw new Error('Fixture profile lock is missing.');
     await writeFile(recordFile, JSON.stringify({ ...record, token: 'another-owner' }));

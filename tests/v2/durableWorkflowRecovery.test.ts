@@ -165,7 +165,7 @@ describe('read-only owned workflow startup recovery', () => {
     expect((await f.inspect()).blocked.some((row) => row.reason.includes('ambiguous'))).toBe(true); await fs.unlink(path.join(directory, 'workflow-ambiguous.sqlite'));
     const oversized = path.join(directory, `workflow-${'b'.repeat(64)}.sqlite`); await fs.writeFile(oversized, '', { mode: 0o600 }); await fs.truncate(oversized, 256 * 1024 * 1024 + 1);
     expect((await f.inspect()).blocked.some((row) => row.reason.includes('quota'))).toBe(true); await fs.unlink(oversized);
-    const ownerFile = path.join(f.profileOwner.lockPath, 'owner.json'); const original = await fs.readFile(ownerFile, 'utf8');
+    const ownerFile = f.profileOwner.recordPath; const original = await fs.readFile(ownerFile, 'utf8');
     await fs.writeFile(ownerFile, JSON.stringify({ ...f.profileOwner.record, token: randomUUID() }));
     try { await expect(f.inspect()).rejects.toThrow(/ownership was lost/u); }
     finally { await fs.writeFile(ownerFile, original); }

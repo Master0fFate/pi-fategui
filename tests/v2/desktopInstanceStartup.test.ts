@@ -79,6 +79,7 @@ describe('fixed desktop startup failure guidance', () => {
     const failure = desktopStartupFailure(error);
     expect(failure.title).toBe('Fate UI could not start this instance');
     expect(failure.message).toContain('running or retained owner');
+    expect(failure.message).toContain('recovered automatically at the next start');
     expect(failure.message).toContain('Do not delete ownership records');
     expect(failure.message).toContain('explicit operator recovery review');
     expect(failure.message).toContain('does not authorize a second Pi runtime');

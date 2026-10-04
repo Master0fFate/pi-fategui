@@ -64,7 +64,7 @@ describe('native durable state repositories', () => {
       const error = await open().then(() => null, (reason: unknown) => reason);
       expect(error).toBeInstanceOf(DurableStorageCloseUncertainError);
       expect((error as AggregateError).errors.map(String).join('\n')).toMatch(/newer version.*\n.*startup close outcome/u);
-      expect(JSON.parse(await fs.readFile(path.join(profileOwner.lockPath, 'owner.json'), 'utf8')).token).toBe(profileOwner.record.token);
+      expect(JSON.parse(await fs.readFile(profileOwner.recordPath, 'utf8')).token).toBe(profileOwner.record.token);
     } finally { close.mockRestore(); }
   });
 
@@ -252,7 +252,7 @@ describe('native durable state repositories', () => {
     const { root, dataRoot, profileOwner, open } = await fixture();
     const store = await open();
     await store.createTasks().save(tasks(), null);
-    const ownerFile = path.join(profileOwner.lockPath, 'owner.json');
+    const ownerFile = profileOwner.recordPath;
     const original = await fs.readFile(ownerFile, 'utf8');
     await fs.writeFile(ownerFile, JSON.stringify({ ...profileOwner.record, token: 'different' }));
     try {

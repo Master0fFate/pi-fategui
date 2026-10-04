@@ -127,7 +127,7 @@ async function fixture() {
 }
 
 async function assertOwnerHeld(owner: OwnerLock) {
-  const record = JSON.parse(await fs.readFile(path.join(owner.lockPath, 'owner.json'), 'utf8'));
+  const record = JSON.parse(await fs.readFile(owner.recordPath, 'utf8'));
   expect(record.token).toBe(owner.record.token);
   expect(record.resource).toBe(owner.record.resource);
 }
@@ -290,6 +290,13 @@ describe('native acquisition cleanup after synthetic ACL scope-finalization fail
       await expect(f.open(owner)).rejects.toThrow('already has an open writer');
       await assertOwnerHeld(owner);
       expect(f.release).not.toHaveBeenCalled();
+      // The core marked the lock for operator review. No later start recovers it after this
+      // process stops, and code cannot release it, this owner included.
+      expect((await fs.readdir(owner.lockPath)).sort()).toEqual([path.basename(owner.recordPath), 'review-required.json']);
+      await expect(owner.release()).rejects.toThrow(/retained for operator review/u);
+      await assertOwnerHeld(owner);
+      // The operator's act in this fixture, after the real close above: clear the marker.
+      await fs.unlink(path.join(owner.lockPath, 'review-required.json'));
       await owner.release();
       const nextOwner = await f.acquireProfile();
       await nextOwner.release();

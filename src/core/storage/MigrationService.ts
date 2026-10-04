@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { FatePaths } from '../FatePaths';
-import { OwnerLock, lockName } from '../ownership/OwnerLock';
+import { OwnerLock, lockName, ownerRecordPath } from '../ownership/OwnerLock';
 import { hostCheckoutLockRoot } from '../ownership/CheckoutOwnership';
 import { withPrivateWindowsAclScope } from './WindowsPrivateAcl';
 import { openFateDurableStore, verifyCompletedDurableImport, type FateDurableStore } from '../durable/FateDurableStore';
@@ -147,6 +147,8 @@ export class MigrationService {
       retain = error instanceof MigrationCloseUncertain;
       throw error;
     } finally {
+      // An unconfirmed native close keeps every lock for an operator, also after this process stops.
+      if (retain) await Promise.allSettled([owner, ...checkouts].map((lock) => lock.requireOperatorReview()));
       if (!retain) {
         const results = await Promise.allSettled(checkouts.reverse().map((lock) => lock.release()));
         if (results.some((result) => result.status === 'rejected')) throw new Error('Migration checkout release is uncertain; profile ownership retained.');
@@ -156,7 +158,7 @@ export class MigrationService {
   }
   private async assertOwner(owner: OwnerLock): Promise<void> {
     const record = z.object({ token: z.string(), resource: z.string() }).passthrough().parse(
-      await readMigrationJson(path.join(owner.lockPath, 'owner.json'), 4096));
+      await readMigrationJson(ownerRecordPath(owner.lockPath, owner.record.token), 4096));
     if (record.token !== owner.record.token || record.resource !== owner.record.resource) throw new Error('Migration profile owner changed; mutation is fenced.');
   }
   private backup(plan: MigrationPlan): string { return path.join(plan.backupRoot, plan.id); }

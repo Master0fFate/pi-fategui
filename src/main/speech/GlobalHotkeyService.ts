@@ -100,6 +100,7 @@ export class GlobalHotkeyService {
   private current: { cleanup: () => void } | null = null;
   private combo: KeyCombo | null = null;
   private active = false;
+  private disposed = false;
 
   constructor(logs: AppLogService, onStart: () => void, onStop: () => void,
     private readonly loadModule: () => Promise<UiohookModule> = () => import('uiohook-napi')) {
@@ -118,6 +119,8 @@ export class GlobalHotkeyService {
    *  hook. Returns the resulting status (push-to-talk may be unavailable). */
   async register(accelerator: string, mode: VoiceHotkeyMode): Promise<SpeechHotkeyStatus> {
     this.unregister();
+    // A settings save or a late startup step can arrive during quit. Nothing registers then.
+    if (this.disposed) return this.getStatus();
     if (mode === 'toggle') {
       const registered = globalShortcut.register(accelerator, () => this.toggle());
       if (!registered) {
@@ -129,7 +132,7 @@ export class GlobalHotkeyService {
     }
 
     const mod = await this.loadUiohook();
-    if (!mod) return this.getStatus();
+    if (!mod || this.disposed) return this.getStatus();
     const combo = parseAccelerator(accelerator, mod.UiohookKey);
     if (!combo) {
       return { pushToTalkAvailable: this.pushToTalkAvailable, reason: `The hotkey "${accelerator}" is not a recognizable key combination for push-to-talk.` };
@@ -177,6 +180,7 @@ export class GlobalHotkeyService {
 
   /** Release every registration and stop the native hook if it was started. */
   dispose(): void {
+    this.disposed = true;
     this.unregister();
     // Only a hook that push-to-talk started is stopped. Loading it here would start the global
     // keyboard hook on every quit only to stop it, and that native start can block the main
@@ -193,9 +197,12 @@ export class GlobalHotkeyService {
 
   private loadUiohook(): Promise<UiohookModule | null> {
     if (this.uiohookPromise) return this.uiohookPromise;
+    if (this.disposed) return Promise.resolve(null);
     this.uiohookPromise = (async () => {
       try {
         const mod = await this.loadModule();
+        // Quit began while the module was loading: the hook must not start now.
+        if (this.disposed) return null;
         mod.uIOhook.start();
         this.logs.write('info', 'speech', 'Global keyboard hook started for voice push-to-talk.');
         return mod;

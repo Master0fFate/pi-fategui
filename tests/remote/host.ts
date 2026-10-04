@@ -94,7 +94,10 @@ async function inspect() {
   for (const namespace of [server.core.paths.lockRoot, hostCheckoutLockRoot()]) {
     for (const name of await fs.readdir(namespace).catch(() => [] as string[])) {
       if (!/^(?:profile|checkout)-[a-f0-9]{64}\.lock$/u.test(name)) continue;
-      lockRecords.push({ directory: path.join(namespace, name), record: JSON.parse(await fs.readFile(path.join(namespace, name, 'owner.json'), 'utf8')) });
+      // The record is named after its owner's token.
+      const recordName = (await fs.readdir(path.join(namespace, name))).find((entry) => /^owner-[0-9a-f-]{36}\.json$/u.test(entry));
+      if (!recordName) throw new Error('Lock has no owner record');
+      lockRecords.push({ directory: path.join(namespace, name), record: JSON.parse(await fs.readFile(path.join(namespace, name, recordName), 'utf8')) });
     }
   }
   return { ...identity, sessionId, workspaceId: handle.id, workspaceGeneration: handle.generation,

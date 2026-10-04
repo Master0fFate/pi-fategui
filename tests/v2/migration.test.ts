@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FatePaths } from '../../src/core/FatePaths';
 import { MigrationService } from '../../src/core/storage/MigrationService';
-import { OwnerLock } from '../../src/core/ownership/OwnerLock';
+import { OwnerLock, findOwnerRecord } from '../../src/core/ownership/OwnerLock';
 import { hostCheckoutLockRoot } from '../../src/core/ownership/CheckoutOwnership';
 import { openFateDurableStore } from '../../src/core/durable/FateDurableStore';
 import { fingerprintMigrationFile } from '../../src/core/storage/MigrationFiles';
@@ -210,7 +210,7 @@ describe('explicit native state migration', () => {
     try {
       expect((await f.service.dryRun()).errors.join(' ')).toContain('ownership is uncertain');
       await expect(f.service.apply(plan)).rejects.toThrow('Owner already in use');
-      expect(JSON.parse(await fs.readFile(path.join(owner.lockPath, 'owner.json'), 'utf8')).token).toBe(owner.record.token);
+      expect(JSON.parse(await fs.readFile(owner.recordPath, 'utf8')).token).toBe(owner.record.token);
     } finally { await owner.release(); }
   });
   it('rejects changed source and cross-host plans before backup or staging', async () => {
@@ -312,7 +312,7 @@ describe('explicit native state migration', () => {
       checkpoint: async (at) => {
         if (at !== 'before-activation') return;
         const name = (await fs.readdir(f.paths.lockRoot)).find((item) => item.startsWith('profile-'))!;
-        const ownerFile = path.join(f.paths.lockRoot, name, 'owner.json');
+        const ownerFile = (await findOwnerRecord(path.join(f.paths.lockRoot, name)))!;
         const owner = JSON.parse(await fs.readFile(ownerFile, 'utf8'));
         await fs.writeFile(ownerFile, JSON.stringify({ ...owner, token: randomUUID() }));
       } });

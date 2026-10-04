@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { Storage } from '@earendil-works/pi-durable';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
-import { OwnerLock, canonicalFuturePath } from '../ownership/OwnerLock';
+import { OwnerLock, canonicalFuturePath, ownerRecordPath } from '../ownership/OwnerLock';
 import { assertPrivateWindowsAcl, assertPrivateWindowsAcls, withPrivateWindowsAclScope } from '../storage/WindowsPrivateAcl';
 
 export interface OwnedDurableStorageOptions {
@@ -99,7 +99,7 @@ async function openOwnedDurableStorageWithinScope(options: OwnedDurableStorageOp
     // admission. A PowerShell process for every native document read/commit
     // would put model streaming on a subprocess-per-record critical path.
     await privatePath(options.profileOwner.lockPath, true, false);
-    const ownerPath = path.join(options.profileOwner.lockPath, 'owner.json');
+    const ownerPath = ownerRecordPath(options.profileOwner.lockPath, options.profileOwner.record.token);
     await privatePath(ownerPath, false, false);
     const stat = await fs.stat(ownerPath);
     if (stat.size > 4096) throw new Error('Native durable profile owner record is invalid.');
@@ -111,7 +111,7 @@ async function openOwnedDurableStorageWithinScope(options: OwnedDurableStorageOp
   };
   await assertOwnership();
   await privatePath(root, true, false);
-  await assertPrivateWindowsAcls([options.profileOwner.lockPath, path.join(options.profileOwner.lockPath, 'owner.json'), root]);
+  await assertPrivateWindowsAcls([options.profileOwner.lockPath, ownerRecordPath(options.profileOwner.lockPath, options.profileOwner.record.token), root]);
 
   // Resolve capability before creating any new state. Electron/Node builds without
   // node:sqlite fail explicitly rather than quietly falling back to weaker storage.

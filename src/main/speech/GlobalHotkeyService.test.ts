@@ -64,4 +64,33 @@ describe('GlobalHotkeyService native hook lifetime', () => {
     expect(uIOhook.start).toHaveBeenCalledOnce();
     expect(uIOhook.removeListener).toHaveBeenCalledOnce();
   });
+
+  it('does not start the keyboard hook for a registration that arrives after quit began', async () => {
+    const { uIOhook, load, service } = fixture();
+    service.dispose();
+    // A settings save or a late startup step during shutdown.
+    await expect(service.applySpeechSettings({ enabled: true, voiceHotkey: 'Control+Space', voiceHotkeyMode: 'push-to-talk' })).resolves.toEqual({ pushToTalkAvailable: true });
+    await settle();
+    expect(load).not.toHaveBeenCalled();
+    expect(uIOhook.start).not.toHaveBeenCalled();
+    expect(uIOhook.on).not.toHaveBeenCalled();
+  });
+
+  it('does not start the keyboard hook when quit begins while its module is loading', async () => {
+    const { uIOhook, load, service } = fixture();
+    let loaded!: () => void;
+    const gate = new Promise<void>((resolve) => { loaded = resolve; });
+    const module = await load();
+    load.mockClear();
+    load.mockImplementationOnce(async () => { await gate; return module; });
+    const registration = service.register('Control+Space', 'push-to-talk');
+    service.dispose();
+    loaded();
+    await expect(registration).resolves.toEqual({ pushToTalkAvailable: true });
+    await settle();
+    expect(load).toHaveBeenCalledOnce();
+    expect(uIOhook.start).not.toHaveBeenCalled();
+    expect(uIOhook.on).not.toHaveBeenCalled();
+    expect(uIOhook.stop).not.toHaveBeenCalled();
+  });
 });

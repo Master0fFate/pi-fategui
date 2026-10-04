@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import type { DatabaseSync } from 'node:sqlite';
 import { apply, assertValidOp, type Op } from '@earendil-works/chord/delta';
 import { z } from 'zod';
-import { OwnerLock, canonicalFuturePath } from '../ownership/OwnerLock';
+import { OwnerLock, canonicalFuturePath, ownerRecordPath } from '../ownership/OwnerLock';
 import { DurableStorageCloseUncertainError } from '../durable/OwnedDurableStorage';
 import { assertPrivateWindowsAcl } from '../storage/WindowsPrivateAcl';
 
@@ -119,7 +119,7 @@ export async function inspectOwnedNativeWorkflowRecovery(options: InspectOwnedNa
     try {
       const directory = await fs.lstat(options.profileOwner.lockPath, { bigint: true });
       if (!directory.isDirectory() || directory.isSymbolicLink() || process.platform !== 'win32' && (directory.mode & 0o077n) !== 0n) throw new Error('Invalid owner directory.');
-      const ownerFile = path.join(options.profileOwner.lockPath, 'owner.json');
+      const ownerFile = ownerRecordPath(options.profileOwner.lockPath, options.profileOwner.record.token);
       const stat = await fs.lstat(ownerFile, { bigint: true });
       if (!regular(stat) || stat.size > 4096n) throw new Error('Invalid owner record.');
       const owner: unknown = JSON.parse(await fs.readFile(ownerFile, 'utf8'));
