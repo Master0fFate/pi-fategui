@@ -17,6 +17,7 @@
   "bugs": "https://github.com/Master0fFate/pi-fategui/issues",
   "license": "Apache-2.0",
   "scripts": {
+    "postinstall": "node scripts/ensure-node-pty-helper.mjs",
     "clean": "rimraf dist release",
     "dev:renderer": "vite --config vite.renderer.config.ts --host 127.0.0.1",
     "dev:main": "vite build --config vite.main.config.ts --watch",

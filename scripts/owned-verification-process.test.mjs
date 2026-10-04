@@ -17,7 +17,10 @@ test('owned verification observes an ordinary child and refuses pre-cancelled la
   assert.equal(cancelled.started, false); assert.equal(cancelled.cancelled, 'SIGINT');
 }, ownedTestTimeout);
 
-test('cancellation stops the owned process tree before a descendant delayed effect', async () => {
+// This case owns a real process tree and writes inside the verifier's private
+// root. The plain unit run (`pnpm test`) has no such root, so the case is
+// reported as skipped there. `pnpm verify:v2` supplies the root and runs it.
+test.skipIf(!process.env.FATE_V2_TEST_ROOT)('cancellation stops the owned process tree before a descendant delayed effect', async () => {
   assert(process.env.FATE_V2_TEST_ROOT, 'Use a private isolated test root');
   const directory = await mkdtemp(path.join(process.env.FATE_V2_TEST_ROOT, 'owned-verification-'));
   const marker = path.join(directory, 'descendant-effect');

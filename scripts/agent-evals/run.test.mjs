@@ -97,7 +97,9 @@ writeFileSync(new URL('candidate.pid', import.meta.url), String(process.pid));
 writeFileSync(new URL('candidate.ppid', import.meta.url), String(process.ppid));
 export function recoverMessages() {}
 process.on('SIGTERM', () => {}); while (true) {}`);
-    const result = await evaluate({ caseId: 'delivery-recovery', workspace: root, timeout: 1500 });
+    // The candidate must start and record its PID before it is stopped. A loaded
+    // runner needs more than 1.5 s to start that Node child.
+    const result = await evaluate({ caseId: 'delivery-recovery', workspace: root, timeout: 6000 });
     expect(result).toMatchObject({ success: false, timedOut: true });
     const pid = Number(await fs.readFile(path.join(root, 'candidate.pid'), 'utf8'));
     expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
@@ -105,7 +107,7 @@ process.on('SIGTERM', () => {}); while (true) {}`);
     expect(() => process.kill(pid, 0)).toThrow();
     await fs.rm(root, { recursive: true, force: true, maxRetries: process.platform === 'win32' ? 3 : 0, retryDelay: 100 });
     await expect(fs.stat(root)).rejects.toMatchObject({ code: 'ENOENT' });
-  });
+  }, 30_000);
 
   it('validates reported metrics and rejects incompatible baselines', async () => {
     const root = await workspace(corrected);

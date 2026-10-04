@@ -643,7 +643,9 @@ describe('GitService', { timeout: 30_000 }, () => {
     const git = new GitService(files);
     await expect(git.status()).resolves.toMatchObject({ truncated: true });
     await expect(git.combinedDiff()).resolves.toMatchObject({ truncated: true });
-  }, 60_000);
+    // 10,001 files and two full scans: 27-45 s on the hosted macOS Intel runner
+    // in earlier runs, 62 s in one. The cap assertions are unchanged.
+  }, 180_000);
 
   it('returns changed-file counts and bounded previews for Unicode and spaced paths', async () => {
     const root = await repository();
