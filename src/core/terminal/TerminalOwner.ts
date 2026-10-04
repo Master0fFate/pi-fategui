@@ -147,7 +147,9 @@ export class TerminalOwner {
           if (this.terminals.get(id) !== terminal) return;
           const notify = !terminal.closed;
           this.terminals.delete(id); // Only an actual native exit releases the owner/slot.
-          this.rememberExit(identity, id);
+          // Only a session that was still open: one that the host closed (a disconnect, lost
+          // control) keeps refusing every later frame, so nothing is replayed into it.
+          if (notify) this.rememberExit(identity, id);
           this.closeChannel(terminal);
           this.releaseListener(terminal.exit);
           delete terminal.exit;
