@@ -22,6 +22,7 @@ overrides:
 patchedDependencies:
   '@earendil-works/pi-ai@1.0.0': 4bcde4a30fe8d53cc25479918cac3539628a6968def978de5786e92b87c1a032
   '@earendil-works/pi-coding-agent@1.0.0': 9c04e2c48437d6b5f814b27fe56af0bd615934c4a153f8d12e47bf84d2e284e2
+  app-builder-lib@26.15.3: b5e0ab623a375981aa1586d67d23f4868c58eb8c0b04d9dffafd1b1108299ae0
   node-pty@1.1.0: 2b455fb76d545f5675726929a6727582f3eb3f16f03646ce7969800ee5dc38df
   react-remove-scroll@2.7.2: 7814906b2704c7fa6f363643a985ccd0b143dc873af6d5c05edda3fb3982b203
 
@@ -6106,7 +6107,7 @@ snapshots:
       normalize-path: 3.0.0
       picomatch: 2.3.2
 
-  app-builder-lib@26.15.3(dmg-builder@26.15.3)(electron-builder-squirrel-windows@26.15.3)(supports-color@10.2.2):
+  app-builder-lib@26.15.3(patch_hash=b5e0ab623a375981aa1586d67d23f4868c58eb8c0b04d9dffafd1b1108299ae0)(dmg-builder@26.15.3)(electron-builder-squirrel-windows@26.15.3)(supports-color@10.2.2):
     dependencies:
       '@electron/asar': 3.4.1
       '@electron/fuses': 1.8.0
@@ -6729,7 +6730,7 @@ snapshots:
 
   dmg-builder@26.15.3(electron-builder-squirrel-windows@26.15.3)(supports-color@10.2.2):
     dependencies:
-      app-builder-lib: 26.15.3(dmg-builder@26.15.3)(electron-builder-squirrel-windows@26.15.3)(supports-color@10.2.2)
+      app-builder-lib: 26.15.3(patch_hash=b5e0ab623a375981aa1586d67d23f4868c58eb8c0b04d9dffafd1b1108299ae0)(dmg-builder@26.15.3)(electron-builder-squirrel-windows@26.15.3)(supports-color@10.2.2)
       builder-util: 26.15.3(supports-color@10.2.2)
       fs-extra: 10.1.0
       js-yaml: 4.3.1
@@ -6777,7 +6778,7 @@ snapshots:
 
   electron-builder-squirrel-windows@26.15.3(dmg-builder@26.15.3)(supports-color@10.2.2):
     dependencies:
-      app-builder-lib: 26.15.3(dmg-builder@26.15.3)(electron-builder-squirrel-windows@26.15.3)(supports-color@10.2.2)
+      app-builder-lib: 26.15.3(patch_hash=b5e0ab623a375981aa1586d67d23f4868c58eb8c0b04d9dffafd1b1108299ae0)(dmg-builder@26.15.3)(electron-builder-squirrel-windows@26.15.3)(supports-color@10.2.2)
       builder-util: 26.15.3(supports-color@10.2.2)
       electron-winstaller: 5.4.0(supports-color@10.2.2)
     transitivePeerDependencies:
@@ -6786,7 +6787,7 @@ snapshots:
 
   electron-builder@26.15.3(electron-builder-squirrel-windows@26.15.3)(supports-color@10.2.2):
     dependencies:
-      app-builder-lib: 26.15.3(dmg-builder@26.15.3)(electron-builder-squirrel-windows@26.15.3)(supports-color@10.2.2)
+      app-builder-lib: 26.15.3(patch_hash=b5e0ab623a375981aa1586d67d23f4868c58eb8c0b04d9dffafd1b1108299ae0)(dmg-builder@26.15.3)(electron-builder-squirrel-windows@26.15.3)(supports-color@10.2.2)
       builder-util: 26.15.3(supports-color@10.2.2)
       builder-util-runtime: 9.7.0(supports-color@10.2.2)
       chalk: 4.1.2

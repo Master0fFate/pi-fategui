@@ -9,7 +9,9 @@ const controls = ['.sidebar-toolbar-action > button', '.icon-button', '.composer
 async function checkCenters(page: Page, selectors: string[]) {
   for (const selector of selectors) {
     const buttons = page.locator(`${selector}:visible`);
-    expect(await buttons.count(), selector).toBeGreaterThan(0);
+    // Still required. A control can render after its panel (the main process
+    // creates the first browser tab), so wait for one; do not sample an instant.
+    await expect(buttons.first(), selector).toBeVisible();
     for (const button of await buttons.all()) {
       const svg = button.locator(':scope > svg');
       await expect(svg).toHaveCount(1);

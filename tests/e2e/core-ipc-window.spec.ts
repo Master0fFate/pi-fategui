@@ -13,6 +13,10 @@ async function assertNativeDatabase(data: string): Promise<void> {
   } finally { await handle.close(); }
 }
 
+// A cold production launch on a hosted runner can need more than the 10 s
+// default before the bridge reports ready. The readiness check is unchanged.
+const READY = { timeout: 45_000 };
+
 for (const backend of ['legacy-json', 'native-durable'] as const) {
 test(`[${backend}] production core opens a second trusted window without another runtime owner and restarts`, async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'fate-core-window-e2e-'));
@@ -30,11 +34,11 @@ test(`[${backend}] production core opens a second trusted window without another
   try {
     application = await launch(true);
     const first = await application.firstWindow();
-    await expect(first.locator('[data-bridge-status="ready"]')).toBeVisible();
+    await expect(first.locator('[data-bridge-status="ready"]')).toBeVisible(READY);
     const opened = application.waitForEvent('window');
     await first.evaluate(() => window.piDesktop.newWindow());
     const second = await opened;
-    await expect(second.locator('[data-bridge-status="ready"]')).toBeVisible();
+    await expect(second.locator('[data-bridge-status="ready"]')).toBeVisible(READY);
     const [a, b] = await Promise.all([
       first.evaluate(() => window.piDesktop.getRuntimeState()),
       second.evaluate(() => window.piDesktop.getRuntimeState()),
@@ -48,7 +52,7 @@ test(`[${backend}] production core opens a second trusted window without another
     // silently ignored or replaced by an empty legacy owner.
     application = await launch(false);
     const restarted = await application.firstWindow();
-    await expect(restarted.locator('[data-bridge-status="ready"]')).toBeVisible();
+    await expect(restarted.locator('[data-bridge-status="ready"]')).toBeVisible(READY);
     expect((await restarted.evaluate(() => window.piDesktop.getRuntimeState())).project).toBeNull();
     if (backend === 'native-durable') await assertNativeDatabase(data);
   } finally {
@@ -65,7 +69,7 @@ test(`[${backend}] production IPC captures the trusted project for files, Git, M
     const projectA = path.join(root, 'A');
     const projectB = path.join(root, 'B');
     const data = path.join(root, 'data');
-    await Promise.all([mkdir(projectA), mkdir(projectB), mkdir(data)]);
+    await Promise.all([mkdir(projectA), mkdir(projectB), mkdir(data, { mode: 0o700 })]);
     const [a, b] = await Promise.all([realpath(projectA), realpath(projectB)]);
     await Promise.all([writeFile(path.join(a, 'sentinel.txt'), 'A only'), writeFile(path.join(b, 'sentinel.txt'), 'B only'),
       writeFile(path.join(data, 'trusted-projects.json'), JSON.stringify({ version: 1, paths: [a, b] }))]);
@@ -76,7 +80,7 @@ test(`[${backend}] production IPC captures the trusted project for files, Git, M
         PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_OFFLINE: '1', FATE_STATE_PERSISTENCE: backend },
     });
     const first = await application.firstWindow();
-    await expect(first.locator('[data-bridge-status="ready"]')).toBeVisible();
+    await expect(first.locator('[data-bridge-status="ready"]')).toBeVisible(READY);
     await expect.poll(() => first.evaluate(() => window.piDesktop.getRuntimeState().then((state) => state.project?.path)),
       { timeout: 45_000 }).toBe(a);
     const snapshot = await first.evaluate(async () => ({

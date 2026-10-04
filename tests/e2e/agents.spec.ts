@@ -135,7 +135,10 @@ for (const skin of ['default', 'dreamcore', 'm3-expressive'] as const) {
         })());
       }))).toBe(true);
       await page.getByRole('button', { name: 'Open home conversation', exact: true }).click();
-      expect((await page.evaluate(async () => (await window.piDesktop.getAgentLibrary()).states[0]!)).homeSessionId).toBe(home.homeSessionId);
+      // Opening the home conversation saves the Agent state. A library read that
+      // meets that save is refused by design (reported as a diagnostic), so wait
+      // for the settled state; do not sample once.
+      await expect.poll(() => page.evaluate(async () => (await window.piDesktop.getAgentLibrary()).states[0]?.homeSessionId ?? null)).toBe(home.homeSessionId);
       await agents(page);
 
       await section(page, 'TaskTemplates');

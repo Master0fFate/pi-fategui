@@ -1,0 +1,27 @@
+diff --git a/out/node-module-collector/pnpmNodeModulesCollector.js b/out/node-module-collector/pnpmNodeModulesCollector.js
+index 8853912e013d3769f3e763d06720a94091a7ffaa..3445520f62552b702a647dd2a108a5d25bf8f099 100644
+--- a/out/node-module-collector/pnpmNodeModulesCollector.js
++++ b/out/node-module-collector/pnpmNodeModulesCollector.js
+@@ -154,12 +154,18 @@ class PnpmNodeModulesCollector extends nodeModulesCollector_1.NodeModulesCollect
+             const id = `${key}@${value.version}`;
+             // The pnpm list output can include the same `name@version` thousands of times across a
+             // deep workspace; without this guard we re-resolve and re-recurse each occurrence.
+-            if (this.collectedDeps.has(id)) {
++            // Fate UI patch: pnpm can install one `name@version` more than once (peer variants),
++            // and lists the full subtree of a package under only one of those instances. The
++            // guard therefore includes the install path, or those subtrees are never walked.
++            const visited = `${id}\0${(_a = value.path) !== null && _a !== void 0 ? _a : ''}`;
++            if (this.collectedDeps.has(visited)) {
+                 return;
+             }
+-            this.collectedDeps.add(id);
+-            const pkg = await this.locateFromDepOrRoot(key, value.path, value.version);
+-            this.allDependencies.set(id, { ...value, path: (_b = pkg === null || pkg === void 0 ? void 0 : pkg.packageDir) !== null && _b !== void 0 ? _b : value.path });
++            this.collectedDeps.add(visited);
++            if (!this.allDependencies.has(id)) {
++                const pkg = await this.locateFromDepOrRoot(key, value.path, value.version);
++                this.allDependencies.set(id, { ...value, path: (_b = pkg === null || pkg === void 0 ? void 0 : pkg.packageDir) !== null && _b !== void 0 ? _b : value.path });
++            }
+             await this.collectDepsRecursively(value);
+         };
+         for (const [key, value] of Object.entries(tree.dependencies || {})) {

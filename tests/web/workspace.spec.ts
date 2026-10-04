@@ -25,6 +25,9 @@ test('saved history pages and permission reductions use actual browser transport
   await client.page.getByRole('button', { name: 'Request permission review', exact: true }).click();
   await client.page.getByRole('button', { name: 'Confirm permission change', exact: true }).click();
   await expect.poll(async () => (await host.inspect()).runtime.permissionLevel).toBe('read-only');
+  // The host applies the level before its reply reaches the proxy. Wait for
+  // the actual recorded reply (as the later reduction below does), not for luck.
+  await expect.poll(() => host.proxy.commands.filter((entry) => entry.method === 'permission.confirm' && entry.response?.ok === true).length).toBe(1);
   expect(host.captured(client, 'permission.confirm').response).toMatchObject({ ok: true, result: { level: 'read-only', applied: true } });
   expect((await host.inspect()).invocations.filter((entry) => entry.kind === 'prompt')).toHaveLength(0);
 
