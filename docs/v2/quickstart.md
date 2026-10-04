@@ -1,6 +1,6 @@
 # V2 candidate setup
 
-**Read [candidate status](current-status.md) and [security and limits](security-and-limits.md) before installation.** V2 is a source candidate, not an accepted release. The procedures below reflect the implemented command grammar; their clean-fixture execution against the final candidate is pending. They are not package publication, migration or platform-acceptance receipts.
+**Read [candidate status](current-status.md) and [security and limits](security-and-limits.md) before installation.** V2 is published as the pre-release 2.0.0-beta for beta testers, not as a final release. The procedures below reflect the implemented command grammar; their clean-fixture execution against the final candidate is pending. They are not package publication, migration or platform-acceptance receipts.
 
 ## Choose the execution host
 
@@ -12,7 +12,7 @@ The network client has fewer capabilities than local desktop. In particular, it 
 
 ## Local desktop
 
-Use the [desktop installation guide](../../README.md#get-started-in-60-seconds) for a published desktop build. An existing release download is not evidence that it contains this candidate. For source work, use [development instructions](../development.md) and record the selected commit and exact dependencies.
+Use the [desktop installation guide](../../README.md#get-started-in-60-seconds) for a published desktop build. Only the 2.0.0-beta pre-release contains V2; the stable 1.1 downloads do not. For source work, use [development instructions](../development.md) and record the selected commit and exact dependencies.
 
 ```sh
 fate /absolute/path/to/project

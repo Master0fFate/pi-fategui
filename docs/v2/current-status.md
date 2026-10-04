@@ -4,7 +4,7 @@
 
 ## Source and version
 
-The published baseline is [`v2-native-pi-durable` commit `dcfadfc83c6be7f654f5fe8013f67eeedff1fc69`](https://github.com/Master0fFate/pi-fategui/commit/dcfadfc83c6be7f654f5fe8013f67eeedff1fc69). The consumer continuation is committed on that branch and proposed for `main` in [pull request 49](https://github.com/Master0fFate/pi-fategui/pull/49). Its hosted runs name the exact commit they checked; local verification reports identify their source by a source-byte manifest. No release or deployment has been made from it.
+The published baseline is [`v2-native-pi-durable` commit `dcfadfc83c6be7f654f5fe8013f67eeedff1fc69`](https://github.com/Master0fFate/pi-fategui/commit/dcfadfc83c6be7f654f5fe8013f67eeedff1fc69). That branch is now merged into `main`, and the tag `v2.0.0-beta` is published from it as a pre-release. The hosted release run built, installed and smoke-checked the installers of that tag on all four runners. The final 2.0.0 release has not been made.
 
 Two defects were found only when the hosted runners packaged V2 for the first time, and both are repaired in source. The installers omitted 165 runtime libraries: pnpm installs two peer variants of one Pi package version and lists the shared subtree under only one of them, and the packager remembered visited packages by name and version alone (`patches/app-builder-lib@26.15.3.patch`). The standard Pi themes were missing on a clean profile: Pi 1.0 writes its bundled themes with `okhsl()` colors, which the theme reader rejected. A developer profile with its own Pi themes hid that defect from the local packaged smoke, so the smoke now requires the two bundled themes by name.
 
@@ -16,7 +16,7 @@ Historical presentation evidence below belongs to [`4238ee090e6a2bb06d6447ae54dc
 
 The combined presentation increment passed 61 focused tests, full TypeScript checking and a web build; 143 emitted JavaScript files had no unresolved local modules. These local checks cover the repaired presentation scope. No browser/native/application run or hosted check/run result was recorded for that increment, and it does not supply full V2, backend or platform acceptance.
 
-`package.json` and `PRODVER` still identify the application as **1.1.0**. That does not identify a newly accepted V2 artifact, prove compatibility with another 1.1.0 binary, or mean these changes are in `main`. The retained branches are `main`, `backup/main-before-m4-02518314500b`, and `v2-native-pi-durable`. The old `windows-m5-verification` and `v2-preparation-linux` branches were intentionally deleted. Use exact published commits when comparing evidence.
+At the tip of `main`, `package.json` and `PRODVER` stay at **1.1.0** while the beta is in testing. Installed stable copies read `PRODVER` from `main` for their update check, and they must not be offered the beta. The tag `v2.0.0-beta` carries the version `2.0.0-beta`. `main` is the only branch; the earlier V2, verification and backup branches were merged or deleted, and the tag `archive/main-before-m4` keeps the old backup commits. Use exact published commits when comparing evidence.
 
 The [M5 Linux handoff](M5-linux-handoff.md), [Windows prompt](M5-Windows-verification-prompt.md), and [preparation record](M5-linux-preparation.md) preserve historical source bindings, counts and artifact receipts. Their commands, branch names, limits and acceptance statements are not current instructions. Missing older unpublished source has not been recovered and contributes no current acceptance evidence.
 
