@@ -1354,10 +1354,28 @@ export class AgentTeamCoordinator {
   private assertWorkspacePolicy(node: AgentTeamNode, requested?: AgentWorkspaceRequest): void {
     const policy = this.workspacePolicy();
     // Legacy restored nodes without metadata inherited the root checkout and are therefore shared.
-    const mode = requested?.mode ?? node.workspace?.mode ?? 'shared';
+    const mode = requested?.mode ?? this.effectiveWorkspaceMode(node);
     if (policy.strict && mode !== policy.preferredMode) {
       throw new Error(`Global Agent workspace policy strictly requires ${policy.preferredMode}; requested ${mode} is refused. Use Settings > Agent to change the policy.`);
     }
+  }
+
+  /**
+   * The isolation an agent really has. A shared child of an agent that works in an isolated
+   * worktree works in that worktree, so it is isolated from the project checkout too.
+   */
+  private effectiveWorkspaceMode(node: AgentTeamNode): AgentWorkspaceRequest['mode'] {
+    const team = [...this.teamsById.values()].find((candidate) => candidate.nodes.get(node.id) === node);
+    let cursor: AgentTeamNode | undefined = node;
+    for (let hops = 0; cursor && hops < 64; hops += 1) {
+      const workspace = cursor.workspace;
+      if (!workspace) return 'shared';
+      if (workspace.mode === 'worktree') return 'worktree';
+      const parent: AgentTeamNode | undefined = cursor.parentNodeId ? team?.nodes.get(cursor.parentNodeId) : undefined;
+      if (!parent?.workspace || this.checkoutKey(parent.workspace.path) !== this.checkoutKey(workspace.path)) return 'shared';
+      cursor = parent;
+    }
+    return 'shared';
   }
 
   getWorkspacePolicy(): AgentWorkspacePolicy & { explanation: string } {
@@ -1366,7 +1384,7 @@ export class AgentTeamCoordinator {
       ...policy,
       explanation: policy.strict
         ? `Global strict policy requires ${policy.preferredMode} for future executable admissions; incompatible workspace modes are refused.`
-        : `Global preference defaults future spawns to ${policy.preferredMode}; an explicit per-spawn workspace mode may override it.`,
+        : `Global preference defaults future spawns to ${policy.preferredMode}; an explicit per-spawn workspace mode may override it. A child of an agent that already works in an isolated worktree stays in that worktree unless its parent requests a mode.`,
     };
   }
 
@@ -1380,12 +1398,17 @@ export class AgentTeamCoordinator {
   }
 
   private async provisionWorkspace(runtime: AgentTeamRuntime, parent: AgentTeamNode, node: AgentTeamNode, requested?: AgentWorkspaceRequest): Promise<(() => void) | undefined> {
+    // An agent that already works in an isolated worktree keeps its own children in that worktree
+    // unless it asks for something else. The global preference decides only the step out of the
+    // project checkout. Such a shared child is isolated, and the policy judges it as isolated.
+    const isolatedParent = this.effectiveWorkspaceMode(parent) === 'worktree';
+    const judged = (choice: AgentWorkspaceRequest): AgentWorkspaceRequest => choice.mode === 'shared' && isolatedParent ? { mode: 'worktree' } : choice;
     // New nodes start with provisional shared metadata; only an explicit request is meaningful before selection.
-    if (requested) this.assertWorkspacePolicy(node, requested);
+    if (requested) this.assertWorkspacePolicy(node, judged(requested));
     const parentPath = await this.validateNodeWorkspace(runtime, parent);
     // Resolve omission only after async validation so a just-saved preference applies before any Git mutation.
-    const choice = requested ?? { mode: this.workspacePolicy().preferredMode };
-    this.assertWorkspacePolicy(node, choice);
+    const choice = requested ?? { mode: isolatedParent ? 'shared' as const : this.workspacePolicy().preferredMode };
+    this.assertWorkspacePolicy(node, judged(choice));
     if (choice.mode === 'shared') {
       node.workspace = { mode: 'shared', path: parentPath, parentPath, state: 'ready' };
       return;

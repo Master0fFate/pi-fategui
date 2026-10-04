@@ -60,7 +60,7 @@ export function createAgentCollaborationTools(
   const caller = (sessionId: string, requestedTeamId?: string) => callerNodeId ?? coordinator.rootNodeId(sessionId, requestedTeamId);
   const workspacePolicyTool = defineTool({
     name: 'get_agent_workspace_policy', label: 'Get Agent workspace policy', promptSnippet: 'Inspect the current global Agent workspace policy',
-    description: 'Read the live global preference for future Agent Team executable admissions. Omitted spawn workspace uses preferredMode; strict policy rejects incompatible requested modes. Change it only in Settings > Agent.',
+    description: 'Read the live global preference for future Agent Team executable admissions. Omitted spawn workspace uses preferredMode, except that a child of an agent in an isolated worktree stays in that worktree; strict policy rejects incompatible requested modes. Change it only in Settings > Agent.',
     parameters: Type.Object({}, { additionalProperties: false }), executionMode: 'parallel',
     execute: async () => {
       const policy = coordinator.getWorkspacePolicy();
@@ -108,8 +108,8 @@ export function createAgentCollaborationTools(
   return [
     defineTool({
       name: 'spawn_agent', label: 'Spawn agent', promptSnippet: 'Create one direct child agent',
-      description: 'Create a direct child in the current agent tree and start its initial task. Omit workspace to use the live global preference; an explicit mode overrides only when global strict mode is off. Worktrees are not security sandboxes. Depth, total nodes, active turns, authority, context, and per-checkout writer leases are enforced atomically.',
-      promptGuidelines: ['Delegate one bounded outcome.', 'Omit workspace to use the global preference. When policy is soft, shared children inherit the caller checkout and isolated worktrees require parent review; strict policy rejects an incompatible explicit mode.', 'Worktrees start from committed files; uncommitted parent changes stay behind. Choose shared explicitly if the task needs those files and strict policy permits it.', 'Capacity errors are explicit; wait for existing work and retry.'],
+      description: 'Create a direct child in the current agent tree and start its initial task. Omit workspace to use the live global preference, or, when you already work in an isolated worktree, to keep the child in your worktree; an explicit mode overrides only when global strict mode is off. Worktrees are not security sandboxes. Depth, total nodes, active turns, authority, context, and per-checkout writer leases are enforced atomically.',
+      promptGuidelines: ['Delegate one bounded outcome.', 'Omit workspace to use the global preference; if you already work in an isolated worktree, an omitted workspace keeps the child in your worktree, and you request mode worktree to give it its own. When policy is soft, shared children inherit the caller checkout and isolated worktrees require parent review; strict policy rejects an incompatible explicit mode.', 'Worktrees start from committed files; uncommitted parent changes stay behind. Choose shared explicitly if the task needs those files and strict policy permits it.', 'Capacity errors are explicit; wait for existing work and retry.'],
       parameters: spawnParameters, executionMode: 'sequential',
       execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
         const receipt = await coordinator.spawn(caller(ctx.sessionManager.getSessionId(), params.teamId), params, toolCallId, modelRuntime, signal);

@@ -436,6 +436,48 @@ describe('AgentTeamCoordinator vertical slice', () => {
     expect(createdInputs.at(-1)!.projectPath).toBe(child.workspace!.path);
   }, 30_000);
 
+  it('keeps the child of an isolated agent in that agent\'s worktree unless the agent asks otherwise', async () => {
+    const repository = await fs.mkdtemp(path.join(dataRoot, 'repository-'));
+    execFileSync('git', ['init'], { cwd: repository });
+    execFileSync('git', ['config', 'user.email', 'agent@example.test'], { cwd: repository });
+    execFileSync('git', ['config', 'user.name', 'Agent Test'], { cwd: repository });
+    await fs.writeFile(path.join(repository, 'tracked.txt'), 'base\n');
+    execFileSync('git', ['add', '.'], { cwd: repository });
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: repository });
+    const root = rootSession();
+    let policy: { preferredMode: 'worktree' | 'shared'; strict: boolean } = { preferredMode: 'worktree', strict: false };
+    const coordinator = new AgentTeamCoordinator({ resolveRoot: () => ({ projectPath: repository, session: root, permissionLevel: 'full-access' }), getAgentWorkspacePolicy: () => policy, emit: () => undefined, persist: () => undefined }, dataRoot, undefined, new AgentWorkspaceGitService(path.join(dataRoot, 'managed')));
+    const rootId = coordinator.rootNodeId('root-session');
+    const workspaceOf = (nodeId: string) => coordinator.getTeams('root-session')[0]!.nodes.find((node) => node.id === nodeId)!.workspace!;
+
+    // The first step out of the project checkout follows the global preference: an own worktree.
+    const isolated = await coordinator.spawn(rootId, { task: 'isolate', name: 'isolated', permission: 'full-access' }, 'nested-isolated', runtime());
+    await settle();
+    const worktree = workspaceOf(isolated.nodeId);
+    expect(worktree).toMatchObject({ mode: 'worktree', state: 'ready', parentPath: repository });
+
+    // Its own child, with no workspace requested, stays in that same worktree.
+    const inherited = await coordinator.spawn(isolated.nodeId, { task: 'help', name: 'helper', permission: 'read-only' }, 'nested-inherited', runtime());
+    await settle();
+    expect(workspaceOf(inherited.nodeId)).toMatchObject({ mode: 'shared', state: 'ready', path: worktree.path, parentPath: worktree.path });
+    expect(createdInputs.at(-1)?.projectPath).toBe(worktree.path);
+
+    // The agent that spawns decides otherwise by asking: its child then gets a worktree of its own.
+    const own = await coordinator.spawn(isolated.nodeId, { task: 'separate', name: 'separate', permission: 'full-access', workspace: { mode: 'worktree' } }, 'nested-own', runtime());
+    await settle();
+    const separate = workspaceOf(own.nodeId);
+    expect(separate).toMatchObject({ mode: 'worktree', state: 'ready', parentPath: worktree.path });
+    expect(separate.path).not.toBe(worktree.path);
+
+    // A strict worktree policy accepts the inherited child: it is isolated from the project checkout.
+    policy = { preferredMode: 'worktree', strict: true };
+    const strict = await coordinator.spawn(isolated.nodeId, { task: 'strict help', name: 'strict-helper', permission: 'read-only' }, 'nested-strict', runtime());
+    await settle();
+    expect(workspaceOf(strict.nodeId)).toMatchObject({ mode: 'shared', path: worktree.path });
+    // The same policy still refuses a shared child of the project checkout itself.
+    await expect(coordinator.spawn(rootId, { task: 'shared at root', name: 'root-shared', permission: 'read-only', workspace: { mode: 'shared' } }, 'nested-root-shared', runtime())).rejects.toThrow(/strictly requires worktree/u);
+  }, 60_000);
+
   it('creates managed worktrees and pins shared descendants/reopens to the caller checkout', async () => {
     const repository = await fs.mkdtemp(path.join(dataRoot, 'repository-'));
     execFileSync('git', ['init'], { cwd: repository });
