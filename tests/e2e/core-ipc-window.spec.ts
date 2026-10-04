@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, open, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { captureOutput, closeOrExplain } from './closeOrExplain';
 
 async function assertNativeDatabase(data: string): Promise<void> {
   const handle = await open(path.join(data, 'durable', 'v1', 'state.sqlite'), 'r');
@@ -21,6 +22,7 @@ for (const backend of ['legacy-json', 'native-durable'] as const) {
 test(`[${backend}] production core opens a second trusted window without another runtime owner and restarts`, async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'fate-core-window-e2e-'));
   let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let output = (): string => '';
   const data = path.join(root, 'data');
   const launch = (selectBackend: boolean) => {
     const env: Record<string, string> = {};
@@ -33,6 +35,7 @@ test(`[${backend}] production core opens a second trusted window without another
   };
   try {
     application = await launch(true);
+    output = captureOutput(application);
     const first = await application.firstWindow();
     await expect(first.locator('[data-bridge-status="ready"]')).toBeVisible(READY);
     const opened = application.waitForEvent('window');
@@ -47,17 +50,18 @@ test(`[${backend}] production core opens a second trusted window without another
     expect(b.project).toBeNull();
     expect(await application.windows()).toHaveLength(2);
     if (backend === 'native-durable') await assertNativeDatabase(data);
-    await application.close(); application = undefined;
+    await closeOrExplain(application, output); application = undefined;
     // No selector on ordinary restart. Retained native evidence must not be
     // silently ignored or replaced by an empty legacy owner.
     application = await launch(false);
+    output = captureOutput(application);
     const restarted = await application.firstWindow();
     await expect(restarted.locator('[data-bridge-status="ready"]')).toBeVisible(READY);
     expect((await restarted.evaluate(() => window.piDesktop.getRuntimeState())).project).toBeNull();
     if (backend === 'native-durable') await assertNativeDatabase(data);
   } finally {
-    await application?.close();
-    await rm(root, { recursive: true, force: true });
+    try { await closeOrExplain(application, output); }
+    finally { await rm(root, { recursive: true, force: true }); }
   }
 });
 
@@ -65,6 +69,7 @@ test(`[${backend}] production IPC captures the trusted project for files, Git, M
   test.setTimeout(120_000);
   const root = await mkdtemp(path.join(tmpdir(), 'fate-core-project-e2e-'));
   let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let output = (): string => '';
   try {
     const projectA = path.join(root, 'A');
     const projectB = path.join(root, 'B');
@@ -79,6 +84,7 @@ test(`[${backend}] production IPC captures the trusted project for files, Git, M
       env: { ...process.env, VITE_DEV_SERVER_URL: '', FATE_GUI_DATA_DIR: data,
         PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_OFFLINE: '1', FATE_STATE_PERSISTENCE: backend },
     });
+    output = captureOutput(application);
     const first = await application.firstWindow();
     await expect(first.locator('[data-bridge-status="ready"]')).toBeVisible(READY);
     await expect.poll(() => first.evaluate(() => window.piDesktop.getRuntimeState().then((state) => state.project?.path)),
@@ -104,8 +110,8 @@ test(`[${backend}] production IPC captures the trusted project for files, Git, M
     expect(next.monitor.projectPath).toBe(b);
     if (backend === 'native-durable') await assertNativeDatabase(data);
   } finally {
-    await application?.close();
-    await rm(root, { recursive: true, force: true });
+    try { await closeOrExplain(application, output); }
+    finally { await rm(root, { recursive: true, force: true }); }
   }
 });
 }
