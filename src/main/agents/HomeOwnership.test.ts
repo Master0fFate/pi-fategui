@@ -108,7 +108,8 @@ describe('D0-03 supported SDK home ownership proof', () => {
     SessionManager.open(home.file, directory, owner.projectPath).appendCustomEntry('large-history-fixture', { content: 'x'.repeat(9 * 1024 * 1024) });
     await fs.appendFile(home.file, `${JSON.stringify({ type: 'custom', id: randomUUID(), parentId: null, data: { customType: 'fate-agent-home-v1', padding: 'x'.repeat(2 * 1024 * 1024) }, customType: 'unrelated-fixture' })}\n`);
     expect(await homes.open(owner)).toEqual(home);
-  });
+    // A 9 MiB history write. A loaded hosted runner needed 5.02 s against the 5 s default.
+  }, 30_000);
 
   it('reopens a saved home above 128 MiB without rewriting or truncating its history', async () => {
     const { root, owner } = await fixture();
