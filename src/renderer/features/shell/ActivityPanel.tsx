@@ -174,7 +174,9 @@ function useAttestationLedger(projectPath: string | null, trusted: boolean) {
   // State carries its own projectPath so stale rows are never rendered for a
   // different project, even before the effect clears them.
   const current = state.projectPath === projectPath;
-  const usable = current && state.status === 'ready' ? state.result : null;
+  // The effect above clears rows only after a render. A trust downgrade must
+  // hide them in the same render that shows the "not trusted" notice.
+  const usable = current && trusted && state.status === 'ready' ? state.result : null;
   return {
     status: current ? state.status : ('loading' as LedgerStatus),
     rows: usable?.rows ?? [],

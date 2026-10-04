@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,7 +10,9 @@ const roots = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 function checkout(bases) {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'fate-node-pty-helper-'));
+  // The module resolver returns real paths. On macOS the temp directory is
+  // behind a symlink (/var -> /private/var), so compare against the real root.
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'fate-node-pty-helper-')));
   roots.push(root);
   const pty = path.join(root, 'node_modules', 'node-pty');
   mkdirSync(pty, { recursive: true });
