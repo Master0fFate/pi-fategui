@@ -1,17 +1,10 @@
 import { globalShortcut } from 'electron';
-import type { UiohookKeyboardEvent } from 'uiohook-napi';
 import type { SpeechHotkeyStatus, VoiceHotkeyMode } from '../../shared/contracts/ipc';
 import type { AppLogService } from '../logging/AppLogService';
+import { startKeyboardHookProcess, type KeyboardHook, type KeyCombo } from './keyboardHookProcess';
 
+// Types only: the main process never loads the native hook module.
 type UiohookModule = typeof import('uiohook-napi');
-
-interface KeyCombo {
-  keycode: number;
-  ctrl: boolean;
-  alt: boolean;
-  shift: boolean;
-  meta: boolean;
-}
 
 /** Accelerator modifier tokens (uppercased). `CommandOrControl` resolves to
  *  Meta on macOS and Control elsewhere, matching Electron's semantics, because
@@ -73,28 +66,21 @@ export function parseAccelerator(accelerator: string, key: UiohookModule['Uiohoo
   return hasKey ? combo : null;
 }
 
-function eventMatches(event: UiohookKeyboardEvent, combo: KeyCombo): boolean {
-  return event.keycode === combo.keycode
-    && Boolean(event.ctrlKey) === combo.ctrl
-    && Boolean(event.altKey) === combo.alt
-    && Boolean(event.shiftKey) === combo.shift
-    && Boolean(event.metaKey) === combo.meta;
-}
-
 /**
  * Global voice hotkey: toggle (Electron globalShortcut) or push-to-talk
  * (uiohook-napi, which sees key-down AND key-up while another app is focused).
  *
- * The native hook is loaded lazily and only for push-to-talk, so toggle users
- * never pay for it and never see an Input Monitoring prompt. If the hook cannot
- * load on a platform, push-to-talk reports unavailable and the caller can fall
- * back to toggle; the app never hard-crashes.
+ * The native hook is started lazily and only for push-to-talk, so toggle users
+ * never pay for it and never see an Input Monitoring prompt. It runs in a helper
+ * process (see keyboardHookProcess): a hook that hangs or fails cannot freeze or
+ * crash the application. Push-to-talk then reports unavailable and the caller can
+ * fall back to toggle.
  */
 export class GlobalHotkeyService {
   private readonly logs: AppLogService;
   private readonly onStart: () => void;
   private readonly onStop: () => void;
-  private uiohookPromise: Promise<UiohookModule | null> | null = null;
+  private uiohookPromise: Promise<KeyboardHook | null> | null = null;
   private pushToTalkAvailable = true;
   private unavailableReason: string | undefined;
   private current: { cleanup: () => void } | null = null;
@@ -103,7 +89,7 @@ export class GlobalHotkeyService {
   private disposed = false;
 
   constructor(logs: AppLogService, onStart: () => void, onStop: () => void,
-    private readonly loadModule: () => Promise<UiohookModule> = () => import('uiohook-napi')) {
+    private readonly startHook: (listener: (event: 'down' | 'up') => void) => Promise<KeyboardHook | null> = startKeyboardHookProcess) {
     this.logs = logs;
     this.onStart = onStart;
     this.onStop = onStop;
@@ -131,24 +117,15 @@ export class GlobalHotkeyService {
       return this.getStatus();
     }
 
-    const mod = await this.loadUiohook();
-    if (!mod || this.disposed) return this.getStatus();
-    const combo = parseAccelerator(accelerator, mod.UiohookKey);
+    const hook = await this.loadHook();
+    if (!hook || this.disposed) return this.getStatus();
+    const combo = parseAccelerator(accelerator, hook.keys as unknown as UiohookModule['UiohookKey']);
     if (!combo) {
       return { pushToTalkAvailable: this.pushToTalkAvailable, reason: `The hotkey "${accelerator}" is not a recognizable key combination for push-to-talk.` };
     }
     this.combo = combo;
-    const handler = (event: UiohookKeyboardEvent | { type: number }) => {
-      if (!this.combo || event.type !== mod.EventType.EVENT_KEY_PRESSED && event.type !== mod.EventType.EVENT_KEY_RELEASED) return;
-      const key = event as UiohookKeyboardEvent;
-      if (event.type === mod.EventType.EVENT_KEY_PRESSED && eventMatches(key, this.combo)) {
-        if (!this.active) { this.active = true; this.onStart(); }
-      } else if (event.type === mod.EventType.EVENT_KEY_RELEASED && key.keycode === this.combo.keycode) {
-        if (this.active) { this.active = false; this.onStop(); }
-      }
-    };
-    mod.uIOhook.on('input', handler);
-    this.current = { cleanup: () => { mod.uIOhook.removeListener('input', handler as (...args: unknown[]) => void); this.combo = null; } };
+    hook.setCombo(combo);
+    this.current = { cleanup: () => { hook.setCombo(null); this.combo = null; } };
     this.logs.write('info', 'speech', `Voice push-to-talk hotkey registered: ${accelerator}`);
     return this.getStatus();
   }
@@ -187,7 +164,7 @@ export class GlobalHotkeyService {
     // thread for good (it did on macOS: the application then never quit).
     const started = this.uiohookPromise;
     if (!started) return;
-    void started.then((mod) => { try { mod?.uIOhook.stop(); } catch { /* best-effort */ } });
+    void started.then((hook) => { hook?.stop(); });
   }
 
   private toggle(): void {
@@ -195,24 +172,28 @@ export class GlobalHotkeyService {
     else { this.active = true; this.onStart(); }
   }
 
-  private loadUiohook(): Promise<UiohookModule | null> {
+  /** The helper reports only that the registered combination went down or up. */
+  private onHookEvent(event: 'down' | 'up'): void {
+    if (!this.combo) return;
+    if (event === 'down') {
+      if (!this.active) { this.active = true; this.onStart(); }
+    } else if (this.active) { this.active = false; this.onStop(); }
+  }
+
+  private loadHook(): Promise<KeyboardHook | null> {
     if (this.uiohookPromise) return this.uiohookPromise;
     if (this.disposed) return Promise.resolve(null);
-    this.uiohookPromise = (async () => {
-      try {
-        const mod = await this.loadModule();
-        // Quit began while the module was loading: the hook must not start now.
-        if (this.disposed) return null;
-        mod.uIOhook.start();
-        this.logs.write('info', 'speech', 'Global keyboard hook started for voice push-to-talk.');
-        return mod;
-      } catch (error) {
+    this.uiohookPromise = this.startHook((event) => this.onHookEvent(event)).catch(() => null).then((hook) => {
+      // Quit began while the helper was starting: it must not stay.
+      if (hook && this.disposed) { hook.stop(); return null; }
+      if (hook) this.logs.write('info', 'speech', 'Global keyboard hook started for voice push-to-talk.');
+      else if (!this.disposed) {
         this.pushToTalkAvailable = false;
-        this.unavailableReason = 'The global keyboard hook could not load on this platform, so push-to-talk is unavailable. Toggle mode still works.';
-        this.logs.write('warn', 'speech', `${this.unavailableReason} (${error instanceof Error ? error.message : String(error)})`);
-        return null;
+        this.unavailableReason = 'The global keyboard hook could not start on this platform, so push-to-talk is unavailable. Toggle mode still works.';
+        this.logs.write('warn', 'speech', this.unavailableReason);
       }
-    })();
+      return hook;
+    });
     return this.uiohookPromise;
   }
 }
