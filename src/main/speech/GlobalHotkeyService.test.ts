@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { UiohookKey } from 'uiohook-napi';
-import { parseAccelerator } from './GlobalHotkeyService';
+import { GlobalHotkeyService, parseAccelerator } from './GlobalHotkeyService';
 
 // Parsing accelerators must not load or download an Electron executable.
 vi.mock('electron', () => ({ globalShortcut: {} }));
@@ -32,5 +32,36 @@ describe('GlobalHotkeyService.parseAccelerator', () => {
     expect(parseAccelerator('Shift', UiohookKey)).toBeNull();
     expect(parseAccelerator('Ctrl+Alt+Nonsense', UiohookKey)).toBeNull();
     expect(parseAccelerator('', UiohookKey)).toBeNull();
+  });
+});
+
+describe('GlobalHotkeyService native hook lifetime', () => {
+  function fixture() {
+    const uIOhook = { start: vi.fn(), stop: vi.fn(), on: vi.fn(), removeListener: vi.fn() };
+    const load = vi.fn(async () => ({ uIOhook, UiohookKey, EventType: { EVENT_KEY_PRESSED: 4, EVENT_KEY_RELEASED: 5 } }));
+    const service = new GlobalHotkeyService({ write: vi.fn() } as never, () => undefined, () => undefined, load as never);
+    return { uIOhook, load, service };
+  }
+  const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+  it('does not load or start the keyboard hook on quit when push-to-talk never used it', async () => {
+    const { uIOhook, load, service } = fixture();
+    service.dispose();
+    await settle();
+    expect(load).not.toHaveBeenCalled();
+    expect(uIOhook.start).not.toHaveBeenCalled();
+    expect(uIOhook.stop).not.toHaveBeenCalled();
+  });
+
+  it('stops the keyboard hook on quit after push-to-talk started it, without a second start', async () => {
+    const { uIOhook, load, service } = fixture();
+    await expect(service.register('Control+Space', 'push-to-talk')).resolves.toEqual({ pushToTalkAvailable: true });
+    expect(load).toHaveBeenCalledOnce();
+    expect(uIOhook.start).toHaveBeenCalledOnce();
+    service.dispose();
+    await settle();
+    expect(uIOhook.stop).toHaveBeenCalledOnce();
+    expect(uIOhook.start).toHaveBeenCalledOnce();
+    expect(uIOhook.removeListener).toHaveBeenCalledOnce();
   });
 });

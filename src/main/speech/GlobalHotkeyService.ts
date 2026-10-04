@@ -101,7 +101,8 @@ export class GlobalHotkeyService {
   private combo: KeyCombo | null = null;
   private active = false;
 
-  constructor(logs: AppLogService, onStart: () => void, onStop: () => void) {
+  constructor(logs: AppLogService, onStart: () => void, onStop: () => void,
+    private readonly loadModule: () => Promise<UiohookModule> = () => import('uiohook-napi')) {
     this.logs = logs;
     this.onStart = onStart;
     this.onStop = onStop;
@@ -177,7 +178,12 @@ export class GlobalHotkeyService {
   /** Release every registration and stop the native hook if it was started. */
   dispose(): void {
     this.unregister();
-    void this.loadUiohook().then((mod) => { try { mod?.uIOhook.stop(); } catch { /* best-effort */ } });
+    // Only a hook that push-to-talk started is stopped. Loading it here would start the global
+    // keyboard hook on every quit only to stop it, and that native start can block the main
+    // thread for good (it did on macOS: the application then never quit).
+    const started = this.uiohookPromise;
+    if (!started) return;
+    void started.then((mod) => { try { mod?.uIOhook.stop(); } catch { /* best-effort */ } });
   }
 
   private toggle(): void {
@@ -189,7 +195,7 @@ export class GlobalHotkeyService {
     if (this.uiohookPromise) return this.uiohookPromise;
     this.uiohookPromise = (async () => {
       try {
-        const mod = await import('uiohook-napi');
+        const mod = await this.loadModule();
         mod.uIOhook.start();
         this.logs.write('info', 'speech', 'Global keyboard hook started for voice push-to-talk.');
         return mod;
