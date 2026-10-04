@@ -202,6 +202,10 @@ app.whenReady().then(() => {
   agents.start();
   window = new BrowserWindow({
     width: 1280, height: 720,
+    // macOS alone clamps a window to its display. Hosted macOS runners have a
+    // 1024-pixel display, so a spec that asks for 1440x900 silently got a narrow
+    // layout there. Windows and Linux already allow the requested size.
+    enableLargerThanScreen: true,
     minWidth: MINIMUM_WINDOW_SIZE.width, minHeight: MINIMUM_WINDOW_SIZE.height,
     show: false, frame: false, backgroundColor: '#11111b',
     webPreferences: { ...secureWebPreferences, preload: path.resolve(directory, '../../dist/preload/index.cjs') },
