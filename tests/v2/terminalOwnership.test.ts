@@ -86,6 +86,30 @@ describe('host manual terminal ownership', () => {
     } finally { service.dispose(); }
   });
 
+  it('drops the late frames of a session that ended by a real exit, and still refuses a guessed one', async () => {
+    const service = owner();
+    const terminal = await service.create(a, workspaceId, 1, 4, 80, 24);
+    pty.emit('last output');
+    // The shell exits. The acknowledgement of its last output, a key and a close are already on the wire.
+    const exit = (pty.process.onExit.mock.calls as unknown as Array<[(event: { exitCode: number }) => void]>)[0]![0];
+    exit({ exitCode: 0 });
+    expect(events.at(-1)).toMatchObject({ type: 'exit', id: terminal.id });
+    pty.process.write.mockClear(); pty.process.resize.mockClear(); pty.process.kill.mockClear();
+    expect(() => service.acknowledge(a, terminal.id, 1, 11)).not.toThrow();
+    expect(() => service.write(a, terminal.id, 'x')).not.toThrow();
+    expect(() => service.resize(a, terminal.id, 100, 30)).not.toThrow();
+    expect(() => service.close(a, terminal.id)).not.toThrow();
+    expect(pty.process.write).not.toHaveBeenCalled();
+    expect(pty.process.resize).not.toHaveBeenCalled();
+    expect(pty.process.kill).not.toHaveBeenCalled();
+    // Another client, and an identifier that never was a session, are still refused.
+    expect(() => service.acknowledge(b, terminal.id, 1, 1)).toThrow(/unavailable/);
+    expect(() => service.write(a, '00000000-0000-4000-8000-000000000000', 'x')).toThrow(/unavailable/);
+    expect(() => service.close(a, '00000000-0000-4000-8000-000000000000')).toThrow(/unavailable/);
+    // The slot is free again for the same controller.
+    await expect(service.create(a, workspaceId, 1, 4, 80, 24)).resolves.toMatchObject({ cwd: process.cwd() });
+  });
+
   it('closes immediately on disconnect and never replays input on a replacement ticket', async () => {
     const service = owner();
     const terminal = await service.create(a, workspaceId, 1, 4, 80, 24);

@@ -44,6 +44,13 @@ export class TerminalOwner {
   private readonly creating = new Set<PendingCreate>();
   private loading: Promise<typeof import('node-pty')> | null = null;
   private readonly disconnected = new WeakSet<RequestContext>();
+  /**
+   * Sessions that ended by a real exit, by the client that owned them. The last frames of that
+   * client (the acknowledgement of the final output, a key, a close) can cross the exit event
+   * on the wire. They name a real session of that client, so they are dropped, not refused:
+   * a refusal ends the connection and takes the client's control with it.
+   */
+  private readonly exited = new WeakMap<RequestContext, string[]>();
   private stopped = false;
   private disposal: Promise<void> | null = null;
   private resolveDisposal: (() => void) | null = null;
@@ -140,6 +147,7 @@ export class TerminalOwner {
           if (this.terminals.get(id) !== terminal) return;
           const notify = !terminal.closed;
           this.terminals.delete(id); // Only an actual native exit releases the owner/slot.
+          this.rememberExit(identity, id);
           this.closeChannel(terminal);
           this.releaseListener(terminal.exit);
           delete terminal.exit;
@@ -184,16 +192,29 @@ export class TerminalOwner {
     }
   }
 
+  private rememberExit(identity: RequestContext, id: string): void {
+    const ids = this.exited.get(identity) ?? [];
+    ids.push(id);
+    if (ids.length > 32) ids.shift();
+    this.exited.set(identity, ids);
+  }
+  private hasExited(identity: RequestContext, id: string): boolean {
+    return this.exited.get(identity)?.includes(id) === true;
+  }
+
   write(identity: RequestContext, id: string, data: string): void {
     terminalWriteInputSchema.parse({ id, data });
+    if (this.hasExited(identity, id)) return;
     this.owned(identity, id, true).process.write(data);
   }
   resize(identity: RequestContext, id: string, cols: number, rows: number): void {
     terminalResizeInputSchema.parse({ id, cols, rows });
+    if (this.hasExited(identity, id)) return;
     this.owned(identity, id, true).process.resize(cols, rows);
   }
   /** Exact, ordered sequence+length ACK. An old/duplicate/oversized ACK has no effect. */
   acknowledge(identity: RequestContext, id: string, sequence: number, characters: number): void {
+    if (this.hasExited(identity, id)) return;
     const terminal = this.owned(identity, id, true);
     const first = terminal.pending.keys().next().value;
     if (!Number.isSafeInteger(sequence) || !Number.isSafeInteger(characters) || first !== sequence
@@ -204,6 +225,7 @@ export class TerminalOwner {
     this.flush(id, terminal);
   }
   close(identity: RequestContext, id: string): void {
+    if (this.hasExited(identity, id)) return;
     const terminal = this.owned(identity, id, false);
     this.destroy(id, terminal);
   }
