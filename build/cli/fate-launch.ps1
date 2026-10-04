@@ -51,6 +51,9 @@ function Run-Program([string]$File, [string[]]$Arguments, [bool]$Wait) {
   $start = New-Object System.Diagnostics.ProcessStartInfo
   $start.FileName = $File
   $start.UseShellExecute = $false
+  # The process-scope policy that let this launcher run must not reach the app,
+  # the host, or any shell a person later opens inside them.
+  [void]$start.EnvironmentVariables.Remove('PSExecutionPolicyPreference')
   $start.Arguments = (($Arguments | ForEach-Object { Quote-Argument $_ }) -join ' ')
   $child = [System.Diagnostics.Process]::Start($start)
   if ($Wait) { $child.WaitForExit(); exit $child.ExitCode }
@@ -61,8 +64,11 @@ try {
   }
   $modes = @('init','serve','web','--web','provider','auth-code','access-key','doctor')
   if ($LaunchArgs.Count -gt 0 -and $modes -ccontains $LaunchArgs[0]) {
-    $companion = Get-Command fate-server.cmd -CommandType Application -ErrorAction SilentlyContinue
-    $node = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue
+    # Get-Command returns EVERY application match on PATH (several Node installs,
+    # or both npm and pnpm shims). Take the first, as the shell itself would; a
+    # list would otherwise be joined into one nonexistent file name.
+    $companion = Get-Command fate-server.cmd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $node = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (!$companion -or !$node) { throw 'Install the separate fate-server Node package (Node 22.19+).' }
     # Ask the installed shim using a fixed, non-user-controlled query. Global
     # npm/pnpm shims are not adjacent to dist. Never feed user arguments back

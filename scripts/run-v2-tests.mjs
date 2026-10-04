@@ -44,7 +44,7 @@ export async function createIsolatedEnvironment(inherited = process.env) {
     if (process.platform === 'win32') {
       // A disposable test HOME must really be private. Windows ignores POSIX
       // mode bits, and CI/temp roots can inherit grants for other local users.
-      const script = String.raw`$ErrorActionPreference='Stop'; $p=$env:FATE_TEST_PRIVATE_ROOT; $a=Get-Acl -LiteralPath $p; $a.SetAccessRuleProtection($true,$false); foreach($r in @($a.Access)){[void]$a.RemoveAccessRuleAll($r)}; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $r=[Security.AccessControl.FileSystemAccessRule]::new($sid,[Security.AccessControl.FileSystemRights]::FullControl,([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit),[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow); $a.AddAccessRule($r); Set-Acl -LiteralPath $p -AclObject $a`;
+      const script = String.raw`$ErrorActionPreference='Stop'; $env:PSModulePath="$PSHOME\Modules"; $p=$env:FATE_TEST_PRIVATE_ROOT; $a=Get-Acl -LiteralPath $p; $a.SetAccessRuleProtection($true,$false); foreach($r in @($a.Access)){[void]$a.RemoveAccessRuleAll($r)}; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $r=[Security.AccessControl.FileSystemAccessRule]::new($sid,[Security.AccessControl.FileSystemRights]::FullControl,([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit),[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow); $a.AddAccessRule($r); Set-Acl -LiteralPath $p -AclObject $a`;
       await new Promise((resolve, reject) => execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
         env: { ...process.env, FATE_TEST_PRIVATE_ROOT: root }, windowsHide: true, timeout: 20_000,
       }, (error) => error ? reject(error) : resolve()));
@@ -66,6 +66,13 @@ export async function createIsolatedEnvironment(inherited = process.env) {
     for (const [key, relative] of Object.entries(locations)) {
       env[key] = path.join(root, relative);
       await mkdir(env[key], { recursive: true, mode: 0o700 });
+    }
+    if (process.platform === 'win32') {
+      // Windows resolves known folders from USERPROFILE, not from LOCALAPPDATA.
+      // If they are missing under the private home the lookup returns an empty
+      // path, and a helper such as Windows PowerShell then writes its module
+      // cache relative to the working directory: the verified source tree.
+      for (const folder of ['Local', 'Roaming']) await mkdir(path.join(env.USERPROFILE, 'AppData', folder), { recursive: true, mode: 0o700 });
     }
     Object.assign(env, {
       FATE_V2_TEST_ROOT: root, PI_OFFLINE: '1', NODE_ENV: 'test',

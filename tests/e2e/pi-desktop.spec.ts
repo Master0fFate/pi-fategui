@@ -7,6 +7,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 const exec = promisify(execFile);
 
@@ -620,7 +621,7 @@ test('built-in Chromium opens local HTML and attaches DevTools-style element ann
     await expect(attachments).toHaveCount(2);
     await expect(attachments.nth(1)).toContainText('Publish preview');
 
-    await page.screenshot({ path: 'test-results/pi-desktop-browser.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-browser.png') });
 
     // Agent control is always on; toggling annotate off returns direct clicks.
     await annotate.click();
@@ -695,7 +696,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(page.getByRole('button', { name: /Connect your AI/ })).toBeEnabled();
     await expect(page.getByRole('button', { name: /Inspect codebase/ })).toBeEnabled();
     await expect(page.getByRole('button', { name: /Ship a change/ })).toBeEnabled();
-    await page.screenshot({ path: 'test-results/pi-desktop-welcome.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-welcome.png') });
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.platform)).toBe(process.platform);
     expect(await page.evaluate(() => ({ process: 'process' in window, require: 'require' in window, bridge: 'piDesktop' in window }))).toEqual({ process: false, require: false, bridge: true });
 
@@ -898,7 +899,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     expect(railOnHover.rail).toEqual(railBeforeHover.rail);
     expect(railOnHover.welcome).toEqual(railBeforeHover.welcome);
     expect(railOnHover.composer).toEqual(railBeforeHover.composer);
-    await page.screenshot({ path: 'test-results/pi-desktop-extension-status-hover.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-extension-status-hover.png') });
     await page.mouse.move(1, 1);
 
     const sessionList = page.locator('.session-list');
@@ -931,7 +932,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(firstSessionRow.getByRole('button', { name: 'Rename First session' })).toBeVisible();
     await expect(page.getByRole('button', { name: /Import session/i })).toHaveCount(0);
     await expect(page.locator('.session-action-bar')).toHaveCount(0);
-    await page.screenshot({ path: 'test-results/pi-desktop-final.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-final.png') });
 
     const composerInput = page.getByLabel('Message Pi');
     const secondSessionRow = page.locator('.session-row').filter({ hasText: 'Second session' });
@@ -975,7 +976,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     expect(treeDecoration.marks.every((mark) => ['rgba(0, 0, 0, 0)', 'transparent'].includes(mark.background)
       && mark.backgroundImage === 'none' && mark.borderWidth === '0px')).toBe(true);
     await page.waitForTimeout(180);
-    await page.screenshot({ path: 'test-results/pi-desktop-agents.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-agents.png') });
 
     await agents.getByRole('button', { name: 'Rename @test-runner-1' }).click();
     await agents.getByRole('textbox', { name: 'Display name for @test-runner-1' }).fill('Regression Verifier');
@@ -1141,7 +1142,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     expect(slashPickerBox!.width).toBeLessThan(composerBox!.width);
     expect(Math.abs((slashPickerBox!.x + slashPickerBox!.width / 2) - (composerBox!.x + composerBox!.width / 2))).toBeLessThan(2);
     await page.waitForTimeout(180);
-    await page.screenshot({ path: 'test-results/pi-desktop-slash-skills.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-slash-skills.png') });
 
     await composerInput.fill('Inspect this with /vibe');
     await expect(slashPicker.getByRole('option', { name: /^vibesecurity\b/i })).toBeVisible();
@@ -1213,7 +1214,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
         return result;
       });
       expect(narrowRail).toEqual({ overflow: 0, actionsInside: true });
-      await page.screenshot({ path: `test-results/pi-desktop-goalmax-agents-${compact ? 'compact' : 'normal'}.png` });
+      await page.screenshot({ path: await evidenceOutputPath(`pi-desktop-goalmax-agents-${compact ? 'compact' : 'normal'}.png`) });
     }
     await page.evaluate(() => { document.documentElement.dataset.compactMode = 'false'; });
     await goalRail.getByRole('button', { name: 'Open Goal Flight Deck' }).click();
@@ -1234,7 +1235,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
       };
     });
     expect(goalLayout).toEqual({ railOverflow: 0, deckOverflow: 0, headerOverflow: 0, actionsInsideRail: true });
-    await page.screenshot({ path: 'test-results/pi-desktop-goal-flight-deck.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-goal-flight-deck.png') });
     await goalRail.getByRole('button', { name: 'Pause goal' }).click();
     await expect(goalRail.getByRole('button', { name: 'Resume goal' })).toBeVisible();
     await goalRail.getByRole('button', { name: 'Resume goal' }).click();
@@ -1283,15 +1284,15 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(compactTools.getByRole('button', { name: 'Tag project file or folder' })).toBeVisible();
     await assertInsideViewport(compactTools);
     await page.waitForTimeout(180);
-    await page.screenshot({ path: 'test-results/pi-desktop-compact-flight-deck.png' });
-    await page.screenshot({ path: 'test-results/pi-desktop-compact-composer.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-compact-flight-deck.png') });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-compact-composer.png') });
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Permission level: Edit files' }).click();
     const compactPermissions = page.getByRole('dialog', { name: 'Permission level' });
     await expect(compactPermissions).toBeVisible();
     await assertInsideViewport(compactPermissions);
     await page.waitForTimeout(180);
-    await page.screenshot({ path: 'test-results/pi-desktop-compact-permissions.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-compact-permissions.png') });
     await page.keyboard.press('Escape');
     await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1280, 720));
     await expect(compactToolsTrigger).toBeVisible();
@@ -1318,7 +1319,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(reasoningOptions).toBeVisible();
     await assertInsideViewport(reasoningOptions);
     await page.waitForTimeout(180);
-    await page.screenshot({ path: 'test-results/pi-desktop-model-popover.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-model-popover.png') });
     await page.keyboard.press('Escape');
     await page.keyboard.press('Escape');
 
@@ -1376,18 +1377,18 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     });
     expect(fontCoverage).toBe(true);
     await page.waitForTimeout(250);
-    await page.screenshot({ path: 'test-results/pi-desktop-settings.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-settings.png') });
     const themeSelect = settingsDialog.getByRole('combobox', { name: 'Interface theme' });
     await themeSelect.click();
     await page.getByRole('option', { name: /Daylight/ }).click();
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.themeTone)).toBe('light');
     await page.waitForTimeout(250);
-    await page.screenshot({ path: 'test-results/pi-desktop-settings-light.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-settings-light.png') });
     await themeSelect.click();
     await page.getByRole('option', { name: /Pi · E2E Theme/ }).click();
     await expect(themeSelect).toContainText('Pi · E2E Theme');
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('pi-e2e-theme-0123456789ab');
-    await page.screenshot({ path: 'test-results/pi-desktop-settings-pi-theme.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-settings-pi-theme.png') });
     await themeSelect.click();
     await page.getByRole('option', { name: /Midnight/ }).click();
     await settingsDialog.getByRole('tab', { name: /General/ }).click();
@@ -1470,7 +1471,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(settingsDialog.getByRole('status')).toContainText('Settings saved');
     await settingsDialog.getByRole('tab', { name: /Agent/ }).click();
     await expect(settingsDialog.getByRole('combobox', { name: 'Default provider' })).toContainText('Test');
-    await page.screenshot({ path: 'test-results/pi-desktop-settings-models.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-settings-models.png') });
     await settingsDialog.getByRole('tab', { name: /System/ }).click();
     await expect(settingsDialog.getByText('Pi diagnostics')).toBeVisible();
     await settingsDialog.getByRole('tab', { name: /Workspace/ }).click();
@@ -1514,7 +1515,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await audio.dispatchEvent('play');
     await expect(page.locator('.music-equalizer')).toBeVisible();
     await expect(page.locator('.music-equalizer i')).toHaveCount(4);
-    await page.screenshot({ path: 'test-results/pi-desktop-music-player.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-music-player.png') });
     await audio.dispatchEvent('pause');
     await expect(page.locator('.music-equalizer')).toHaveCount(0);
     await page.getByRole('button', { name: 'Hide playlist' }).click();
@@ -1659,7 +1660,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     }));
     expect(contextLayout.scrollWidth).toBeLessThanOrEqual(contextLayout.clientWidth);
     expect(contextLayout.chartWidth).toBeGreaterThan(200);
-    await page.screenshot({ path: 'test-results/pi-desktop-context-wrap.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-context-wrap.png') });
 
     await openInspectorView(page, 'Work', /Changes/u);
     await expect(page.getByRole('button', { name: 'Refresh Git status' })).toBeVisible();
@@ -1679,7 +1680,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     const changedImage = page.locator('button.change-row').filter({ hasText: 'assets/icon.png' });
     await changedImage.click();
     await expect(page.getByRole('img', { name: 'Preview of assets/icon.png' })).toBeVisible();
-    await page.screenshot({ path: 'test-results/pi-desktop-image-diff.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-image-diff.png') });
 
     await page.getByRole('button', { name: 'Switch to branch history' }).click();
     const fixtureCommit = page.locator('.commit-row-main').filter({ hasText: 'fixture' });
@@ -1692,7 +1693,7 @@ test('first launch, project, prompt, tool, diff, Git graph, worktrees, and sessi
     await expect(commitCard.getByRole('button', { name: 'Open on GitHub' })).toBeVisible();
     await fixtureCommit.click();
     await expect(page.getByLabel('Files changed in fixture')).toContainText('src/example.ts');
-    await page.screenshot({ path: 'test-results/pi-desktop-git-graph.png' });
+    await page.screenshot({ path: await evidenceOutputPath('pi-desktop-git-graph.png') });
     await page.getByRole('button', { name: 'Switch to working-tree diff' }).click();
 
     const worktreeSelector = page.getByRole('button', { name: 'Change worktree. Current branch: main' });

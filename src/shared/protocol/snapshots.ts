@@ -13,7 +13,7 @@ export const snapshotScopeSchema = z.object({
   /** Provided by the trusted workspace adapter, never a client-controlled host path. */
   projectPath: z.string().min(1),
 }).strict();
-export const historyScopeSchema = snapshotScopeSchema;
+export const historyScopeSchema = snapshotScopeSchema.extend({ selectionRevision: z.number().int().nonnegative().safe().optional() });
 export const snapshotItemSchema = z.object({
   kind: z.enum(['message', 'tool']), id: z.string().max(500), role: z.enum(['user', 'assistant', 'system']).optional(),
   name: z.string().max(200).optional(), status: z.string().max(40).optional(), text: z.string().max(16_384),

@@ -4,7 +4,7 @@ import type { FateCoreOptions } from '../core/createFateCore';
 import type { FateCore } from '../core/FateCore';
 import type { CoreShutdownResult } from '../core/lifecycle/CoreLifecycle';
 import { CommandJournal } from '../core/commands/CommandJournal';
-import { assertPrivateWindowsTree } from '../core/storage/WindowsPrivateAcl';
+import { assertPrivateWindowsTree, withPrivateWindowsAclScope } from '../core/storage/WindowsPrivateAcl';
 import { fateProviderStoragePaths } from '../main/pi/FateProviderStorage';
 import { parseServerConfig, type ServerConfig } from './config';
 import { AuthService } from './auth/AuthService';
@@ -66,20 +66,26 @@ export async function startNodeServerWithFactory(
     await journal.checkHealth();
     // The profile-owner lock is held. A missing pair initializes once; a
     // partial, corrupt or unsafe credential store blocks startup, not auth.
-    const auth = await AuthService.open(config.paths, config.workspaces);
-    const authPath = fateProviderStoragePaths(config.paths.dataRoot).authPath;
-    const provider = await fs.lstat(authPath).then((stat): NodeServerReadiness['provider'] => {
-      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Provider credential path is not a regular private file.');
-      return 'unverified';
-    }, (error: NodeJS.ErrnoException): NodeServerReadiness['provider'] => {
-      if (error.code === 'ENOENT') return 'auth-required';
-      throw error;
+    // This finite startup preflight (credential store, then both tree walks
+    // below) shares one ACL helper process. Every walk stays live, and any
+    // refusal still fails startup before a listener exists.
+    const { auth, provider } = await withPrivateWindowsAclScope(async () => {
+      const auth = await AuthService.open(config.paths, config.workspaces);
+      const authPath = fateProviderStoragePaths(config.paths.dataRoot).authPath;
+      const provider = await fs.lstat(authPath).then((stat): NodeServerReadiness['provider'] => {
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Provider credential path is not a regular private file.');
+        return 'unverified';
+      }, (error: NodeJS.ErrnoException): NodeServerReadiness['provider'] => {
+        if (error.code === 'ENOENT') return 'auth-required';
+        throw error;
+      });
+      // Provider auth, session permissions, write intents, journals and lock
+      // files can each have an unsafe explicit Windows ACL under a private root.
+      // Refuse the entire existing tree before any listener becomes ready.
+      await assertPrivateWindowsTree(path.dirname(config.paths.dataRoot));
+      await assertPrivateWindowsTree(config.paths.lockRoot);
+      return { auth, provider };
     });
-    // Provider auth, session permissions, write intents, journals and lock
-    // files can each have an unsafe explicit Windows ACL under a private root.
-    // Refuse the entire existing tree before any listener becomes ready.
-    await assertPrivateWindowsTree(path.dirname(config.paths.dataRoot));
-    await assertPrivateWindowsTree(config.paths.lockRoot);
     const readiness: NodeServerReadiness = Object.freeze({ ready: true, profileLock: 'held', workspaceRegistry: 'ready',
       permissionStore: 'healthy', commandJournal: 'healthy', authentication: 'ready', provider, listener: 'disabled', host: config.host,
       configuredPort: config.port, browserOrigins: config.browserOrigins,

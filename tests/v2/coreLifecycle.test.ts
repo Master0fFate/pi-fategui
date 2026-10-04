@@ -64,10 +64,17 @@ describe('T29 core lifetime', () => {
       expect(handle.runtime.hasEvictionBlockingWork()).toBe(true);
       await expect(core.workspaces!.dispose()).rejects.toThrow('work is active');
       expect(await core.workspaces!.registerHostPath(project)).toBe(handle);
-      const shutdown = core.shutdownCore();
-      expect(core.shutdownCore()).toBe(shutdown);
+      core.lifecycle.beginShutdown();
+      core.lifecycle.beginShutdown();
+      expect(core.lifecycle.settled()).toBeNull();
+      expect(() => core.lifecycle.assertAdmission()).toThrow('shutting down');
       await expect(core.workspaces!.registerHostPath(project)).rejects.toThrow('stopping');
       await expect(handle.runtime.prompt({ text: 'late prompt', behavior: 'prompt' })).rejects.toThrow('shutting down');
+      expect(adapter.invocations.some((entry) => entry.kind === 'cancel')).toBe(false);
+      expect(core.runtime.ownsCheckout(project)).toBe(true);
+      expect((await readdir(paths.lockRoot)).some((name) => name.startsWith('profile-'))).toBe(true);
+      const shutdown = core.shutdownCore();
+      expect(core.shutdownCore()).toBe(shutdown);
       await expect(shutdown).resolves.toEqual({ status: 'settled' });
       const cancellation = adapter.invocations.find((entry) => entry.kind === 'cancel' && entry.sessionId === sessionId);
       const settlement = adapter.invocations.find((entry) => entry.kind === 'settled' && entry.sessionId === sessionId);
@@ -91,6 +98,45 @@ describe('T29 core lifetime', () => {
     expect(() => lifecycle.createClient()).toThrow('shutting down');
     await expect(first).resolves.toEqual({ status: 'settled' });
     expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('allows an early host fence without starting core/client disposal or its wait budget', async () => {
+    vi.useFakeTimers();
+    const shutdown = vi.fn(async () => undefined);
+    const cleanup = vi.fn();
+    const fence = vi.fn();
+    const lifecycle = new CoreLifecycle({ beginShutdown: fence, shutdown, shutdownBudgetMs: 10 });
+    lifecycle.createClient({ disposeTerminals: cleanup });
+    lifecycle.beginShutdown();
+    lifecycle.beginShutdown();
+    expect(lifecycle.isStopping).toBe(true);
+    expect(fence).toHaveBeenCalledOnce();
+    expect(() => lifecycle.assertAdmission()).toThrow('shutting down');
+    expect(() => lifecycle.createClient()).toThrow('shutting down');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(lifecycle.settled()).toBeNull();
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    const result = lifecycle.shutdownCore();
+    expect(lifecycle.shutdownCore()).toBe(result);
+    await expect(result).resolves.toEqual({ status: 'settled' });
+    expect(fence).toHaveBeenCalledOnce();
+    expect(shutdown).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('does not duplicate shutdown if the existing fence reenters shutdownCore', async () => {
+    const shutdown = vi.fn(async () => undefined);
+    let lifecycle!: CoreLifecycle;
+    let nested: ReturnType<CoreLifecycle['shutdownCore']> | undefined;
+    const fence = vi.fn(() => { nested = lifecycle.shutdownCore(); });
+    lifecycle = new CoreLifecycle({ beginShutdown: fence, shutdown });
+    const result = lifecycle.shutdownCore();
+    expect(nested).toBe(result);
+    await expect(result).resolves.toEqual({ status: 'settled' });
+    expect(fence).toHaveBeenCalledOnce();
+    expect(shutdown).toHaveBeenCalledOnce();
   });
 
   it('does not release a lock or claim clean completion when cancellation refuses to stop', async () => {
@@ -177,12 +223,20 @@ describe('T29 core lifetime', () => {
     expect(exit).toHaveBeenCalledWith('incomplete');
   });
 
-  it('supports partial startup: a failed fence still requests cleanup but reports incomplete', async () => {
+  it.each([new Error('fence failed'), undefined])('retains an early fence failure, including a falsy throw, until shutdown (%s)', async (failure) => {
     const shutdown = vi.fn(async () => undefined);
-    const lifecycle = new CoreLifecycle({ beginShutdown: () => { throw new Error('fence failed'); }, shutdown });
-    await expect(lifecycle.shutdownCore()).resolves.toEqual({ status: 'incomplete', reason: 'failed' });
-    expect(shutdown).toHaveBeenCalledOnce();
+    const fence = vi.fn(() => { throw failure; });
+    const lifecycle = new CoreLifecycle({ beginShutdown: fence, shutdown });
+    lifecycle.beginShutdown();
+    lifecycle.beginShutdown();
+    expect(lifecycle.settled()).toBeNull();
+    expect(shutdown).not.toHaveBeenCalled();
     expect(() => lifecycle.assertAdmission()).toThrow('shutting down');
-    await expect(lifecycle.settled()).rejects.toThrow('fence failed');
+    const result = lifecycle.shutdownCore();
+    expect(lifecycle.shutdownCore()).toBe(result);
+    await expect(result).resolves.toEqual({ status: 'incomplete', reason: 'failed' });
+    expect(fence).toHaveBeenCalledOnce();
+    expect(shutdown).toHaveBeenCalledOnce();
+    await expect(lifecycle.settled()).rejects.toBe(failure);
   });
 });

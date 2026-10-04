@@ -20,7 +20,10 @@ test('lost HTTP command ACK survives reload and reviews only the original ID wit
   const submitted = host.proxy.commands.filter((entry) => entry.method === 'runtime.prompt');
   expect(submitted).toHaveLength(1);
   const original = submitted[0]!;
-  expect(original.dropped).toBe(true);
+  // The review control appears with the pre-saved request, before any reply.
+  // A durable backend may answer after the run reached its barrier, so wait
+  // for the proxy's actual drop of the genuine response; never assume it.
+  await expect.poll(() => original.dropped).toBe(true);
   expect(original.response).toMatchObject({ ok: true, result: { requestId: original.request.requestId,
     kind: 'prompt', outcome: 'accepted', durability: 'journaled', sessionId: host.ready.workspaces.a.sessionId } });
   const beforeReload = await host.inspect();

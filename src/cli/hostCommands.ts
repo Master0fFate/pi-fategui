@@ -8,6 +8,8 @@ import { createProviderLoginIo, runProviderLogin } from './providerLogin';
 import { writeClientCredentialReference } from '../server/auth/AuthStore';
 import { runForegroundHost } from './foreground';
 import { startAuthenticatedNodeServer, startProductionWebNodeServer } from '../server/main';
+import { permissionLevelSchema } from '../shared/contracts/ipc';
+import { statePersistenceBackendSchema } from '../shared/v2FeaturePolicy';
 
 type HostCommand = Exclude<CliCommand, { mode: 'desktop' | 'connect' }>;
 function option(command: HostCommand, name: string): string | undefined {
@@ -58,9 +60,15 @@ export async function runHostCommand(command: HostCommand): Promise<void> {
   const portText = option(command, 'port');
   if (command.mode === 'init') {
     if (!workspace) throw new Error('Workspace is required.');
-    await initializeHostProfile({ profileId: command.profile, workspace, trustAccepted: command.options['trust-workspace'] === true,
-      ...(portText === undefined ? {} : { port: Number(portText) }) });
-    process.stdout.write('Host profile initialized with read-only permission. No agent was started.\n'); return;
+    const statePersistence = statePersistenceBackendSchema.optional().parse(option(command, 'state-persistence'));
+    const maxPermission = permissionLevelSchema.parse(option(command, 'max-permission') ?? 'read-only');
+    const profile = await initializeHostProfile({ profileId: command.profile, workspace, trustAccepted: command.options['trust-workspace'] === true,
+      ...(portText === undefined ? {} : { port: Number(portText) }),
+      ...(statePersistence === undefined ? {} : { statePersistence }), maxPermission,
+      manualTerminal: command.options['manual-terminal'] === true, acceptUnsandboxedShell: command.options['accept-unsandboxed-shell'] === true });
+    process.stdout.write(`Host profile initialized with ${profile.config.maxPermission} permission. No agent was started.\n`);
+    if (profile.config.flags.terminal) process.stdout.write('Manual terminal enabled: unsandboxed execution-host shell. Agent permissions do not limit shell commands.\n');
+    return;
   }
   if (command.mode === 'web') {
     if (!workspace) throw new Error('Workspace is required.');

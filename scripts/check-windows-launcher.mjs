@@ -29,6 +29,10 @@ const run = (exe, args, env, verbatim = false, cwd = installed) => new Promise((
 });
 const launch = async (shell, args, env) => {
   const launcher = path.join(installed, 'fate.cmd');
+  // Emulate a stock Windows client, where the effective policy refuses every
+  // script file. The launcher must still run, and must not pass its own
+  // process-scope policy on to the application it starts.
+  env = { ...env, PSExecutionPolicyPreference: 'Restricted' };
   // Windows PowerShell 5 invokes .cmd through cmd.exe. For a token without
   // spaces it drops its own single-quote grouping before cmd parses pipes,
   // ampersands and carets. Explicit native double quotes must cross that
@@ -49,7 +53,7 @@ try {
   await fs.copyFile(path.join(source, 'build/cli/fate-launch.ps1'), path.join(installed, 'resources/cli/fate-launch.ps1'));
   await fs.mkdir(path.join(installed, 'resources/app'), { recursive: true });
   await fs.writeFile(path.join(installed, 'resources/app/package.json'), JSON.stringify({ main: 'main.cjs' }));
-  await fs.writeFile(path.join(installed, 'resources/app/main.cjs'), `const {app}=require('electron'); app.setPath('userData',process.env.FATE_LAUNCH_USER_DATA); app.disableHardwareAcceleration(); require('node:fs').writeFileSync(process.env.FATE_LAUNCH_CAPTURE,JSON.stringify({pid:process.pid,argv:process.argv})); app.quit();`);
+  await fs.writeFile(path.join(installed, 'resources/app/main.cjs'), `const {app}=require('electron'); app.setPath('userData',process.env.FATE_LAUNCH_USER_DATA); app.disableHardwareAcceleration(); require('node:fs').writeFileSync(process.env.FATE_LAUNCH_CAPTURE,JSON.stringify({pid:process.pid,argv:process.argv,policy:process.env.PSExecutionPolicyPreference??null})); app.quit();`);
   const env = { ...isolated.env, FATE_LAUNCH_CAPTURE: capture, FATE_LAUNCH_USER_DATA: path.join(isolated.root, 'electron-data') };
   const literal = path.join(installed, 'zażółć ^ % & (literal) $x ; ! path');
   for (const shell of ['cmd', 'powershell']) {
@@ -78,7 +82,8 @@ try {
         await new Promise(resolve => setTimeout(resolve, 50));
       }
       records.push({ shell, args: test.args, transport: shell === 'powershell' ? 'explicit cmd quoting for non-space metacharacter tokens' : 'native cmd quoting', result, observed });
-      if (test.expected) { assert.equal(result.code, 0, result.stderr); assert(observed, 'Desktop capture absent.'); assert.deepEqual(observed.argv.slice(1), test.expected); }
+      if (test.expected) { assert.equal(result.code, 0, result.stderr); assert(observed, 'Desktop capture absent.'); assert.deepEqual(observed.argv.slice(1), test.expected);
+        assert.equal(observed.policy, null, 'The launcher passed its script policy to the application.'); }
       else { assert.equal(result.code, 1); assert.equal(observed, null, 'Rejected arguments started Electron.'); if (test.diagnostic) assert.match(result.stderr, test.diagnostic); }
     }
   }
@@ -92,13 +97,20 @@ try {
     { name: 'npm', bin: path.join(isolated.root, 'npm global'), command: ['npm', 'install', '--global', '--prefix', path.join(isolated.root, 'npm global'), '--ignore-scripts', '--offline', '--no-audit', '--no-fund', pkg] },
     { name: 'pnpm', bin: path.join(isolated.root, 'pnpm bin'), command: ['pnpm', 'add', '--global', '--global-dir', path.join(isolated.root, 'pnpm global'), '--global-bin-dir', path.join(isolated.root, 'pnpm bin'), '--offline', '--ignore-scripts', pkg] },
   ];
+  // A later PATH directory with another node.exe and another companion shim,
+  // as on hosts with several Node installs. PowerShell lists every match; the
+  // launcher must start only the first one. These decoys must never run.
+  const decoy = path.join(isolated.root, 'later PATH decoys');
+  await fs.mkdir(decoy);
+  await fs.writeFile(path.join(decoy, 'node.exe'), 'not an executable; a second PATH match only');
+  await fs.writeFile(path.join(decoy, 'fate-server.cmd'), '@echo off\r\necho DECOY_COMPANION_RAN 1>&2\r\nexit /b 9\r\n');
   for (const layout of layouts) {
     await fs.mkdir(layout.bin, { recursive: true });
     const layoutEnv = { ...env, PATH: layout.bin + path.delimiter + env.PATH };
     const installedShim = await run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '& ' + layout.command.map(psLiteral).join(' ')], layoutEnv, false, isolated.root);
     records.push({ layout: layout.name, install: installedShim }); assert.equal(installedShim.code, 0, installedShim.stderr);
     await fs.access(path.join(layout.bin, 'fate-server.cmd'));
-    const delegatedEnv = { ...env, PATH: layout.bin + path.delimiter + env.PATH };
+    const delegatedEnv = { ...env, PATH: layout.bin + path.delimiter + env.PATH + path.delimiter + decoy };
     const query = await run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '& ' + psLiteral(path.join(layout.bin, 'fate-server.cmd')) + ' --launcher-entry'], delegatedEnv);
     assert.equal(query.code, 0, query.stderr); const metadata = JSON.parse(query.stdout); assert.equal(metadata.version, 1); assert(path.isAbsolute(metadata.entry)); await fs.access(metadata.entry);
     for (const shell of ['cmd', 'powershell']) {
@@ -108,6 +120,7 @@ try {
       // Its real compiled CLI must be reached, then safely refuse startup.
       records.push({ layout: layout.name, shell, metadata, result });
       assert.equal(result.code, 1); assert.match(result.stderr, /Fate server command failed/u); await assert.rejects(fs.access(capture));
+      assert.doesNotMatch(result.stderr, /DECOY_COMPANION_RAN/u);
     }
     const noNode = { ...delegatedEnv, PATH: [layout.bin, path.join(env.SYSTEMROOT ?? env.SystemRoot, 'System32'), path.join(env.SYSTEMROOT ?? env.SystemRoot, 'System32/WindowsPowerShell/v1.0')].join(path.delimiter) };
     const missing = await launch('cmd', ['serve', '--profile', 'fixture'], noNode);

@@ -10,6 +10,9 @@ import { SessionQueueRepository } from '../../src/main/pi/SessionQueueRepository
 import { initializeHostProfile } from '../../src/cli/profile';
 import { nativeMigrationFormat } from '../../src/cli/migration';
 import { privateTestRoot } from './helpers/isolatedEnvironment';
+import { assertPrivateWindowsAcl } from '../../src/core/storage/WindowsPrivateAcl';
+import { setOtherLocalUsersRead } from './helpers/windowsAcl';
+import { linkFileOrJunction } from './helpers/platformLinks';
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
@@ -58,7 +61,10 @@ describe('host-local native migration CLI', () => {
   it.each([false, true])('exports a private exact plan, activates and rolls back through actual %s profile CLI entry', async (server) => {
     const f = await fixture(server); const original = await fs.readFile(f.transcript);
     const summary = await f.prepare(); const bytes = await fs.readFile(f.planFile);
-    expect(summary.planDigest).toBe(hash(bytes)); expect((await fs.stat(f.planFile)).mode & 0o077).toBe(0);
+    expect(summary.planDigest).toBe(hash(bytes));
+    // Windows mode bits say nothing about the NTFS DACL; check the live ACL there.
+    if (process.platform === 'win32') await expect(assertPrivateWindowsAcl(f.planFile)).resolves.toBeUndefined();
+    else expect((await fs.stat(f.planFile)).mode & 0o077).toBe(0);
     const envelope = JSON.parse(bytes.toString()); expect(envelope).toMatchObject({ nativeFormat: nativeMigrationFormat, nativeSdkVersion: '1.0.0', selector: { kind: server ? 'server' : 'desktop' } });
     expect(summary).not.toHaveProperty('plan'); expect(summary).not.toHaveProperty('projects');
     expect(await f.execute('apply', String(summary.planDigest))).toMatchObject({ status: 'activated', workResumed: false, restart: 'ordinary-host-startup' });
@@ -97,10 +103,13 @@ describe('host-local native migration CLI', () => {
   it('never overwrites plan output or follows linked/nonprivate/oversized plan storage', async () => {
     const f = await fixture(); const summary = await f.prepare(); const original = await fs.readFile(f.planFile);
     await expect(f.prepare()).rejects.toThrow('plan'); expect(await fs.readFile(f.planFile)).toEqual(original);
-    await fs.chmod(f.planFile, 0o644); await expect(f.execute('apply', String(summary.planDigest))).rejects.toThrow('plan'); await fs.chmod(f.planFile, 0o600);
-    const link = path.join(f.plans, 'linked-plan'); await fs.symlink(f.planFile, link);
+    // A real other-user read grant: an NTFS allow rule on Windows, mode bits elsewhere.
+    if (process.platform === 'win32') await setOtherLocalUsersRead(f.planFile, true); else await fs.chmod(f.planFile, 0o644);
+    await expect(f.execute('apply', String(summary.planDigest))).rejects.toThrow('plan');
+    if (process.platform === 'win32') await setOtherLocalUsersRead(f.planFile, false); else await fs.chmod(f.planFile, 0o600);
+    const link = path.join(f.plans, 'linked-plan'); await linkFileOrJunction(f.planFile, f.plans, link);
     await expect(f.invoke('apply', ['--plan-file', link, '--plan-digest', String(summary.planDigest), '--confirm-apply'])).rejects.toThrow('plan');
-    const parentLink = path.join(f.root, 'linked-parent'); await fs.symlink(f.plans, parentLink);
+    const parentLink = path.join(f.root, 'linked-parent'); await fs.symlink(f.plans, parentLink, process.platform === 'win32' ? 'junction' : 'dir');
     await expect(f.invoke('prepare', ['--out-file', path.join(parentLink, 'unsafe.json')])).rejects.toThrow('plan');
     await expect(f.invoke('prepare', ['--out-file', path.join(f.paths.dataRoot, 'unsafe.json')])).rejects.toThrow('plan');
     await fs.truncate(f.planFile, 8 * 1024 * 1024 + 1); await expect(f.execute('apply', String(summary.planDigest))).rejects.toThrow('plan');

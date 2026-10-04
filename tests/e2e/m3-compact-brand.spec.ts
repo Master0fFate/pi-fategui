@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 test('M3 compact expanded sidebar keeps a single-line Fate UI brand', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'fate-compact-brand-'));
@@ -64,8 +65,7 @@ test('M3 compact expanded sidebar keeps a single-line Fate UI brand', async () =
       expect(geometry.centerDelta).toBeLessThanOrEqual(0.5);
       console.log(`Compact brand at ${width}px:`, geometry);
     }
-    await mkdir('screenshots/m3-expressive', { recursive: true });
-    await sidebar.screenshot({ path: 'screenshots/m3-expressive/compact-sidebar-brand.png', animations: 'disabled' });
+    await sidebar.screenshot({ path: await evidenceOutputPath('m3-expressive', 'compact-sidebar-brand.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'Collapse sidebar', exact: true }).click();
     await expect(sidebar).toHaveClass(/sidebar--collapsed/u);
     await expect(title).toBeHidden();

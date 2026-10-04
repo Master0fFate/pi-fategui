@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 const exec = promisify(execFile);
 
@@ -37,10 +38,10 @@ test('Settings owns workspace policy while Run Agents reviews and retains work',
     await expect(settings.getByRole('status')).toContainText('Settings saved');
     await expect.poll(() => page.evaluate(() => window.piDesktop.getSettings())).toMatchObject({ agentWorkspace: { preferredMode: 'worktree', strict: true } });
     await settings.getByRole('region', { name: 'Agent workspace policy' }).scrollIntoViewIfNeeded();
-    await page.screenshot({ path: 'test-results/agent-workspace-settings.png' });
+    await page.screenshot({ path: await evidenceOutputPath('agent-workspace-settings.png') });
     await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
     await expect.poll(() => settings.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
-    await page.screenshot({ path: 'test-results/agent-workspace-settings-narrow.png' });
+    await page.screenshot({ path: await evidenceOutputPath('agent-workspace-settings-narrow.png') });
     await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1280, 800));
     await page.getByRole('button', { name: 'Close settings' }).click();
     await page.getByRole('button', { name: /Open project/u }).first().click();
@@ -52,7 +53,7 @@ test('Settings owns workspace policy while Run Agents reviews and retains work',
     await expect(agents.getByRole('button', { name: 'Create Agent Team' })).toHaveCount(0);
     await expect(agents.getByText('Workspace defaults', { exact: true })).toHaveCount(0);
     await expect(agents.getByLabel('Reviewer Agent Team node active')).toBeVisible();
-    await page.screenshot({ path: 'test-results/agent-workspace-run-panel.png' });
+    await page.screenshot({ path: await evidenceOutputPath('agent-workspace-run-panel.png') });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await settings.getByRole('tab', { name: /Agent/u }).click();
     await expect(preferred).toBeChecked();
@@ -75,10 +76,10 @@ test('Settings owns workspace policy while Run Agents reviews and retains work',
     await expect(workspace.getByLabel('Workspace diff')).toContainText('export const workspace');
     await expect(workspace.getByRole('button', { name: 'Integrate changes' })).toBeEnabled();
     await workspace.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: 'test-results/agent-workspace-review.png' });
+    await page.screenshot({ path: await evidenceOutputPath('agent-workspace-review.png') });
     await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(900, 700));
     await expect.poll(() => workspace.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
-    await page.screenshot({ path: 'test-results/agent-workspace-review-narrow.png' });
+    await page.screenshot({ path: await evidenceOutputPath('agent-workspace-review-narrow.png') });
     await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1280, 800));
     await workspace.getByLabel('Integration method').selectOption('cherry-pick');
     await expect(workspace.getByRole('button', { name: 'Integrate changes' })).toBeDisabled();

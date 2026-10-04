@@ -172,6 +172,7 @@ export class RemoteDesktopFateApi implements NetworkWorkspaceApi {
   readTasks(workspace: WebWorkspace) { return this.read(workspace, (scope) => this.bridge.remoteReadTasks(scope)); }
   readGitStatus(workspace: WebWorkspace) { return this.read(workspace, (scope) => this.bridge.remoteReadGitStatus(scope)); }
   readGitHistory(workspace: WebWorkspace) { return this.read(workspace, (scope) => this.bridge.remoteReadGitHistory(scope)); }
+  readHistory(workspace: WebWorkspace, pageId?: string) { return this.read(workspace, (scope) => this.bridge.remoteReadHistory(scope, pageId)); }
   readSessions(workspace: WebWorkspace, query = '') { return this.read(workspace, (scope) => this.bridge.remoteReadSessions(scope, query)); }
   readModels(workspace: WebWorkspace) { return this.read(workspace, (scope) => this.bridge.remoteReadModels(scope)); }
   readQueue(workspace: WebWorkspace) { return this.read(workspace, (scope) => this.bridge.remoteReadQueue(scope)); }

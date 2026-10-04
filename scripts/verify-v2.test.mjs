@@ -8,6 +8,11 @@ test('verification scopes are explicit and artifact work is never implicitly ena
   const source = verificationPlan(parseVerificationArgs(['--scope', 'core']), 'linux');
   assert(!source.gates.some((gate) => /package|desktop|browser|remote/u.test(gate.id)));
   assert(source.pending.some((gate) => gate.id === 'remote'));
+  for (const id of ['v2', 'unit']) {
+    const args = source.gates.find((gate) => gate.id === id).args;
+    assert.equal(args[args.indexOf('--bail') + 1], '1');
+    assert(!args.some((value) => /--(?:testNamePattern|exclude|shard)/u.test(value)));
+  }
   const full = verificationPlan(parseVerificationArgs([]), 'win32');
   assert(full.gates.some((gate) => gate.id === 'windows-launcher'));
   assert(!full.gates.some((gate) => gate.id === 'server-package'));

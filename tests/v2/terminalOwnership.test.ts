@@ -30,14 +30,14 @@ let root = process.cwd();
 let hasControl = true;
 let permission: 'read-only' | 'edit' = 'edit';
 let enabled = true;
-function owner() {
+function owner(shell = canonicalNodeExecutable) {
   return new TerminalOwner({ enabled,
     registry: { resolve: (context: typeof a, id: string, generation: number) => {
       if (id !== workspaceId || generation !== 1 || context === b) throw new Error('Workspace membership required.');
       return { root };
     } } as unknown as WorkspaceRegistry,
     control: { hasControl: (context: typeof a, id: string, generation: number) => hasControl && context === a && id === workspaceId && generation === 4 } as unknown as WorkspaceControl,
-    permission: () => permission, resolveShell: () => canonicalNodeExecutable,
+    permission: () => permission, resolveShell: () => shell,
     loadPty: () => import('node-pty'), send: (_identity, event) => events.push(event),
   });
 }
@@ -75,6 +75,15 @@ describe('host manual terminal ownership', () => {
     const next = await service.create(a, workspaceId, 1, 4, 80, 24);
     root = process.platform === 'win32' ? 'C:\\another-root' : '/another-root';
     expect(() => service.write(a, next.id, 'bad')).toThrow(/root changed/);
+  });
+
+  it.skipIf(process.platform !== 'win32')('disables registry AutoRun for the installed Windows command shell', async () => {
+    const shell = realpathSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe'));
+    const service = owner(shell);
+    try {
+      await service.create(a, workspaceId, 1, 4, 80, 24);
+      expect(pty.spawn).toHaveBeenCalledWith(shell, ['/d'], expect.objectContaining({ cwd: process.cwd() }));
+    } finally { service.dispose(); }
   });
 
   it('closes immediately on disconnect and never replays input on a replacement ticket', async () => {

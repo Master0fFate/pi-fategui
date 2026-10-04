@@ -14,7 +14,7 @@ import { networkPromptInputSchema, projectFileReferenceSchema } from './attachme
 export const MAX_COMMAND_BYTES = 1024 * 1024;
 export const MAX_RESULT_BYTES = 2 * 1024 * 1024;
 export const revisionSchema = z.number().int().nonnegative().safe();
-export const capabilitySchema = z.enum(['host.info', 'workspace.list', 'file.read', 'workspace.snapshot', 'workspace.monitor', 'goal.read', 'task.read', 'git.read', 'workspace.control', 'permission.approve', 'runtime.prompt', 'runtime.abort', 'session.select', 'terminal.manual', 'session.read', 'runtime.configure', 'goal.control', 'task.control', 'queue.read', 'queue.control', 'agent.read', 'agent.control', 'text.context']);
+export const capabilitySchema = z.enum(['host.info', 'workspace.list', 'file.read', 'workspace.snapshot', 'workspace.monitor', 'goal.read', 'task.read', 'git.read', 'workspace.control', 'permission.approve', 'runtime.prompt', 'runtime.abort', 'session.select', 'terminal.manual', 'session.read', 'session.history', 'runtime.configure', 'goal.control', 'task.control', 'queue.read', 'queue.control', 'agent.read', 'agent.control', 'text.context']);
 export type Capability = z.infer<typeof capabilitySchema>;
 
 // Resource IDs are issued and resolved by the host. No raw/relative paths enter this initial surface.

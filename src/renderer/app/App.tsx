@@ -150,11 +150,26 @@ function NetworkInitializer({ web }: { web: NetworkWorkspaceApi }) {
   useLayoutEffect(() => {
     void initialize(web);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let invalidated = -1;
     const unsubscribe = web.onInvalidate(() => {
       if (!web.isConnected) { if (timer) clearTimeout(timer); timer = undefined; disconnect(); return; }
       // Events are invalidation metadata, not PiEvents. Disable current reads immediately.
       invalidate();
-      if (!timer) timer = setTimeout(() => { timer = undefined; void refresh(web); }, 250);
+      invalidated = useWebWorkspaceStore.getState().request;
+      const settle = (attempt: number) => {
+        timer = undefined;
+        // A refresh that started after the last invalidation (the one that follows
+        // a command, for example) already loads state at least that new. A second
+        // reload would only discard the reads a person is using for no new data.
+        const state = useWebWorkspaceStore.getState();
+        if (state.request === invalidated || state.phase === 'error') { void refresh(web); return; }
+        // That newer refresh is still loading (a slow link). Decide when it
+        // settles: a failure is retried above, as it always was. Bounded wait.
+        if (state.phase !== 'synchronizing') return;
+        if (attempt < 40) timer = setTimeout(() => settle(attempt + 1), 250);
+        else void refresh(web);
+      };
+      if (!timer) timer = setTimeout(() => settle(0), 250);
     });
     return () => { unsubscribe(); if (timer) clearTimeout(timer); reset(); };
   }, [web, initialize, refresh, disconnect, invalidate, reset]);

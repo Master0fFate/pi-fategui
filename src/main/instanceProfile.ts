@@ -50,9 +50,10 @@ export function isMultiInstanceProbe(commandLine: readonly string[], additionalD
  * `multi`: each concurrent process gets its own persistent Chromium profile
  * slot (process and renderer storage isolated). Electron's process singleton
  * is scoped to userData, so occupied slots are skipped while the first launch
- * keeps the existing profile and renderer storage. Pi sessions stay shared,
- * while Fate UI provider auth and models use its SDK-owned store. Opt into this
- * with `--new-instance` or `FATE_NEW_INSTANCE=1` for a fully isolated runtime.
+ * keeps the existing profile and renderer storage. `--new-instance` or
+ * `FATE_NEW_INSTANCE=1` isolates Chromium only, not the canonical Fate/SDK data.
+ * The core still refuses a second writable profile owner. Independent runtimes
+ * with shared saved-session behavior require a separate reviewed ownership design.
  */
 export function acquireInstanceProfile(
   electronApp: InstanceProfileApp,

@@ -1,5 +1,7 @@
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PiSessionRepository } from '../../src/main/pi/PiSessionRepository';
+afterEach(() => vi.restoreAllMocks());
 import { createAuthenticatedServerContext } from '../../src/core/dispatch/RequestContext';
 import type { FateCore } from '../../src/core/FateCore';
 import type { WorkspaceHandle } from '../../src/core/workspaces/WorkspaceHandle';
@@ -22,7 +24,7 @@ const identity = createAuthenticatedServerContext({ principalId, clientId, expir
 const foreign = createAuthenticatedServerContext({ principalId, clientId: '70000000-0000-4000-8000-000000000007', expiresAt: initialTime + 3600_000 }, null);
 const read = (method: string, input: object = {}) => ({ protocol: 1, requestId, serverEpoch: epoch,
   issuedAt: initialTime, method, workspaceId, workspaceGeneration: 3,
-  ...(method === 'workspace.monitor' ? { expectedSessionId: sessionId, selectionRevision: 9 } : {}), input });
+  ...(['workspace.monitor', 'session.history'].includes(method) ? { expectedSessionId: sessionId, selectionRevision: 9 } : {}), input });
 const dashboard = (section: 'overview' | 'runs' = 'runs', offset = 0, sinceRevision?: string) => ({
   projectPath: root, sessionId, checkedAt: initialTime, revision: 'reviewed-page-revision', overall: 'unknown' as const,
   sources: { runs: 'partial' as const, teams: 'ready' as const, tasks: 'unknown' as const, activity: 'unknown' as const },
@@ -59,7 +61,7 @@ function fixture(messageCount = 1) {
     goalReady: snapshotReady, tasksReady: snapshotReady }), flushSnapshotEvents: vi.fn(), getMonitorDashboard: monitor };
   const handle = { root, id: workspaceId, generation: 3, runtime, files: { getRoot: () => root },
     admission: { snapshot: () => ({ selectedSessionId: selected, selectionRevision }) } } as unknown as WorkspaceHandle;
-  const core = { workspaces: { resolve: (_context: unknown, id: string, expected: number) => {
+  const core = { paths: { sessionsRoot: path.join(root, 'sessions') }, workspaces: { resolve: (_context: unknown, id: string, expected: number) => {
     if (!allowed || id !== workspaceId || expected !== generation || generation !== handle.generation) throw new Error('Not current');
     return handle;
   } }, runtime: { workspaceOrigin: (candidate: string) => candidate === root ? { workspaceId, workspaceGeneration: generation } : null,
@@ -84,6 +86,35 @@ function fixture(messageCount = 1) {
 }
 
 describe('T39 bounded authenticated workspace reads', () => {
+  it('serves bounded saved history through the production handler, fencing cursors by client and selection', async () => {
+    const history = vi.spyOn(PiSessionRepository.prototype, 'readHistoryPage').mockImplementation(async (_root, _session, offset = 0) => ({
+      items: [{ kind: 'message', id: `saved-${offset}`, role: 'user', text: 'saved text', timestamp: 1, clipped: false, mediaOmitted: false }],
+      nextOffset: offset === 0 ? 1 : null, stamp: 'stable-file', mediaOmitted: false, oversizedItems: 0,
+    }));
+    const f = fixture();
+    const first = await f.dispatch(read('session.history'));
+    expect(first).toMatchObject({ ok: true, method: 'session.history', result: { sessionId, items: [{ text: 'saved text' }] } });
+    if (!first.ok || first.method !== 'session.history' || !first.result.nextPageId) throw new Error('Expected saved history cursor');
+    const next = read('session.history', { pageId: first.result.nextPageId });
+    expect(await f.dispatch(next, foreign)).toMatchObject({ ok: false, error: { code: 'RESYNC_REQUIRED' } });
+    expect(await f.dispatch(next)).toMatchObject({ ok: true, result: { nextPageId: null, items: [{ id: 'saved-1' }] } });
+    expect(await f.dispatch(next)).toMatchObject({ ok: false, error: { code: 'RESYNC_REQUIRED' } });
+    expect(history).toHaveBeenCalledTimes(2);
+    expect(history).toHaveBeenCalledWith(root, sessionId, 1, 'stable-file');
+    expect(JSON.stringify(first)).not.toContain(root);
+    f.switchAwayAndBack();
+    expect(await f.dispatch(read('session.history'))).toMatchObject({ ok: false, error: { code: 'STALE_SESSION' } });
+  });
+  it('does not deliver saved history after selection changes during its disk read', async () => {
+    const f = fixture();
+    vi.spyOn(PiSessionRepository.prototype, 'readHistoryPage').mockImplementation(async () => {
+      f.switchAwayAndBack();
+      return { items: [], nextOffset: null, stamp: 'stable', mediaOmitted: false, oversizedItems: 0 };
+    });
+    expect(await f.dispatch(read('session.history'))).toMatchObject({ ok: false, error: { code: 'STALE_SESSION' } });
+    expect(requestEnvelopeSchema.safeParse(read('session.history', { pageId: '../private' })).success).toBe(false);
+    expect(requestEnvelopeSchema.safeParse(read('session.history', { projectPath: root })).success).toBe(false);
+  });
   it('accepts only named scoped schemas, not a caller path, owner, session or unchecked output', () => {
     for (const [method, input] of [['workspace.snapshot', {}], ['workspace.snapshotPage', { pageId: requestId }],
       ['workspace.monitor', { section: 'runs', offset: 25, limit: 25, sinceRevision: 'old' }]] as const) {

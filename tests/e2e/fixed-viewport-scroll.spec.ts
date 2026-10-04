@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 test('fixed viewport preserves real dialog/select scrolling, geometry and focus', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'fate-fixed-viewport-'));
@@ -42,6 +43,7 @@ test('fixed viewport preserves real dialog/select scrolling, geometry and focus'
     const dialog = page.getByRole('dialog', { name: 'Settings', exact: true });
     const pane = dialog.locator('.settings-scroll');
     await expect(dialog).toBeVisible();
+    await dialog.getByRole('tab', { name: /Skins/u }).click();
     const select = dialog.getByRole('combobox', { name: 'Interface font', exact: true });
     await select.scrollIntoViewIfNeeded();
     expect(await pane.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
@@ -70,7 +72,7 @@ test('fixed viewport preserves real dialog/select scrolling, geometry and focus'
     await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeFocused();
     expect(await geometry()).toEqual(before);
     expect(errors).toEqual([]);
-    await page.screenshot({ path: 'test-results/fixed-viewport-scroll.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('fixed-viewport-scroll.png'), animations: 'disabled' });
     passed = true;
   } finally {
     await app?.close();

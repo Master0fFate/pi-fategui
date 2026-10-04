@@ -3,6 +3,71 @@ import { projectMonitorForNetwork } from '../../src/shared/protocol/diagnostics'
 import type { TaskList } from '../../src/shared/contracts/tasks';
 import { test, expect, inspector, actualTaskRow, object } from './fixture';
 
+test('saved history pages and permission reductions use actual browser transport and host state', async ({ host }) => {
+  await host.rpc({ type: 'seedHistory', count: 130 });
+  const client = await host.login();
+  const original = (await host.inspect()).runtime.sessionId;
+  await host.claim(client.page);
+  await client.page.getByRole('button', { name: 'Review controls', exact: true }).click();
+  const history = client.page.getByRole('region', { name: 'Saved session history', exact: true });
+  await history.getByRole('button', { name: 'Read from start', exact: true }).click();
+  await expect(history.getByText('Saved fixture row 001', { exact: true })).toBeVisible();
+  await history.getByRole('button', { name: 'Next history page', exact: true }).click();
+  await expect(history.getByText('Saved fixture row 130', { exact: true })).toBeVisible();
+  await expect(history.getByText('Saved fixture row 001', { exact: true })).toHaveCount(0);
+  await expect(history.getByText('End of saved history.', { exact: true })).toBeVisible();
+  expect((await host.inspect()).runtime.sessionId).toBe(original);
+  const pages = host.proxy.commands.filter((entry) => entry.method === 'session.history');
+  expect(pages).toHaveLength(2);
+  expect(object(pages[0]!.response!.result).items).toHaveLength(128);
+  expect(object(pages[1]!.response!.result).items).toHaveLength(2);
+  await client.page.getByRole('combobox', { name: 'Requested permission', exact: true }).selectOption('read-only');
+  await client.page.getByRole('button', { name: 'Request permission review', exact: true }).click();
+  await client.page.getByRole('button', { name: 'Confirm permission change', exact: true }).click();
+  await expect.poll(async () => (await host.inspect()).runtime.permissionLevel).toBe('read-only');
+  expect(host.captured(client, 'permission.confirm').response).toMatchObject({ ok: true, result: { level: 'read-only', applied: true } });
+  expect((await host.inspect()).invocations.filter((entry) => entry.kind === 'prompt')).toHaveLength(0);
+
+  // Elevate only while idle, then use the REAL production policy and runtime
+  // transaction to reduce authority while a fake turn is actually in flight.
+  await client.page.getByRole('combobox', { name: 'Requested permission', exact: true }).selectOption('edit');
+  await client.page.getByRole('button', { name: 'Request permission review', exact: true }).click();
+  await client.page.getByRole('button', { name: 'Confirm permission change', exact: true }).click();
+  await expect.poll(async () => (await host.inspect()).runtime.permissionLevel).toBe('edit');
+  await host.rpc({ type: 'barrier', operation: 'hold', name: 'emit' });
+  await client.page.getByRole('button', { name: 'Hide controls', exact: true }).click();
+  await client.page.getByLabel('Message to selected host session').fill('Hold one fake turn for permission fencing.');
+  await client.page.getByRole('button', { name: 'Send prompt', exact: true }).click();
+  await host.rpc({ type: 'barrier', operation: 'reached', name: 'emit' });
+  expect((await host.inspect()).runtime.activeSessionRunning).toBe(true);
+  await client.page.getByRole('button', { name: 'Review controls', exact: true }).click();
+  await client.page.getByRole('combobox', { name: 'Requested permission', exact: true }).selectOption('read-only');
+  await client.page.getByRole('button', { name: 'Request permission review', exact: true }).click();
+  await client.page.getByRole('button', { name: 'Confirm permission change', exact: true }).click();
+  await expect.poll(async () => (await host.inspect()).runtime.permissionLevel).toBe('read-only');
+  expect((await host.inspect()).runtime.activeSessionRunning).toBe(true);
+  await expect.poll(() => host.proxy.commands.filter((entry) => entry.method === 'permission.confirm' && entry.response?.ok === true).length).toBe(3);
+  const applied = host.captured(client, 'permission.confirm');
+  expect(applied.request.input).toMatchObject({ oldLevel: 'edit', newLevel: 'read-only' });
+  expect(applied.response).toMatchObject({ ok: true, requestId: applied.request.requestId,
+    result: { level: 'read-only', applied: true, sessionId: original } });
+  const scope = { protocol: 1, serverEpoch: host.ready.serverEpoch, issuedAt: Date.now(),
+    workspaceId: host.ready.workspaces.a.workspaceId, workspaceGeneration: host.ready.workspaces.a.workspaceGeneration };
+  expect(await host.command(client, applied, { ...scope, method: 'command.status', requestId: crypto.randomUUID(),
+    input: { requestId: applied.request.requestId } })).toMatchObject({ ok: true, result: { state: 'settled',
+      receipt: { kind: 'permission', requestId: applied.request.requestId, oldLevel: 'edit', newLevel: 'read-only', outcome: 'applied', durability: 'journaled' } } });
+  const issued = host.captured(client, 'permission.issue');
+  expect(await host.command(client, issued, { ...scope, method: 'control.renew', requestId: crypto.randomUUID(),
+    input: { generation: issued.request.controlGeneration } })).toMatchObject({ ok: true, result: { generation: issued.request.controlGeneration } });
+  expect(await host.command(client, issued, { ...issued.request, requestId: crypto.randomUUID(),
+    input: { ...object(issued.request.input), oldLevel: 'read-only', newLevel: 'edit' } }))
+    .toMatchObject({ ok: false, error: { code: 'CONTROL_REQUIRED' } });
+  expect((await host.inspect()).runtime.permissionLevel).toBe('read-only');
+  await host.rpc({ type: 'barrier', operation: 'release', name: 'emit' });
+  await expect.poll(async () => (await host.inspect()).runtime.activeSessionRunning).toBe(false);
+  expect((await host.inspect()).invocations.filter((entry) => entry.kind === 'prompt')).toHaveLength(1);
+});
+
 // These tests deliberately keep the backend assertions beside DOM assertions.
 // An enabled button, toast, sanitized fake row or mocked success is not evidence.
 test('distinct browser identities start as observers; takeover fences the stale controller and preserves its draft', async ({ host }) => {

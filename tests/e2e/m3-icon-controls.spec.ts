@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 const controls = ['.sidebar-toolbar-action > button', '.icon-button', '.composer .send-button', '.composer-toolbar button:is(.composer-icon-action, .composer-tools-toggle, .permission-toggle, .voice-button)', '.music-controls button', '.music-dock-toggle', '.browser-toolbar button', '.browser-tab-close', '.browser-new-tab'];
 async function checkCenters(page: Page, selectors: string[]) {
@@ -49,8 +50,7 @@ for (const compact of [false, true]) {
       await checkCenters(page, controls.slice(6));
       await page.mouse.move(1000, 800);
       if (!compact) {
-        await mkdir('screenshots/m3-expressive', { recursive: true });
-        await page.screenshot({ path: 'screenshots/m3-expressive/icon-controls-centered.png', animations: 'disabled' });
+        await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'icon-controls-centered.png'), animations: 'disabled' });
       }
     } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
   });

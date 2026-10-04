@@ -27,7 +27,9 @@ import { JournalRejected, type CommandJournal } from '../../core/commands/Comman
 import { ProtocolFault } from '../../shared/protocol/errors';
 import { utf8Bytes } from '../../shared/protocol/envelopes';
 import { WorkspaceSnapshotService } from '../../core/views/WorkspaceSnapshotService';
-import { type SnapshotPage, type SnapshotScope } from '../../shared/protocol/snapshots';
+import { HistoryPageService } from '../../core/views/HistoryPageService';
+import { PiSessionRepository } from '../../main/pi/PiSessionRepository';
+import { type SnapshotPage, type SnapshotScope, type HistoryPage } from '../../shared/protocol/snapshots';
 import { monitorDashboardSchema, monitorReadInputSchema, type MonitorItem } from '../../shared/contracts/monitorDashboard';
 import { projectMonitorForNetwork } from '../../shared/protocol/diagnostics';
 import type { ClientTickets } from '../auth/ClientTickets';
@@ -89,6 +91,7 @@ export function createNetworkDispatcher(options: NetworkDispatcherOptions) {
   const snapshots = new WorkspaceSnapshotService(
     () => { if (!capturing) throw new ProtocolFault('BUSY'); capturing.runtime.flushSnapshotEvents(); },
     () => { if (!capturing) throw new ProtocolFault('BUSY'); return capturing.runtime.captureSnapshotView(); }, options.now);
+  let history: HistoryPageService | undefined;
   const pageOwners = new Map<string, { handle: WorkspaceHandle; selectionRevision: number; sessionId: string; expiresAt: number }>();
   const hostMaximum = hostPermissionMaximum({ mode: 'network', ...(options.maxPermission ? { maximumLevel: options.maxPermission } : {}) });
   const controllerContexts = new Map<string, RequestContext>();
@@ -176,7 +179,10 @@ export function createNetworkDispatcher(options: NetworkDispatcherOptions) {
     const state = handle.runtime.getState(false);
     return snapshot.selectedSessionId === target.sessionId && snapshot.selectionRevision === target.selectionRevision
       && state.sessionId === target.sessionId && state.project !== null && state.project.trusted === true && state.project.path === handle.root
-      && !state.activeSessionRunning && state.sessionOperation !== true && state.error === null;
+      // Runtime reductions fence future tools immediately, including a live turn.
+      // Elevations still require idle state; this cannot sandbox an existing shell.
+      && (!state.activeSessionRunning || permissionRank[target.newLevel] < permissionRank[target.oldLevel])
+      && state.sessionOperation !== true && state.error === null;
   };
   const approvals = new ApprovalChallenges({
     mayApprove,
@@ -240,7 +246,7 @@ export function createNetworkDispatcher(options: NetworkDispatcherOptions) {
       || capability === 'workspace.control' && workspace !== null && current(identity, workspace.workspaceId) === workspace.handle
       || capability === 'permission.approve' && workspace !== null && current(identity, workspace.workspaceId) === workspace.handle
       || (capability === 'runtime.prompt' || capability === 'runtime.abort' || capability === 'session.select'
-        || capability === 'session.read' || capability === 'runtime.configure' || capability === 'goal.control'
+        || capability === 'session.read' || capability === 'session.history' || capability === 'runtime.configure' || capability === 'goal.control'
         || capability === 'task.control' || capability === 'queue.read' || capability === 'queue.control'
         || capability === 'agent.read' || capability === 'agent.control' || capability === 'text.context' && options.textAttachments !== undefined)
         && workspace !== null && current(identity, workspace.workspaceId) === workspace.handle),
@@ -330,7 +336,7 @@ export function createNetworkDispatcher(options: NetworkDispatcherOptions) {
       capabilities: ['host.info', 'workspace.list', 'file.read', 'workspace.snapshot', 'workspace.monitor',
         'goal.read', 'task.read', 'git.read', 'session.read', 'runtime.configure', 'goal.control', 'task.control',
         'queue.read', 'queue.control', 'agent.read', 'agent.control', ...(options.textAttachments ? ['text.context' as const] : []),
-        'workspace.control', 'permission.approve', 'runtime.prompt', 'runtime.abort', 'session.select',
+        'workspace.control', 'permission.approve', 'runtime.prompt', 'runtime.abort', 'session.select', 'session.history',
         ...(options.terminalEnabled ? ['terminal.manual' as const] : [])],
       networkDispatchEnabled: true, ...(options.readiness === undefined ? {} : { readiness: await options.readiness() }) }),
     'workspace.list': (_input, context) => ({ workspaces: roots.flatMap((root, index) => {
@@ -341,6 +347,22 @@ export function createNetworkDispatcher(options: NetworkDispatcherOptions) {
       if (!handle) return [];
       return [{ workspaceId: handle.id, workspaceGeneration: handle.generation, label: `Workspace ${index + 1}` }];
     }) }),
+    'session.history': async (input, context) => {
+      const scope = { ...readScope(context), selectionRevision: context.workspace.selectionRevision };
+      let page: HistoryPage;
+      try {
+        history ??= new HistoryPageService(new PiSessionRepository(undefined, core.paths.sessionsRoot), options.now);
+        page = await history.read(scope, input.pageId);
+      }
+      catch (error) {
+        if (error instanceof Error && error.message === 'RESYNC_REQUIRED') throw new ProtocolFault('RESYNC_REQUIRED');
+        if (error instanceof Error && error.message === 'BUSY') throw new ProtocolFault('BUSY');
+        if (error instanceof Error && error.message === 'RESULT_TOO_LARGE') throw new ProtocolFault('RESULT_TOO_LARGE');
+        throw new ProtocolFault('STORAGE_UNAVAILABLE');
+      }
+      readScope(context); // No stale workspace/session data after the disk read.
+      return page;
+    },
     'workspace.snapshot': (_input, context) => {
       const scope = readScope(context);
       const handle = context.workspace.handle as WorkspaceHandle;

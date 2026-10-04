@@ -242,7 +242,8 @@ describe('subagent session inspector', () => {
 
     await openAgentsInspector(user);
     expect(screen.getByRole('button', { name: 'Run, 10 active' })).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: /Open Worker \d+ \(@worker-\d+\) child session: Running/u })).toHaveLength(10);
+    // Inspector loads this panel lazily; wait for the actual rows, not only its tab.
+    expect(await screen.findAllByRole('button', { name: /Open Worker \d+ \(@worker-\d+\) child session: Running/u })).toHaveLength(10);
   });
 
   it('resizes the read-only preview between the child list and chat area', async () => {

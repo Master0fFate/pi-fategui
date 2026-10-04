@@ -4,7 +4,7 @@ import path from 'node:path';
 import { FatePaths } from '../FatePaths';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import { fateDataRoot } from '../../main/pi/FateProviderStorage';
-import { assertPrivateWindowsTree } from './WindowsPrivateAcl';
+import { assertPrivateWindowsTree, withPrivateWindowsAclScope } from './WindowsPrivateAcl';
 
 export interface ServerProfileOptions {
   readonly home?: string;
@@ -57,10 +57,13 @@ export async function createServerProfile(options: ServerProfileOptions = {}): P
     ancestor = parent;
   }
   if (options.profileRoot && missing.length) throw new Error('Custom server profile directory must already exist and be private.');
-  if (missing.length === 0) await assertPrivateWindowsTree(root);
   const lockRoot = path.join(base, '.locks');
-  try { await fs.lstat(lockRoot); await assertPrivateWindowsTree(lockRoot); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  // Both finite preflight walks share one helper process; each walk stays live.
+  await withPrivateWindowsAclScope(async () => {
+    if (missing.length === 0) await assertPrivateWindowsTree(root);
+    try { await fs.lstat(lockRoot); await assertPrivateWindowsTree(lockRoot); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  });
   // Never mkdir the profile, the Pi directory, or the provider data root here.
   return new FatePaths({
     profileId,

@@ -4,7 +4,7 @@ import { methodCatalog, publicWorkspaceSchema } from '../../shared/protocol/meth
 import { connectionProfilesSchema, connectionSelectSchema, connectionGenerationSchema, desktopConnectionStateSchema,
   remoteWorkspaceInputSchema, remoteReadInputSchema, remoteMonitorInputSchema, remoteFileListInputSchema,
   remotePreviewInputSchema, remotePromptInputSchema, remoteSessionInputSchema, remoteStatusInputSchema,
-  remoteSnapshotSchema, remoteMonitorSchema, remoteMutationSchema, remoteSessionsInputSchema, remoteGitDiffInputSchema,
+  remoteSnapshotSchema, remoteMonitorSchema, remoteMutationSchema, remoteSessionsInputSchema, remoteHistoryInputSchema, remoteGitDiffInputSchema,
   remoteGitCommitInputSchema, remoteMonitorDetailInputSchema, remoteUploadInputSchema, remoteCancelTextInputSchema,
   remoteOperationInputSchema, remoteIssuePermissionInputSchema, remoteConfirmPermissionInputSchema } from '../../shared/contracts/connections';
 import type { DesktopConnectionRouter } from './DesktopConnectionRouter';
@@ -60,6 +60,8 @@ export function registerConnectionIpc(handle: Register, router: DesktopConnectio
   richEmpty(ipcChannels.remoteModels, 'runtime.models'); richEmpty(ipcChannels.remoteQueue, 'runtime.queueRead');
   richEmpty(ipcChannels.remoteTeams, 'team.read'); richEmpty(ipcChannels.remoteAgents, 'agent.read');
   richEmpty(ipcChannels.remoteGitCombinedDiff, 'git.combinedDiff');
+  named(ipcChannels.remoteHistory, remoteHistoryInputSchema, methodCatalog['session.history'].wireResultSchema,
+    (input, guard) => router.read(input.scope.generation, guard, (client) => client.read(input.scope, 'session.history', input.input)));
   named(ipcChannels.remoteSessions, remoteSessionsInputSchema, methodCatalog['session.list'].wireResultSchema,
     (input, guard) => router.read(input.scope.generation, guard, (client) => client.read(input.scope, 'session.list', input.input)));
   named(ipcChannels.remoteGitDiff, remoteGitDiffInputSchema, methodCatalog['git.diff'].wireResultSchema,

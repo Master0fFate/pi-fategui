@@ -17,13 +17,13 @@ try {
   const childFile = path.join(isolated.root, 'tty-child.mjs');
   const resultFile = path.join(isolated.root, 'tty-result.json');
   const expected = 'zażółć hidden';
-  await fs.writeFile(childFile, `import {createProviderLoginIo} from ${JSON.stringify(pathToFileURL(path.join(bundle, 'input.mjs')).href)};
+  await fs.writeFile(childFile, `import {createProviderLoginIo, ProviderLoginOperatorError} from ${JSON.stringify(pathToFileURL(path.join(bundle, 'input.mjs')).href)};
 import {writeFileSync} from 'node:fs';
 const io=createProviderLoginIo(), abort=new AbortController();
 const before={raw:Boolean(process.stdin.isRaw),flowing:process.stdin.readableFlowing===true,data:process.stdin.listenerCount('data'),end:process.stdin.listenerCount('end')};
 let canceled=false, correct=false;
 try {const pending=io.readPrivate('Private synthetic fixture input only.',abort.signal); console.log('FATE_TTY_INPUT_READY'); const value=await pending; correct=value===${JSON.stringify(expected)};}
-catch(error){canceled=error.message==='Provider login canceled.';}
+catch(error){canceled=error instanceof ProviderLoginOperatorError&&error.code==='cancelled'&&error.message.startsWith('Provider login canceled.');}
 const result={pid:process.pid,interactive:io.interactive,correct,canceled,rawRestored:Boolean(process.stdin.isRaw)===before.raw,flowRestored:(process.stdin.readableFlowing===true)===before.flowing,dataListenersRestored:process.stdin.listenerCount('data')===before.data,endListenersRestored:process.stdin.listenerCount('end')===before.end};
 writeFileSync(${JSON.stringify(resultFile)},JSON.stringify(result));console.log('FATE_TTY_DONE');
 `);

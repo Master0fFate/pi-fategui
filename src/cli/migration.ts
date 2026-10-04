@@ -6,6 +6,7 @@ import packageMetadata from '../../package.json';
 import { createDesktopFatePaths, type FatePaths } from '../core/FatePaths';
 import { MigrationService, type MigrationPlan } from '../core/storage/MigrationService';
 import { assertPrivateMigrationPath, overlaps } from '../core/storage/MigrationFiles';
+import { withPrivateWindowsAclScope } from '../core/storage/WindowsPrivateAcl';
 import { hostCheckoutLockRoot } from '../core/ownership/CheckoutOwnership';
 import type { CliCommand } from './args';
 import { readHostProfile, writePrivateHostOutput } from './profile';
@@ -63,8 +64,21 @@ async function readPlan(target: string, expectedDigest: string): Promise<z.infer
 
 /** Offline local command; deliberately bypasses server startup and host-admin RPC. */
 export async function runMigrationCommand(command: HostCommand): Promise<void> {
+  // One finite offline command shares one ACL helper process; every check stays live.
+  const summaries: unknown[] = [];
+  const print = () => { for (const summary of summaries.splice(0)) process.stdout.write(`${JSON.stringify(summary)}\n`); };
+  try { await withPrivateWindowsAclScope(() => migrateWithinScope(command, (summary) => { summaries.push(summary); })); }
+  catch (error) {
+    // A typed refusal (a blocked preflight, for example) keeps its summary. A
+    // helper that cannot be joined is not a verified outcome: print no success
+    // line, and keep the fixed operator error instead of a raw failure.
+    if (error instanceof MigrationOperatorError) { print(); throw error; }
+    throw new MigrationOperatorError('operation', { cause: error });
+  }
+  print();
+}
+async function migrateWithinScope(command: HostCommand, write: (summary: unknown) => void): Promise<void> {
   if (command.mode !== 'migrate') throw new MigrationOperatorError('plan');
-  const write = (summary: unknown) => { process.stdout.write(`${JSON.stringify(summary)}\n`); };
   let paths: FatePaths;
   try { paths = command.options.desktop === true ? createDesktopFatePaths() : (await readHostProfile(command.profile)).paths; }
   catch (cause) { throw new MigrationOperatorError('plan', { cause }); }

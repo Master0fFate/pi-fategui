@@ -67,6 +67,17 @@ describe('isolated v2 test infrastructure', () => {
     expect(await realpath(getAgentDir())).toBe(await realpath(process.env.PI_CODING_AGENT_DIR!));
   });
 
+  test.skipIf(process.platform !== 'win32')('Windows known folders resolve inside the private home, never to an empty path', async () => {
+    // An empty known-folder path makes Windows PowerShell write its module
+    // cache relative to the working directory, changing the verified source.
+    const output = execFileSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      "[Console]::Out.Write([Environment]::GetFolderPath('LocalApplicationData') + '|' + [Environment]::GetFolderPath('ApplicationData'))"],
+    { encoding: 'utf8', windowsHide: true });
+    const folders = output.split('|');
+    expect(folders).toHaveLength(2);
+    for (const folder of folders) { expect(folder).toBeTruthy(); await assertPrivatePath(folder); }
+  });
+
   test('allowlists environment, strips secrets and injection, retains absolute tool PATH', () => {
     const output = probe(`
       const { createIsolatedEnvironment } = await import(${JSON.stringify(launcherUrl)});

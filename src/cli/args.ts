@@ -13,7 +13,8 @@ export class CliUsageError extends Error {
 }
 const fail = (): never => { throw new CliUsageError(); };
 const flags: Record<CliMode | 'desktop' | 'connect', readonly string[]> = {
-  desktop: ['project', 'new-instance'], connect: [], init: ['profile', 'workspace', 'trust-workspace', 'port'],
+  desktop: ['project', 'new-instance'], connect: [], init: ['profile', 'workspace', 'trust-workspace', 'port',
+    'state-persistence', 'max-permission', 'manual-terminal', 'accept-unsandboxed-shell'],
   serve: ['profile'], web: ['profile', 'workspace', 'port', 'trust-workspace'], doctor: ['profile'],
   provider: ['profile', 'provider-id', 'method'], 'auth-code': ['profile', 'out-file'],
   'access-key': ['profile', 'workspace', 'out-file', 'client-id'],
@@ -50,7 +51,8 @@ export function parseCliArgs(argv: readonly string[], entry: 'desktop' | 'server
     if (!literal && token.startsWith('--')) {
       const split = token.indexOf('='), name = token.slice(2, split < 0 ? undefined : split);
       if (!flags[mode].includes(name) || Object.hasOwn(options, name)) fail();
-      if (['new-instance', 'trust-workspace', 'desktop', 'confirm-apply', 'confirm-rollback', 'acknowledge-unknown'].includes(name)) {
+      if (['new-instance', 'trust-workspace', 'desktop', 'confirm-apply', 'confirm-rollback', 'acknowledge-unknown',
+        'manual-terminal', 'accept-unsandboxed-shell'].includes(name)) {
         if (split >= 0) fail(); options[name] = true;
       } else {
         const value = split < 0 ? argv[++index] : token.slice(split + 1);
@@ -69,6 +71,12 @@ export function parseCliArgs(argv: readonly string[], entry: 'desktop' | 'server
   if (!profilePattern.test(profile)) fail();
   if ((mode === 'init' || mode === 'web') && (!options.workspace || options['trust-workspace'] !== true)) fail();
   if (options.port && (!/^[1-9][0-9]{0,4}$/u.test(String(options.port)) || Number(options.port) > 65535)) fail();
+  if (mode === 'init') {
+    if (options['state-persistence'] && !['legacy-json', 'native-durable'].includes(String(options['state-persistence']))) fail();
+    if (options['max-permission'] && !['read-only', 'edit', 'full-access'].includes(String(options['max-permission']))) fail();
+    if (Boolean(options['manual-terminal']) !== Boolean(options['accept-unsandboxed-shell'])) fail();
+    if (options['manual-terminal'] && !['edit', 'full-access'].includes(String(options['max-permission']))) fail();
+  }
   if (mode === 'provider' && (options.method && !['api_key', 'oauth'].includes(String(options.method))
     || verb !== 'login' && (options.method || options['provider-id']))) fail();
   if (mode === 'access-key' && (verb === 'create' ? !options['out-file'] || !options.workspace || options['client-id']

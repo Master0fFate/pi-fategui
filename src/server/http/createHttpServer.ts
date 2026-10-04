@@ -16,6 +16,7 @@ import { createStaticAssetHandler } from './staticAssets';
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_CONNECTIONS = 8;
+const MAX_ACTIVE_REQUESTS = 32;
 
 export interface HttpServiceOptions {
   readonly auth: AuthService;
@@ -97,7 +98,16 @@ export async function createHttpServer(options: HttpServiceOptions): Promise<Htt
   const cookieName = `fate_${createHash('sha256').update(options.profileId).digest('hex').slice(0, 16)}_session`;
   const staticAssets = options.staticDirectory === undefined ? null : await createStaticAssetHandler(options.staticDirectory);
   const cookies = new Set<Socket>();
+  const activeRequests = new Set<Promise<void>>();
+  let stopping = false;
+  let stopResult: Promise<void> | null = null;
   const server = createServer((request, response) => {
+    // Socket count alone does not bound pipelined, asynchronously pending work.
+    if (stopping || activeRequests.size >= MAX_ACTIVE_REQUESTS) {
+      response.setHeader('Connection', 'close');
+      refusal(response, new ProtocolFault('BUSY'));
+      return;
+    }
     const started = Date.now();
     const route: Diagnostic['method'] = request.url === '/healthz' ? 'health'
       : request.url === '/api/auth/exchange' ? 'auth.exchange'
@@ -113,7 +123,7 @@ export async function createHttpServer(options: HttpServiceOptions): Promise<Htt
         : response.statusCode === 403 ? 'FORBIDDEN' : response.statusCode === 429 ? 'BUSY'
           : response.statusCode === 400 || response.statusCode === 404 ? 'INVALID_REQUEST' : 'INTERNAL_ERROR'),
       durationMs: Math.max(0, Date.now() - started), count: 1 }); });
-    void (async () => {
+    const processing = (async () => {
       const path = apiPath(request);
       const origin = guardRequest(request, config, { browserMutation: path === '/api/auth/exchange' || path === '/api/auth/logout'
         || path === '/api/command' && oneHeader(request, 'cookie') !== null,
@@ -133,6 +143,7 @@ export async function createHttpServer(options: HttpServiceOptions): Promise<Htt
       if (path === '/api/auth/exchange' && request.method === 'POST') {
         if (oneHeader(request, 'cookie') || oneHeader(request, 'authorization')) throw new ProtocolFault('FORBIDDEN');
         const body = await boundedJsonBody(request, MAX_JSON_BYTES);
+        if (stopping) throw new ProtocolFault('BUSY');
         if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || !('code' in body) || typeof body.code !== 'string') throw new ProtocolFault('INVALID_REQUEST');
         const exchanged = await options.auth.exchange(body.code, request.socket.remoteAddress ?? '');
         respond(response, 200, { session: exchanged.session }, { 'Set-Cookie': `${cookieName}=${exchanged.sessionToken}; HttpOnly; SameSite=Strict; Path=/api` });
@@ -143,8 +154,9 @@ export async function createHttpServer(options: HttpServiceOptions): Promise<Htt
         if (!ownerCredential) throw new ProtocolFault('UNAUTHENTICATED');
         // Authentication is evaluated before parsing admin payloads. The method catalog is fixed.
         options.auth.authorizeAdmin({ ownerCredential, origin, cookiePresented: oneHeader(request, 'cookie') !== null });
-        const result = await executeAdminMethod(options.auth, { ownerCredential, origin, cookiePresented: false },
-          await boundedJsonBody(request, MAX_JSON_BYTES), options.providerAdmin);
+        const body = await boundedJsonBody(request, MAX_JSON_BYTES);
+        if (stopping) throw new ProtocolFault('BUSY');
+        const result = await executeAdminMethod(options.auth, { ownerCredential, origin, cookiePresented: false }, body, options.providerAdmin);
         respond(response, 200, result);
         return;
       }
@@ -175,7 +187,9 @@ export async function createHttpServer(options: HttpServiceOptions): Promise<Htt
         if (sessionToken) options.auth.assertBrowserCsrf(sessionToken, oneHeader(request, 'x-fate-csrf') ?? '');
         const ticket = oneHeader(request, 'x-fate-client-ticket');
         if (!ticket) throw new ProtocolFault('UNAUTHENTICATED');
-        const result = responseEnvelopeSchema.parse(await options.onCommand(await boundedTextBody(request, MAX_JSON_BYTES), principal, ticket, origin));
+        const body = await boundedTextBody(request, MAX_JSON_BYTES);
+        if (stopping) throw new ProtocolFault('BUSY');
+        const result = responseEnvelopeSchema.parse(await options.onCommand(body, principal, ticket, origin));
         requestId = result.requestId;
         workspaceId = result.scope?.workspaceId ?? null;
         diagnosticCode = result.ok ? 'OK' : result.error.code;
@@ -187,9 +201,11 @@ export async function createHttpServer(options: HttpServiceOptions): Promise<Htt
       diagnosticCode = error instanceof ProtocolFault ? error.code : 'INTERNAL_ERROR';
       try { refusal(response, error); } catch { response.destroy(); }
     });
+    activeRequests.add(processing);
+    void processing.then(() => activeRequests.delete(processing), () => activeRequests.delete(processing));
   });
   server.on('upgrade', (request, socket, head) => {
-    if (!options.onUpgrade) { socket.destroy(); return; }
+    if (stopping || !options.onUpgrade) { socket.destroy(); return; }
     try { options.onUpgrade(request, socket, head, config, cookieName); }
     catch { socket.destroy(); }
   });
@@ -208,10 +224,18 @@ export async function createHttpServer(options: HttpServiceOptions): Promise<Htt
     });
     const bound = server.address() as AddressInfo | null;
     if (!bound || bound.address !== options.host || bound.port !== options.port) throw new Error('Loopback listener address changed.');
-    return { server, port: bound.port, stop: async () => {
-      // Close any live sockets before releasing the core's profile-owner lock.
-      for (const socket of cookies) socket.destroy();
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    return { server, port: bound.port, stop: () => {
+      if (stopResult) return stopResult;
+      stopping = true; // Fence synchronously, before a later body/upgrade can admit work.
+      stopResult = (async () => {
+        const closed = new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        for (const socket of cookies) socket.destroy();
+        // Losing a socket is not settlement of an admitted grant or its final
+        // journal write. Keep the owner's shutdown pending until both finish.
+        const [listener] = await Promise.all([Promise.allSettled([closed]), Promise.allSettled([...activeRequests])]);
+        if (listener[0]?.status === 'rejected') throw listener[0].reason;
+      })();
+      return stopResult;
     } };
   } catch (error) {
     for (const socket of cookies) socket.destroy();

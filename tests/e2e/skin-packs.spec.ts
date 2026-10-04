@@ -2,6 +2,7 @@ import { _electron as electron, expect, test } from '@playwright/test';
 import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 test('a folder skin imports into user data, previews, exports, survives restart, and uninstalls safely', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'fate-pack-e2e-'));
@@ -66,9 +67,9 @@ test('a folder skin imports into user data, previews, exports, survives restart,
     await settings.getByRole('button', { name: 'Export Ashen Terminal', exact: true }).click();
     await expect(settings.getByText(/Exported to/)).toBeVisible();
     expect(await readFile(path.join(exported, 'ashen-terminal', 'background.png'))).toEqual(await readFile(path.join(installedPath, 'background.png')));
-    await settings.screenshot({ path: 'test-results/skin-pack-settings.png', animations: 'disabled' });
+    await settings.screenshot({ path: await evidenceOutputPath('skin-pack-settings.png'), animations: 'disabled' });
     await settings.getByRole('button', { name: 'Close settings', exact: true }).click();
-    await page.screenshot({ path: 'test-results/skin-pack-workspace.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('skin-pack-workspace.png'), animations: 'disabled' });
     await application.close();
 
     application = await launch();

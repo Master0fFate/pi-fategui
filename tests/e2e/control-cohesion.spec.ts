@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 async function railMetrics(page: Page) {
   return page.evaluate(() => {
@@ -60,14 +61,14 @@ for (const skin of ['default', 'dreamcore'] as const) {
             expect(metrics.every(({ markFont }) => markFont === '11px')).toBe(true);
             await expect(page.locator('.goalmax-task-strip')).toHaveCSS('border-radius', '0px');
           }
-          await page.screenshot({ path: `test-results/controls-${skin}-${compact ? 'compact' : 'normal'}-${width}.png`, animations: 'disabled' });
+          await page.screenshot({ path: await evidenceOutputPath(`controls-${skin}-${compact ? 'compact' : 'normal'}-${width}.png`), animations: 'disabled' });
         }
         await page.getByRole('button', { name: 'Expand task list' }).click();
         await expect(page.getByRole('list', { name: 'Task status' })).toContainText('The detail remains readable');
         await page.getByText('Saved goal instructions · 1').click();
         await expect(page.getByRole('region', { name: 'Saved goal instructions' })).toContainText('Keep the recovery path documented.');
         await expect(page.locator('.composer-rails')).toHaveJSProperty('scrollWidth', await page.locator('.composer-rails').evaluate((element) => element.clientWidth));
-        await page.screenshot({ path: `test-results/controls-${skin}-${compact ? 'compact' : 'normal'}-expanded.png`, animations: 'disabled' });
+        await page.screenshot({ path: await evidenceOutputPath(`controls-${skin}-${compact ? 'compact' : 'normal'}-expanded.png`), animations: 'disabled' });
         await page.getByRole('button', { name: 'Collapse task list' }).click();
         await page.getByText('Saved goal instructions · 1').click();
       }
@@ -85,7 +86,7 @@ for (const skin of ['default', 'dreamcore'] as const) {
         expect(await menu.evaluate((element) => getComputedStyle(element).fontFamily)).toContain('JetBrains Mono');
         await expect(folderTrigger).toHaveText('[...]');
       }
-      await page.screenshot({ path: `test-results/folder-actions-${skin}.png`, animations: 'disabled' });
+      await page.screenshot({ path: await evidenceOutputPath(`folder-actions-${skin}.png`), animations: 'disabled' });
       await page.getByRole('menuitem', { name: 'Delete all sessions' }).click();
       const folderConfirm = page.getByRole('alertdialog', { name: 'Delete sessions from project-with-a-long-folder-name?' });
       await expect(folderConfirm).toBeVisible();
@@ -114,7 +115,7 @@ for (const skin of ['default', 'dreamcore'] as const) {
         await expect(confirmation).toHaveCSS('border-radius', '0px');
         await expect(confirmation).toHaveCSS('box-shadow', 'none');
       }
-      await page.screenshot({ path: `test-results/team-delete-${skin}.png`, animations: 'disabled' });
+      await page.screenshot({ path: await evidenceOutputPath(`team-delete-${skin}.png`), animations: 'disabled' });
       await page.keyboard.press('Escape');
       await expect(confirmation).toHaveCount(0);
       await expect(deleteTrigger).toBeFocused();

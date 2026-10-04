@@ -1,12 +1,33 @@
-name: V2 source verification
+name: V2 candidate verification
 
-# Deliberately manual while native release/platform gates remain unaccepted.
-# This workflow creates no installers, packages, releases, credentials or deployments.
+# Runs for pull requests into main that touch the product, and manually.
+# A pull request always includes the browser workflows and the package jobs;
+# a manual run selects them. Package jobs produce CI artifacts only, never
+# releases or deployments. Native desktop installers are a separate workflow.
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/v2-server.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'patches/**'
+      - 'build/**'
+      - 'scripts/**'
+      - 'src/**'
+      - 'tests/**'
+      - '*.config.ts'
+      - 'tsconfig.json'
   workflow_dispatch:
     inputs:
       browser:
         description: Also install the pinned Chromium test dependency and run browser workflows
+        required: false
+        default: false
+        type: boolean
+      packages:
+        description: Build and smoke independent Linux x64 Node artifacts, with and without native PTY
         required: false
         default: false
         type: boolean
@@ -16,7 +37,7 @@ permissions:
 
 concurrency:
   group: v2-source-verification-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   linux-source:
@@ -45,10 +66,10 @@ jobs:
       - name: Run isolated source, contract, unit and local-network gates
         run: pnpm verify:v2 --scope core
       - name: Install pinned test browser
-        if: inputs.browser
+        if: github.event_name == 'pull_request' || inputs.browser
         run: pnpm exec playwright install chromium
       - name: Run actual browser workflows
-        if: inputs.browser
+        if: github.event_name == 'pull_request' || inputs.browser
         run: pnpm test:web
       - name: Record exact candidate and remaining gates
         if: always()
@@ -57,7 +78,63 @@ jobs:
           {
             echo "Candidate: $GITHUB_SHA"
             echo "Scope: Linux x64 source checks only"
-            echo "Browser requested: ${{ inputs.browser }}"
+            echo "Browser workflows run: ${{ github.event_name == 'pull_request' || inputs.browser }}"
             echo "Native desktop, Windows/macOS, real SSH/systemd, package notices/artifacts and human acceptance remain separate gates."
             echo "No private profiles or failure fixture roots are uploaded."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  linux-packages:
+    name: Linux x64 / Node package / terminal=${{ matrix.terminal }}
+    if: github.event_name == 'pull_request' || inputs.packages
+    needs: linux-source
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        terminal: [false, true]
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.17.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+      - name: Verify target identity
+        run: node -e "if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Expected native Linux x64');"
+      - name: Install frozen build dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build independent package and run extracted-artifact smoke
+        env:
+          FATE_PACKAGE_TERMINAL: ${{ matrix.terminal }}
+        shell: bash
+        run: |
+          args=(--output "$RUNNER_TEMP/fate-packages")
+          if [ "$FATE_PACKAGE_TERMINAL" = true ]; then args+=(--with-terminal); fi
+          pnpm package:server "${args[@]}"
+      - name: Retain only verified archives and their checksums
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fate-server-${{ github.sha }}-linux-x64-terminal-${{ matrix.terminal }}
+          path: |
+            ${{ runner.temp }}/fate-packages/*.tar.gz
+            ${{ runner.temp }}/fate-packages/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: Record evidence scope
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "Candidate: $GITHUB_SHA"
+            echo "Target: Linux x64, Node 24.19.0; native PTY: ${{ matrix.terminal }}"
+            echo "Archive manifest binds source bytes, dependency closure and extracted-artifact smoke."
+            echo "Artifacts upload only after package smoke passes; private smoke profiles/logs are not uploaded."
+            echo "This does not accept desktop, SSH/service, other platforms or human release gates."
           } >> "$GITHUB_STEP_SUMMARY"

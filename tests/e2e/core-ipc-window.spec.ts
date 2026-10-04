@@ -1,18 +1,34 @@
 import { _electron as electron, expect, test } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-test('production core opens a second trusted window without another runtime owner', async () => {
+async function assertNativeDatabase(data: string): Promise<void> {
+  const handle = await open(path.join(data, 'durable', 'v1', 'state.sqlite'), 'r');
+  try {
+    const header = Buffer.alloc(16);
+    expect((await handle.read(header, 0, header.length, 0)).bytesRead).toBe(16);
+    expect(header.toString('utf8')).toBe('SQLite format 3\0');
+  } finally { await handle.close(); }
+}
+
+for (const backend of ['legacy-json', 'native-durable'] as const) {
+test(`[${backend}] production core opens a second trusted window without another runtime owner and restarts`, async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'fate-core-window-e2e-'));
   let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  const data = path.join(root, 'data');
+  const launch = (selectBackend: boolean) => {
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value;
+    Object.assign(env, { VITE_DEV_SERVER_URL: '', FATE_GUI_DATA_DIR: data,
+      PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_OFFLINE: '1' });
+    if (selectBackend) env.FATE_STATE_PERSISTENCE = backend;
+    else delete env.FATE_STATE_PERSISTENCE;
+    return electron.launch({ args: [`--user-data-dir=${path.join(root, 'chromium')}`, path.resolve('.'), '--new-instance'], env });
+  };
   try {
-    application = await electron.launch({
-      args: [`--user-data-dir=${path.join(root, 'chromium')}`, path.resolve('.'), '--new-instance'],
-      env: { ...process.env, VITE_DEV_SERVER_URL: '', FATE_GUI_DATA_DIR: path.join(root, 'data'),
-        PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_OFFLINE: '1' },
-    });
+    application = await launch(true);
     const first = await application.firstWindow();
     await expect(first.locator('[data-bridge-status="ready"]')).toBeVisible();
     const opened = application.waitForEvent('window');
@@ -26,13 +42,22 @@ test('production core opens a second trusted window without another runtime owne
     expect(a.project).toBeNull();
     expect(b.project).toBeNull();
     expect(await application.windows()).toHaveLength(2);
+    if (backend === 'native-durable') await assertNativeDatabase(data);
+    await application.close(); application = undefined;
+    // No selector on ordinary restart. Retained native evidence must not be
+    // silently ignored or replaced by an empty legacy owner.
+    application = await launch(false);
+    const restarted = await application.firstWindow();
+    await expect(restarted.locator('[data-bridge-status="ready"]')).toBeVisible();
+    expect((await restarted.evaluate(() => window.piDesktop.getRuntimeState())).project).toBeNull();
+    if (backend === 'native-durable') await assertNativeDatabase(data);
   } finally {
     await application?.close();
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test('production IPC captures the trusted project for files, Git, Monitor and a project switch', async () => {
+test(`[${backend}] production IPC captures the trusted project for files, Git, Monitor and a project switch`, async () => {
   test.setTimeout(120_000);
   const root = await mkdtemp(path.join(tmpdir(), 'fate-core-project-e2e-'));
   let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
@@ -48,7 +73,7 @@ test('production IPC captures the trusted project for files, Git, Monitor and a 
     application = await electron.launch({
       args: [`--user-data-dir=${path.join(root, 'chromium')}`, path.resolve('.'), '--new-instance', `--project=${a}`],
       env: { ...process.env, VITE_DEV_SERVER_URL: '', FATE_GUI_DATA_DIR: data,
-        PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_OFFLINE: '1' },
+        PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_OFFLINE: '1', FATE_STATE_PERSISTENCE: backend },
     });
     const first = await application.firstWindow();
     await expect(first.locator('[data-bridge-status="ready"]')).toBeVisible();
@@ -73,8 +98,10 @@ test('production IPC captures the trusted project for files, Git, Monitor and a 
     }));
     expect(next.preview).toMatchObject({ content: 'B only' });
     expect(next.monitor.projectPath).toBe(b);
+    if (backend === 'native-durable') await assertNativeDatabase(data);
   } finally {
     await application?.close();
     await rm(root, { recursive: true, force: true });
   }
 });
+}

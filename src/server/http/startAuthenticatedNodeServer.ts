@@ -18,6 +18,7 @@ import { ClientTickets } from '../auth/ClientTickets';
 import { EventConnection } from '../ws/EventConnection';
 import { createTerminalBridge } from '../ws/TerminalBridge';
 import { RedactedLog } from '../logging/RedactedLog';
+import { createHostShutdown } from '../HostShutdown';
 import { createProviderAdminPort } from '../admin/providerMethods';
 import { fateProviderStoragePaths } from '../../main/pi/FateProviderStorage';
 import type { PublicHostReadiness } from '../../shared/protocol/methods';
@@ -31,12 +32,16 @@ export interface AuthenticatedNodeServer {
   readonly hostId: string;
   readonly readiness: Readonly<{ ready: true; listener: 'bound'; host: '127.0.0.1'; port: number }>;
   stop(): Promise<CoreShutdownResult>;
+  /** Actual transport/native/core settlement, which may outlive the grace result. */
+  settled(): Promise<void> | null;
 }
 
 export interface AuthenticatedHostPolicy {
   readonly hostName?: string;
   /** Trusted host-local policy, not part of server JSON or a browser request. */
   readonly mayTakeOver?: NetworkDispatcherOptions['mayTakeOver'];
+  /** Trusted in-process native I/O port. No serialized config, CLI or browser switch. */
+  readonly loadPty?: () => Promise<typeof import('node-pty')>;
 }
 async function publicHostId(core: FateCore): Promise<string> {
   const target = path.join(path.dirname(core.paths.dataRoot), 'host-id');
@@ -79,6 +84,20 @@ export async function startAuthenticatedNodeServerWithFactory(input: unknown,
   let terminal: ReturnType<typeof createTerminalBridge> | null = null;
   let attachments: TextAttachmentStore | null = null;
   let expiryTimer: ReturnType<typeof setInterval> | null = null;
+  const shutdown = createHostShutdown({
+    fence: () => base.core.lifecycle.beginShutdown(),
+    stopTransports: async () => {
+      if (expiryTimer) clearInterval(expiryTimer);
+      // Start every close independently and synchronously. HTTP seals request
+      // admission and drains full handlers, including their final journal writes.
+      const callbacks = [() => http?.stop(), () => events?.close(), () => tickets?.close(),
+        () => terminal?.close(), () => attachments?.close()];
+      const results = await Promise.allSettled(callbacks.map(async (close) => close()));
+      const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+      if (failures.length) throw new AggregateError(failures, 'Host transport/native cleanup is incomplete; ownership retained.');
+    },
+    stopCore: () => base.stop(), coreSettlement: () => base.core.lifecycle.settled(),
+  });
   try {
     // Reuse the sole profile-owned authority store; never open a second writer.
     const auth = base.auth;
@@ -122,6 +141,7 @@ export async function startAuthenticatedNodeServerWithFactory(input: unknown,
     if (base.readiness.terminalEnabled) {
       terminal = createTerminalBridge({ registry: base.core.workspaces, control: commands.control,
         permission: commands.terminalPermission,
+        ...(hostPolicy.loadPty === undefined ? {} : { loadPty: hostPolicy.loadPty }),
         resolveShell: () => process.platform === 'win32' ? (process.env.ComSpec ?? 'C:\\Windows\\System32\\cmd.exe')
           : (process.env.SHELL ?? '/bin/sh') });
     }
@@ -138,31 +158,19 @@ export async function startAuthenticatedNodeServerWithFactory(input: unknown,
       } });
     const liveEvents = events;
     http = await createHttpServer({ auth, host: base.readiness.host, port: base.readiness.configuredPort,
-      profileId: base.core.paths.dataRoot, allowedOrigins: base.readiness.browserOrigins, serverEpoch, ready: () => true,
+      profileId: base.core.paths.dataRoot, allowedOrigins: base.readiness.browserOrigins, serverEpoch, ready: () => !base.core.lifecycle.isStopping,
       logger: new RedactedLog(diagnosticSink), providerAdmin, ...(builtWebDirectory === undefined ? {} : { staticDirectory: builtWebDirectory }),
       onCommand: commands.onCommand,
       onUpgrade: (request, socket, head, config, cookieName) => liveEvents.handleUpgrade(request, socket, head, config, cookieName) });
     const listener = http;
-    let stopping: Promise<CoreShutdownResult> | null = null;
     return { core: base.core, auth, http: listener, tickets: liveTickets, serverEpoch, hostId,
       readiness: Object.freeze({ ready: true, listener: 'bound', host: base.readiness.host, port: listener.port }),
-      stop: () => stopping ??= (async () => {
-        if (expiryTimer) clearInterval(expiryTimer);
-        liveEvents.close(); liveTerminal?.close(); liveTickets.close(); await listener.stop();
-        let attachmentFailure: unknown;
-        try { await liveAttachments.close(); } catch (error) { attachmentFailure = error; }
-        const result = await base.stop();
-        if (attachmentFailure) throw new AggregateError([attachmentFailure], 'Private text cleanup is incomplete.');
-        return result;
-      })() };
+      stop: shutdown.stop, settled: shutdown.settled };
   } catch (error) {
-    try { if (expiryTimer) clearInterval(expiryTimer);
-      events?.close(); terminal?.close(); tickets?.close(); await http?.stop();
-      let attachmentFailure: unknown;
-      try { await attachments?.close(); } catch (cleanupError) { attachmentFailure = cleanupError; }
-      const shutdown = await base.stop();
-      if (shutdown.status !== 'settled') throw new Error('Core shutdown is incomplete; ownership remains held.');
-      if (attachmentFailure) throw attachmentFailure; }
+    try {
+      const result = await shutdown.stop();
+      if (result.status !== 'settled') throw new Error('Authenticated host shutdown is incomplete; ownership remains held.');
+    }
     catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Authenticated listener startup failed and owner shutdown was incomplete.'); }
     throw error;
   }

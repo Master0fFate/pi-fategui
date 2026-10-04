@@ -23,7 +23,7 @@ describe('initial protocol preparation', () => {
     expect(Object.keys(methodCatalog).sort()).toEqual([
       'host.info', 'workspace.list', 'workspace.snapshot', 'workspace.snapshotPage', 'workspace.monitor', 'workspace.monitorDetail',
       'control.claim', 'control.renew', 'control.release', 'control.takeover', 'permission.issue', 'permission.confirm',
-      'command.status', 'file.list', 'file.previewText', 'runtime.prompt', 'runtime.abort', 'session.select', 'session.list', 'session.create',
+      'command.status', 'file.list', 'file.previewText', 'runtime.prompt', 'runtime.abort', 'session.select', 'session.list', 'session.history', 'session.create',
       'runtime.models', 'runtime.queueRead', 'runtime.setModel', 'runtime.setThinking', 'runtime.queue',
       'goal.get', 'goal.create', 'goal.control', 'goal.update', 'goal.clear', 'goal.editSteering', 'goal.removeSteering',
       'task.list', 'task.create', 'task.update', 'task.reorder', 'task.delete', 'task.clear',

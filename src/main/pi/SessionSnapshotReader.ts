@@ -1,5 +1,6 @@
 import { open, type FileHandle } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
+import { sessionProjectMatches } from './SessionProjectIdentity';
 
 export type SnapshotRecord = Record<string, unknown>;
 
@@ -418,7 +419,7 @@ async function readRecord(handle: FileHandle, offset: number, byteLength: number
 }
 
 /** A fixed-size, positional read. No readFile/readline of an unbounded line. */
-export async function readSessionSnapshot(filePath: string, sessionId: string): Promise<ReadSessionSnapshot | undefined> {
+export async function readSessionSnapshot(filePath: string, sessionId: string, expectedCwd?: string): Promise<ReadSessionSnapshot | undefined> {
   const handle = await open(filePath, 'r');
   try {
     const stats = await handle.stat();
@@ -451,7 +452,8 @@ export async function readSessionSnapshot(filePath: string, sessionId: string): 
       }
       if (parsed) {
         if (!header.value) {
-          if (parsed.type !== 'session' || typeof parsed.id !== 'string' || !parsed.id) return false;
+          if (parsed.type !== 'session' || parsed.id !== sessionId
+            || expectedCwd !== undefined && !sessionProjectMatches(parsed.cwd, expectedCwd)) return false;
           header.value = parsed;
         } else if (validEntry(parsed)) {
           if ((parsed.id as string).length > MAX_ID_LENGTH || (typeof parsed.parentId === 'string' && parsed.parentId.length > MAX_ID_LENGTH)) {

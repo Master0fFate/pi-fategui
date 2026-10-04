@@ -21,7 +21,7 @@ const serverConfigSchema = z.object({
   // Exact approved browser origins, including a future explicitly configured SSH local forward.
   browserOrigins: z.array(z.string().regex(/^http:\/\/(?:127\.0\.0\.1|localhost):[1-9][0-9]{0,4}$/u)).max(8).optional(),
   // Terminal enablement is host-local and requires a second explicit acknowledgement
-  // of its unsandboxed OS-user authority. No network route advertises it yet.
+  // of its unsandboxed OS-user authority. Clients cannot enable it with a frame.
   flags: z.object({ terminal: z.boolean().default(false), terminalWarningAccepted: z.literal(true).optional(), browser: z.literal(false) })
     .strict().refine((flags) => !flags.terminal || flags.terminalWarningAccepted === true,
       'Enabling the host manual terminal requires terminalWarningAccepted: true.'),

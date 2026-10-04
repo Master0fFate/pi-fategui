@@ -1,5 +1,5 @@
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
-import type { ReactElement, ReactNode } from 'react';
+import type { FocusEvent, ReactElement, ReactNode } from 'react';
 
 type TooltipSide = 'top' | 'right' | 'bottom' | 'left';
 type TooltipAlign = 'start' | 'center' | 'end';
@@ -13,6 +13,20 @@ interface AppTooltipProps {
   delayDuration?: number;
   wrapTrigger?: boolean;
   triggerClassName?: string;
+}
+
+/** Focus opens a tooltip for keyboard users only. A programmatic focus return
+ * (a dialog closed by pointer restores its opener) must not raise a tooltip
+ * over neighboring controls, where it would intercept the next click. */
+function openOnKeyboardFocusOnly(event: FocusEvent<HTMLElement>): void {
+  let keyboard = true;
+  // With wrapTrigger the handler sits on a wrapper span. Only the element that
+  // really took focus can match :focus-visible, never that wrapper.
+  const focused = event.target instanceof Element ? event.target : event.currentTarget;
+  try { keyboard = focused.matches(':focus-visible'); }
+  catch { /* An engine without the selector keeps the focus-open behavior. */ }
+  // Radix skips its own focus handler for a default-prevented event.
+  if (!keyboard) event.preventDefault();
 }
 
 export function AppTooltip({
@@ -34,7 +48,7 @@ export function AppTooltip({
   return (
     <TooltipPrimitive.Provider delayDuration={delayDuration ?? 350} skipDelayDuration={150} disableHoverableContent={false}>
       <TooltipPrimitive.Root>
-        <TooltipPrimitive.Trigger asChild>{trigger}</TooltipPrimitive.Trigger>
+        <TooltipPrimitive.Trigger asChild onFocus={openOnKeyboardFocusOnly}>{trigger}</TooltipPrimitive.Trigger>
         <TooltipPrimitive.Portal>
           <TooltipPrimitive.Content
             className="tooltip"

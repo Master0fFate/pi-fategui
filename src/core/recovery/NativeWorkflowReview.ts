@@ -8,6 +8,7 @@ import { FatePaths } from '../FatePaths';
 import { OwnerLock, canonicalFuturePath, lockName } from '../ownership/OwnerLock';
 import { DurableStorageCloseUncertainError } from '../durable/OwnedDurableStorage';
 import { inspectOwnedNativeWorkflowRecovery, type NativeWorkflowRecoveryInspection } from './NativeWorkflowRecovery';
+import { insidePrivateWindowsAclScope, withIndependentWindowsAclQueries, withPrivateWindowsAclScope, WindowsAclUnverifiedError } from '../storage/WindowsPrivateAcl';
 import { assertPrivateMigrationPath, exists, fingerprintMigrationFile, migrationHash, privateMigrationDirectory,
   readMigrationJson, syncMigrationDirectory, type MigrationFile } from '../storage/MigrationFiles';
 
@@ -139,6 +140,22 @@ async function verifyRetainedEvidence(options: OwnedWorkflowReviewOptions, recor
 }
 /** Read-only startup composition. Never modifies the frozen scanner or old databases. */
 export async function inspectOwnedNativeWorkflowReview(options: OwnedWorkflowReviewOptions): Promise<NativeWorkflowReviewInspection> {
+  // One finite inspection. Keep every live ACL read, but do not pay for a new
+  // PowerShell process at each one. No ACL answer outlives this call.
+  // A caller's scope is borrowed: its helper decides, and a refusal fails that
+  // caller's whole operation. Only a scope created here may be repeated.
+  const borrowed = insidePrivateWindowsAclScope();
+  try { return await withPrivateWindowsAclScope(() => inspectReviewWithinScope(options)); }
+  catch (error) {
+    if (borrowed || !(error instanceof WindowsAclUnverifiedError)) throw error;
+    // One refused query ends the shared helper and every later query with it.
+    // Repeat this read-only inspection with independent queries, so one unsafe
+    // item is still reported as retained uncertain evidence, as it was before
+    // helpers were shared. A lost owner or an unsafe owner record still throws.
+    return withIndependentWindowsAclQueries(() => inspectReviewWithinScope(options));
+  }
+}
+async function inspectReviewWithinScope(options: OwnedWorkflowReviewOptions): Promise<NativeWorkflowReviewInspection> {
   await assertOwner(options);
   const scanned = await inspectOwnedNativeWorkflowRecovery({ dataRoot: options.paths.dataRoot, profileOwner: options.profileOwner, maxFiles: options.maxFiles ?? MAX_FILES });
   let acknowledgedGraphs = 0;
@@ -159,9 +176,11 @@ export async function inspectOwnedNativeWorkflowReview(options: OwnedWorkflowRev
 /** Must run before opening/creating native workflow storage, including same-ID retries. */
 export async function assertNativeWorkflowIdentityNotRetired(options: OwnedWorkflowReviewOptions, filename: string): Promise<void> {
   if (!workflowName.test(filename)) throw new Error('Workflow admission requires an exact host-generated identity.');
-  const records = await receipts(options);
-  if (records.some((record) => record.plan.blocks.some((block) => block.filename === filename))) throw new NativeWorkflowPermanentlyRetiredError();
-  await verifyRetainedEvidence(options, records);
+  await withPrivateWindowsAclScope(async () => {
+    const records = await receipts(options);
+    if (records.some((record) => record.plan.blocks.some((block) => block.filename === filename))) throw new NativeWorkflowPermanentlyRetiredError();
+    await verifyRetainedEvidence(options, records);
+  });
 }
 export interface NativeWorkflowReviewOptions {
   readonly paths: FatePaths;
@@ -171,14 +190,21 @@ export interface NativeWorkflowReviewOptions {
 class WorkflowReviewCloseUncertainError extends Error {}
 export class NativeWorkflowReviewService {
   constructor(private readonly options: NativeWorkflowReviewOptions) { if (!(options.paths instanceof FatePaths)) throw new Error('Workflow review requires host-created paths.'); }
-  private async own<T>(run: (owned: OwnedWorkflowReviewOptions) => Promise<T>): Promise<T> {
+  private async owned<T>(run: (owned: OwnedWorkflowReviewOptions) => Promise<T>): Promise<T> {
     await profileIdentity(this.options.paths);
     const owner = await OwnerLock.acquire(this.options.paths.lockRoot, 'profile', await canonicalFuturePath(resource(this.options.paths))); let retain = false;
     try { return await run({ paths: this.options.paths, profileOwner: owner }); }
     catch (error) { retain = error instanceof DurableStorageCloseUncertainError || error instanceof WorkflowReviewCloseUncertainError; throw error; }
     finally { if (!retain) await owner.release(); }
   }
-  inspect(): Promise<NativeWorkflowReviewInspection> { return this.own(inspectOwnedNativeWorkflowReview); }
+  /** Mutating verbs fail on any refused query, so they may share one helper.
+   * It is joined after the owner decision above, never instead of it. */
+  private own<T>(run: (owned: OwnedWorkflowReviewOptions) => Promise<T>): Promise<T> {
+    return withPrivateWindowsAclScope(() => this.owned(run));
+  }
+  // Diagnosis reports an unsafe item as a result, so it must not share one
+  // helper for the whole verb; the inspection itself still shares one.
+  inspect(): Promise<NativeWorkflowReviewInspection> { return this.owned(inspectOwnedNativeWorkflowReview); }
   private async observe(owned: OwnedWorkflowReviewOptions): Promise<Omit<NativeWorkflowReviewPlan, 'id' | 'sourceDigest'>> {
     const before = await inventory(owned.paths); const inspected = await inspectOwnedNativeWorkflowReview(owned); const after = await inventory(owned.paths);
     if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('Workflow history changed during inspection.');
@@ -192,7 +218,10 @@ export class NativeWorkflowReviewService {
   prepare(): Promise<NativeWorkflowReviewPlan> { return this.own(async (owned) => {
     const observed = await this.observe(owned); return validatePlan({ ...observed, id: randomUUID(), sourceDigest: sourceDigest(observed) });
   }); }
-  async acknowledge(raw: NativeWorkflowReviewPlan): Promise<{ status: 'acknowledged-unknown'; retiredGraphs: number; explicitWorkOnly: true }> {
+  acknowledge(raw: NativeWorkflowReviewPlan): Promise<{ status: 'acknowledged-unknown'; retiredGraphs: number; explicitWorkOnly: true }> {
+    return withPrivateWindowsAclScope(() => this.acknowledgeWithinScope(raw));
+  }
+  private async acknowledgeWithinScope(raw: NativeWorkflowReviewPlan): Promise<{ status: 'acknowledged-unknown'; retiredGraphs: number; explicitWorkOnly: true }> {
     const plan = validatePlan(raw);
     if (JSON.stringify(plan.profile) !== JSON.stringify(await profileIdentity(this.options.paths))) throw new Error('Workflow review belongs to another host or profile.');
     return this.own(async (owned) => {

@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
 import { builtInThemes, themeDefinitionSchema, type ThemeDefinition } from '../../src/shared/themes';
 import { expectLoadedFontFace } from './fontAssertions';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 const exec = promisify(execFile);
 const midnight = builtInThemes.find((theme) => theme.id === 'midnight')!;
@@ -156,7 +157,7 @@ async function stableSidebarSearch(page: Page, name: string) {
       }),
     };
   })).toEqual({ count: 5, groupCentered: true, contained: true, iconsCentered: true });
-  await page.locator('.workspace-header').screenshot({ path: `screenshots/m3-expressive/header-${name.replace('search-', '')}.png`, animations: 'disabled' });
+  await page.locator('.workspace-header').screenshot({ path: await evidenceOutputPath('m3-expressive', `header-${name.replace('search-', '')}.png`), animations: 'disabled' });
   const boxes: Array<{ x: number; y: number; width: number; height: number }> = [];
   for (const tab of ['Sessions', 'Resources', 'Sessions', 'Resources', 'Sessions', 'Resources', 'Sessions']) {
     await page.getByRole('tab', { name: tab, exact: true }).click();
@@ -169,7 +170,7 @@ async function stableSidebarSearch(page: Page, name: string) {
     const filled = await input.boundingBox();
     expect({ x: filled!.x, y: filled!.y, height: filled!.height }).toEqual({ x: box!.x, y: box!.y, height: box!.height });
     await input.fill('');
-    if (boxes.length <= 3) await page.locator('.sidebar').screenshot({ path: `screenshots/m3-expressive/${name}-${tab.toLowerCase()}.png`, animations: 'disabled' });
+    if (boxes.length <= 3) await page.locator('.sidebar').screenshot({ path: await evidenceOutputPath('m3-expressive', `${name}-${tab.toLowerCase()}.png`), animations: 'disabled' });
   }
   for (const box of boxes) expect(box).toEqual(boxes[0]);
 }
@@ -206,11 +207,11 @@ async function floatingMusic(page: Page, name: string) {
   const queue = await page.locator('.music-queue-panel').boundingBox();
   expect(queue!.x).toBeGreaterThanOrEqual(0);
   expect(queue!.x + queue!.width).toBeLessThan(player!.x);
-  await page.screenshot({ path: `screenshots/m3-expressive/${name}.png`, animations: 'disabled' });
+  await page.screenshot({ path: await evidenceOutputPath('m3-expressive', `${name}.png`), animations: 'disabled' });
   // Compare real rendered corner pixels against the same underlying conversation with
   // the player closed. No test-only DOM styles: only normal controls change visibility.
   const clip = { x: Math.ceil(player!.x), y: Math.ceil(player!.y), width: 32, height: 32 };
-  const opened = await page.screenshot({ clip, animations: 'disabled', path: `screenshots/m3-expressive/${name}-corner.png` });
+  const opened = await page.screenshot({ clip, animations: 'disabled', path: await evidenceOutputPath('m3-expressive', `${name}-corner.png`) });
   await page.getByRole('button', { name: 'Close music player' }).click();
   await expect(page.locator('.music-player-panel')).toBeHidden();
   const closed = await page.screenshot({ clip, animations: 'disabled' });
@@ -271,7 +272,6 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
   await mkdir(dataRoot, { recursive: true });
   await writeFile(path.join(dataRoot, 'themes.json'), JSON.stringify({ themes: [customPalette] }));
   await writeFile(path.join(dataRoot, 'settings.json'), JSON.stringify(appSettingsSchema.parse({ appearance: 'dark', defaultModel: null, thinkingLevel: 'medium', confirmRiskyCommands: true, terminalShell: null, reduceMotion: false, musicPlayerEnabled: true })));
-  await mkdir('screenshots/m3-expressive', { recursive: true });
   const launch = () => electron.launch({ args: [path.resolve('.test-dist/main/index.js')], env: { ...process.env, PI_DESKTOP_E2E_PROJECT: project, PI_DESKTOP_E2E_SECOND_PROJECT: secondProject, PI_DESKTOP_E2E_SESSION_COUNT: '8', PI_DESKTOP_E2E_USER_DATA: userData, FATE_GUI_DATA_DIR: dataRoot, PI_OFFLINE: '1' } });
   let app: Awaited<ReturnType<typeof launch>> | undefined;
   try {
@@ -331,7 +331,7 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await expect(interfaceFont).toContainText('Roboto Flex');
     await expectLoadedFontFace(page, 'Roboto Flex Variable');
     await settings.getByRole('button', { name: 'Save changes' }).click();
-    await page.screenshot({ path: 'screenshots/m3-expressive/settings.png' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'settings.png') });
     await settings.getByRole('button', { name: 'Close settings' }).click();
     await stableSidebarSearch(page, 'search-normal');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -359,29 +359,29 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await page.getByRole('button', { name: 'Collapse inspector', exact: true }).click();
     await floatingMusic(page, 'music-floating');
     await page.getByRole('button', { name: 'Open inspector', exact: true }).click();
-    await page.screenshot({ path: 'screenshots/m3-expressive/workspace-1600.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'workspace-1600.png'), animations: 'disabled' });
     await page.evaluate(async () => {
       await window.piDesktop.prompt({ text: '__FATE_AGENT_FIXTURE__', behavior: 'prompt' });
       await window.piDesktop.prompt({ text: '__FATE_V2_AGENT_FIXTURE__', behavior: 'prompt' });
     });
     await expect(page.locator('.subagent-session-row').first()).toBeVisible();
     await agentIconGeometry(page);
-    await page.screenshot({ path: 'screenshots/m3-expressive/populated-run.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'populated-run.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'Close music player' }).click();
     await page.evaluate(() => window.piDesktop.createTask({ title: 'Review the workspace layout', detail: 'An ordinary task rendered through the real workbench.' }));
     await page.getByRole('button', { name: 'Expand task list' }).click();
     await expect(page.locator('.goalmax-task-strip')).toBeVisible();
     await page.getByRole('button', { name: 'Model and reasoning settings' }).click();
     await expect(page.getByRole('dialog', { name: 'Model settings' })).toHaveCSS('border-radius', '24px');
-    await page.screenshot({ path: 'screenshots/m3-expressive/tasks-model-picker.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'tasks-model-picker.png'), animations: 'disabled' });
     await page.keyboard.press('Escape');
     await page.getByRole('tablist', { name: 'Run views' }).getByRole('tab', { name: 'Tools', exact: true }).click();
     await expect(page.locator('.tool-card').first()).toBeVisible();
-    await page.screenshot({ path: 'screenshots/m3-expressive/tools.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'tools.png'), animations: 'disabled' });
     await page.getByRole('button', { name: /^System/u }).click();
     await page.getByRole('tablist', { name: 'System views' }).getByRole('tab', { name: 'Context', exact: true }).click();
     await expect(page.locator('.context-dashboard')).toBeVisible();
-    await page.screenshot({ path: 'screenshots/m3-expressive/context.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'context.png'), animations: 'disabled' });
     await page.getByRole('tablist', { name: 'System views' }).getByRole('tab', { name: 'Resources', exact: true }).click();
     await expect(page.locator('.resources-panel')).toBeVisible();
     await page.getByRole('button', { name: 'Open browser', exact: true }).click();
@@ -391,7 +391,7 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await page.getByRole('button', { name: 'Open music player' }).click();
     await floatingMusic(page, 'music-browser-shifted');
     await page.getByRole('button', { name: 'Close music player' }).click();
-    await page.screenshot({ path: 'screenshots/m3-expressive/resources-browser.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'resources-browser.png'), animations: 'disabled' });
     await browser.getByRole('button', { name: 'Close browser', exact: true }).click();
     await page.getByRole('button', { name: 'Open inspector', exact: true }).click();
     await page.getByRole('button', { name: /^Run(?:,|$)/u }).click();
@@ -406,7 +406,7 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
       await paletteCompliance(page, theme);
       await geometry(page, chromeRadius);
       await expect(page.getByLabel('Message Pi')).toHaveValue('Draft retained across appearance changes');
-      if (theme.id === 'daylight') await page.screenshot({ path: 'screenshots/m3-expressive/light-preview.png', animations: 'disabled' });
+      if (theme.id === 'daylight') await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'light-preview.png'), animations: 'disabled' });
     }
     await settings.getByRole('button', { name: 'Close settings' }).click();
     await paletteCompliance(page, builtInThemes.find((theme) => theme.id === 'm3-expressive')!);
@@ -444,7 +444,7 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await dockGeometry(page);
     await agentIconGeometry(page);
     await stableSidebarSearch(page, 'search-compact');
-    await page.screenshot({ path: 'screenshots/m3-expressive/compact-1100.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'compact-1100.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'Collapse inspector', exact: true }).click();
     await floatingMusic(page, 'music-floating-compact');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -472,7 +472,7 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     expect(await page.locator('.workspace').evaluate((element) => getComputedStyle(element, '::before').zIndex)).toBe('-2');
     const afterBackground = await page.locator('.browser-thread-layout').screenshot({ animations: 'disabled' });
     expect(afterBackground.equals(beforeBackground)).toBe(false);
-    await page.screenshot({ path: 'screenshots/m3-expressive/background-study.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'background-study.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await settings.getByRole('tab', { name: /Skins/u }).click();
     await settings.getByRole('button', { name: 'Remove background', exact: true }).click();
@@ -495,14 +495,14 @@ test('M3 Expressive independent preview, save, compact layout and restart', asyn
     await page.getByRole('option', { name: /^Roboto Flex/u }).press('Enter');
     await settings.getByRole('button', { name: 'Save changes' }).click();
     await settings.getByRole('button', { name: 'Close settings' }).click();
-    await page.screenshot({ path: 'screenshots/m3-expressive/compact-980.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'compact-980.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'Close music player' }).click();
     await page.getByRole('button', { name: 'Collapse inspector', exact: true }).click();
     await page.getByRole('button', { name: 'Collapse sidebar', exact: true }).click();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(640, 680));
     await geometry(page, chromeRadius);
     await expect(page.getByRole('button', { name: 'Expand sidebar', exact: true })).toBeVisible();
-    await page.screenshot({ path: 'screenshots/m3-expressive/compact-640-collapsed.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'compact-640-collapsed.png'), animations: 'disabled' });
     await app.close();
     app = await launch();
     const restarted = await app.firstWindow();

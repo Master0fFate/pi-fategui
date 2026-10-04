@@ -101,16 +101,49 @@ function approvals() {
   let controller = true;
   const events: string[] = [];
   const save = vi.fn(async () => { events.push('durable-save'); });
-  const activate = vi.fn(() => { events.push('activate'); active = 'full-access'; });
+  const activate = vi.fn((_context: unknown, target: ApprovalTarget) => { events.push('activate'); active = target.newLevel; });
   const service = new ApprovalChallenges({ now: () => now, mayApprove: () => controller,
     readState: () => ({ trusted, storageHealthy, currentLevel: active, hostMaximum }), save, activate });
   return { service, events, save, activate, setNow: (value: number) => { now = value; },
     setCap: (value: ApprovalState['hostMaximum']) => { hostMaximum = value; },
     setHealthy: (value: boolean) => { storageHealthy = value; }, setTrusted: (value: boolean) => { trusted = value; },
-    setController: (value: boolean) => { controller = value; }, level: () => active };
+    setController: (value: boolean) => { controller = value; },
+    setLevel: (value: ApprovalState['currentLevel']) => { active = value; }, level: () => active };
 }
 
 describe('single-use approval challenges (isolated primitive)', () => {
+  it('reductions retain controller, current-level, cap and one-use checks', async () => {
+    const f = approvals(); const a = context();
+    const reduction: ApprovalTarget = { ...target, newLevel: 'read-only' };
+    expect(() => f.service.issue(a, { ...target, newLevel: 'edit' })).toThrow('PERMISSION_REQUIRED');
+    f.setController(false);
+    expect(() => f.service.issue(a, reduction)).toThrow('CONTROL_REQUIRED');
+    f.setController(true); f.setHealthy(false);
+    expect(() => f.service.issue(a, reduction)).toThrow('PERMISSION_REQUIRED');
+    f.setHealthy(true);
+    const stale = f.service.issue(a, reduction);
+    f.setLevel('full-access');
+    await expect(f.service.consume(a, stale.id, reduction)).rejects.toMatchObject({ code: 'PERMISSION_REQUIRED' });
+    f.setCap('read-only');
+    expect(() => f.service.issue(a, { ...target, oldLevel: 'full-access', newLevel: 'edit' })).toThrow('PERMISSION_REQUIRED');
+    f.setLevel('edit');
+    const valid = f.service.issue(a, reduction);
+    await expect(f.service.consume(context(clientB), valid.id, reduction)).rejects.toMatchObject({ code: 'PERMISSION_REQUIRED' });
+    await f.service.consume(a, valid.id, reduction);
+    expect(f.level()).toBe('read-only');
+    expect(f.events).toEqual(['durable-save', 'activate']);
+    await expect(f.service.consume(a, valid.id, reduction)).rejects.toMatchObject({ code: 'PERMISSION_REQUIRED' });
+    expect(f.save).toHaveBeenCalledOnce();
+  });
+  it('revoking a client invalidates a pending reduction without saving', async () => {
+    const f = approvals(); const a = context();
+    const reduction: ApprovalTarget = { ...target, newLevel: 'read-only' };
+    const pending = f.service.issue(a, reduction);
+    f.service.revokeClient(a);
+    await expect(f.service.consume(a, pending.id, reduction)).rejects.toMatchObject({ code: 'PERMISSION_REQUIRED' });
+    expect(f.save).not.toHaveBeenCalled();
+    expect(f.level()).toBe('edit');
+  });
   it('binds principal, client, workspace, session, action and both levels; saves before activation', async () => {
     const f = approvals(); const a = context();
     const challenge = f.service.issue(a, target);

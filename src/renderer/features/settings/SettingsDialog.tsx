@@ -220,6 +220,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
   const [inputDevicesError, setInputDevicesError] = useState<string | null>(null);
   const [inputDevicesLoading, setInputDevicesLoading] = useState(false);
   const settingsScroll = useRef<HTMLDivElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
   const systemLoadStarted = useRef(false);
   const updateCheckPending = useRef(false);
 
@@ -652,7 +653,16 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
-        <Dialog.Content className="settings-dialog" aria-describedby="settings-description">
+        <Dialog.Content className="settings-dialog" aria-describedby="settings-description"
+          onOpenAutoFocus={() => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
+          onCloseAutoFocus={(event) => {
+            // Settings can be opened outside a Radix Trigger (sidebar/hotkey).
+            // Restore the actual opener without adding a global focus listener.
+            event.preventDefault();
+            const target = returnFocus.current;
+            returnFocus.current = null;
+            if (target?.isConnected) target.focus({ preventScroll: true });
+          }}>
           <header className="settings-header">
             <div><Dialog.Title>Settings</Dialog.Title><Dialog.Description id="settings-description">Appearance, agent, voice, and workspace preferences.</Dialog.Description></div>
             <Dialog.Close className="settings-close" aria-label="Close settings"><ActionContent text="close"><X size={17} /></ActionContent></Dialog.Close>

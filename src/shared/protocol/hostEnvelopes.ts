@@ -12,6 +12,7 @@ const mutate = <N extends string, S extends z.ZodType<unknown>>(method: N, input
   method: z.literal(method), input }).strict();
 /** Explicit discriminants and schemas, never runtime reflection or a generic invoke envelope. */
 export const hostRequestSchemas = [
+  read('session.history', hostMethodCatalog['session.history'].inputSchema),
   read('session.list', hostMethodCatalog['session.list'].inputSchema),
   read('runtime.models', hostMethodCatalog['runtime.models'].inputSchema),
   read('runtime.queueRead', hostMethodCatalog['runtime.queueRead'].inputSchema),
@@ -49,6 +50,7 @@ const result = <N extends string, S extends z.ZodType<unknown>>(method: N, schem
 const receipt = <N extends string, S extends z.ZodType<unknown>>(method: N, schema: S) => z.object({ ...resultCommon,
   requestId: mutationRequestIdSchema, method: z.literal(method), result: schema }).strict();
 export const hostResponseSchemas = [
+  result('session.history', hostMethodCatalog['session.history'].wireResultSchema),
   result('session.list', hostMethodCatalog['session.list'].wireResultSchema),
   result('runtime.models', hostMethodCatalog['runtime.models'].wireResultSchema),
   result('runtime.queueRead', hostMethodCatalog['runtime.queueRead'].wireResultSchema),

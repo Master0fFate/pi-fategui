@@ -21,14 +21,15 @@ const clientId = '50000000-0000-4000-8000-000000000005';
 const time = 1_800_000_000_000;
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
-async function fixture() {
+type Level = 'read-only' | 'edit' | 'full-access';
+async function fixture(oldLevel: Level = 'read-only', newLevel: Level = 'edit') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-permission-journal-')); roots.push(root);
   const store = new SessionPermissionStore(new AppLogService(), path.join(root, 'data'));
-  await store.checkHealth(); await store.set(root, sessionId, 'read-only');
+  await store.checkHealth(); await store.set(root, sessionId, oldLevel);
   const set = vi.spyOn(store, 'set');
   const owner = createAuthenticatedServerContext({ principalId, clientId, expiresAt: time + 3600_000 }, null);
   let member = true;
-  let active: 'read-only' | 'edit' | 'full-access' = 'read-only';
+  let active: Level = oldLevel;
   const control = new WorkspaceControl({ now: () => time, isMember: (context) => member && context.principalId === principalId });
   const generation = control.claim(owner, workspaceId).generation;
   const atomicGrant = vi.fn(async (_context: unknown, target: { newLevel: 'read-only' | 'edit' | 'full-access' }) => {
@@ -59,7 +60,7 @@ async function fixture() {
   const dispatcher = makeDispatcher();
   const base = { protocol: 1, serverEpoch: epoch, issuedAt: time, workspaceId, workspaceGeneration: 3,
     selectionRevision: 7, controlGeneration: generation };
-  const target = { sessionId, action: 'runtime.setPermission', oldLevel: 'read-only', newLevel: 'edit' };
+  const target = { sessionId, action: 'runtime.setPermission', oldLevel, newLevel };
   const issued = await dispatcher.dispatchJson(JSON.stringify({ ...base, requestId: randomUUID(), method: 'permission.issue', input: target }), owner);
   if (!issued.ok || issued.method !== 'permission.issue') throw new Error('Expected a real one-use challenge.');
   const confirmation = requestEnvelopeSchema.parse({ ...base, ...createMutationIdentity(epoch, time), method: 'permission.confirm',
@@ -72,6 +73,29 @@ async function fixture() {
     revoke: () => { member = false; }, changeDisplayedLevel: () => { active = 'read-only'; } };
 }
 describe('PF7 original permission-confirmation durable proof; no provider or replay', () => {
+  it.each([['full-access', 'edit'], ['full-access', 'read-only'], ['edit', 'read-only']] as const)(
+    'durably reduces %s to %s through the production dispatcher, deduplicates and recovers its receipt', async (oldLevel, newLevel) => {
+      const f = await fixture(oldLevel, newLevel);
+      const applied = await f.send(f.confirmation);
+      expect(applied).toMatchObject({ ok: true, method: 'permission.confirm', result: { applied: true, sessionId, level: newLevel } });
+      expect(await f.store.get(f.root, sessionId)).toBe(newLevel);
+      expect(await f.send(f.confirmation)).toEqual(applied);
+      expect(await f.status(nextEpoch)).toMatchObject({ ok: true, result: { state: 'settled',
+        receipt: { kind: 'permission', outcome: 'applied', oldLevel, newLevel } } });
+      expect(f.atomicGrant).toHaveBeenCalledOnce();
+      expect(f.set).toHaveBeenCalledOnce();
+      expect(await f.send({ ...f.confirmation, ...createMutationIdentity(epoch, time) }))
+        .toMatchObject({ ok: false, error: { code: 'PERMISSION_REQUIRED' } });
+    });
+  it('does not retry an uncertain reduction or claim that its authority was lowered', async () => {
+    const f = await fixture('edit', 'read-only');
+    f.set.mockRejectedValueOnce(new Error('Synthetic storage failure'));
+    expect(await f.send(f.confirmation)).toMatchObject({ ok: false, execution: 'unknown', error: { code: 'OUTCOME_UNKNOWN' } });
+    expect(await f.status(nextEpoch)).toMatchObject({ ok: true, result: { state: 'outcome_unknown', receipt: null } });
+    expect(await f.store.get(f.root, sessionId)).toBe('edit');
+    await f.send(f.confirmation);
+    expect(f.set).toHaveBeenCalledOnce();
+  });
   it('drops the applied ACK, reopens under a new epoch and resolves ONLY original ID/challenge/scope with one actual permission-store transaction', async () => {
     const f = await fixture();
     // Simulate the transport losing this ACK AFTER actual completion; do not send a replacement confirmation.

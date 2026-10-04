@@ -24,7 +24,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { assertPrivateWindowsAcl } from '../../core/storage/WindowsPrivateAcl';
+import { assertPrivateWindowsAcl, withPrivateWindowsAclScope } from '../../core/storage/WindowsPrivateAcl';
 import { ScopedDomainEvents, type EventOrigin } from '../../core/events/ScopedDomainEvents';
 import { hostCheckoutOwnership, type CheckoutOwnership } from '../../core/ownership/CheckoutOwnership';
 import type { OwnerLock } from '../../core/ownership/OwnerLock';
@@ -42,6 +42,11 @@ async function syncIdentityDirectory(directory: string): Promise<void> {
 /** A private host-owned random identity for the same physical registered checkout.
  * No pathname/dictionary-searchable digest crosses the protocol. No SDK or trust decision is made here. */
 async function durableWorkspaceIdentity(paths: FatePaths, projectPath: string): Promise<string> {
+  // One finite lookup shares one ACL helper process; both checks stay live.
+  try { return await withPrivateWindowsAclScope(() => readWorkspaceIdentity(paths, projectPath)); }
+  catch { throw new Error('Workspace identity storage is unavailable.'); }
+}
+async function readWorkspaceIdentity(paths: FatePaths, projectPath: string): Promise<string> {
   try {
     const canonical = await fs.realpath(projectPath);
     const physical = await fs.stat(canonical);

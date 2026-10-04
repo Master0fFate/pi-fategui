@@ -72,6 +72,7 @@ export const ipcChannels = {
   remoteTasks: 'connections:remote-tasks',
   remoteGitStatus: 'connections:remote-git-status',
   remoteGitHistory: 'connections:remote-git-history',
+  remoteHistory: 'connections:remote-history',
   remoteSessions: 'connections:remote-sessions',
   remoteModels: 'connections:remote-models',
   remoteQueue: 'connections:remote-queue',

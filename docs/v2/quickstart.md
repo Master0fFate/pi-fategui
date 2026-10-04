@@ -48,7 +48,18 @@ Choose a disposable workspace for first validation. Review it before granting tr
 fate-server web --profile local-web --workspace "/absolute/path/project" --trust-workspace --port 47119
 ```
 
-`web` initializes only a missing profile; it does not replace a corrupt profile or change an existing profile's workspace/port. CLI-created profiles start with a **read-only host maximum**, terminal disabled and browser integration disabled. This is stricter than the general server-composition default of Edit files. Browser control cannot raise the host maximum. The CLI has no permission-cap or terminal-enablement flag.
+`web` initializes only a missing profile; it does not replace a corrupt profile or change an existing profile's workspace/port. CLI-created profiles default to a **read-only host maximum**, terminal disabled and browser integration disabled. This is stricter than the general server-composition default of Edit files. Browser control cannot raise the host maximum.
+
+To choose a different host maximum or native storage for a **new** profile, initialize it explicitly first:
+
+```sh
+fate-server init --profile native-web --workspace "/absolute/path/project" --trust-workspace --port 47119 --state-persistence native-durable --max-permission edit
+fate-server web --profile native-web --workspace "/absolute/path/project" --trust-workspace
+```
+
+`--state-persistence` and `--max-permission` are init-only. Init refuses to overwrite an existing profile. Native selection does not migrate saved legacy data; use the [migration procedure](migration-cli.md) for that. The unspecified storage default remains legacy JSON. An explicit legacy selector deliberately refuses startup over retained native state; use the unspecified default if you plan to migrate later.
+
+Manual terminal support is also off by default and requires a companion package built with `--with-terminal`; profile flags do not install native dependencies. Enabling it for a new profile requires **all three** init flags: `--max-permission edit --manual-terminal --accept-unsandboxed-shell` (or an explicit `full-access` host maximum). This grants an unsandboxed execution-host shell; agent Edit permission does not limit shell commands. Only a supported client with current workspace control and effective Edit or Full access can use it. Disconnect closes that client's terminal; input is never replayed. The browser client path and real PTY acceptance are tracked in [candidate status](current-status.md).
 
 Keep the host terminal open. The command opens or prints a login-page URL such as `http://127.0.0.1:47119/`, with no secret in it. In a second host-local terminal:
 
@@ -65,7 +76,9 @@ fate-server auth-code --profile local-web --out-file "/private/access/browser-co
 
 Enter the one-use code in the login form before its five-minute expiry. Do not put it in a URL, command-line argument, screenshot or shared log. The code is exchanged in a POST body. The browser uses a scoped HttpOnly session cookie and an in-memory CSRF token; provider and owner secrets remain on the host.
 
-Choose a registered workspace. You begin as an observer; explicitly claim control before supported mutations. Shared selected-session state can change when another controller selects a session. Check the host, workspace, session, connection, control and permission display before acting. The current permission selector has an unresolved reduction issue; see [limits](security-and-limits.md#control-permission-and-shared-selection).
+Choose a registered workspace. You begin as an observer; explicitly claim control before supported mutations. Shared selected-session state can change when another controller selects a session. Check the host, workspace, session, connection, control and permission display before acting. Permission reductions and elevations both require the scoped review and confirmation; the destination cannot exceed the host maximum. A lost response requires original-request review, not a new retry. See [limits](security-and-limits.md#control-permission-and-shared-selection).
+
+To read text outside the current snapshot, open workspace controls and use **Saved history → Read from start**. **Next history page** replaces the previous page; it does not add archived items to the live conversation. Media and clipped items are labeled. If the saved file or selection changes, refresh and start again.
 
 ## Headless host and provider setup
 

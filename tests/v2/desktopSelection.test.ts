@@ -20,7 +20,7 @@ function fixture(read: () => Promise<DesktopConnectionState>) {
     selectConnectionProfile: unavailable, connectConnection: unavailable, disconnectConnection: unavailable,
     remoteListWorkspaces: unavailable, remoteReadSnapshot: unavailable, remoteReadMonitor: unavailable,
     remoteReadGoal: unavailable, remoteReadTasks: unavailable, remoteReadGitStatus: unavailable,
-    remoteReadGitHistory: unavailable, remoteReadSessions: unavailable, remoteReadModels: unavailable,
+    remoteReadHistory: unavailable, remoteReadGitHistory: unavailable, remoteReadSessions: unavailable, remoteReadModels: unavailable,
     remoteReadQueue: unavailable, remoteReadTeams: unavailable, remoteReadAgents: unavailable,
     remoteReadGitDiff: unavailable, remoteReadGitCombinedDiff: unavailable, remoteReadGitCommitDetails: unavailable,
     remoteReadMonitorDetail: unavailable, remoteUploadText: unavailable, remoteCancelText: unavailable,

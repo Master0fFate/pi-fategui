@@ -6,9 +6,11 @@ import type { RemoteDesktopFateApi } from './RemoteDesktopFateApi';
 import { bootstrapDesktopFateApi, createDesktopFateApi, readDesktopBridge, selectDesktopMethods, type DesktopFateApi, type DesktopOnlyApi } from './DesktopFateApi';
 import { desktopClientCapabilities, desktopHostCapabilities, type ClientCapabilities, type Feature, type FeatureSupport, type HostCapabilities } from '../../shared/protocol/capabilities';
 import { capabilityAvailable, negotiateCapabilities } from './capabilityPolicy';
+import type { ManualTerminalApi } from '../../shared/contracts/terminal';
 
 export type RendererFateApi = FateApi & { readonly desktop?: DesktopOnlyApi; readonly web?: NetworkWorkspaceApi;
-  readonly connections?: DesktopConnectionApi; readonly remote?: RemoteDesktopFateApi; readonly capabilities?: FeatureSupport }; 
+  readonly connections?: DesktopConnectionApi; readonly remote?: RemoteDesktopFateApi; readonly capabilities?: FeatureSupport;
+  readonly terminal?: ManualTerminalApi };
 const browserFeatureSupport: FeatureSupport = Object.freeze({
   monitor: false, nativeBrowser: false, microphone: false, hotkeys: false, updater: false,
   ambientAudio: false, manualTerminal: false, localFileOpen: false, clipboardText: false,
@@ -65,6 +67,20 @@ function managed(api: RendererFateApi): { api: RendererFateApi; release: () => v
   const subscriptions = new Map<EventChannel, () => void>();
   const nativeSubscriptions = new Set<() => void>();
   const desktop = api.desktop;
+  const terminal = api.terminal;
+  const wrappedTerminal: ManualTerminalApi | undefined = terminal && {
+    createTerminal: (cols, rows) => terminal.createTerminal(cols, rows),
+    writeTerminal: (id, data) => terminal.writeTerminal(id, data),
+    acknowledgeTerminal: (id, characters) => terminal.acknowledgeTerminal(id, characters),
+    resizeTerminal: (id, cols, rows) => terminal.resizeTerminal(id, cols, rows),
+    closeTerminal: (id) => terminal.closeTerminal(id),
+    onTerminalEvent: (listener) => {
+      const unsubscribe = terminal.onTerminalEvent(listener);
+      const cleanup = () => { if (nativeSubscriptions.delete(cleanup)) unsubscribe(); };
+      nativeSubscriptions.add(cleanup);
+      return cleanup;
+    },
+  };
   const trackNative = <K extends NativeEventChannel>(channel: K): DesktopOnlyApi[K] => {
     const subscribe = desktop![channel];
     return ((listener: never) => {
@@ -117,6 +133,7 @@ function managed(api: RendererFateApi): { api: RendererFateApi; release: () => v
       ...selectFateMethods(api),
       ...(wrappedDesktop ? { desktop: wrappedDesktop } : {}),
       ...(api.web ? { web: api.web } : {}),
+      ...(wrappedTerminal ? { terminal: wrappedTerminal } : {}),
       ...(api.connections ? { connections: api.connections } : {}),
       ...(api.remote ? { remote: api.remote } : {}),
       ...(typeof api.onEvents === 'function' ? { onEvents: wrap('onEvents') } : {}),
@@ -137,10 +154,15 @@ function activate(api: RendererFateApi, capabilities: FeatureSupport): void {
   const next = managed(api);
   // Support requires both negotiation and an actual local adapter. A web facade
   // cannot gain native calls merely because a host advertises them.
-  const available = next.api.desktop ? capabilities : {
+  const negotiated = next.api.desktop ? capabilities : {
     ...capabilities, nativeBrowser: false, microphone: false, hotkeys: false,
-    updater: false, ambientAudio: false, manualTerminal: false, localFileOpen: false,
+    updater: false, ambientAudio: false, localFileOpen: false,
   };
+  const available: FeatureSupport = { ...negotiated, get manualTerminal() {
+    if (next.api.web) return Boolean(next.api.terminal && next.api.web.supports('terminal.manual'));
+    if (next.api.remote && typeof next.api.connections?.getConnectionState === 'function' && connectionState?.kind !== 'local') return false;
+    return Boolean(next.api.desktop && capabilities.manualTerminal);
+  } };
   current = { ...next.api, capabilities: available };
   activeCapabilities = available;
   releaseCurrent = next.release;
@@ -195,10 +217,10 @@ export function getDesktopApiOptional(): DesktopOnlyApi | undefined {
   return getFateApiOptional()?.desktop;
 }
 
-/** A browser read-only adapter is explicit; no native bridge or fake RuntimeState is installed. */
-export function installWebFateApi(web: NetworkWorkspaceApi & { readonly shared: FateApi }): () => void {
+/** Browser operations are explicit; no native bridge or fake RuntimeState is installed. */
+export function installWebFateApi(web: NetworkWorkspaceApi & { readonly shared: FateApi; readonly terminal?: ManualTerminalApi | undefined }): () => void {
   if (explicitlyInstalled) throw new Error('Fate API already installed');
-  activate({ ...web.shared, web }, browserFeatureSupport);
+  activate({ ...web.shared, web, ...(web.terminal ? { terminal: web.terminal } : {}) }, browserFeatureSupport);
   explicitlyInstalled = true;
   const installed = current;
   return () => { if (current === installed) resetFateApi(); };
@@ -219,10 +241,20 @@ export function getDesktopApi(): DesktopOnlyApi {
 }
 
 export function hasCapability(feature: Feature): boolean {
-  getFateApiOptional();
-  if (getFateApiOptional()?.remote && getWebApiOptional()
+  const api = getFateApiOptional();
+  if (feature === 'manualTerminal' && api?.web) return Boolean(api.terminal && api.web.supports('terminal.manual'));
+  if (api?.remote && getWebApiOptional()
     && ['nativeBrowser', 'microphone', 'hotkeys', 'ambientAudio', 'manualTerminal', 'localFileOpen'].includes(feature)) return false;
   return capabilityAvailable(activeCapabilities ?? undefined, feature);
+}
+
+/** Remote desktop has no terminal transport. Never fall back to a local shell. */
+export function getTerminalApiOptional(): ManualTerminalApi | undefined {
+  const api = getFateApiOptional();
+  if (!api || !hasCapability('manualTerminal')) return undefined;
+  if (api.web) return api.terminal;
+  if (api.remote && getWebApiOptional()) return undefined;
+  return api.desktop;
 }
 
 export function hasDesktopApi(): boolean { return Boolean(getDesktopApiOptional()); }

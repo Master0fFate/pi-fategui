@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
 import { builtInThemes } from '../../src/shared/themes';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 async function agents(page: Page) { await page.getByRole('tab', { name: 'Agents', exact: true }).click(); return page.getByRole('region', { name: 'Agents library' }); }
 async function section(page: Page, name: string) { await page.getByRole('navigation', { name: 'Agents sections' }).getByRole('button', { name, exact: true }).click(); }
@@ -93,7 +94,6 @@ for (const skin of ['default', 'dreamcore', 'm3-expressive'] as const) {
     await writeFile(path.join(data, 'themes.json'), JSON.stringify({ themes: [{ id: 'agents-custom', name: 'Agents custom palette', ...packPalette }] }));
     await writeFile(path.join(project, 'README.md'), '# Isolated Agents fixture\n');
     await writeFile(path.join(data, 'settings.json'), JSON.stringify(appSettingsSchema.parse({ appearance: 'dark', defaultModel: 'test/deterministic', thinkingLevel: 'high', confirmRiskyCommands: true, terminalShell: null, reduceMotion: true, skinId: skin, themeId: 'midnight', agentWorkspace: { preferredMode: 'shared', strict: false } })));
-    await mkdir('screenshots/agents', { recursive: true });
     const launch = () => electron.launch({ args: [path.resolve('.test-dist/main/index.js')], env: { ...process.env, PI_DESKTOP_E2E_PROJECT: project, PI_DESKTOP_E2E_USER_DATA: profile, FATE_GUI_DATA_DIR: data, PI_OFFLINE: '1' } });
     let app: Awaited<ReturnType<typeof launch>> | undefined;
     try {
@@ -105,7 +105,7 @@ for (const skin of ['default', 'dreamcore', 'm3-expressive'] as const) {
       await expect(page.getByText(/No saved Agents/)).toBeVisible();
       await balancedNavigation(page);
       await toolbarMatchesResources(page);
-      await page.screenshot({ path: `screenshots/agents/${skin}-empty.png`, animations: 'disabled' });
+      await page.screenshot({ path: await evidenceOutputPath('agents', `${skin}-empty.png`), animations: 'disabled' });
       await page.getByRole('button', { name: 'New Agent', exact: true }).focus();
       await page.keyboard.press('Enter');
       let dialog = page.getByRole('dialog', { name: 'New Agent', exact: true });
@@ -113,7 +113,7 @@ for (const skin of ['default', 'dreamcore', 'm3-expressive'] as const) {
       await dialog.getByLabel('Agent description').fill('A saved identity with a retained conversation, not a running team node.');
       await dialog.getByLabel('Agent instructions').fill('Review carefully. Keep task text in the user role.');
       await choose(page, dialog, 'Agent permission', 'Edit project files');
-      await dialog.screenshot({ path: `screenshots/agents/${skin}-editor.png`, animations: 'disabled' });
+      await dialog.screenshot({ path: await evidenceOutputPath('agents', `${skin}-editor.png`), animations: 'disabled' });
       await dialog.getByRole('button', { name: 'Save Agent', exact: true }).click();
       await expect(dialog).toHaveCount(0);
       await page.getByRole('button', { name: 'Open home conversation', exact: true }).click();
@@ -173,12 +173,12 @@ for (const skin of ['default', 'dreamcore', 'm3-expressive'] as const) {
       dialog = page.getByRole('dialog', { name: 'Review exact Agent action' });
       await expect(dialog.getByLabel('Exact proposed action')).toContainText('agent-approved.txt');
       await expect(dialog.getByRole('button', { name: 'Approve action' })).toBeDisabled();
-      await dialog.screenshot({ path: `screenshots/agents/${skin}-needs-attention.png`, animations: 'disabled' });
+      await dialog.screenshot({ path: await evidenceOutputPath('agents', `${skin}-needs-attention.png`), animations: 'disabled' });
       await dialog.getByRole('checkbox', { name: 'I reviewed the exact action and project' }).check();
       await dialog.getByRole('button', { name: 'Approve action' }).click();
       await expect(page.locator('.agent-run-status[data-status="succeeded"]')).toHaveCount(2);
       expect(await readFile(path.join(project, 'agent-approved.txt'), 'utf8')).toBe('Approved through real confined SDK tool.\n');
-      await page.screenshot({ path: `screenshots/agents/${skin}-history.png`, animations: 'disabled' });
+      await page.screenshot({ path: await evidenceOutputPath('agents', `${skin}-history.png`), animations: 'disabled' });
       await agents(page); await section(page, 'Agents');
 
       await itemAction(page, 'Reviewer v2', 'Edit');
@@ -192,7 +192,7 @@ for (const skin of ['default', 'dreamcore', 'm3-expressive'] as const) {
       await dialog.getByRole('button', { name: 'Save Agent', exact: true }).click();
       await expect(dialog.getByRole('alert')).toContainText('conflict');
       await expect(dialog.getByLabel('Agent name', { exact: true })).toHaveValue('Do not lose this draft');
-      await dialog.screenshot({ path: `screenshots/agents/${skin}-conflict.png`, animations: 'disabled' });
+      await dialog.screenshot({ path: await evidenceOutputPath('agents', `${skin}-conflict.png`), animations: 'disabled' });
       await dialog.getByRole('button', { name: 'Close Agent editor' }).click();
       await page.getByRole('alertdialog').getByRole('button', { name: 'Discard changes' }).click();
       await expect(dialog).toHaveCount(0);
@@ -203,7 +203,7 @@ for (const skin of ['default', 'dreamcore', 'm3-expressive'] as const) {
       await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(980, 720));
       await contained(page);
       await toolbarMatchesResources(page);
-      await page.screenshot({ path: `screenshots/agents/${skin}-compact-light.png`, animations: 'disabled' });
+      await page.screenshot({ path: await evidenceOutputPath('agents', `${skin}-compact-light.png`), animations: 'disabled' });
       for (const theme of builtInThemes) {
         await appearance(page, new RegExp(`^${theme.name}`), true);
         await balancedNavigation(page);
@@ -239,7 +239,7 @@ for (const skin of ['default', 'dreamcore', 'm3-expressive'] as const) {
       await expect(page.locator('html')).toHaveAttribute('data-skin', skin);
       await expect(page.locator('html')).toHaveAttribute('data-skin-id', skin === 'm3-expressive' ? skin : `pack:agents-${skin}`);
       await contained(page);
-      await page.screenshot({ path: `screenshots/agents/${skin}-${skin === 'm3-expressive' ? 'custom-palette' : 'custom-pack'}.png`, animations: 'disabled' });
+      await page.screenshot({ path: await evidenceOutputPath('agents', `${skin}-${skin === 'm3-expressive' ? 'custom-palette' : 'custom-pack'}.png`), animations: 'disabled' });
       expect(await page.evaluate(async () => (await window.piDesktop.getAgentLibrary()).agents)).toEqual(definitions);
 
       await app.close(); app = await launch(); page = await app.firstWindow();
@@ -254,7 +254,7 @@ for (const skin of ['default', 'dreamcore', 'm3-expressive'] as const) {
       await expect(page.getByRole('button', { name: 'Start Session', exact: true })).toBeDisabled();
       await itemAction(page, 'Reviewer v2', 'Delete');
       await expect(page.getByRole('alertdialog')).toContainText('Saved conversations');
-      await page.getByRole('alertdialog').screenshot({ path: `screenshots/agents/${skin}-delete.png`, animations: 'disabled' });
+      await page.getByRole('alertdialog').screenshot({ path: await evidenceOutputPath('agents', `${skin}-delete.png`), animations: 'disabled' });
       await page.getByRole('button', { name: 'Delete definition', exact: true }).click();
       await expect(page.getByText(/No saved Agents/)).toBeVisible();
     } finally {

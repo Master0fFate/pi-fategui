@@ -2,6 +2,7 @@ import { _electron as electron, expect, test } from '@playwright/test';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 test('off-by-default scoped learning supports manual approval and an actual different-session manifest', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'fate-learning-e2e-'));
@@ -24,7 +25,7 @@ test('off-by-default scoped learning supports manual approval and an actual diff
     await expect(settings.getByRole('region', { name: 'Memory storage locations' })).toContainText('settings.json');
     await expect(settings.getByRole('region', { name: 'Memory storage locations' })).toContainText('current.json');
     await settings.locator('.settings-scroll').evaluate((element) => { element.scrollTop = 0; });
-    await settings.screenshot({ path: 'test-results/memory-learning-settings.png' });
+    await settings.screenshot({ path: await evidenceOutputPath('memory-learning-settings.png') });
     await page.getByRole('button', { name: 'Close settings' }).click();
     await page.getByRole('button', { name: /Open project/u }).first().click();
     await page.getByRole('button', { name: /Memory Learning/u }).click();
@@ -65,7 +66,7 @@ test('off-by-default scoped learning supports manual approval and an actual diff
     await page.getByRole('button', { name: /Memory Learning/u }).click();
     await learning.getByRole('button', { name: 'Recent use', exact: true }).click();
     await expect(learning.getByRole('heading', { name: 'Handed to runtime (provider receipt unproven)' })).toBeVisible();
-    await page.screenshot({ path: 'test-results/memory-learning-recent-use.png' });
+    await page.screenshot({ path: await evidenceOutputPath('memory-learning-recent-use.png') });
     await learning.getByRole('button', { name: 'Close Memory Learning' }).click();
     await expect.poll(() => page.evaluate(async () => (await window.piDesktop.getRuntimeState()).streaming)).toBe(false);
     await page.getByRole('button', { name: /Memory Learning/u }).click();

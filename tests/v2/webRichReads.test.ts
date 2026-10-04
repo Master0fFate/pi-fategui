@@ -16,6 +16,7 @@ const snapshot: WebSnapshot['header'] = {
     agentRows: false, taskRows: false, goalText: false, taskText: false, agentText: false, queueContents: false }, warnings: [],
 };
 const results = {
+  'session.history': { version: 1, sessionId, items: [], nextPageId: null, mediaOmitted: false, oversizedItems: 0 },
   'goal.get': { sessionId, selectionRevision: 8, goal: null },
   'task.list': { sessionId, selectionRevision: 8, list: null },
   'git.status': { repository: true, branch: 'main', ahead: 0, behind: 0, changes: [], additions: 0, deletions: 0, truncated: false },
@@ -42,11 +43,22 @@ function fixture() {
       connect: async () => ({ ticket: 'host-ticket', serverEpoch: epoch }) as never,
       subscribe: async () => { throw new Error('not used'); }, close: () => undefined }) });
   Object.assign(web, { connected: true, epoch, selected: scope, selectedSnapshot: snapshot,
-    capabilities: new Set(['goal.read', 'task.read', 'git.read', 'session.read', 'runtime.configure', 'queue.read', 'agent.read', 'workspace.monitor', 'text.context']), commands: { command } });
+    capabilities: new Set(['goal.read', 'task.read', 'git.read', 'session.read', 'session.history', 'runtime.configure', 'queue.read', 'agent.read', 'workspace.monitor', 'text.context']), commands: { command } });
   return { web, command };
 }
 
 describe('T39 browser typed rich reads', () => {
+  it('reads saved-history pages only under the current session and rejects path-like cursors', async () => {
+    const { web, command } = fixture();
+    await web.readHistory(scope);
+    await web.readHistory(scope, sessionId);
+    expect(command.mock.calls[0]![0]).toMatchObject({ method: 'session.history', expectedSessionId: sessionId, selectionRevision: 8, input: {} });
+    expect(command.mock.calls[1]![0]).toMatchObject({ method: 'session.history', input: { pageId: sessionId } });
+    for (const [request] of command.mock.calls.slice()) expect(requestEnvelopeSchema.safeParse(request).success).toBe(true);
+    await expect(web.readHistory(scope, '../private')).rejects.toThrow();
+    expect(command).toHaveBeenCalledTimes(2);
+    web.close();
+  });
   it('sends only selected session/revision in four named bounded envelopes and accepts actual null as null', async () => {
     const { web, command } = fixture();
     expect((await web.readGoal(scope)).goal).toBeNull();

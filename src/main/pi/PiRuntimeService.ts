@@ -1337,6 +1337,7 @@ export class PiRuntimeService {
   private executionAdmissionGuard: () => void = () => undefined;
   private readonly pendingTitleGenerations = new Set<Promise<void>>();
   private readonly pendingModelOperations = new Set<Promise<unknown>>();
+  private readonly pendingPermissionChanges = new Set<Promise<void>>();
   private providerLoginResponse: { id: string; resolve: (value: string) => void; reject: (error: Error) => void; detachAbort?: () => void } | null = null;
   private providerLoginRuntimeInitialization: Promise<ModelRuntime> | null = null;
   private readonly modelsDev: ModelsDevService;
@@ -2885,6 +2886,17 @@ export class PiRuntimeService {
   }
 
   async setPermissionLevel(level: PermissionLevel): Promise<RuntimeState> {
+    if (this.hostStopping) throw new Error('The core is shutting down; permission changes are closed.');
+    // Reserve ownership before any synchronous state event can reenter shutdown.
+    // Keep immediate reduction fencing; do not defer the transaction to a microtask.
+    let settled!: () => void;
+    const pending = new Promise<void>((resolve) => { settled = resolve; });
+    this.pendingPermissionChanges.add(pending);
+    try { return await this.setPermissionLevelOwned(level); }
+    finally { this.pendingPermissionChanges.delete(pending); settled(); }
+  }
+
+  private async setPermissionLevelOwned(level: PermissionLevel): Promise<RuntimeState> {
     if (this.sdkCompatibilityFailure) throw new PiDesktopError(this.sdkCompatibilityFailure);
     const project = this.project;
     if (!project?.trusted) throw new PiDesktopError({ code: 'PROJECT_NOT_TRUSTED', message: 'Open and trust a project before changing permissions.', retryable: true });
@@ -4107,9 +4119,10 @@ export class PiRuntimeService {
     }
     const pending = await Promise.allSettled([...this.pendingDisposals]);
     failures.push(...pending.flatMap((result) => result.status === 'rejected' ? [result.reason] : []));
-    // Detached model reads/titles can still touch provider or session state.
-    // Keep the profile owner until their real promises finish, including after abort.
-    await Promise.allSettled([...this.pendingModelOperations, ...this.pendingTitleGenerations]);
+    // Detached model reads/titles and admitted permission writes can still touch
+    // profile state. Cancellation/disposal above must not release ownership while
+    // those writes continue, even if their disposed-session result is rejected.
+    await Promise.allSettled([...this.pendingModelOperations, ...this.pendingTitleGenerations, ...this.pendingPermissionChanges]);
     try { await this.goalMax.dispose(); } catch (error) { failures.push(error); }
     try { await this.tasks.dispose(); } catch (error) { failures.push(error); }
     this.subagents.reset();
@@ -5852,7 +5865,8 @@ export class PiRuntimeService {
 
   /** Eviction must retain owned descendants and failed-to-stop writers, not only streamed text. */
   hasEvictionBlockingWork(): boolean {
-    if (this.replacementActive || this.promptOptimizationActive || this.pendingModelOperations.size > 0 || this.pendingTitleGenerations.size > 0) return true;
+    if (this.replacementActive || this.promptOptimizationActive || this.pendingModelOperations.size > 0
+      || this.pendingTitleGenerations.size > 0 || this.pendingPermissionChanges.size > 0) return true;
     return [...this.liveSlots].some((slot) => !slot.disposed && (slot.activeRunId !== null
       || this.sessionHasActiveWork(slot.runtime.session)
       || this.hasOwnedAgentWork(slot.runtime.session.sessionId)

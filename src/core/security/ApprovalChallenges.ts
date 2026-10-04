@@ -89,7 +89,9 @@ export class ApprovalChallenges {
     const state = this.options.readState(context, target);
     if (!validState(state) || !state.trusted || !state.storageHealthy) throw new ProtocolFault('PERMISSION_REQUIRED');
     if (state.currentLevel !== target.oldLevel || expectedMaximum !== undefined && state.hostMaximum !== expectedMaximum
-      || permissionRank[target.newLevel] <= permissionRank[target.oldLevel]
+      // The same scoped transaction handles reductions and elevations. Reject
+      // no-ops, not reductions; the destination must still obey the host cap.
+      || target.newLevel === target.oldLevel
       || permissionRank[target.newLevel] > permissionRank[state.hostMaximum]) throw new ProtocolFault('PERMISSION_REQUIRED');
     return state;
   }

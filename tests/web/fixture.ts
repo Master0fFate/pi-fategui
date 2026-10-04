@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createGitFixture, isWithin, privateTestRoot, type GitFixture } from '../v2/helpers/isolatedEnvironment';
 import type { WebFixtureAction, WebFixtureInspection, WebFixtureReady, WebFixtureReply } from '../v2/helpers/webProcessProtocol';
 import { FaultProxy, type CommandCapture, type JsonRecord } from './faultProxy';
+import { statePersistenceBackendSchema, type StatePersistenceBackend } from '../../src/shared/v2FeaturePolicy';
 
 async function freePort(): Promise<number> {
   const probe = createServer();
@@ -50,16 +51,17 @@ export class WebHost {
   private readonly startupStages: string[][] = [];
   ready!: WebFixtureReady;
   readonly boots: WebFixtureReady[] = [];
-  private constructor(readonly repositories: GitFixture, readonly proxy: FaultProxy, private readonly browser: Browser) {}
+  private constructor(readonly repositories: GitFixture, readonly proxy: FaultProxy, private readonly browser: Browser,
+    readonly statePersistence: StatePersistenceBackend, private readonly terminalEnabled: boolean) {}
   get origin(): string { return this.proxy.origin; }
-  static async start(browser: Browser): Promise<WebHost> {
+  static async start(browser: Browser, statePersistence: StatePersistenceBackend, terminalEnabled = false): Promise<WebHost> {
     const repositories = await createGitFixture();
     let proxy: FaultProxy | undefined;
     let host: WebHost | undefined;
     try {
       await fs.mkdir(path.join(repositories.root, 'home'), { mode: 0o700 });
       proxy = await FaultProxy.start();
-      host = new WebHost(repositories, proxy, browser);
+      host = new WebHost(repositories, proxy, browser, statePersistence, terminalEnabled);
       await host.boot();
       return host;
     } catch (reason) {
@@ -92,7 +94,9 @@ export class WebHost {
     const port = await freePort();
     const home = path.join(this.repositories.root, 'home');
     const environment = { ...process.env, HOME: home, USERPROFILE: home,
-      FATE_WEB_CASE_ROOT: this.repositories.root, FATE_WEB_PROXY_ORIGIN: this.origin, FATE_WEB_SERVER_PORT: String(port) };
+      FATE_WEB_CASE_ROOT: this.repositories.root, FATE_WEB_PROXY_ORIGIN: this.origin, FATE_WEB_SERVER_PORT: String(port),
+      FATE_WEB_STATE_PERSISTENCE: this.boots.length === 0 ? this.statePersistence : undefined,
+      FATE_WEB_TERMINAL_ENABLED: this.terminalEnabled ? '1' : '0' };
     // The test child also inherits the Node outbound/Electron guard. No CLI flag
     // or environment setting enables the fake adapter in production main.ts.
     this.childOutput = '';
@@ -147,6 +151,8 @@ export class WebHost {
           if (reply.ok) waiting.resolve(reply.result); else waiting.reject(new Error(reply.error));
         });
       });
+      expect(ready.statePersistence).toBe(this.statePersistence);
+      expect(ready.nativeDatabasePresent).toBe(this.statePersistence === 'native-durable');
       this.ready = ready; this.boots.push(ready); this.startupStages.push(stages);
       this.proxy.target(port); this.proxy.resumeEvents();
     } catch (reason) {
@@ -288,13 +294,16 @@ export class WebHost {
       const page = context.pages()[0];
       if (failed && page && !page.isClosed()) {
         const screenshot = info.outputPath(`browser-${index + 1}.png`);
-        await page.screenshot({ path: screenshot, fullPage: true });
+        // A failed/hung host can leave lazy font requests unresolved. Evidence
+        // capture must not consume teardown's entire budget before owned cleanup.
+        await page.screenshot({ path: screenshot, fullPage: true, timeout: 5_000 });
         await info.attach(`browser-${index + 1}-screenshot`, { path: screenshot, contentType: 'image/png' });
       }
     }
     // Deliberately omit Cookie, bootstrap, CSRF, tickets and source text.
     await info.attach('real-wire-evidence', { contentType: 'application/json', body: Buffer.from(JSON.stringify({
-      boots: this.boots.map((boot) => ({ pid: boot.pid, serverEpoch: boot.serverEpoch })),
+      boots: this.boots.map((boot) => ({ pid: boot.pid, serverEpoch: boot.serverEpoch,
+        statePersistence: boot.statePersistence, nativeDatabasePresent: boot.nativeDatabasePresent })),
       startupStages: this.startupStages,
       commands: this.proxy.commands.map((entry) => ({ method: entry.method, requestId: entry.request.requestId,
         originalId: entry.method === 'command.status' ? object(entry.request.input).requestId : undefined,
@@ -305,19 +314,22 @@ export class WebHost {
   }
   async close(): Promise<void> {
     const failures: unknown[] = [];
+    let ownedShutdownConfirmed = false;
     for (const context of this.contexts) { try { await context.close(); } catch (error) { failures.push(error); } }
     try {
       if (this.child?.connected) {
         const child = this.child;
         const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-        const outcome = await this.rpc<{ status: string; providerCallsBlocked: number }>({ type: 'shutdown' });
+        const outcome = await this.rpc<{ status: string; providerCallsBlocked: number; nativePtySettled: boolean }>({ type: 'shutdown' });
         expect(outcome.status).toBe('settled');
         expect(outcome.providerCallsBlocked).toBe(0);
+        expect(outcome.nativePtySettled).toBe(true);
         let deadline: ReturnType<typeof setTimeout> | undefined;
         try {
           await Promise.race([exited, new Promise<never>((_resolve, reject) => {
             deadline = setTimeout(() => { reject(new Error('Fixture cleanup did not exit.')); }, 10_000);
           })]);
+          ownedShutdownConfirmed = true;
         } finally { if (deadline) clearTimeout(deadline); }
       }
     } catch (error) { failures.push(error); }
@@ -329,18 +341,24 @@ export class WebHost {
       failures.push(new Error('Fixture owner settlement is unknown; its private files are retained.'));
     } else {
       this.child = null;
-      try { await this.repositories.cleanup(); } catch (error) { failures.push(error); }
+      if (ownedShutdownConfirmed) {
+        try { await this.repositories.cleanup(); } catch (error) { failures.push(error); }
+      } else failures.push(new Error('Host/native shutdown was not confirmed; private workspace files are retained even after the host PID exits.'));
     }
     if (failures.length) throw new AggregateError(failures, 'Real browser fixture cleanup/invariants failed.');
   }
 }
 
-export const test = base.extend<{ host: WebHost }>({
-  host: async ({ browser }, use, info) => {
-    const host = await WebHost.start(browser);
+export const test = base.extend<{ host: WebHost; terminalEnabled: boolean }>({
+  terminalEnabled: [false, { option: true }],
+  // Separate host construction from the unchanged 90s user-workflow budget.
+  // A native restart scenario has TWO genuine cold boots; each boot still has
+  // its original 60s Windows limit, and teardown must still prove settlement.
+  host: [async ({ browser, terminalEnabled }, use, info) => {
+    const host = await WebHost.start(browser, statePersistenceBackendSchema.parse(info.project.name), terminalEnabled);
     try { await use(host); }
     finally { try { await host.evidence(info); } finally { await host.close(); } }
-  },
+  }, { timeout: 75_000 }],
 });
 export { expect };
 export async function inspector(page: Page, destination: 'Work' | 'Run', tab: string): Promise<void> {

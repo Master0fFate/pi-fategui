@@ -13,6 +13,9 @@ import type { FateApi } from './FateApi';
 import type { InputOf } from '../shared/protocol/methods';
 import { type HostReadMethod, type OperationMethod, operationMethodSchema, hostOperationJournalMethods } from '../shared/protocol/hostOperations';
 import { textUploadDisplaySchema, type TextAttachmentReceipt, textAttachmentIdSchema } from '../shared/protocol/attachments';
+import type { ManualTerminalApi } from '../shared/contracts/terminal';
+import type { TerminalScope } from '../shared/protocol/terminal';
+import type { ScopedTerminalApi } from './BrowserTerminalClient';
 
 const originPattern = /^http:\/\/(?:127\.0\.0\.1|localhost):[1-9][0-9]{0,4}$/u;
 const authSessionSchema = z.object({ session: z.object({ sessionId: z.string().uuid(), expiresAt: z.number().int().positive().safe(),
@@ -48,6 +51,8 @@ export type WebGitHistory = WireResultOf<'git.history'>;
 export type WebInput<M extends import('../shared/protocol/methods').MethodName> = z.input<(typeof methodCatalog)[M]['inputSchema']>;
 export interface WebEventClient {
   readonly connection: EventConnectionInfo | null;
+  /** Absent on adapters that cannot deliver terminal frames. */
+  readonly terminal?: ScopedTerminalApi;
   connect(): Promise<EventConnectionInfo>;
   subscribe(workspaceId: string, workspaceGeneration: number, cursor?: EventCursor): Promise<EventCursor>;
   close(): void;
@@ -182,6 +187,9 @@ export class WebFateApi {
   private recoveryError: string | null = null;
   private readonly onAuthenticationLost: (() => void) | undefined;
   readonly shared: FateApi = unsupportedWebFateMethods();
+  readonly terminal: ManualTerminalApi | undefined;
+  private terminalScope: TerminalScope | null = null;
+  private terminalLeaseTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(readonly origin: string, session: BrowserSession, options: WebClientOptions = {}) {
     checkedOrigin(origin);
@@ -194,6 +202,31 @@ export class WebFateApi {
     this.events = options.makeEvents?.((event) => this.invalidate(event), () => this.csrf, () => this.lostConnection())
       ?? new EventTransport(`${origin.replace(/^http:/u, 'ws:')}/api/events`, () => this.csrf,
         (event) => this.invalidate(event), undefined, () => this.lostConnection());
+    const terminal = this.events.terminal;
+    this.terminal = terminal ? {
+      createTerminal: async (cols, rows) => {
+        const scope = this.assertTerminalAuthority();
+        const snapshot = this.selectedSnapshot;
+        if (!snapshot || snapshot.controls.permissionLevel === 'read-only') {
+          throw new Error('Refresh the workspace with non-read-only permission before opening a manual shell.');
+        }
+        const lifecycle = this.lifecycle;
+        this.terminalScope = scope;
+        this.armTerminalLeaseExpiry();
+        const created = await terminal.createTerminal(scope, cols, rows);
+        if (lifecycle !== this.lifecycle || !this.isConnected || this.terminalScope === null || this.control !== scope.controlGeneration
+          || this.selected?.workspaceId !== scope.workspaceId || this.selected.workspaceGeneration !== scope.workspaceGeneration) {
+          await terminal.closeTerminal(created.id);
+          throw new Error('Manual terminal scope changed while starting. Open a new shell explicitly.');
+        }
+        return created;
+      },
+      writeTerminal: async (id, data) => { this.assertTerminalAuthority(); await terminal.writeTerminal(id, data); },
+      resizeTerminal: async (id, cols, rows) => { this.assertTerminalAuthority(); await terminal.resizeTerminal(id, cols, rows); },
+      acknowledgeTerminal: async (id, characters) => { this.assertTerminalAuthority(); await terminal.acknowledgeTerminal(id, characters); },
+      closeTerminal: (id) => terminal.closeTerminal(id),
+      onTerminalEvent: (listener) => terminal.onTerminalEvent(listener),
+    } : undefined;
     this.commands = new HttpCommandTransport(origin, () => ({ 'X-Fate-Csrf': this.csrf }), () => this.events.connection?.ticket ?? null,
       async (input, init) => {
         const response = await this.send(input, init);
@@ -281,7 +314,37 @@ export class WebFateApi {
   get control(): number | null {
     return this.isConnected && this.controlExpiresAt !== null && this.controlExpiresAt > this.estimatedHostTime ? this.controlGeneration : null;
   }
-  supports(capability: Capability): boolean { return this.isConnected && this.capabilities.has(capability); }
+  supports(capability: Capability): boolean {
+    return this.isConnected && this.capabilities.has(capability) && (capability !== 'terminal.manual' || this.terminal !== undefined);
+  }
+  private assertTerminalAuthority(): TerminalScope {
+    const scope = this.selected;
+    const controlGeneration = this.control;
+    const previous = this.terminalScope;
+    if (!scope || controlGeneration === null || !this.supports('terminal.manual')
+      || previous && (previous.workspaceId !== scope.workspaceId || previous.workspaceGeneration !== scope.workspaceGeneration
+        || previous.controlGeneration !== controlGeneration)) {
+      this.closeTerminals();
+      throw new Error('A connected workspace and current explicit control are required for the manual terminal.');
+    }
+    return { workspaceId: scope.workspaceId, workspaceGeneration: scope.workspaceGeneration, controlGeneration };
+  }
+  private closeTerminals(): void {
+    if (this.terminalLeaseTimer) clearTimeout(this.terminalLeaseTimer);
+    this.terminalLeaseTimer = null;
+    this.terminalScope = null;
+    this.events.terminal?.closeAll();
+  }
+  private armTerminalLeaseExpiry(): void {
+    if (this.terminalLeaseTimer) clearTimeout(this.terminalLeaseTimer);
+    this.terminalLeaseTimer = null;
+    if (!this.terminalScope || this.controlExpiresAt === null) return;
+    this.terminalLeaseTimer = setTimeout(() => {
+      this.terminalLeaseTimer = null;
+      if (this.control !== null) { this.armTerminalLeaseExpiry(); return; }
+      this.closeTerminals(); this.notify();
+    }, Math.max(1, this.controlExpiresAt - this.estimatedHostTime));
+  }
   onInvalidate(listener: () => void): () => void { this.invalidationListeners.add(listener); return () => { this.invalidationListeners.delete(listener); }; }
   private notify(): void { for (const listener of this.invalidationListeners) listener(); }
   private lostConnection(): void {
@@ -289,6 +352,7 @@ export class WebFateApi {
     this.connected = false;
     this.controlGeneration = null;
     this.controlExpiresAt = null;
+    this.closeTerminals();
     this.selectedSnapshot = null;
     this.viewRevision++;
     this.lifecycle++;
@@ -350,6 +414,7 @@ export class WebFateApi {
       this.latestControlGeneration = Math.max(this.latestControlGeneration ?? 0, event.controlGeneration);
       if (this.controlGeneration !== null && this.controlGeneration !== event.controlGeneration) {
         this.controlGeneration = null; this.controlExpiresAt = null;
+        this.closeTerminals();
       }
     } else if (!this.selectedSnapshot || event.streamId !== this.selectedSnapshot.eventStream?.streamId) return;
     // Pi/GoalMax/task transitions invalidate projections, NOT an unchanged host lease.
@@ -446,6 +511,7 @@ export class WebFateApi {
       this.controlGeneration = null;
       this.controlExpiresAt = null;
       this.latestControlGeneration = null;
+      this.closeTerminals();
     }
     this.selected = scope;
     this.selectedSnapshot = null;
@@ -480,6 +546,7 @@ export class WebFateApi {
     // Snapshot high-water is a replay cursor. Subscribe from it and wait for the
     // server ACK; events published between capture and ACK are replayed, not guessed.
     this.selectedSnapshot = header;
+    if (header.controls.permissionLevel === 'read-only') this.closeTerminals();
     try {
       await this.events.subscribe(scope.workspaceId, scope.workspaceGeneration, header.eventStream);
       if (revision !== this.viewRevision || !this.isConnected) throw new Error('Snapshot invalidated during replay. Refresh this workspace.');
@@ -546,6 +613,7 @@ export class WebFateApi {
   readTasks(workspace: WebWorkspace): Promise<WebTaskRead> { return this.scopedRichRead(workspace, 'task.list'); }
   readGitStatus(workspace: WebWorkspace): Promise<WebGitStatus> { return this.scopedRichRead(workspace, 'git.status'); }
   readGitHistory(workspace: WebWorkspace): Promise<WebGitHistory> { return this.scopedRichRead(workspace, 'git.history'); }
+  readHistory(workspace: WebWorkspace, pageId?: string) { return this.scopedRichRead(workspace, 'session.history', pageId === undefined ? {} : { pageId }); }
   readSessions(workspace: WebWorkspace, query = '') { return this.scopedRichRead(workspace, 'session.list', { query }); }
   readModels(workspace: WebWorkspace) { return this.scopedRichRead(workspace, 'runtime.models', {}); }
   readQueue(workspace: WebWorkspace) { return this.scopedRichRead(workspace, 'runtime.queueRead', {}); }
@@ -667,22 +735,28 @@ export class WebFateApi {
     assertScope(response, scope, this.epoch!);
     if (!response.ok || response.method !== 'control.claim') throw new Error('Invalid control response.');
     this.assertControlScope(scope, epoch, response.result.generation);
+    if (this.terminalScope && this.terminalScope.controlGeneration !== response.result.generation) this.closeTerminals();
     this.controlGeneration = response.result.generation;
     this.controlExpiresAt = response.result.expiresAt;
+    this.armTerminalLeaseExpiry();
     this.notify();
     return response.result;
   }
   async renewControl(workspace: WebWorkspace): Promise<WireResultOf<'control.renew'>> {
     const scope = this.checkedWorkspace(workspace);
     const generation = this.control;
-    if (!this.supports('workspace.control') || generation === null) throw new Error('A live workspace lease is required for renewal.');
+    if (!this.supports('workspace.control') || generation === null) {
+      this.closeTerminals();
+      throw new Error('A live workspace lease is required for renewal.');
+    }
     const epoch = this.epoch!;
     const response = await this.command({ ...this.readId(), method: 'control.renew', workspaceId: scope.workspaceId,
       workspaceGeneration: scope.workspaceGeneration, input: { generation } });
     resultOrError(response); assertScope(response, scope, this.epoch!);
     if (!response.ok || response.method !== 'control.renew' || response.result.generation !== generation) throw new Error('Control scope changed. Refresh before claiming again.');
     this.assertControlScope(scope, epoch, response.result.generation);
-    this.controlGeneration = response.result.generation; this.controlExpiresAt = response.result.expiresAt; this.notify();
+    this.controlGeneration = response.result.generation; this.controlExpiresAt = response.result.expiresAt;
+    this.armTerminalLeaseExpiry(); this.notify();
     return response.result;
   }
   async takeOverControl(workspace: WebWorkspace): Promise<WireResultOf<'control.takeover'>> {
@@ -694,6 +768,7 @@ export class WebFateApi {
     resultOrError(response); assertScope(response, scope, this.epoch!);
     if (!response.ok || response.method !== 'control.takeover') throw new Error('Control scope changed. Refresh before claiming again.');
     this.assertControlScope(scope, epoch, response.result.generation);
+    this.closeTerminals();
     this.controlGeneration = response.result.generation; this.controlExpiresAt = response.result.expiresAt; this.notify();
     return response.result;
   }
@@ -745,6 +820,7 @@ export class WebFateApi {
     const generation = this.controlGeneration;
     this.controlGeneration = null;
     this.controlExpiresAt = null;
+    this.closeTerminals();
     this.notify();
     if (generation === null || !this.isConnected) return;
     const response = await this.command({ ...this.readId(), method: 'control.release', workspaceId: scope.workspaceId,
@@ -858,6 +934,7 @@ export class WebFateApi {
     this.controlExpiresAt = null;
     this.latestControlGeneration = null;
     this.viewRevision++;
+    this.closeTerminals();
     this.events.close();
     this.invalidationListeners.clear();
   }

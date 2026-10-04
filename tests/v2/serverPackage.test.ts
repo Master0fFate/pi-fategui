@@ -48,7 +48,7 @@ import {readFileSync} from 'node:fs'; import assert from 'node:assert/strict';
 const text=readFileSync(${JSON.stringify(noticePath)},'utf8');
 const roots={'@earendil-works/chord':'1.0.0','@earendil-works/pi-ai':'1.0.0','@earendil-works/pi-coding-agent':'1.0.0','@earendil-works/pi-durable':'1.0.0','@earendil-works/pi-client':'1.0.0','@earendil-works/pi-protocol':'1.0.0','@earendil-works/pi-server':'1.0.0'};
 const note=retainedPiLicenseNotice(text,roots);
-assert.equal(retainedPiLicenseNotice(text.replaceAll('\\n','\\r\\n'),roots),note);
+assert.equal(retainedPiLicenseNotice(text.replaceAll('\\r\\n','\\n').replaceAll('\\n','\\r\\n'),roots),note);
 assert.throws(()=>retainedPiLicenseNotice(text.replace('Copyright (c) 2025 Mario Zechner','Copyright altered'),roots),/verified upstream terms/);
 assert.throws(()=>retainedPiLicenseNotice(text.replaceAll('a13d35a742c6ef8462812a28fbe1d8c8b7431c32','unverified'),roots),/tagged Pi license provenance/);
 assert.throws(()=>retainedPiLicenseNotice(text,{...roots,'@earendil-works/pi-durable':'1.0.1'}),/Unverified Pi license version/);

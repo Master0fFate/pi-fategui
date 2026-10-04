@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { FatePaths } from '../FatePaths';
 import { OwnerLock, lockName } from '../ownership/OwnerLock';
 import { hostCheckoutLockRoot } from '../ownership/CheckoutOwnership';
+import { withPrivateWindowsAclScope } from './WindowsPrivateAcl';
 import { openFateDurableStore, verifyCompletedDurableImport, type FateDurableStore } from '../durable/FateDurableStore';
 import { MIGRATED_NAMESPACES, readMigrationSource, type MigrationSource } from './MigrationSource';
 import { assertMigrationPath, assertPrivateMigrationPath, exists, fingerprintMigrationFile, listMigrationFiles, migrationHash,
@@ -93,23 +94,26 @@ export class MigrationService {
   }
   async dryRun(): Promise<MigrationDryRun> {
     try {
-      await this.locations();
-      if (await exists(this.profileLock())) throw new Error('Profile already in use or ownership is uncertain. Stop all owners; no stale lock is reclaimed.');
-      if (await exists(path.join(this.options.paths.dataRoot, 'durable'))) throw new Error('A native namespace already exists; inspect its migration rather than overwriting it.');
-      const source = await this.observe(); const errors = [...source.errors];
-      for (const project of source.projects) {
-        if (overlaps(project.path, this.options.backupRoot) || overlaps(project.path, this.options.paths.dataRoot)) errors.push('Migration storage must not overlap a project/worktree.');
-        if (await exists(this.checkoutLock(project.path))) errors.push('A referenced checkout is owned or uncertain. Stop every owner before migration.');
-      }
-      if (errors.length) return { plan: null, errors, notices };
-      const requiredBytes = source.files.reduce((sum, file) => sum + file.bytes, 0) * 4 + 32 * 1024 * 1024; await this.space(requiredBytes);
-      const stat = await fs.stat(this.resource());
-      const plan = planSchema.parse({ format: 1, id: randomUUID(), host: os.hostname(), sourceVersion: this.options.sourceVersion,
-        targetVersion: this.options.targetVersion, dataRoot: this.options.paths.dataRoot, sessionsRoot: this.options.paths.sessionsRoot,
-        profileResource: this.resource(), profileDevice: String(stat.dev), profileInode: String(stat.ino), backupRoot: this.options.backupRoot,
-        sourceDigest: source.combinedDigest, files: source.files, references: source.references, projects: source.projects, sessions: source.sessions, requiredBytes });
-      return { plan, errors: [], notices };
+      return await withPrivateWindowsAclScope(() => this.observeDryRun());
     } catch (error) { return { plan: null, errors: [error instanceof Error ? error.message : 'Migration preflight failed.'], notices }; }
+  }
+  private async observeDryRun(): Promise<MigrationDryRun> {
+    await this.locations();
+    if (await exists(this.profileLock())) throw new Error('Profile already in use or ownership is uncertain. Stop all owners; no stale lock is reclaimed.');
+    if (await exists(path.join(this.options.paths.dataRoot, 'durable'))) throw new Error('A native namespace already exists; inspect its migration rather than overwriting it.');
+    const source = await this.observe(); const errors = [...source.errors];
+    for (const project of source.projects) {
+      if (overlaps(project.path, this.options.backupRoot) || overlaps(project.path, this.options.paths.dataRoot)) errors.push('Migration storage must not overlap a project/worktree.');
+      if (await exists(this.checkoutLock(project.path))) errors.push('A referenced checkout is owned or uncertain. Stop every owner before migration.');
+    }
+    if (errors.length) return { plan: null, errors, notices };
+    const requiredBytes = source.files.reduce((sum, file) => sum + file.bytes, 0) * 4 + 32 * 1024 * 1024; await this.space(requiredBytes);
+    const stat = await fs.stat(this.resource());
+    const plan = planSchema.parse({ format: 1, id: randomUUID(), host: os.hostname(), sourceVersion: this.options.sourceVersion,
+      targetVersion: this.options.targetVersion, dataRoot: this.options.paths.dataRoot, sessionsRoot: this.options.paths.sessionsRoot,
+      profileResource: this.resource(), profileDevice: String(stat.dev), profileInode: String(stat.ino), backupRoot: this.options.backupRoot,
+      sourceDigest: source.combinedDigest, files: source.files, references: source.references, projects: source.projects, sessions: source.sessions, requiredBytes });
+    return { plan, errors: [], notices };
   }
   private validate(input: MigrationPlan): MigrationPlan {
     const plan = planSchema.parse(input);
@@ -174,7 +178,10 @@ export class MigrationService {
         await assertPrivateMigrationPath(source, false);
         await fs.copyFile(source, destination, constants.COPYFILE_EXCL);
         await fs.chmod(destination, 0o600); await assertPrivateMigrationPath(destination, false);
-        const handle = await fs.open(destination, 'r'); try { await handle.sync(); } finally { await handle.close(); }
+        // Windows FlushFileBuffers requires write access. O_RDWR does not
+        // truncate or alter the copy; keep the required durability barrier.
+        const handle = await fs.open(destination, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+        try { await handle.sync(); } finally { await handle.close(); }
         const actual = await fingerprintMigrationFile(destination, file.name);
         if (actual.sha256 !== file.sha256 || actual.bytes !== file.bytes) throw new Error('Private backup verification failed; original data is unchanged.');
         await syncMigrationDirectory(path.dirname(destination));
@@ -198,7 +205,7 @@ export class MigrationService {
   }
   async apply(input: MigrationPlan): Promise<MigrationResult> {
     const plan = this.validate(input);
-    return this.own(plan, async (owner) => {
+    return withPrivateWindowsAclScope(() => this.own(plan, async (owner) => {
       const source = await this.recheck(plan); await this.space(plan.requiredBytes); await this.options.checkpoint?.('locked'); await this.assertOwner(owner);
       await this.ensureBackup(plan); await this.options.checkpoint?.('backup-complete');
       const migrations = path.dirname(this.staging(plan));
@@ -269,13 +276,13 @@ export class MigrationService {
       await fs.rename(path.join(staging, 'durable'), active); await syncMigrationDirectory(plan.dataRoot); await syncMigrationDirectory(staging);
       await this.options.checkpoint?.('activated');
       return { id: plan.id, status: 'activated', backup: this.backup(plan), importedSessions: plan.sessions.length, sourceDigest: plan.sourceDigest };
-    });
+    }));
   }
   /** Conservative rollback: preserve candidate, expose untouched legacy namespaces, never restore over new work. */
   async rollback(input: MigrationPlan, matchedSourceVersion: string): Promise<{ status: 'rolled-back'; retainedNative: string }> {
     const plan = this.validate(input);
     if (matchedSourceVersion !== plan.sourceVersion) throw new Error('Rollback requires the exact original application version.');
-    return this.own(plan, async (owner) => {
+    return withPrivateWindowsAclScope(() => this.own(plan, async (owner) => {
       await this.recheck(plan); await this.ensureBackup(plan);
       const active = path.join(plan.dataRoot, 'durable'); const retainedNative = path.join(this.staging(plan), 'rolled-back-durable');
       if (await exists(retainedNative) && !await exists(active)) {
@@ -292,7 +299,7 @@ export class MigrationService {
       if (await exists(retainedNative)) throw new Error('A retained candidate already exists; no overwrite is permitted.');
       await fs.rename(active, retainedNative); await syncMigrationDirectory(plan.dataRoot); await syncMigrationDirectory(this.staging(plan));
       return { status: 'rolled-back', retainedNative };
-    });
+    }));
   }
 }
 class MigrationCloseUncertain extends Error {}

@@ -11,6 +11,8 @@ describe('T31 headless smoke process', () => {
     });
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('HEADLESS_SMOKE_BACKEND_OK legacy-json');
+    expect(result.stdout).toContain('HEADLESS_SMOKE_BACKEND_OK native-durable');
     expect(result.stdout).toContain('HEADLESS_SMOKE_OK');
   }, 180_000);
 });

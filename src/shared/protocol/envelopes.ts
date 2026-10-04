@@ -56,7 +56,7 @@ const requestCoverage: { [M in MethodName]: Extract<WireRequest, { method: M }>[
   'control.claim': 'control.claim', 'control.renew': 'control.renew', 'control.release': 'control.release', 'control.takeover': 'control.takeover',
   'permission.issue': 'permission.issue', 'permission.confirm': 'permission.confirm', 'command.status': 'command.status', 'file.list': 'file.list', 'file.previewText': 'file.previewText',
   'runtime.prompt': 'runtime.prompt', 'runtime.abort': 'runtime.abort', 'session.select': 'session.select',
-  'session.list': 'session.list', 'session.create': 'session.create', 'runtime.models': 'runtime.models',
+  'session.history': 'session.history', 'session.list': 'session.list', 'session.create': 'session.create', 'runtime.models': 'runtime.models',
   'runtime.setModel': 'runtime.setModel', 'runtime.setThinking': 'runtime.setThinking', 'runtime.queueRead': 'runtime.queueRead', 'runtime.queue': 'runtime.queue',
   'goal.create': 'goal.create', 'goal.control': 'goal.control', 'goal.update': 'goal.update', 'goal.clear': 'goal.clear',
   'goal.editSteering': 'goal.editSteering', 'goal.removeSteering': 'goal.removeSteering',

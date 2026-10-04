@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 const skins = [
   { id: 'default', theme: 'midnight', name: 'Default' },
@@ -86,10 +87,8 @@ for (const skin of skins) {
       await assertQuestionnaire(page, skin);
       await expect(page.locator('.question-card-option')).toHaveText(['Overview', 'Recent work', 'Last view']);
       if (process.env.FATE_CAPTURE_QUESTIONNAIRE) {
-        const directory = path.resolve('screenshots/questionnaire');
-        await mkdir(directory, { recursive: true });
-        await page.screenshot({ path: path.join(directory, `${skin.id}.png`) });
-        await captureQuestionDetail(page, path.join(directory, `${skin.id}-detail.png`));
+        await page.screenshot({ path: await evidenceOutputPath('questionnaire', `${skin.id}.png`) });
+        await captureQuestionDetail(page, await evidenceOutputPath('questionnaire', `${skin.id}-detail.png`));
       }
     } finally {
       await application.close();
@@ -124,7 +123,7 @@ for (const skin of skins) {
       expect(layout.optionLines).toBeGreaterThan(1.8);
       expect(layout.cardOverflow || layout.headingOverflow || layout.optionOverflow).toBe(false);
       if (process.env.FATE_CAPTURE_QUESTIONNAIRE) {
-        await captureQuestionDetail(page, path.resolve(`screenshots/questionnaire/${skin.id}-long-detail.png`));
+        await captureQuestionDetail(page, await evidenceOutputPath('questionnaire', `${skin.id}-long-detail.png`));
       }
     } finally {
       await application.close();

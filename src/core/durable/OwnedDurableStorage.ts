@@ -4,7 +4,7 @@ import type { Storage } from '@earendil-works/pi-durable';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
 import { OwnerLock, canonicalFuturePath } from '../ownership/OwnerLock';
-import { assertPrivateWindowsAcl } from '../storage/WindowsPrivateAcl';
+import { assertPrivateWindowsAcl, assertPrivateWindowsAcls, withPrivateWindowsAclScope } from '../storage/WindowsPrivateAcl';
 
 export interface OwnedDurableStorageOptions {
   readonly dataRoot: string;
@@ -61,6 +61,30 @@ async function syncDirectory(target: string): Promise<void> {
  * A successful commit is an SQLite FULL transaction, not a JSONL flush or rename.
  */
 export async function openOwnedDurableStorage(options: OwnedDurableStorageOptions): Promise<OwnedDurableStorage> {
+  // Startup checks are one finite operation. Keep each live ACL read, but do
+  // not pay for a new PowerShell process at every open stage. No worker/ACL
+  // result is retained by the returned store; later admissions still read the
+  // actual profile owner entry/token through assertOwnership below.
+  let acquired: OwnedDurableStorage | undefined;
+  try {
+    return await withPrivateWindowsAclScope(async () => {
+      acquired = await openOwnedDurableStorageWithinScope(options);
+      return acquired;
+    });
+  } catch (error) {
+    // Scope finalization can fail after SQLite opened successfully. Settle that
+    // backend before the host can release its borrowed profile ownership.
+    if (acquired) {
+      try { await acquired.storage.close(BACKGROUND_CONTEXT); }
+      catch (closeError) {
+        throw new DurableStorageCloseUncertainError([error, closeError], 'Native durable ACL scope finalization failed and close is uncertain; retain profile ownership.');
+      }
+    }
+    throw error;
+  }
+}
+
+async function openOwnedDurableStorageWithinScope(options: OwnedDurableStorageOptions): Promise<OwnedDurableStorage> {
   if (!(options.profileOwner instanceof OwnerLock) || !path.isAbsolute(options.dataRoot)
     || !/^[a-z0-9][a-z0-9_-]{0,100}\.sqlite$/u.test(options.filename)) {
     throw new Error('Native durable storage requires a profile owner, absolute data root, and safe database name.');
@@ -86,8 +110,8 @@ export async function openOwnedDurableStorage(options: OwnedDurableStorageOption
     }
   };
   await assertOwnership();
-  await assertPrivateWindowsAcl(options.profileOwner.lockPath);
-  await assertPrivateWindowsAcl(path.join(options.profileOwner.lockPath, 'owner.json'));
+  await privatePath(root, true, false);
+  await assertPrivateWindowsAcls([options.profileOwner.lockPath, path.join(options.profileOwner.lockPath, 'owner.json'), root]);
 
   // Resolve capability before creating any new state. Electron/Node builds without
   // node:sqlite fail explicitly rather than quietly falling back to weaker storage.
@@ -119,16 +143,26 @@ export async function openOwnedDurableStorage(options: OwnedDurableStorageOption
     }
   }
   try {
-    await privatePath(root, true);
+    const existingDirectories: string[] = [];
     for (const target of [path.dirname(directory), directory]) {
-      await fs.mkdir(target, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'EEXIST') throw error; });
-      await privatePath(target, true);
-      await syncDirectory(path.dirname(target));
+      try { await privatePath(target, true, false); existingDirectories.push(target); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        // Validate every existing ancestor before creating anything beneath it.
+        await assertPrivateWindowsAcls(existingDirectories); existingDirectories.length = 0;
+        await fs.mkdir(target, { mode: 0o700 });
+        await privatePath(target, true);
+        await syncDirectory(path.dirname(target));
+      }
     }
+    await assertPrivateWindowsAcls(existingDirectories);
+    const existingFiles: string[] = [];
     for (const suffix of ['', '-wal', '-shm']) {
-      try { await privatePath(`${filename}${suffix}`, false); }
+      const target = `${filename}${suffix}`;
+      try { await privatePath(target, false, false); existingFiles.push(target); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     }
+    await assertPrivateWindowsAcls(existingFiles);
     try {
       const created = await fs.open(filename, 'wx', 0o600);
       try { await created.sync(); } finally { await created.close(); }

@@ -26,6 +26,7 @@ export const remoteMonitorInputSchema = remoteReadInputSchema.extend({ input: me
 export const remoteFileListInputSchema = remoteReadInputSchema.extend({ directoryId: uuidSchema.nullable() }).strict();
 export const remotePreviewInputSchema = remoteReadInputSchema.extend({ fileId: uuidSchema }).strict();
 export const remotePromptInputSchema = remoteReadInputSchema.extend({ input: methodCatalog['runtime.prompt'].inputSchema }).strict();
+export const remoteHistoryInputSchema = remoteReadInputSchema.extend({ input: hostMethodCatalog['session.history'].inputSchema }).strict();
 export const remoteSessionsInputSchema = remoteReadInputSchema.extend({ input: hostMethodCatalog['session.list'].inputSchema }).strict();
 export const remoteGitDiffInputSchema = remoteReadInputSchema.extend({ input: hostMethodCatalog['git.diff'].inputSchema }).strict();
 export const remoteGitCommitInputSchema = remoteReadInputSchema.extend({ input: hostMethodCatalog['git.commitDetails'].inputSchema }).strict();
@@ -120,6 +121,7 @@ export interface DesktopConnectionApi {
   remoteReadTasks(scope: RemoteScope): Promise<WireResultOf<'task.list'>>;
   remoteReadGitStatus(scope: RemoteScope): Promise<WireResultOf<'git.status'>>;
   remoteReadGitHistory(scope: RemoteScope): Promise<WireResultOf<'git.history'>>;
+  remoteReadHistory(scope: RemoteScope, pageId?: string): Promise<WireResultOf<'session.history'>>;
   remoteReadSessions(scope: RemoteScope, query: string): Promise<WireResultOf<'session.list'>>;
   remoteReadModels(scope: RemoteScope): Promise<WireResultOf<'runtime.models'>>;
   remoteReadQueue(scope: RemoteScope): Promise<WireResultOf<'runtime.queueRead'>>;
@@ -156,6 +158,7 @@ export function selectConnectionMethods(api: DesktopConnectionApi): DesktopConne
     remoteListWorkspaces: api.remoteListWorkspaces, remoteReadSnapshot: api.remoteReadSnapshot,
     remoteReadMonitor: api.remoteReadMonitor, remoteReadGoal: api.remoteReadGoal, remoteReadTasks: api.remoteReadTasks,
     remoteReadGitStatus: api.remoteReadGitStatus, remoteReadGitHistory: api.remoteReadGitHistory,
+    remoteReadHistory: api.remoteReadHistory,
     remoteReadSessions: api.remoteReadSessions, remoteReadModels: api.remoteReadModels, remoteReadQueue: api.remoteReadQueue,
     remoteReadTeams: api.remoteReadTeams, remoteReadAgents: api.remoteReadAgents, remoteReadGitDiff: api.remoteReadGitDiff,
     remoteReadGitCombinedDiff: api.remoteReadGitCombinedDiff, remoteReadGitCommitDetails: api.remoteReadGitCommitDetails,

@@ -7,6 +7,7 @@ import { taskCreateInputSchema, taskUpdateInputSchema, taskReorderInputSchema, t
 import { agentTeamControlInputSchema, agentTeamNodeStatusSchema, workspaceReviewSchema } from '../contracts/multiAgent';
 import { uuidSchema, mutationRequestIdSchema } from './requestIds';
 import { textAttachmentInputSchema, textAttachmentIdSchema, textAttachmentReceiptSchema } from './attachments';
+import { historyPageSchema, SNAPSHOT_PAGE_BYTES } from './snapshots';
 
 const revision = z.number().int().nonnegative().safe();
 const domainId = z.string().min(1).max(160).refine((value) => !/[\u0000-\u001f\u007f]/u.test(value));
@@ -87,6 +88,7 @@ const mutation = <N extends OperationMethod, S extends z.ZodType<unknown>, C ext
   handlerDestination: `trustedHost.${name}`, maxDomainBytes: 2048, maxWireBytes: 2048,
 });
 export const hostMethodCatalog = {
+  'session.history': read('session.history', z.object({ pageId: uuidSchema.optional() }).strict(), historyPageSchema, 'session.history', SNAPSHOT_PAGE_BYTES),
   'session.list': read('session.list', z.object({ query: z.string().max(500).default('') }).strict(), sessionReadSchema, 'session.read'),
   'runtime.models': read('runtime.models', emptyInputSchema, modelReadSchema, 'runtime.configure'),
   'runtime.queueRead': read('runtime.queueRead', emptyInputSchema, queueReadSchema, 'queue.read', 1024 * 1024),

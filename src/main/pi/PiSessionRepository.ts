@@ -1,4 +1,4 @@
-import { lstat, open, opendir, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, open, opendir, readdir, realpath, rename, rm, writeFile, type FileHandle } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   getAgentDir,
@@ -14,6 +14,7 @@ import type { SnapshotItem } from '../../shared/protocol/snapshots';
 import { messageText } from './PiEventNormalizer';
 import { agentTeamSchema, type AgentTeam } from '../../shared/contracts/multiAgent';
 import { OversizedRecordFields, readSessionSnapshot, SessionSnapshotLimitError, type SnapshotRecord } from './SessionSnapshotReader';
+import { sessionProjectMatches } from './SessionProjectIdentity';
 
 export interface SessionRepositorySource {
   /** `includeSearchText` is intentionally opt-in: normal sidebar loading must not scan every transcript. */
@@ -105,6 +106,10 @@ const hiddenHistoryEntryTypes = new Set(['thinking_level_change', 'model_change'
 // Keep the record buffer below 128 KiB while the bounded streaming field
 // validator is live. The shared 64 KiB read chunk is not retained per record.
 const MAX_HISTORY_RECORD_BUFFER_BYTES = 96 * 1024;
+// A giant record may cross the ordinary page boundary, but may not turn one
+// authenticated page request into an unbounded full-transcript scan.
+const MAX_HISTORY_SCAN_BYTES = 8 * 1024 * 1024;
+const MAX_HISTORY_SCAN_MS = 5_000;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -187,40 +192,43 @@ function parseMetadataLines(source: string, metadata: ScannedSessionMetadata, in
   return headerSeen;
 }
 
-async function readFileRange(filePath: string, position: number, length: number): Promise<string> {
-  const handle = await open(filePath, 'r');
-  try {
-    const buffer = Buffer.allocUnsafe(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, position);
-    return buffer.subarray(0, bytesRead).toString('utf8');
-  } finally {
-    await handle.close();
-  }
+async function readFileRange(handle: FileHandle, position: number, length: number): Promise<string> {
+  const buffer = Buffer.allocUnsafe(length);
+  const { bytesRead } = await handle.read(buffer, 0, length, position);
+  return buffer.subarray(0, bytesRead).toString('utf8');
 }
 
-async function readSessionMetadata(filePath: string, includeSearchText: boolean): Promise<SessionInfo | null> {
+async function readSessionMetadata(filePath: string, cwd: string, includeSearchText: boolean): Promise<SessionInfo | null> {
+  let handle: FileHandle | undefined;
   try {
     const stats = await lstat(filePath);
     if (!stats.isFile() || stats.isSymbolicLink()) return null;
+    handle = await open(filePath, 'r');
+    const sameFile = (other: typeof stats) => other.isFile() && other.dev === stats.dev && other.ino === stats.ino
+      && other.size === stats.size && other.mtimeMs === stats.mtimeMs && other.ctimeMs === stats.ctimeMs;
+    if (!sameFile(await handle.stat())) return null;
     const prefixLength = Math.min(stats.size, MAX_SESSION_METADATA_PREFIX_BYTES);
-    const prefix = await readFileRange(filePath, 0, prefixLength);
+    const prefix = await readFileRange(handle, 0, prefixLength);
     const metadata: ScannedSessionMetadata = { header: {}, firstMessage: '', messageCount: 0, searchText: '' };
-    if (!parseMetadataLines(prefix, metadata, includeSearchText, true)) return null;
+    if (!parseMetadataLines(prefix, metadata, includeSearchText, true) || !sessionProjectMatches(metadata.header.cwd, cwd)) return null;
 
     if (stats.size > prefixLength) {
       const tailStart = Math.max(prefixLength, stats.size - MAX_SESSION_METADATA_TAIL_BYTES);
-      const tail = await readFileRange(filePath, tailStart, stats.size - tailStart);
+      const tail = await readFileRange(handle, tailStart, stats.size - tailStart);
       // A tail beginning immediately after a newline already starts on a valid
       // JSONL boundary. Otherwise discard its first partial record.
       const discardFirstPartialLine = tailStart !== prefixLength || !prefix.endsWith('\n');
       parseMetadataLines(tail, metadata, includeSearchText, false, discardFirstPartialLine);
     }
 
+    // One handle binds prefix and tail to the validated header. Do not mix a
+    // replaced file's tail into another project's catalog entry.
+    const current = await lstat(filePath);
+    if (current.isSymbolicLink() || !sameFile(current) || !sameFile(await handle.stat())) return null;
     const id = typeof metadata.header.id === 'string' ? metadata.header.id : '';
     if (!id) return null;
     const createdAt = typeof metadata.header.timestamp === 'string' ? new Date(metadata.header.timestamp) : null;
     const created = createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : stats.birthtime;
-    const cwd = typeof metadata.header.cwd === 'string' ? metadata.header.cwd : '';
     const parentSessionPath = typeof metadata.header.parentSession === 'string' ? metadata.header.parentSession : undefined;
     return {
       path: filePath,
@@ -242,6 +250,8 @@ async function readSessionMetadata(filePath: string, includeSearchText: boolean)
     };
   } catch {
     return null;
+  } finally {
+    await handle?.close();
   }
 }
 
@@ -277,7 +287,7 @@ async function listSessionMetadata(cwd: string, sessionsRoot: string, includeSea
     .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
     .map((entry) => join(directory, entry.name))
     .slice(0, MAX_CACHED_SESSIONS);
-  const sessions = await mapWithConcurrency(paths, MAX_SESSION_DISCOVERY_CONCURRENCY, (filePath) => readSessionMetadata(filePath, includeSearchText));
+  const sessions = await mapWithConcurrency(paths, MAX_SESSION_DISCOVERY_CONCURRENCY, (filePath) => readSessionMetadata(filePath, cwd, includeSearchText));
   return sessions.filter((session): session is SessionInfo => session !== null)
     .sort((left, right) => right.modified.getTime() - left.modified.getTime());
 }
@@ -462,7 +472,7 @@ export class PiSessionRepository {
     const listed = includeSearchText ? this.source.list(cwd, true) : this.source.list(cwd);
     const value = listed.then((sessions) => {
       let remainingSearchCharacters = MAX_SESSION_SEARCH_CACHE_CHARACTERS;
-      return [...sessions]
+      return sessions.filter((session) => sessionProjectMatches(session.cwd, cwd))
         .sort((left, right) => right.modified.getTime() - left.modified.getTime())
         .slice(0, MAX_CACHED_SESSIONS)
         .map((session) => {
@@ -553,7 +563,7 @@ export class PiSessionRepository {
       let header: unknown;
       try { header = JSON.parse(lines.shift() ?? ''); }
       catch { return { state: 'unknown', reason: 'corrupt' }; }
-      if (!isRecord(header) || header.type !== 'session' || header.id !== sessionId || header.cwd !== resolve(cwd)) return { state: 'unknown', reason: 'corrupt' };
+      if (!isRecord(header) || header.type !== 'session' || header.id !== sessionId || !sessionProjectMatches(header.cwd, cwd)) return { state: 'unknown', reason: 'corrupt' };
       const entries = new Map<string, { parentId: string | null; team: AgentTeam | null | undefined; teamId?: string; sequence?: number }>();
       let leaf: string | null = null;
       for (const line of lines) {
@@ -614,7 +624,7 @@ export class PiSessionRepository {
     try {
       const stats = await lstat(summary.path);
       if (!stats.isFile() || stats.isSymbolicLink()) return undefined;
-      const read = await readSessionSnapshot(summary.path, sessionId);
+      const read = await readSessionSnapshot(summary.path, sessionId, cwd);
       if (!read) return undefined;
       const firstMessage = read.firstMessage ?? summary.firstMessage;
       const title = read.name !== undefined ? sessionDisplayTitle(read.name ?? undefined, firstMessage) : summary.title;
@@ -667,7 +677,9 @@ export class PiSessionRepository {
       const headerEnd = headerBuffer.subarray(0, headerRead.bytesRead).indexOf(10);
       if (headerEnd < 0) throw new Error('The saved session header is unavailable.');
       const header = parseJsonRecord(headerBuffer.subarray(0, headerEnd).toString('utf8'));
-      if (header?.type !== 'session' || header.id !== sessionId) throw new Error('The saved session header does not match its identity.');
+      if (header?.type !== 'session' || header.id !== sessionId || !sessionProjectMatches(header.cwd, cwd)) {
+        throw new Error('The saved session header does not match its identity.');
+      }
       const items: SnapshotItem[] = [];
       let mediaOmitted = false;
       let oversizedItems = 0;
@@ -747,13 +759,20 @@ export class PiSessionRepository {
         }
       };
       let consumed = 0;
+      const scanStarted = performance.now();
       let carry = Buffer.alloc(0);
       let oversized: OversizedRecordFields | null = null;
       const chunk = Buffer.alloc(64 * 1024);
-      // Finish any partially consumed line before paging. An offset inside a
-      // JSONL record would silently lose that message on the next page.
+      // Finish a partially consumed line only within the hard scan budget.
+      // Refuse rather than issue a cursor inside a record and silently lose it.
       while (position < stat.size && items.length < 128 && (consumed < 768 * 1024 || carry.length > 0 || oversized !== null)) {
-        const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, stat.size - position), position);
+        if (consumed >= MAX_HISTORY_SCAN_BYTES || performance.now() - scanStarted >= MAX_HISTORY_SCAN_MS) {
+          throw new Error('Saved history exceeds the bounded page scan limit; original JSONL is unchanged.');
+        }
+        const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, stat.size - position, MAX_HISTORY_SCAN_BYTES - consumed), position);
+        if (performance.now() - scanStarted >= MAX_HISTORY_SCAN_MS) {
+          throw new Error('Saved history exceeds the bounded page scan limit; original JSONL is unchanged.');
+        }
         if (!bytesRead) break;
         let start = 0;
         while (start < bytesRead) {
@@ -784,12 +803,16 @@ export class PiSessionRepository {
       if (!pageFull && position === stat.size && (carry.length || oversized)) pushLine(carry, oversized?.finish(), position);
       if (nextOffset === null && position < stat.size) nextOffset = position;
       const after = await handle.stat();
+      if (performance.now() - scanStarted >= MAX_HISTORY_SCAN_MS) {
+        throw new Error('Saved history exceeds the bounded page scan limit; original JSONL is unchanged.');
+      }
       if (`${after.dev}:${after.ino}:${after.size}:${after.mtimeMs}:${after.ctimeMs}` !== stamp) throw new Error('RESYNC_REQUIRED');
       return { items, nextOffset, stamp, oversizedItems, mediaOmitted };
     } finally { await handle.close(); }
   }
 
   async rename(cwd: string, sessionId: string, name: string): Promise<void> {
+    this.invalidate(cwd); // A cached catalog row is not current mutation authority.
     const session = await this.resolve(cwd, sessionId);
     if (!session) throw new Error('The selected session no longer exists.');
     this.source.rename(session.path, name);
@@ -797,7 +820,7 @@ export class PiSessionRepository {
   }
 
   async renameIfUnnamed(cwd: string, sessionId: string, name: string): Promise<boolean> {
-    const session = (await this.source.list(cwd)).find((candidate) => candidate.id === sessionId);
+    const session = (await this.source.list(cwd)).find((candidate) => candidate.id === sessionId && sessionProjectMatches(candidate.cwd, cwd));
     if (!session || session.name?.trim()) return false;
     this.source.rename(session.path, name);
     this.invalidate(cwd);
@@ -805,6 +828,7 @@ export class PiSessionRepository {
   }
 
   async delete(cwd: string, sessionId: string): Promise<void> {
+    this.invalidate(cwd);
     const session = await this.resolve(cwd, sessionId);
     if (!session) throw new Error('The selected session no longer exists.');
     if (!this.source.remove) throw new Error('Deleting sessions is unavailable.');
@@ -820,6 +844,7 @@ export class PiSessionRepository {
    * direct listed session child and validates every JSONL entry before write.
    */
   async deleteBranch(cwd: string, sessionId: string, branchId: string, activeLeafId: string | null): Promise<void> {
+    this.invalidate(cwd);
     const session = await this.resolve(cwd, sessionId);
     if (!session) throw new Error('The selected session no longer exists.');
     const resolvedPath = this.assertSafeSessionPaths([session.path])[0];
@@ -833,7 +858,7 @@ export class PiSessionRepository {
       const before = await readBoundedBranchRewriteSource(resolvedPath);
       const parsed = parseEntriesForBranchRewrite(before);
       const header = parsed.find((entry) => entry.type === 'session');
-      if (!header || header.id !== sessionId) throw new Error('The saved session header is invalid.');
+      if (!header || header.id !== sessionId || !sessionProjectMatches(header.cwd, cwd)) throw new Error('The saved session header is invalid.');
       const entries = parsed.filter(isValidSessionEntry);
       if (entries.length !== parsed.filter(isSessionEntry).length) throw new Error('The saved session contains an invalid entry.');
       const byId = new Map(entries.map((entry) => [entry.id, entry]));
@@ -904,7 +929,7 @@ export class PiSessionRepository {
     if (!this.source.remove) throw new Error('Deleting sessions is unavailable.');
     const sessions = await this.source.list(cwd);
     const paths = this.assertSafeSessionPaths(
-      sessions.filter((session) => !excludedSessionIds.has(session.id)).map((session) => session.path),
+      sessions.filter((session) => sessionProjectMatches(session.cwd, cwd) && !excludedSessionIds.has(session.id)).map((session) => session.path),
     );
     let deleted = 0;
     for (const sessionPath of paths) {

@@ -421,6 +421,34 @@ describe('PiRuntimeService', () => {
     await service.dispose();
   });
 
+  it.each([false, true])('joins an admitted permission write during disposal (save fails: %s)', async (fails) => {
+    const fake = fixture();
+    const permissions = new InMemorySessionPermissionStore();
+    const service = permissionRuntime(fake, permissions);
+    await service.openProject({ path: '/project', name: 'project', trusted: true });
+    const save = permissions.set.bind(permissions);
+    const entered = permissionBarrier(), finish = permissionBarrier();
+    vi.spyOn(permissions, 'set').mockImplementationOnce(async (...args) => {
+      entered.release(); await finish.promise;
+      if (fails) throw new Error('Synthetic permission save failure');
+      await save(...args);
+    });
+    const change = service.setPermissionLevel('full-access');
+    const rejected = expect(change).rejects.toThrow(/superseded/);
+    await entered.promise;
+    let disposed = false;
+    const stopping = service.dispose().then(() => { disposed = true; });
+    await vi.waitFor(() => expect(fake.runtime.dispose).toHaveBeenCalled());
+    expect(disposed).toBe(false);
+    expect(service.hasEvictionBlockingWork()).toBe(true);
+    await expect(service.setPermissionLevel('read-only')).rejects.toThrow(/shutting down/);
+    finish.release();
+    await rejected; await stopping;
+    expect(disposed).toBe(true);
+    expect(service.agentAuthority('session-1')).toBeNull();
+    if (!fails) await expect(permissions.get('/project', 'session-1')).resolves.toBe('full-access');
+  });
+
   it('fences an active root and descendants immediately on reduction even when persistence fails', async () => {
     const fake = fixture();
     const permissions = new InMemorySessionPermissionStore();

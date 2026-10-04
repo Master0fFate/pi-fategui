@@ -13,6 +13,7 @@ import { createMutationIdentity } from '../../../src/shared/protocol/requestIds'
 import { FakePiSdkAdapter } from './fakePi';
 import { assertPrivatePath, privateTestRoot } from './isolatedEnvironment';
 import { startTestNodeServer } from './nodeServerFactory';
+import type { StatePersistenceBackend } from '../../../src/shared/v2FeaturePolicy';
 
 async function waitFor(condition: () => boolean): Promise<void> {
   const deadline = Date.now() + 5_000;
@@ -23,14 +24,14 @@ async function waitFor(condition: () => boolean): Promise<void> {
 }
 
 /** One temporary host, one registered project. Runs in the isolated plain Node smoke child. */
-export async function runHeadlessSmoke(): Promise<void> {
+export async function runHeadlessSmoke(statePersistence: StatePersistenceBackend = 'legacy-json'): Promise<void> {
   const root = await mkdtemp(path.join(privateTestRoot(), 'headless-smoke-'));
   const home = path.join(root, 'home');
   const project = path.join(root, 'project');
   const file = path.join(project, 'sentinel.txt');
   const initial = Buffer.from('before: headless smoke\n');
   const changed = Buffer.from('after: controlled fake edit\n');
-  const config = { profile: { profileId: 'headless-smoke', home }, workspaces: [project], host: '127.0.0.1', port: 47819,
+  const config = { statePersistence, profile: { profileId: 'headless-smoke', home }, workspaces: [project], host: '127.0.0.1', port: 47819,
     flags: { browser: false, terminal: false }, maxPermission: 'edit' };
   let adapter: FakePiSdkAdapter | undefined;
   try {
@@ -42,6 +43,7 @@ export async function runHeadlessSmoke(): Promise<void> {
     // No fake selector exists on that entry; its profile lock must be released first.
     const production = await import(pathToFileURL(path.resolve('dist/server/main.js')).href);
     const actual = await production.startNodeServer(config);
+    assert.equal(actual.core.statePersistence, statePersistence);
     assert.equal(actual.readiness.listener, 'disabled');
     assert.equal(actual.readiness.provider, 'auth-required');
     assert.deepEqual(await actual.stop(), { status: 'settled' });
@@ -51,6 +53,10 @@ export async function runHeadlessSmoke(): Promise<void> {
     const lockRoot = core.paths.lockRoot;
     try {
       assert.equal(server.readiness.listener, 'disabled');
+      assert.equal(core.statePersistence, statePersistence);
+      if (statePersistence === 'native-durable') {
+        assert.ok((await readFile(path.join(core.paths.dataRoot, 'durable', 'v1', 'state.sqlite'))).length > 0);
+      }
       const handle = await core.workspaces!.registerHostPath(project);
       const permission = await handle.runtime.setPermissionLevel('edit');
       assert.equal(permission.permissionLevel, 'edit');
@@ -164,6 +170,13 @@ export async function runHeadlessSmoke(): Promise<void> {
       assert.deepEqual(await server.stop(), { status: 'settled' });
       assert.equal(core.runtime.ownsCheckout(project), false);
       assert.equal((await readdir(lockRoot)).some((name) => name.startsWith('profile-')), false);
+      // Ordinary restart must retain the activated backend without auto-running work.
+      const callsBeforeRestart = adapter.invocations.length;
+      const restarted = await startTestNodeServer({ ...config, statePersistence: undefined }, adapter);
+      try {
+        assert.equal(restarted.core.statePersistence, statePersistence);
+        assert.equal(adapter.invocations.length, callsBeforeRestart);
+      } finally { assert.deepEqual(await restarted.stop(), { status: 'settled' }); }
       // A separate private profile exercises refusal, without recovering the clean case.
       const refusal = await startTestNodeServer({ ...config, profile: { ...config.profile, profileId: 'headless-refusal' } }, adapter, 60);
       const secondHandle = await refusal.core.workspaces!.registerHostPath(project);

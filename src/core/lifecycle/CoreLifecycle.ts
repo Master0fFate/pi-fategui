@@ -39,6 +39,8 @@ export class CoreLifecycle {
   private shutdownResult: Promise<CoreShutdownResult> | null = null;
   private shutdownSettlement: Promise<void> | null = null;
   private stopping = false;
+  private fenceFailed = false;
+  private fenceFailure: unknown;
 
   constructor(private readonly options: CoreLifecycleOptions) {
     this.shutdownBudgetMs = options.shutdownBudgetMs ?? DEFAULT_SHUTDOWN_BUDGET_MS;
@@ -73,22 +75,31 @@ export class CoreLifecycle {
     if (this.stopping) throw new Error('The core is shutting down; new admissions are closed.');
   }
 
+  /** Fence all core admissions now, without starting resource disposal.
+   * A host can settle its terminals/transports before allowing checkout/profile release.
+   * Fence failures remain sticky and are reported by shutdownCore/settled. */
+  beginShutdown(): void {
+    if (this.stopping) return;
+    this.stopping = true;
+    try { this.options.beginShutdown(); }
+    catch (error) { this.fenceFailed = true; this.fenceFailure = error; }
+  }
+
   /**
    * Starts exactly one shutdown. An incomplete result means the caller's grace
    * period ended or cleanup failed; it is deliberately not a clean shutdown.
    */
   shutdownCore(): Promise<CoreShutdownResult> {
     if (this.shutdownResult) return this.shutdownResult;
-    this.stopping = true;
-    let fenceFailed = false;
-    let fenceFailure: unknown;
-    try { this.options.beginShutdown(); } catch (error) { fenceFailed = true; fenceFailure = error; }
+    this.beginShutdown();
+    // A host fence may reenter shutdownCore; reuse the cleanup it already started.
+    if (this.shutdownResult) return this.shutdownResult;
     // A failing fence is not a reason to abandon cancellation. Retain its
     // failure in the final result even if subsequent cleanup succeeds.
     this.shutdownSettlement = Promise.resolve().then(async () => {
       const clients = [...this.clients.keys()].map((client) => this.disposeClient(client));
       const results = await Promise.allSettled([Promise.resolve().then(() => this.options.shutdown()), ...clients]);
-      const failures = [...(fenceFailed ? [fenceFailure] : []),
+      const failures = [...(this.fenceFailed ? [this.fenceFailure] : []),
         ...results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])];
       if (failures.length === 1) throw failures[0];
       if (failures.length > 1) throw new AggregateError(failures, 'Core or client shutdown was incomplete.');

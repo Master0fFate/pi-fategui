@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
 import { expectLoadedFontFace } from './fontAssertions';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 const exec = promisify(execFile);
 async function fixture() {
@@ -99,7 +100,7 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
     await page.getByRole('button', { name: 'Expand task list' }).click();
     await squareSurface(page, '.queued-message');
     await squareSurface(page, '.goalmax-task-strip');
-    await page.screenshot({ path: 'test-results/angelcore-queue-tasks.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-queue-tasks.png'), animations: 'disabled' });
     for (const width of [1680, 1280, 980]) {
       await app.evaluate(({ BrowserWindow }, value) => BrowserWindow.getAllWindows()[0]?.setSize(value, 900), width);
       await singleToolbar(page);
@@ -116,12 +117,12 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
     await squareSurface(page, '.model-popover');
     await page.getByRole('combobox', { name: 'Model', exact: true }).click();
     await squareSurface(page, '.model-select-content');
-    await page.screenshot({ path: 'test-results/angelcore-model-picker.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-model-picker.png'), animations: 'disabled' });
     await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
     await page.locator('.workspace-command-palette').hover();
     await expect(page.getByRole('tooltip')).toContainText('Open command palette');
     await squareSurface(page, '[role="tooltip"]');
-    await page.screenshot({ path: 'test-results/angelcore-tooltip.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-tooltip.png'), animations: 'disabled' });
     await page.mouse.move(400, 500);
 
     await page.getByRole('button', { name: 'Open music player' }).click();
@@ -137,7 +138,7 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
     expect(playlistBox!.x + playlistBox!.width).toBeLessThanOrEqual(playerBox!.x);
     expect(Math.abs(playlistBox!.y - playerBox!.y)).toBeLessThanOrEqual(1);
     expect(Math.abs(playlistBox!.y + playlistBox!.height - (playerBox!.y + playerBox!.height))).toBeLessThanOrEqual(1);
-    await page.screenshot({ path: 'test-results/angelcore-playlist.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-playlist.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'Close music player' }).click();
 
     await page.evaluate(async () => {
@@ -151,37 +152,37 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
     await squareSurface(page, '.goalmax-flight-deck');
     await page.getByRole('tab', { name: /Criteria/ }).click();
     await expect(page.locator('.goalmax-criterion-row')).toHaveCount(2);
-    await page.screenshot({ path: 'test-results/angelcore-goal.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-goal.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'Edit goal', exact: true }).click();
     await squareSurface(page, '.goalmax-editor-dialog');
     await expect.poll(() => page.locator('.goalmax-editor-dialog').evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
-    await page.screenshot({ path: 'test-results/angelcore-goal-editor.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-goal-editor.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'Close goal editor', exact: true }).click();
     await page.getByRole('tab', { name: /^Subagent sessions/ }).click();
     await squareSurface(page, '.subagent-sessions');
     await expect(page.locator('.subagent-session-row').first()).toBeVisible();
-    await page.screenshot({ path: 'test-results/angelcore-agents.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-agents.png'), animations: 'disabled' });
     await expect.poll(() => page.getByRole('button', { name: /^Reviewer Agent Team node/ }).evaluate((button) => {
       const controls = button.parentElement!.querySelector('.subagent-controls')!;
       return button.getBoundingClientRect().bottom <= controls.getBoundingClientRect().top;
     })).toBe(true);
     await page.getByRole('button', { name: /^Reviewer Agent Team node/ }).click();
     await squareSurface(page, '.subagent-chat-preview');
-    await page.screenshot({ path: 'test-results/angelcore-agent-preview.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-agent-preview.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'Close sub-agent chat preview', exact: true }).click();
     await page.getByRole('tablist', { name: 'Run views' }).getByRole('tab', { name: 'Tools', exact: true }).click();
     await squareSurface(page, '.tool-card');
     await page.getByRole('tablist', { name: 'Run views' }).getByRole('tab', { name: 'Activity', exact: true }).click();
     await squareSurface(page, '.activity-panel');
-    await page.screenshot({ path: 'test-results/angelcore-activity.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-activity.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'System', exact: true }).click();
     await page.getByRole('tab', { name: 'Context', exact: true }).click();
     await squareSurface(page, '.context-dashboard');
-    await page.screenshot({ path: 'test-results/angelcore-context.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-context.png'), animations: 'disabled' });
     await page.getByRole('tablist', { name: 'System views' }).getByRole('tab', { name: 'Resources', exact: true }).click();
     await squareSurface(page, '.resources-panel');
     await expect(page.locator('.resource-list article').first()).toBeVisible();
-    await page.screenshot({ path: 'test-results/angelcore-resources.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-resources.png'), animations: 'disabled' });
 
     const dialog = await settings(page);
     await expect(dialog.getByRole('combobox', { name: 'Interface font' })).toContainText('JetBrains Mono');
@@ -193,7 +194,7 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
       await app.evaluate(({ BrowserWindow }, value) => BrowserWindow.getAllWindows()[0]?.setSize(value, 900), width);
       await singleToolbar(page);
     }
-    await page.screenshot({ path: 'test-results/angelcore-compact-memory.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-compact-memory.png'), animations: 'disabled' });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(1440, 900));
     for (const view of [
       { destination: 'Run', tab: 'Goal', selector: '.goalmax-flight-deck', shot: 'goal' },
@@ -204,12 +205,12 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
       await page.getByRole('button', { name: new RegExp(`^${view.destination}`) }).click();
       await page.getByRole('tablist', { name: `${view.destination} views` }).getByRole('tab', { name: new RegExp(`^${view.tab}`) }).click();
       await squareSurface(page, view.selector);
-      await page.screenshot({ path: `test-results/angelcore-${view.shot}-compact.png`, animations: 'disabled' });
+      await page.screenshot({ path: await evidenceOutputPath(`angelcore-${view.shot}-compact.png`), animations: 'disabled' });
     }
     await page.evaluate(() => window.piDesktop.clearTasks());
     await page.getByRole('button', { name: 'Expand goal criteria' }).click();
     await squareSurface(page, '.goalmax-task-strip');
-    await page.screenshot({ path: 'test-results/angelcore-goal-tasks-compact.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-goal-tasks-compact.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'Open music player' }).click();
     await page.getByRole('button', { name: 'Show playlist' }).click();
     await squareSurface(page, '.music-player-panel');
@@ -222,15 +223,15 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
     expect(compactPlaylistBox!.x + compactPlaylistBox!.width).toBeLessThanOrEqual(compactPlayerBox!.x);
     expect(Math.abs(compactPlaylistBox!.y - compactPlayerBox!.y)).toBeLessThanOrEqual(1);
     expect(Math.abs(compactPlaylistBox!.y + compactPlaylistBox!.height - (compactPlayerBox!.y + compactPlayerBox!.height))).toBeLessThanOrEqual(1);
-    await page.screenshot({ path: 'test-results/angelcore-playlist-compact.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-playlist-compact.png'), animations: 'disabled' });
     await page.getByRole('button', { name: 'Close music player' }).click();
     await page.getByRole('button', { name: /^Memory Learning/ }).click();
     await squareSurface(page, '.learning-dialog');
-    await page.screenshot({ path: 'test-results/angelcore-learning.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-learning.png'), animations: 'disabled' });
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Open command palette' }).click();
     await squareSurface(page, '.command-palette');
-    await page.screenshot({ path: 'test-results/angelcore-commands.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-commands.png'), animations: 'disabled' });
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Open browser', exact: true }).click();
     await page.getByRole('textbox', { name: 'Browser address' }).fill(`${data.baseUrl}/page.html`);
@@ -260,13 +261,13 @@ test('Angelcore styles populated surfaces and never wraps the composer toolbar w
       return content ? content.executeJavaScript('({background:getComputedStyle(document.body).backgroundColor,font:getComputedStyle(document.body).fontFamily})') : null;
     })).toEqual({ background: 'rgb(245, 232, 200)', font: 'Georgia, serif' });
     await expect.poll(() => page.evaluate(async () => (await window.piDesktop.getBrowserState()).visible)).toBe(true);
-    await page.screenshot({ path: 'test-results/angelcore-browser.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-browser.png'), animations: 'disabled' });
     await browser.getByRole('button', { name: 'Toggle device toolbar' }).click();
     await squareSurface(page, '.browser-device-toolbar');
-    await page.screenshot({ path: 'test-results/angelcore-browser-device.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-browser-device.png'), animations: 'disabled' });
     const chrome = await browser.boundingBox();
     const device = await page.locator('.browser-device-toolbar').boundingBox();
-    await page.screenshot({ path: 'test-results/angelcore-browser-chrome.png', clip: { x: chrome!.x, y: chrome!.y, width: chrome!.width, height: device!.y + device!.height - chrome!.y }, animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('angelcore-browser-chrome.png'), clip: { x: chrome!.x, y: chrome!.y, width: chrome!.width, height: device!.y + device!.height - chrome!.y }, animations: 'disabled' });
     await browser.getByRole('button', { name: 'Close browser', exact: true }).click();
   } catch (error) {
     console.log(browserLogs.join('').slice(-12000));
@@ -321,7 +322,7 @@ test('v2 pack fonts, embedded image, density styles and user font overrides surv
     await page.getByRole('option', { name: /^Poppins/u }).click();
     await dialog.getByRole('button', { name: 'Save changes' }).click();
     await expect(dialog.getByRole('status')).toContainText('Settings saved');
-    await dialog.screenshot({ path: 'test-results/skin-fonts-v2.png', animations: 'disabled' });
+    await dialog.screenshot({ path: await evidenceOutputPath('skin-fonts-v2.png'), animations: 'disabled' });
     await dialog.getByRole('button', { name: 'Close settings' }).click();
     await page.getByRole('button', { name: 'Open music player' }).click();
     await expect(page.locator('.music-play')).toHaveCSS('border-radius', '1px');
@@ -347,7 +348,7 @@ test('v2 pack fonts, embedded image, density styles and user font overrides surv
     await restored.locator('.goalmax-task-strip-copy strong').hover();
     await expect(restored.locator('.skin-native-tooltip')).toContainText('Native title tooltip detail');
     await expect(restored.locator('.skin-native-tooltip')).toHaveCSS('border-radius', '4px');
-    await restored.screenshot({ path: 'test-results/angelcore-native-tooltip.png', animations: 'disabled' });
+    await restored.screenshot({ path: await evidenceOutputPath('angelcore-native-tooltip.png'), animations: 'disabled' });
     await restored.mouse.move(400, 400);
     await restored.getByRole('button', { name: 'Open browser', exact: true }).click();
     await expect(restored.locator('.browser-address')).toHaveCSS('border-radius', '2px');

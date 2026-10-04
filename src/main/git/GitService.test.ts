@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { promises as fs, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -510,6 +510,29 @@ describe('GitService', { timeout: 30_000 }, () => {
     await run('git', ['remote', 'add', 'origin', root], { cwd: root });
     await expect(git.runOperation('push')).rejects.toThrow();
     await expect(fs.stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('never answers a status request with a read that started before it; waiting callers share one following read', async () => {
+    const root = await repository();
+    await fs.writeFile(path.join(root, 'tracked.txt'), 'base\n');
+    await run('git', ['add', '.'], { cwd: root });
+    await run('git', ['commit', '-m', 'base'], { cwd: root });
+    const files = new FilesystemService();
+    await files.setRoot(root);
+    const git = new GitService(files);
+
+    const first = git.status();
+    // A change after the first read was requested (an agent edit, for example).
+    // Synchronous, so the first read is certainly still in flight below.
+    writeFileSync(path.join(root, 'tracked.txt'), 'changed after the first read started\n');
+    const second = git.status();
+    const third = git.status();
+    expect(second).not.toBe(first);
+    expect(third).toBe(second);
+    expect((await second).changes.map((change) => change.path)).toContain('tracked.txt');
+    await first;
+    // With nothing in flight, a new request starts its own read again.
+    expect((await git.status()).changes.map((change) => change.path)).toContain('tracked.txt');
   });
 
   it('keeps status and untracked diff reads pinned to the operation root across project switches', async () => {

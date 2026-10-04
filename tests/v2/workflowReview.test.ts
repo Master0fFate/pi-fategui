@@ -15,6 +15,9 @@ import { migrationHash } from '../../src/core/storage/MigrationFiles';
 import { runCli } from '../../src/cli/main';
 import { parseCliArgs } from '../../src/cli/args';
 import { privateTestRoot } from './helpers/isolatedEnvironment';
+import { assertPrivateWindowsAcl } from '../../src/core/storage/WindowsPrivateAcl';
+import { linkFileOrJunction } from './helpers/platformLinks';
+import { setOtherLocalUsersRead } from './helpers/windowsAcl';
 
 const Identity = defineDoc({ kind: 'fate.workflow.identity', scope: 'session', version: 1, initial: () => ({ workflowId: '', parentSessionId: '', cwd: '' }) });
 const Fence = defineDoc<{ state: 'idle' | 'active' | 'UNKNOWN' }>({ kind: 'fate.execution.fence', scope: 'session', version: 1, initial: () => ({ state: 'idle' }) });
@@ -166,6 +169,24 @@ describe('explicit native UNKNOWN workflow review', () => {
     const changed = new NativeWorkflowReviewService({ paths: f.paths, checkpoint: async (phase) => { if (phase === 'before-acknowledgment') await fs.writeFile(`${old.file}-wal`, 'new sidecar', { mode: 0o600 }); } });
     await expect(changed.acknowledge(plan)).rejects.toThrow(); await expect(fs.stat(f.recordRoot)).rejects.toMatchObject({ code: 'ENOENT' });
   });
+  it.skipIf(process.platform !== 'win32')('reports one refused Windows ACL as retained uncertain evidence, not as a shared-helper failure', async () => {
+    const f = await fixture(); const old = await f.create(); const before = await f.fingerprints();
+    // A real other-user allow rule on one workflow database. The first refused
+    // query ends the shared ACL helper; diagnosis must still name this file.
+    await setOtherLocalUsersRead(old.file, true);
+    try {
+      const inspected = await f.service.inspect();
+      expect(inspected.uncertainProfile).toBe(true);
+      expect(inspected.eligibleForAcknowledgment).toBe(false);
+      expect(inspected.blocked.map((block) => block.filename)).toEqual([old.file]);
+      expect(inspected.blocked[0]?.reason).toContain('ACL cannot be verified');
+      await expect(fs.stat(f.recordRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await setOtherLocalUsersRead(old.file, false); }
+    expect(await f.fingerprints()).toEqual(before);
+    expect(await f.inspect()).toMatchObject({ uncertainProfile: false, eligibleForAcknowledgment: true });
+    // The repeat deliberately pays one helper process per query (the slow,
+    // independent path), so this case owns a larger explicit budget.
+  }, 180_000);
   it('exposes inspect/prepare/acknowledge through the actual CLI with private exact plans and no SDK initialization', async () => {
     const f = await fixture(); await f.create(); const before = await f.fingerprints();
     const model = vi.spyOn(ModelRuntime, 'create').mockRejectedValue(new Error('No provider initialization'));
@@ -175,7 +196,9 @@ describe('explicit native UNKNOWN workflow review', () => {
     const planFile = path.join(f.plans, 'review.json');
     await runCli(['workflow-review', 'prepare', '--desktop', '--out-file', planFile]);
     const prepared = JSON.parse(output.pop()!); expect(prepared.planDigest).toBe(migrationHash(await fs.readFile(planFile)));
-    expect((await fs.stat(planFile)).mode & 0o077).toBe(0);
+    // Windows mode bits say nothing about the NTFS DACL; check the live ACL there.
+    if (process.platform === 'win32') await expect(assertPrivateWindowsAcl(planFile)).resolves.toBeUndefined();
+    else expect((await fs.stat(planFile)).mode & 0o077).toBe(0);
     await expect(runCli(['workflow-review', 'acknowledge', '--desktop', '--plan-file', planFile, '--plan-digest', '0'.repeat(64), '--acknowledge-unknown'])).rejects.toThrow();
     await runCli(['workflow-review', 'acknowledge', '--desktop', '--plan-file', planFile, '--plan-digest', prepared.planDigest, '--acknowledge-unknown']);
     expect(JSON.parse(output.pop()!)).toMatchObject({ outcome: 'UNKNOWN', originalGraphs: 'permanently-inadmissible', schedulesReenabled: false, workResumed: false });
@@ -190,7 +213,7 @@ describe('explicit native UNKNOWN workflow review', () => {
     await expect(runCli(['workflow-review', 'prepare', '--desktop', '--out-file', file])).rejects.toThrow(); expect(await fs.readFile(file)).toEqual(original);
     const target = path.join(f.cwd, 'relocated-plan.json'); await fs.rename(file, target);
     await expect(runCli(['workflow-review', 'acknowledge', '--desktop', '--plan-file', target, '--plan-digest', summary.planDigest, '--acknowledge-unknown'])).rejects.toThrow();
-    await fs.rename(target, file); const link = path.join(f.plans, 'link.json'); await fs.symlink(file, link);
+    await fs.rename(target, file); const link = path.join(f.plans, 'link.json'); await linkFileOrJunction(file, f.plans, link);
     await expect(runCli(['workflow-review', 'acknowledge', '--desktop', '--plan-file', link, '--plan-digest', summary.planDigest, '--acknowledge-unknown'])).rejects.toThrow();
     expect(() => parseCliArgs(['workflow-review', 'acknowledge', '--desktop', '--plan-file', file, '--plan-digest', summary.planDigest], 'server')).toThrow();
     expect(() => parseCliArgs(['workflow-review', '--desktop', '--profile', 'another'], 'server')).toThrow();

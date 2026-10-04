@@ -378,6 +378,11 @@ export class Dispatcher {
         return finish(result);
       };
       switch (request.method) {
+        case 'session.history': {
+          if (context.kind !== 'workspace-read') throw new ProtocolFault('INTERNAL_ERROR');
+          const handler = this.handlers['session.history']; if (!handler) throw new ProtocolFault('UNSUPPORTED_CAPABILITY');
+          return hostRead('session.history', () => handler(request.input, context));
+        }
         case 'session.list': {
           if (context.kind !== 'workspace-read') throw new ProtocolFault('INTERNAL_ERROR');
           const handler = this.handlers['session.list']; if (!handler) throw new ProtocolFault('UNSUPPORTED_CAPABILITY');

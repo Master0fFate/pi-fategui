@@ -3,6 +3,7 @@ import type { NetworkWorkspaceApi } from '../../../client/NetworkWorkspaceApi';
 import { useRuntimeStore } from '../../stores/runtimeStore';
 import { ConnectionStatus } from './ConnectionStatus';
 import { WorkspaceControlPanel } from './WorkspaceControlPanel';
+import { NetworkHistory } from './NetworkHistory';
 
 /** One host-first status surface. The transport still owns every authority check. */
 export function NetworkConnectionControls({ api }: { api: NetworkWorkspaceApi }) {
@@ -63,6 +64,7 @@ export function NetworkConnectionControls({ api }: { api: NetworkWorkspaceApi })
       onTakeover={() => { if (!selected) throw new Error('No host workspace'); return api.takeOverControl(selected); }}
       onRequestPermission={(input) => { if (!selected) throw new Error('No host workspace'); return api.requestPermissionApproval(selected, input); }}
       onRespondPermission={(input) => { if (!selected) throw new Error('No host workspace'); return api.respondPermissionApproval(selected, input); }} />}
+    {open && current && selected && sessionId && <NetworkHistory key={scopeKey} api={api} workspace={selected} sessionId={sessionId} />}
     {error && <p role="alert">{error}</p>}
   </>;
 }

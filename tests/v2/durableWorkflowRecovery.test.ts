@@ -9,6 +9,7 @@ import { createSession, defineDoc, defineTask } from '@earendil-works/pi-durable
 import { OwnerLock, canonicalFuturePath } from '../../src/core/ownership/OwnerLock';
 import { openOwnedDurableStorage } from '../../src/core/durable/OwnedDurableStorage';
 import { inspectOwnedNativeWorkflowRecovery } from '../../src/core/recovery/NativeWorkflowRecovery';
+import { linkFileOrJunction } from './helpers/platformLinks';
 
 const Identity = defineDoc({ kind: 'fate.workflow.identity', scope: 'session', version: 1, initial: () => ({ workflowId: '', parentSessionId: '', cwd: '' }) });
 const Fence = defineDoc<{ state: 'idle' | 'active' | 'UNKNOWN' }>({ kind: 'fate.execution.fence', scope: 'session', version: 1, initial: () => ({ state: 'idle' }), checkpointWhen: () => false });
@@ -16,6 +17,21 @@ const NeverRun = defineTask<{ id: string }, { phase: 'pending' }, null>({ name: 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+// Windows byte-range locks are mandatory: while a connection is open, another
+// handle cannot read the SQLite WAL-index lock slots (-shm bytes 120..127).
+// Those slots never carry data, so Windows hashes every other byte of that
+// sidecar. POSIX locks are advisory and still hash the whole file.
+async function retainedBytes(file: string): Promise<Buffer> {
+  if (process.platform !== 'win32' || !file.endsWith('-shm')) return fs.readFile(file);
+  const handle = await fs.open(file, 'r');
+  try {
+    const size = (await handle.stat()).size; const bytes = Buffer.alloc(size);
+    for (const [start, end] of [[0, Math.min(size, 120)], [128, size]] as const) {
+      for (let at = start; at < end;) { const { bytesRead } = await handle.read(bytes, at, end - at, at); if (!bytesRead) throw new Error('Sidecar changed while reading.'); at += bytesRead; }
+    }
+    return bytes;
+  } finally { await handle.close(); }
+}
 
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-workflow-recovery-')); cleanups.push(() => fs.rm(root, { recursive: true, force: true }));
@@ -58,7 +74,7 @@ async function fixture() {
   const fingerprints = async () => {
     const directory = path.join(dataRoot, 'durable', 'v1');
     const files = (await fs.readdir(directory)).sort();
-    return Object.fromEntries(await Promise.all(files.map(async (name) => [name, hash(await fs.readFile(path.join(directory, name)))])));
+    return Object.fromEntries(await Promise.all(files.map(async (name) => [name, hash(await retainedBytes(path.join(directory, name)))])));
   };
   return { root, dataRoot, cwd, profileOwner, create, inspect, fingerprints };
 }
@@ -143,7 +159,7 @@ describe('read-only owned workflow startup recovery', () => {
 
   it('refuses links, malformed names, oversized files and denied ownership without executing anything', async () => {
     const f = await fixture(); const saved = await f.create(); const directory = path.dirname(saved.filename);
-    const link = path.join(directory, `workflow-${'a'.repeat(64)}.sqlite`); await fs.symlink(saved.filename, link);
+    const link = path.join(directory, `workflow-${'a'.repeat(64)}.sqlite`); await linkFileOrJunction(saved.filename, f.cwd, link);
     expect((await f.inspect()).uncertainProfile).toBe(true); await fs.unlink(link);
     await fs.writeFile(path.join(directory, 'workflow-ambiguous.sqlite'), 'not a database', { mode: 0o600 });
     expect((await f.inspect()).blocked.some((row) => row.reason.includes('ambiguous'))).toBe(true); await fs.unlink(path.join(directory, 'workflow-ambiguous.sqlite'));

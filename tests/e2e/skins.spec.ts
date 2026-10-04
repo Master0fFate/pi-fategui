@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 const exec = promisify(execFile);
 
@@ -214,7 +215,7 @@ test('Skins previews independently, preserves live work, and restores after rest
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.reduceMotion)).toBe('false');
     await settings.getByRole('tab', { name: /Skins/u }).click();
 
-    await settings.screenshot({ path: 'test-results/dreamcore-skin-settings-compact.png', animations: 'disabled' });
+    await settings.screenshot({ path: await evidenceOutputPath('dreamcore-skin-settings-compact.png'), animations: 'disabled' });
     await settings.getByRole('button', { name: 'Save changes' }).click();
     await expect(settings.getByRole('status')).toContainText('Settings saved');
     await settings.getByRole('button', { name: 'Close settings' }).click();
@@ -224,11 +225,12 @@ test('Skins previews independently, preserves live work, and restores after rest
     await page.getByRole('button', { name: 'Open terminal' }).click();
     const terminal = page.getByRole('region', { name: 'Manual integrated terminal' });
     await expect(terminal.getByText('Terminal', { exact: true })).toBeVisible();
-    await expect(terminal).toContainText('Separate from Pi tools');
+    // Copy-sync with the reviewed manual-shell warning (shared MANUAL_TERMINAL_WARNING).
+    await expect(terminal).toContainText('unsandboxed shell on the execution host');
     await terminal.getByRole('button', { name: 'Close terminal' }).click();
     await page.getByLabel('Message Pi').focus();
     await expectDreamcoreGeometry(page);
-    await page.screenshot({ path: 'test-results/dreamcore-skin-workspace-compact.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('dreamcore-skin-workspace-compact.png'), animations: 'disabled' });
 
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await settings.getByRole('tab', { name: /Compaction/u }).click();
@@ -236,7 +238,7 @@ test('Skins previews independently, preserves live work, and restores after rest
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.compactMode)).toBe('false');
     await settings.getByRole('tab', { name: /Skins/u }).click();
     await expect(palette).toContainText('Monochrome');
-    await settings.screenshot({ path: 'test-results/dreamcore-skin-settings.png', animations: 'disabled' });
+    await settings.screenshot({ path: await evidenceOutputPath('dreamcore-skin-settings.png'), animations: 'disabled' });
     await settings.getByRole('button', { name: 'Save changes' }).click();
     await settings.getByRole('button', { name: 'Close settings' }).click();
     await page.getByLabel('Message Pi').focus();
@@ -260,7 +262,7 @@ test('Skins previews independently, preserves live work, and restores after rest
     await page.getByRole('button', { name: 'Open inspector', exact: true }).click();
     await page.getByLabel('Message Pi').focus();
     await expectDreamcoreGeometry(page);
-    await page.screenshot({ path: 'test-results/dreamcore-skin-workspace.png', animations: 'disabled' });
+    await page.screenshot({ path: await evidenceOutputPath('dreamcore-skin-workspace.png'), animations: 'disabled' });
     await expect.poll(() => page.evaluate(() => window.piDesktop.getSettings())).toMatchObject({
       skinId: 'dreamcore',
       themeId: 'monochrome',

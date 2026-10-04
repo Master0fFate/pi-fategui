@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 const execFileAsync = promisify(execFile);
 
@@ -61,8 +62,7 @@ test('M3 noncompact Settings close owns its visible pointer target and supports 
     expect(evidence.button.appRegion).toBe('no-drag');
     expect(evidence.button.pointerEvents).toBe('auto');
     await expect(page.locator('.dialog-overlay')).toHaveCSS('-webkit-app-region', 'no-drag');
-    await mkdir('screenshots/m3-expressive', { recursive: true });
-    await page.screenshot({ path: 'screenshots/m3-expressive/settings-noncompact-close.png' });
+    await page.screenshot({ path: await evidenceOutputPath('m3-expressive', 'settings-noncompact-close.png') });
     expect(evidence.visualContained).toBe(true);
     expect(evidence.ownsVisualCenter).toBe(true);
     if (process.platform === 'win32') {

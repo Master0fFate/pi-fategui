@@ -8,6 +8,8 @@ if (!process.env.FATE_V2_TEST_ROOT || !process.env.FATE_WEB_CHROMIUM_EXECUTABLE 
 export default defineConfig({
   testDir: 'tests/web', testMatch: '*.spec.ts', workers: 1, fullyParallel: false,
   retries: 0, timeout: 90_000, expect: { timeout: 12_000 },
+  // Run the same actual browser/transport scenarios on both storage backends.
+  projects: [{ name: 'legacy-json' }, { name: 'native-durable' }],
   outputDir: path.resolve('test-results/web'), reporter: [['list']],
   use: { browserName: 'chromium', headless: true, viewport: { width: 1440, height: 1000 },
     // fixture.ts owns tracing/screenshots for BOTH manually-created contexts.

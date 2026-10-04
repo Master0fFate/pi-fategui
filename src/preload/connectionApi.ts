@@ -4,7 +4,7 @@ import { methodCatalog, publicWorkspaceSchema } from '../shared/protocol/methods
 import { connectionProfilesSchema, connectionSelectSchema, connectionGenerationSchema, desktopConnectionStateSchema,
   remoteWorkspaceInputSchema, remoteReadInputSchema, remoteMonitorInputSchema, remoteFileListInputSchema,
   remotePreviewInputSchema, remotePromptInputSchema, remoteSessionInputSchema, remoteStatusInputSchema,
-  remoteSnapshotSchema, remoteMonitorSchema, remoteMutationSchema, remoteSessionsInputSchema, remoteGitDiffInputSchema,
+  remoteSnapshotSchema, remoteMonitorSchema, remoteMutationSchema, remoteSessionsInputSchema, remoteHistoryInputSchema, remoteGitDiffInputSchema,
   remoteGitCommitInputSchema, remoteMonitorDetailInputSchema, remoteUploadInputSchema, remoteCancelTextInputSchema,
   remoteOperationInputSchema, remoteIssuePermissionInputSchema, remoteConfirmPermissionInputSchema,
   type DesktopConnectionApi } from '../shared/contracts/connections';
@@ -30,6 +30,7 @@ export const connectionApi = {
   remoteReadTasks: (scope) => invoke(ipcChannels.remoteTasks, remoteReadInputSchema, methodCatalog['task.list'].wireResultSchema, { scope }),
   remoteReadGitStatus: (scope) => invoke(ipcChannels.remoteGitStatus, remoteReadInputSchema, methodCatalog['git.status'].wireResultSchema, { scope }),
   remoteReadGitHistory: (scope) => invoke(ipcChannels.remoteGitHistory, remoteReadInputSchema, methodCatalog['git.history'].wireResultSchema, { scope }),
+  remoteReadHistory: (scope, pageId) => invoke(ipcChannels.remoteHistory, remoteHistoryInputSchema, methodCatalog['session.history'].wireResultSchema, { scope, input: pageId === undefined ? {} : { pageId } }),
   remoteReadSessions: (scope, query) => invoke(ipcChannels.remoteSessions, remoteSessionsInputSchema, methodCatalog['session.list'].wireResultSchema, { scope, input: { query } }),
   remoteReadModels: (scope) => invoke(ipcChannels.remoteModels, remoteReadInputSchema, methodCatalog['runtime.models'].wireResultSchema, { scope }),
   remoteReadQueue: (scope) => invoke(ipcChannels.remoteQueue, remoteReadInputSchema, methodCatalog['runtime.queueRead'].wireResultSchema, { scope }),

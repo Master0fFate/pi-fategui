@@ -87,7 +87,10 @@ describe('actual core native workflow safety boundaries', () => {
       const createChild = vi.fn(async () => { throw new Error('Child creation must not be reached'); });
       (f.service.agentTeams as unknown as { childSessionFactory: SubagentChildSessionFactory }).childSessionFactory = createChild;
       await f.service.agentWorkflows.createTool(f.service.modelRuntime).execute('no-effect', { action: 'start', nodes: [{ id: 'invalid', task: 'Validation refusal', permission: 'read-only', tools: ['write'], mailboxTtlSeconds: 0 }] }, undefined, undefined, { cwd: f.project, sessionManager: { getSessionId: () => f.session.sessionId } } as never);
-      await expect.poll(() => f.service.agentWorkflows.hasAnyActive()).toBe(false);
+      // Admission and the first native open verify live Windows ACLs through real
+      // helper processes (measured 8.7 s here). Allow that finite startup, not the
+      // 1 s poll default. Every refusal assertion below is unchanged.
+      await expect.poll(() => f.service.agentWorkflows.hasAnyActive(), { timeout: 30_000 }).toBe(false);
       expect(createChild).not.toHaveBeenCalled();
       expect(f.service.agentWorkflows.getWorkflowViews(f.session.sessionId)[0]?.status).toBe('error');
       expect(f.service.hostStopping).toBe(false);

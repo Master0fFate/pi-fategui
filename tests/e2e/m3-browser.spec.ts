@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { appSettingsSchema } from '../../src/shared/contracts/ipc';
 import { builtInThemes, themeDefinitionSchema } from '../../src/shared/themes';
+import { evidenceOutputPath } from './evidenceOutputPath';
 
 const title = 'A deliberately long website title that must truncate inside a Material browser tab';
 
@@ -132,14 +133,14 @@ test('M3 browser capsules preserve real tabs, navigation and website styling in 
         await page.mouse.move(300, 100);
         const name = `browser-m3-${palette === 'Daylight' ? 'light' : palette === copper.name ? 'custom' : 'dark'}${compact ? '-compact' : ''}`;
         const capture = await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0]!.capturePage()).toPNG().toString('base64'));
-        await writeFile(`screenshots/m3-expressive/${name}.png`, Buffer.from(capture, 'base64'));
+        await writeFile(await evidenceOutputPath('m3-expressive', `${name}.png`), Buffer.from(capture, 'base64'));
         const strip = await page.locator('.browser-tab-strip').boundingBox();
         const toolbar = await page.locator('.browser-toolbar').boundingBox();
-        await page.screenshot({ path: `screenshots/m3-expressive/${name}-chrome.png`, animations: 'disabled', clip: { x: strip!.x, y: strip!.y, width: strip!.width, height: toolbar!.y + toolbar!.height - strip!.y } });
+        await page.screenshot({ path: await evidenceOutputPath('m3-expressive', `${name}-chrome.png`), animations: 'disabled', clip: { x: strip!.x, y: strip!.y, width: strip!.width, height: toolbar!.y + toolbar!.height - strip!.y } });
       }
     }
     const websiteCapture = await app.evaluate(async ({ webContents }, expectedTitle) => (await webContents.getAllWebContents().find((content) => content.getTitle() === expectedTitle)!.capturePage()).toPNG().toString('base64'), title);
-    await writeFile('screenshots/m3-expressive/browser-website-unchanged.png', Buffer.from(websiteCapture, 'base64'));
+    await writeFile(await evidenceOutputPath('m3-expressive', 'browser-website-unchanged.png'), Buffer.from(websiteCapture, 'base64'));
     const viewport = await page.locator('.browser-viewport-reservation').boundingBox();
     await expect.poll(() => app.evaluate(({ BrowserWindow, WebContentsView }, expectedTitle) => {
       const view = BrowserWindow.getAllWindows()[0]!.contentView.children.find((child) => child instanceof WebContentsView && child.webContents.getTitle() === expectedTitle);

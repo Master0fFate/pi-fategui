@@ -1,10 +1,9 @@
-import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { lstat, readFile } from 'node:fs/promises';
+import { lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createIsolatedEnvironment } from './run-v2-tests.mjs';
 import { runOwnedVerificationProcess } from './owned-verification-process.mjs';
+import { sourceIdentity } from './source-identity.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scopes = ['core', 'browser', 'desktop', 'full'];
@@ -32,10 +31,12 @@ export function verificationPlan(options, platform = process.platform) {
   const gates = [
     { id: 'typecheck', args: [path.join(root, 'node_modules/typescript/bin/tsc'), '--noEmit'] },
     script('boundaries', 'check-v2-boundaries.mjs'),
-    script('v2', 'run-v2-tests.mjs'),
-    script('contract', 'run-v2-tests.mjs', ['tests/v2/ipcContractParity.test.ts']),
+    // Keep the complete selection, but stop on the first failure instead of
+    // spending the whole run repeating a shared fixture/platform failure.
+    script('v2', 'run-v2-tests.mjs', ['--bail', '1']),
+    script('contract', 'run-v2-tests.mjs', ['tests/v2/ipcContractParity.test.ts', 'tests/v2/commonAdapterParity.test.ts']),
     { id: 'unit', args: ['--import', pathToFileURL(path.join(root, 'tests/v2/helpers/nodeGuard.mjs')).href,
-      path.join(root, 'node_modules/vitest/vitest.mjs'), 'run', '--configLoader', 'runner', '--config', path.join(root, 'vitest.verify.config.ts')] },
+      path.join(root, 'node_modules/vitest/vitest.mjs'), 'run', '--bail', '1', '--configLoader', 'runner', '--config', path.join(root, 'vitest.verify.config.ts')] },
     ...['main', 'preload', 'renderer', 'server', 'web', 'cli'].map((target) => ({ id: `build-${target}`,
       args: [path.join(root, 'node_modules/vite/bin/vite.js'), 'build', '--config', path.join(root, `vite.${target}.config.ts`)] })),
     script('server-smoke', 'smoke-server.mjs'),
@@ -71,31 +72,6 @@ export function verificationSummary(plan, results, unchanged, interrupted = null
     results, pending: plan.pending, interrupted, exitCode: interrupted === 'SIGINT' ? 130 : interrupted === 'SIGTERM' ? 143 : !automatedPassed ? 1 : plan.scope === 'full' ? 2 : 0 };
 }
 
-async function sourceIdentity() {
-  const isolated = await createIsolatedEnvironment();
-  let head, listed;
-  try {
-    const git = (args) => execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', ...args],
-      { cwd: root, env: { ...isolated.env, GIT_OPTIONAL_LOCKS: '0' }, encoding: 'utf8' });
-    head = git(['rev-parse', 'HEAD']).trim();
-    listed = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']).split('\0');
-  } finally { await isolated.cleanup(); }
-  // Include every Git source input, including HTML, build launchers, CSS tooling,
-  // notices and newly added modules. Exclude only private or generated containers
-  // which are not inputs to any automatically admitted gate here.
-  const names = [...new Set(listed.filter((name) => name && !/^(?:plans|node_modules|dist|release|\.test-dist|test-results|playwright-report|coverage)(?:\/|$)/u.test(name)
-    && !/^COMPACT-HANDOFF-(?:MANIFEST\.json|README\.md)$/u.test(name)))].sort();
-  const digest = createHash('sha256');
-  for (const name of names) {
-    let stat;
-    try { stat = await lstat(path.join(root, name)); }
-    catch (error) { if (error.code === 'ENOENT') { digest.update(`${name}\0deleted\0`); continue; } throw error; }
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Verification source must be a regular file: ${name}`);
-    digest.update(name).update('\0').update(createHash('sha256').update(await readFile(path.join(root, name))).digest('hex')).update('\0');
-  }
-  return { head, files: names.length, sha256: digest.digest('hex') };
-}
-
 /** Keep local GUI access without restoring the caller's whole HOME/runtime environment. */
 export async function configureLocalDisplay(env, inherited = process.env, platform = process.platform) {
   if (platform !== 'linux') return;
@@ -125,7 +101,7 @@ export async function main(args = process.argv.slice(2)) {
   const options = parseVerificationArgs(args);
   const plan = verificationPlan(options);
   if (options.plan) { process.stdout.write(JSON.stringify({ ...plan, executed: false, releaseReady: false }, null, 2) + '\n'); return 0; }
-  const before = await sourceIdentity();
+  const before = await sourceIdentity(root);
   const results = [];
   let interrupted = null;
   const cancellation = new AbortController();
@@ -156,7 +132,7 @@ export async function main(args = process.argv.slice(2)) {
     process.stdout.write(`FATE_VERIFY_END ${JSON.stringify(results.at(-1))}\n`);
     if (interrupted || results.at(-1).status !== 'passed') break;
   }
-  const after = await sourceIdentity();
+  const after = await sourceIdentity(root);
   const summary = { ...verificationSummary(plan, results, before.sha256 === after.sha256 && before.head === after.head, interrupted), before, after };
   process.stdout.write(`FATE_VERIFY_RESULT ${JSON.stringify(summary)}\n`);
   return summary.exitCode;

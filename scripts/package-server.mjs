@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { smokePackage } from './smoke-server-package.mjs';
 import { createWebLicenseCapture, writeWebNotices } from './server-web-notices.mjs';
+import { sourceIdentity } from './source-identity.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -227,6 +228,7 @@ export async function packageServer(args = process.argv.slice(2)) {
   assert.equal(process.platform, 'linux', 'Only the tested Linux x64 package target is enabled.');
   assert.equal(process.arch, 'x64', 'Only the tested Linux x64 package target is enabled.');
   assert(!isWithin(options.output, root) && !isWithin(path.join(root, 'node_modules'), options.output), 'Unsafe package output root.');
+  const candidate = await sourceIdentity(root);
   await fs.mkdir(options.output, { recursive: true });
   const sourceManifest = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
   const stage = await fs.mkdtemp(path.join(options.output, `fate-server-${sourceManifest.version}-linux-x64-`));
@@ -302,13 +304,14 @@ command -v node >/dev/null 2>&1 || { echo 'Install Node 22.19 or later for the s
 self=$(readlink -f -- "$0") || { echo 'The fate-server launcher path is unavailable.' >&2; exit 1; }
 exec node "$(dirname -- "$self")/../dist/cli/main.js" "$@"
 `, { mode: 0o755 });
-  const publicManifest = { schema: 1, app: 'Fate server', version: sourceManifest.version, protocol: 1,
+  const publicManifest = { schema: 1, app: 'Fate server', version: sourceManifest.version, protocol: 1, candidate,
     node: sourceManifest.engines.node, artifactTarget: { os: 'linux', arch: 'x64' },
     nativeTerminal: options.terminal, web: options.web, webNoticeClosure: webLicenses?.noticeClosureComplete ?? null, testedTargets: [] };
   await fs.writeFile(path.join(stage, 'server-manifest.json'), JSON.stringify(publicManifest, null, 2) + '\n');
   await checksums(stage);
   const smoke = await smokePackage(stage, { terminal: options.terminal });
   await fs.writeFile(path.join(evidenceRoot, 'production-smoke.json'), JSON.stringify(smoke, null, 2) + '\n');
+  assert.deepEqual(await sourceIdentity(root), candidate, 'Source changed during packaging; do not publish this candidate.');
   publicManifest.testedTargets = [{ os: 'linux', arch: 'x64', node: process.version, abi: process.versions.modules,
     productionSmoke: true, nativeTerminal: options.terminal ? smoke.native : null }];
   await fs.writeFile(path.join(stage, 'server-manifest.json'), JSON.stringify(publicManifest, null, 2) + '\n');
@@ -317,7 +320,7 @@ exec node "$(dirname -- "$self")/../dist/cli/main.js" "$@"
   await run('tar', ['-czf', archive, '-C', path.dirname(stage), path.basename(stage)], root, path.join(evidenceRoot, 'archive.log'));
   const archiveHash = hash(await fs.readFile(archive));
   await fs.writeFile(archive + '.sha256', `${archiveHash}  ${path.basename(archive)}\n`);
-  const record = { stage, archive, archiveSha256: archiveHash, evidenceRoot, node: process.version, declaredPnpm, actualPnpm,
+  const record = { stage, archive, archiveSha256: archiveHash, evidenceRoot, candidate, node: process.version, declaredPnpm, actualPnpm,
     packageManagerVersionMatches: declaredPnpm === `pnpm@${actualPnpm}`, terminal: options.terminal, productionSmoke: smoke,
     status: 'Linux package verified; task acceptance and Windows gates remain separate' };
   await fs.writeFile(path.join(evidenceRoot, 'result.json'), JSON.stringify(record, null, 2) + '\n');

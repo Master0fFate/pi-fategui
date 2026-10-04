@@ -1,6 +1,8 @@
 import type { CoreShutdownResult } from '../core/lifecycle/CoreLifecycle';
 export interface ForegroundHost {
   stop(): Promise<CoreShutdownResult>;
+  /** A network host must include transport-owned writers, not only core cleanup. */
+  settled?(): Promise<void> | null;
   readonly core: { readonly lifecycle: { settled(): Promise<void> | null } };
 }
 export interface HostSignals {
@@ -20,7 +22,7 @@ export async function runForegroundHost(server: ForegroundHost, signals: HostSig
       void server.stop().then(async (result) => {
         if (result.status === 'settled') { settled(); return; }
         write('Host shutdown is incomplete. The process retains ownership. Inspect the host before recovery.\n');
-        const actual = server.core.lifecycle.settled();
+        const actual = server.settled ? server.settled() : server.core.lifecycle.settled();
         if (actual) {
           try { await actual; write('Host shutdown has now settled.\n'); settled(); }
           catch { /* The live process and retained lock remain for operator review. */ }

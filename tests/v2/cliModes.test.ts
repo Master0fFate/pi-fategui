@@ -13,6 +13,21 @@ describe('strict CLI mode grammar', () => {
     ['init','--profile','x','--workspace','/x'], ['provider','login','--profile','x','--token','secret']])('rejects before effects: %s', (...args) => {
     expect(() => parseCliArgs(args)).toThrow();
   });
+  it('requires explicit host-local storage, cap and unsandboxed terminal choices at initialization only', () => {
+    const init = ['init', '--profile', 'safe', '--workspace', '/fixture', '--trust-workspace'];
+    expect(parseCliArgs([...init, '--state-persistence', 'native-durable', '--max-permission', 'edit',
+      '--manual-terminal', '--accept-unsandboxed-shell'], 'server')).toMatchObject({ mode: 'init', options: {
+      'state-persistence': 'native-durable', 'max-permission': 'edit', 'manual-terminal': true, 'accept-unsandboxed-shell': true } });
+    for (const flags of [
+      ['--state-persistence', 'automatic'], ['--max-permission', 'root'], ['--manual-terminal'],
+      ['--accept-unsandboxed-shell'], ['--manual-terminal', '--accept-unsandboxed-shell'],
+      ['--max-permission', 'read-only', '--manual-terminal', '--accept-unsandboxed-shell'],
+      ['--max-permission', 'edit', '--manual-terminal=true', '--accept-unsandboxed-shell'],
+    ]) expect(() => parseCliArgs([...init, ...flags], 'server')).toThrow();
+    expect(() => parseCliArgs(['serve', '--profile', 'safe', '--max-permission', 'full-access'], 'server')).toThrow();
+    expect(() => parseCliArgs(['web', '--profile', 'safe', '--workspace', '/fixture', '--trust-workspace',
+      '--manual-terminal', '--accept-unsandboxed-shell'], 'server')).toThrow();
+  });
   it('rejects secret command-line values and keeps the companion Node-only', () => {
     expect(() => parseCliArgs(['doctor','--profile',`fc1_${'a'.repeat(43)}`])).toThrow();
     expect(() => parseCliArgs(['connect','host'], 'server')).toThrow(/desktop/i);

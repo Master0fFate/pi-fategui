@@ -76,6 +76,8 @@ function BoundedWorkspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
   const mutationError = useRuntimeStore((state) => state.networkError);
   const selectionNotice = useRuntimeStore((state) => state.networkSelectionNotice);
   const [exportError, setExportError] = useState<string | null>(null);
+  const terminalOpen = useUiStore((state) => state.terminalOpen);
+  const toggleTerminal = useUiStore((state) => state.toggleTerminal);
   const mutate = useRuntimeStore((state) => state.runNetworkMutation);
   const omissions = snapshot?.header.omissions;
   const exportText = () => {
@@ -93,6 +95,9 @@ function BoundedWorkspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
   return <main className="workspace" aria-label="Fate web workspace">
     <header className="workspace-header"><div className="workspace-header-identity"><span className="eyebrow">SESSION · BOUNDED NETWORK</span>
       <strong>{sessionView.label ?? 'Select a registered workspace'}</strong></div>
+      <IconButton label={terminalOpen ? 'Close terminal' : 'Open terminal'} terminalLabel="term" aria-pressed={terminalOpen}
+        disabled={!selected || !hasCapability('manualTerminal')} title={!hasCapability('manualTerminal') ? unavailableExplanation.manualTerminal : undefined}
+        onClick={toggleTerminal}><TerminalSquare size={17} /></IconButton>
       <IconButton label={inspectorCollapsed ? 'Open inspector' : 'Collapse inspector'} terminalLabel="panel" onClick={onToggleInspector}>
         {inspectorCollapsed ? <PanelRightOpen size={17} /> : <PanelRightClose size={17} />}
       </IconButton>
@@ -142,6 +147,7 @@ function BoundedWorkspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
       </section>
     </div></div>
     {!snapshot && !error && <p role="status">{selected ? 'Loading a bounded workspace snapshot…' : 'Select a workspace to inspect it.'}</p>}
+    {terminalOpen && <Suspense fallback={<div className="terminal-panel terminal-loading">Loading manual terminal…</div>}><TerminalPanel /></Suspense>}
   </main>;
 }
 

@@ -590,7 +590,7 @@ function boundedGitMessage(operation: GitOperation, stdout: string, stderr: stri
 }
 
 export class GitService {
-  private statusRequest: { root: string; promise: Promise<GitStatus> } | null = null;
+  private statusRequest: { root: string; promise: Promise<GitStatus>; next?: Promise<GitStatus> } | null = null;
   private lastStatus: { root: string; value: GitStatus } | null = null;
   private statusGeneration = 0;
   private readonly diffRequests = new Map<string, Promise<GitDiff>>();
@@ -612,6 +612,16 @@ export class GitService {
 
   status(): Promise<GitStatus> {
     const root = this.files.getRoot();
+    const running = this.statusRequest;
+    // The read in flight may have started before a change this caller already
+    // made or saw (an agent edit, for example). Never hand out that possibly
+    // older result: every caller arriving now shares ONE following read.
+    if (running?.root === root) return running.next ??= running.promise.then(() => this.startStatus(root), () => this.startStatus(root));
+    return this.startStatus(root);
+  }
+
+  private startStatus(root: string): Promise<GitStatus> {
+    // A read that began after the waiting callers asked is fresh enough to share.
     if (this.statusRequest?.root === root) return this.statusRequest.promise;
     const promise = this.readStatus(root)
       .then((value) => {

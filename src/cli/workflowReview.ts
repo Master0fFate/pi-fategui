@@ -5,6 +5,7 @@ import { createDesktopFatePaths, type FatePaths } from '../core/FatePaths';
 import { hostCheckoutLockRoot } from '../core/ownership/CheckoutOwnership';
 import { NativeWorkflowReviewService, nativeWorkflowReviewFormat, nativeWorkflowReviewReason, type NativeWorkflowReviewPlan } from '../core/recovery/NativeWorkflowReview';
 import { assertPrivateMigrationPath, migrationHash, overlaps } from '../core/storage/MigrationFiles';
+import { withPrivateWindowsAclScope } from '../core/storage/WindowsPrivateAcl';
 import type { CliCommand } from './args';
 import { readHostProfile, writePrivateHostOutput } from './profile';
 import { WorkflowReviewOperatorError } from './workflowReviewErrors';
@@ -42,9 +43,23 @@ async function readExactPlan(target: string, digest: string): Promise<unknown> {
 export async function runWorkflowReviewCommand(command: HostCommand): Promise<void> {
   try {
     if (command.mode !== 'workflow-review') throw new WorkflowReviewOperatorError();
+    // One finite offline command shares one ACL helper process; every check stays
+    // live. Diagnosis keeps its own queries: it reports an unsafe item as a
+    // result, and one refused query would end a helper shared by the whole verb.
+    // No summary is printed before the helper has been joined: a reported
+    // outcome must never precede a failed verification of its own checks.
+    const summaries: unknown[] = [];
+    const record = (summary: unknown) => { summaries.push(summary); };
+    if (command.verb === 'inspect') await review(command, record);
+    else await withPrivateWindowsAclScope(() => review(command, record));
+    for (const summary of summaries) process.stdout.write(`${JSON.stringify(summary)}\n`);
+  } catch (cause) { throw new WorkflowReviewOperatorError({ cause }); }
+}
+async function review(command: HostCommand, write: (summary: unknown) => void): Promise<void> {
+  {
+    if (command.mode !== 'workflow-review') throw new WorkflowReviewOperatorError();
     const paths = command.options.desktop === true ? createDesktopFatePaths() : (await readHostProfile(command.profile)).paths;
     const service = new NativeWorkflowReviewService({ paths });
-    const write = (summary: unknown) => { process.stdout.write(`${JSON.stringify(summary)}\n`); };
     if (command.verb === 'inspect') {
       const result = await service.inspect();
       write({ operation: 'inspect', format: nativeWorkflowReviewFormat, profile: paths.profileId,
@@ -70,5 +85,5 @@ export async function runWorkflowReviewCommand(command: HostCommand): Promise<vo
       write({ operation: 'acknowledge', ...result, outcome: 'UNKNOWN', originalGraphs: 'permanently-inadmissible', schedulesReenabled: false, workResumed: false }); return;
     }
     throw new WorkflowReviewOperatorError();
-  } catch (cause) { throw new WorkflowReviewOperatorError({ cause }); }
+  }
 }

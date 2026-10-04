@@ -6,11 +6,19 @@ import { createServerProfile } from '../core/storage/ServerProfile';
 import { OwnerLock, canonicalFuturePath } from '../core/ownership/OwnerLock';
 import { assertPrivateWindowsAcl, assertPrivateWindowsTree } from '../core/storage/WindowsPrivateAcl';
 import { parseServerConfig, type ServerConfig } from '../server/config';
+import { permissionLevelSchema, type PermissionLevel } from '../shared/contracts/ipc';
+import { statePersistenceBackendSchema, type StatePersistenceBackend } from '../shared/v2FeaturePolicy';
 
 const descriptorSchema = z.object({ version: z.literal(1), profileId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/u),
   workspaces: z.array(z.string().min(1).max(32_768)).min(1).max(8), host: z.literal('127.0.0.1'),
-  port: z.number().int().min(1).max(65_535), maxPermission: z.enum(['read-only', 'edit', 'full-access']),
-  workspaceTrustAccepted: z.literal(true), flags: z.object({ terminal: z.literal(false), browser: z.literal(false) }).strict() }).strict();
+  port: z.number().int().min(1).max(65_535), maxPermission: permissionLevelSchema,
+  statePersistence: statePersistenceBackendSchema.optional(),
+  workspaceTrustAccepted: z.literal(true), flags: z.object({ terminal: z.boolean(),
+    terminalWarningAccepted: z.literal(true).optional(), browser: z.literal(false) }).strict()
+    .refine((flags) => !flags.terminal || flags.terminalWarningAccepted === true,
+      'Manual terminal requires explicit unsandboxed-shell acknowledgement.') }).strict()
+  .refine((descriptor) => !descriptor.flags.terminal || descriptor.maxPermission !== 'read-only',
+    'Manual terminal requires an explicit edit or full-access host maximum.');
 type HostDescriptor = z.output<typeof descriptorSchema>;
 export interface HostProfile { readonly paths: FatePaths; readonly config: ServerConfig; readonly input: unknown }
 const unavailable = (): never => { throw new Error('Host profile is unavailable. Run explicit init and check private host storage.'); };
@@ -47,15 +55,19 @@ export async function writePrivateHostOutput(target: string, value: string): Pro
 }
 function serverInput(descriptor: HostDescriptor, home?: string): unknown {
   return { profile: profileOptions(descriptor.profileId, home), workspaces: descriptor.workspaces, host: descriptor.host,
-    port: descriptor.port, flags: descriptor.flags, maxPermission: descriptor.maxPermission };
+    port: descriptor.port, flags: descriptor.flags, maxPermission: descriptor.maxPermission,
+    ...(descriptor.statePersistence === undefined ? {} : { statePersistence: descriptor.statePersistence }) };
 }
 /** No engine, auth store or credential copy. The profile lock covers the descriptor write. */
 export async function initializeHostProfile(input: { readonly profileId: string; readonly workspace: string; readonly trustAccepted: boolean;
-  readonly port?: number; readonly home?: string }): Promise<HostProfile> {
+  readonly port?: number; readonly home?: string; readonly statePersistence?: StatePersistenceBackend;
+  readonly maxPermission?: PermissionLevel; readonly manualTerminal?: boolean; readonly acceptUnsandboxedShell?: boolean }): Promise<HostProfile> {
   if (!input.trustAccepted) throw new Error('Explicit workspace trust is required.');
   const descriptor = descriptorSchema.parse({ version: 1, profileId: input.profileId, workspaces: [path.resolve(input.workspace)],
-    host: '127.0.0.1', port: input.port ?? 47819, maxPermission: 'read-only', workspaceTrustAccepted: true,
-    flags: { terminal: false, browser: false } });
+    host: '127.0.0.1', port: input.port ?? 47819, maxPermission: input.maxPermission ?? 'read-only', workspaceTrustAccepted: true,
+    ...(input.statePersistence === undefined ? {} : { statePersistence: input.statePersistence }),
+    flags: { terminal: input.manualTerminal ?? false, browser: false,
+      ...(input.acceptUnsandboxedShell === true ? { terminalWarningAccepted: true } : {}) } });
   const raw = serverInput(descriptor, input.home);
   const config = await parseServerConfig(raw);
   const paths = config.paths;

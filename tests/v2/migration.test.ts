@@ -15,6 +15,7 @@ import { createFateCore } from '../../src/core/createFateCore';
 import { SessionQueueRepository } from '../../src/main/pi/SessionQueueRepository';
 import { FakePiSdkAdapter } from './helpers/fakePi';
 import type { QueuedMessage } from '../../src/shared/contracts/ipc';
+import { setOtherLocalUsersRead } from './helpers/windowsAcl';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
@@ -22,7 +23,10 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 async function fixture(sessionId = randomUUID()) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fate-migration-')); roots.push(root);
   const dataRoot = path.join(root, 'profile');
-  const project = path.join(root, 'project');
+  // Legacy queue/task/goal repositories persist case-folded Windows identities.
+  // Build the fixture with the same identity rather than a Linux-only hash.
+  const projectPath = path.join(root, 'project');
+  const project = process.platform === 'win32' ? projectPath.toLowerCase() : projectPath;
   const backupRoot = path.join(root, 'backups');
   const paths = new FatePaths({ dataRoot, piAgentDir: path.join(root, 'pi'), sessionsRoot: path.join(root, 'pi', 'sessions'),
     lockRoot: path.join(root, 'locks'), attachmentRoot: path.join(root, 'attachments'), profileId: 'test', profileKind: 'desktop' });
@@ -81,7 +85,14 @@ describe('explicit native state migration', () => {
     const original = await fs.readFile(f.transcript); const queue = await fs.readFile(f.queueFile);
     const report = await f.service.dryRun(); expect(report.errors).toEqual([]); const plan = report.plan!;
     expect(plan.files).toHaveLength(7);
+    const sourceBytes = await Promise.all(plan.files.map((file) => fs.readFile(path.join(f.paths.dataRoot, file.name))));
+    const referenceBytes = await Promise.all(plan.references.map((file) => fs.readFile(file.name)));
     const result = await f.service.apply(plan); expect(result.status).toBe('activated');
+    for (let index = 0; index < plan.files.length; index++) {
+      expect(await fs.readFile(path.join(f.paths.dataRoot, plan.files[index]!.name))).toEqual(sourceBytes[index]);
+      expect(await fs.readFile(path.join(result.backup, plan.files[index]!.name))).toEqual(sourceBytes[index]);
+    }
+    for (let index = 0; index < plan.references.length; index++) expect(await fs.readFile(plan.references[index]!.name)).toEqual(referenceBytes[index]);
     expect(await fs.readFile(f.transcript)).toEqual(original); expect(await fs.readFile(f.queueFile)).toEqual(queue);
     expect(await fs.readFile(path.join(result.backup, path.relative(f.paths.dataRoot, g.dir), 'archive', g.briefRef), 'utf8')).toBe(g.brief);
     await expect(fs.stat(path.join(result.backup, 'auth.json'))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -219,6 +230,16 @@ describe('explicit native state migration', () => {
       await expect(f.service.apply(plan)).rejects.toThrow('Owner already in use');
     } finally { await lock.release(); }
   });
+  it.skipIf(process.platform !== 'win32').each(['backup-complete', 'staged', 'before-activation'] as const)(
+    'queries live ACLs again after %s rather than caching earlier authority', async (phase) => {
+      const f = await fixture(); const plan = (await f.service.dryRun()).plan!;
+      const original = await fs.readFile(f.queueFile);
+      const changed = new MigrationService({ paths: f.paths, backupRoot: f.backupRoot, sourceVersion: '1.1.0', targetVersion: '2.0.0',
+        checkpoint: async (at) => { if (at === phase) await setOtherLocalUsersRead(f.queueFile, true); } });
+      await expect(changed.apply(plan)).rejects.toThrow(/source changed|cannot be verified/u);
+      expect(await fs.readFile(f.queueFile)).toEqual(original);
+      await expect(fs.stat(path.join(f.paths.dataRoot, 'durable'))).rejects.toMatchObject({ code: 'ENOENT' });
+    });
   it('rechecks source after backup/staging immediately before activation', async () => {
     const f = await fixture(); const plan = (await f.service.dryRun()).plan!;
     const changed = new MigrationService({ paths: f.paths, backupRoot: f.backupRoot, sourceVersion: '1.1.0', targetVersion: '2.0.0',
@@ -270,8 +291,10 @@ describe('explicit native state migration', () => {
   it('rejects symbolic links, backup overlap, nonprivate backup and missing project identities', async () => {
     const f = await fixture(); const options = { paths: f.paths, sourceVersion: '1.1.0', targetVersion: '2.0.0' };
     expect((await new MigrationService({ ...options, backupRoot: f.paths.dataRoot }).dryRun()).errors.join(' ')).toContain('overlaps');
-    await fs.chmod(f.backupRoot, 0o755); expect((await f.service.dryRun()).errors.join(' ')).toContain('private'); await fs.chmod(f.backupRoot, 0o700);
-    const link = path.join(f.root, 'backup-link'); await fs.symlink(f.backupRoot, link);
+    if (process.platform === 'win32') await setOtherLocalUsersRead(f.backupRoot, true); else await fs.chmod(f.backupRoot, 0o755);
+    expect((await f.service.dryRun()).errors.join(' ')).toMatch(/private/i);
+    if (process.platform === 'win32') await setOtherLocalUsersRead(f.backupRoot, false); else await fs.chmod(f.backupRoot, 0o700);
+    const link = path.join(f.root, 'backup-link'); await fs.symlink(f.backupRoot, link, process.platform === 'win32' ? 'junction' : 'dir');
     expect((await new MigrationService({ ...options, backupRoot: link }).dryRun()).errors.join(' ')).toContain('symbolic');
     await fs.rmdir(f.project); expect((await f.service.dryRun()).plan).toBeNull();
   });
@@ -298,8 +321,10 @@ describe('explicit native state migration', () => {
     expect((await fs.readdir(f.paths.lockRoot)).some((name) => name.startsWith('profile-'))).toBe(true);
   });
   it('rollback is matched-version, owner-exclusive, non-destructive and idempotent', async () => {
-    const f = await fixture(); const plan = (await f.service.dryRun()).plan!;
-    const original = await fs.readFile(f.queueFile); await f.service.apply(plan);
+    const f = await fixture(); await addGoal(f); const plan = (await f.service.dryRun()).plan!;
+    const sourceBytes = await Promise.all(plan.files.map((file) => fs.readFile(path.join(f.paths.dataRoot, file.name))));
+    const referenceBytes = await Promise.all(plan.references.map((file) => fs.readFile(file.name)));
+    const original = await fs.readFile(f.queueFile); const applied = await f.service.apply(plan);
     await expect(f.service.rollback(plan, '1.0.0')).rejects.toThrow('exact original');
     const owner = await OwnerLock.acquire(f.paths.lockRoot, 'profile', f.paths.dataRoot);
     try { await expect(f.service.rollback(plan, '1.1.0')).rejects.toThrow('Owner already in use'); } finally { await owner.release(); }
@@ -307,6 +332,11 @@ describe('explicit native state migration', () => {
     expect(await fs.readFile(f.queueFile)).toEqual(original); expect(await fs.stat(path.join(result.retainedNative, 'v1', 'state.sqlite'))).toBeDefined();
     await expect(fs.stat(path.join(f.paths.dataRoot, 'durable'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await f.service.rollback(plan, '1.1.0')).toEqual(result);
+    for (let index = 0; index < plan.files.length; index++) {
+      expect(await fs.readFile(path.join(f.paths.dataRoot, plan.files[index]!.name))).toEqual(sourceBytes[index]);
+      expect(await fs.readFile(path.join(applied.backup, plan.files[index]!.name))).toEqual(sourceBytes[index]);
+    }
+    for (let index = 0; index < plan.references.length; index++) expect(await fs.readFile(plan.references[index]!.name)).toEqual(referenceBytes[index]);
   });
   it('refuses rollback after candidate, backup or authoritative source changes', async () => {
     const f = await fixture(); const plan = (await f.service.dryRun()).plan!; await f.service.apply(plan);

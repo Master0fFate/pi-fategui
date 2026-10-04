@@ -119,7 +119,7 @@ function WebSidebar({ collapsed, onToggle }: SidebarProps) {
           aria-current={selected?.workspaceId === workspace.workspaceId ? 'page' : undefined}
           onClick={() => select(workspace)}>{workspace.label}</button>)}
       </nav>}
-      <p>Workspaces are registered on the host. Select sessions in the shared conversation. Native project opening, terminal, provider login, saved routines and memory administration stay host-local.</p>
+      <p>Workspaces are registered on the host. Select sessions in the shared conversation. Native project opening, provider login, saved routines and memory administration stay host-local.</p>
     </div>}
   </aside>;
 }

@@ -64,6 +64,7 @@ export function networkFixture(authenticatedSessionId = '80000000-0000-4000-8000
     onInvalidate: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }, close: vi.fn(),
     listWorkspaces: vi.fn<NetworkWorkspaceApi['listWorkspaces']>(async () => [alpha, beta]),
     readSnapshot: vi.fn<NetworkWorkspaceApi['readSnapshot']>(async (scope) => { host.selected = scope; return makeSnapshot(scope); }),
+    readHistory: vi.fn<NetworkWorkspaceApi['readHistory']>(async () => ({ version: 1, sessionId: host.sessionId, items: [], nextPageId: null, mediaOmitted: false, oversizedItems: 0 })),
     readSessions: vi.fn<NetworkWorkspaceApi['readSessions']>(async () => ({ ...selection(), sessions: [hostSession, otherHostSession].map((id, index) => ({
       id, title: index ? 'Second host session' : 'First host session', createdAt: '2026-01-01T00:00:00.000Z', modifiedAt: '2026-01-01T00:00:00.000Z', messageCount: 1, active: id === host.sessionId })) })),
     readModels: vi.fn<NetworkWorkspaceApi['readModels']>(async () => ({ ...selection(), models: [

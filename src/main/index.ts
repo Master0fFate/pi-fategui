@@ -81,9 +81,9 @@ try {
 }
 // Fate UI is single-instance by default: a later `fate <folder>` launch hands
 // its project path to the already-running app and exits. Set FATE_NEW_INSTANCE=1
-// (or pass --new-instance) for a fully isolated second process with its own
-// persistent Chromium profile slot. Pi sessions stay shared; Fate UI provider
-// credentials and model configuration stay in its own SDK-owned store.
+// (or pass --new-instance) to request another persistent Chromium profile slot.
+// This does not isolate canonical Fate/SDK data: the core must still refuse a
+// second writable owner. Use New Window for another view of the existing owner.
 const newInstanceRequested = process.env.FATE_NEW_INSTANCE === '1' || hasNewInstanceFlag(process.argv);
 const instanceProfile = acquireInstanceProfile(app, newInstanceRequested ? 'multi' : 'single', undefined, initialProjectPath);
 // True for the running app (the primary single-instance lock holder, or any
