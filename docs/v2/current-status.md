@@ -1,6 +1,6 @@
 # V2 candidate status
 
-**Status: source candidate, not an accepted V2 release. Updated 2026-10-04.** Read this page before following the [candidate setup guide](quickstart.md). Source support, an individual test result, a packaged target and release acceptance are different claims.
+**Status: published as the pre-release 2.0.0-beta "Radian" for beta testers; not the final 2.0.0 release. Updated 2026-10-05.** Read this page before following the [candidate setup guide](quickstart.md). Source support, an individual test result, a packaged target and release acceptance are different claims.
 
 ## Source and version
 

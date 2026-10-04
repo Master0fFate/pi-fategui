@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
+import packageMetadata from '../../../package.json';
 import { uuidSchema } from '../../shared/protocol/requestIds';
 import { TextAttachmentStore } from '../../core/attachments/TextAttachmentStore';
 import { assertPrivateWindowsAcl } from '../../core/storage/WindowsPrivateAcl';
@@ -118,7 +119,7 @@ export async function startAuthenticatedNodeServerWithFactory(input: unknown,
     const hostId = await publicHostId(base.core);
     const commands = createNetworkDispatcher({ core: base.core, tickets: liveTickets, serverEpoch,
       journal: base.journal, registeredRoots: base.readiness.registeredWorkspaces,
-      hostId, appVersion: '1.1.0', maxPermission: base.readiness.maxPermission,
+      hostId, appVersion: packageMetadata.version, maxPermission: base.readiness.maxPermission,
       terminalEnabled: base.readiness.terminalEnabled, textAttachments: liveAttachments,
       readiness: async (): Promise<PublicHostReadiness> => {
         const health = await Promise.allSettled([base.core.sessionPermissions.checkHealth(), base.journal.checkHealth()]);
