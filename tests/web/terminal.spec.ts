@@ -44,7 +44,16 @@ test('opt-in browser terminal requires consent and control, writes only its real
   expect(first.driverForceKillRequested).toBe(false);
   await terminal.getByRole('button', { name: 'Close terminal', exact: true }).click();
   await client.page.getByRole('button', { name: 'Open terminal', exact: true }).click();
-  await terminal.getByRole('button', { name: 'Start manual shell', exact: true }).click();
+  // The shell starts only for a connected controller. Say what the page and the host show when it cannot.
+  const restart = terminal.getByRole('button', { name: 'Start manual shell', exact: true });
+  try { await expect(restart).toBeEnabled({ timeout: 20_000 }); }
+  catch (cause) {
+    const frames = host.proxy.frames.slice(-30).map((frame) => `${frame.direction}:${JSON.stringify(frame.value).slice(0, 140)}`);
+    const commands = host.proxy.commands.slice(-10).map((entry) => `${entry.method}:${JSON.stringify(entry.response).slice(0, 200)}`);
+    const page = (await client.page.locator('body').innerText()).replace(/\s+/gu, ' ').slice(0, 2000);
+    throw new Error(['The manual shell cannot start again.', `PAGE: ${page}`, 'COMMANDS:', ...commands, 'FRAMES:', ...frames].join('\n'), { cause });
+  }
+  await restart.click();
   await expect.poll(() => created().length).toBe(2);
   await expect.poll(async () => (await host.rpc<NativePtyObservation[]>({ type: 'terminalStatus' }))[1]?.ptyPid ?? 0).toBeGreaterThan(0);
   // Real socket loss closes the connection-bound shell. View reconnection must
