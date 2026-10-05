@@ -115,3 +115,49 @@ test(`[${backend}] production IPC captures the trusted project for files, Git, M
   }
 });
 }
+
+test('a read that arrives while a project is still opening is answered for that project', async () => {
+  test.setTimeout(120_000);
+  const root = await mkdtemp(path.join(tmpdir(), 'fate-core-switch-e2e-'));
+  let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  let output = (): string => '';
+  try {
+    const data = path.join(root, 'data');
+    await Promise.all([mkdir(path.join(root, 'A')), mkdir(path.join(root, 'B')), mkdir(data, { mode: 0o700 })]);
+    const [a, b] = await Promise.all([realpath(path.join(root, 'A')), realpath(path.join(root, 'B'))]);
+    // Both folders were trusted earlier, as after an update from an older version.
+    await writeFile(path.join(data, 'trusted-projects.json'), JSON.stringify({ version: 1, paths: [a, b] }));
+    for (const project of [a, b]) execFileSync('git', ['init', '-q', project]);
+    application = await electron.launch({
+      args: [`--user-data-dir=${path.join(root, 'chromium')}`, path.resolve('.'), '--new-instance', `--project=${a}`],
+      env: { ...process.env, VITE_DEV_SERVER_URL: '', FATE_GUI_DATA_DIR: data,
+        PI_CODING_AGENT_DIR: path.join(root, 'agent'), PI_OFFLINE: '1' },
+    });
+    output = captureOutput(application);
+    const first = await application.firstWindow();
+    await expect(first.locator('[data-bridge-status="ready"]')).toBeVisible(READY);
+    await expect.poll(() => first.evaluate(() => window.piDesktop.getRuntimeState().then((state) => state.project?.path)),
+      { timeout: 45_000 }).toBe(a);
+    // The Changes panel asks for Git status at the first moment the runtime
+    // shows a project. The runtime shows it before the project is fully open.
+    const statusAtFirstSight = (project: string) => first.evaluate(async (expected) => {
+      const deadline = Date.now() + 45_000;
+      for (;;) {
+        const state = await window.piDesktop.getRuntimeState();
+        if (state.project?.trusted && state.project.path === expected) break;
+        if (Date.now() > deadline) throw new Error('The project did not appear.');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+      }
+      return window.piDesktop.getGitStatus().then((git) => ({ repository: git.repository }),
+        (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
+    }, project);
+    for (const project of [b, a]) {
+      const [, status] = await Promise.all([
+        first.evaluate((next) => window.piDesktop.openProject(next), project), statusAtFirstSight(project)]);
+      expect(status, `Git status of ${path.basename(project)}`).toEqual({ repository: true });
+    }
+  } finally {
+    try { await closeOrExplain(application, output); }
+    finally { await rm(root, { recursive: true, force: true }); }
+  }
+});

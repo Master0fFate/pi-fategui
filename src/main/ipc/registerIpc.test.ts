@@ -16,7 +16,7 @@ vi.mock('electron', () => ({
 import { ipcChannels, type ProjectState, type RuntimeState } from '../../shared/contracts/ipc';
 import type { MutationAttestationLedger } from '../pi/provenance/MutationAttestationLedger';
 import type { ProjectActivation } from '../projects/ProjectService';
-import { activatePreparedProject, assertProjectActivationIdle, createProjectActivationQueue, createProjectPathFocuser, createProjectPathOpener, discardCreatedWorktreeAfterFailure, registerIpc, resolveAttestationQuery } from './registerIpc';
+import { activatePreparedProject, assertProjectActivationIdle, createProjectActivationGate, createProjectActivationQueue, createProjectPathFocuser, createProjectPathOpener, discardCreatedWorktreeAfterFailure, registerIpc, resolveAttestationQuery } from './registerIpc';
 
 const previousProject: ProjectState = { path: '/previous', name: 'previous', trusted: true };
 const nextProject: ProjectState = { path: '/next', name: 'next', trusted: true };
@@ -486,6 +486,44 @@ describe('transactional project activation', () => {
     expect(deps.files.setRoot).toHaveBeenCalledWith(nextProject.path);
     expect(deps.runtime.openProject).toHaveBeenCalledOnce();
     expect(candidate.commit).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the activation gate closed from the first runtime state until the project is committed', async () => {
+    const candidate = activation();
+    const gate = createProjectActivationGate();
+    const deps = { ...services(), activationGate: gate };
+    let finishOpening!: () => void;
+    deps.runtime.openProject.mockImplementationOnce(async (project: ProjectState) => {
+      // The real runtime shows the new project here, before it is ready.
+      deps.setState(state(project) as never);
+      await new Promise<void>((resolve) => { finishOpening = resolve; });
+      return state(project);
+    });
+    let settled = false;
+
+    const activating = activatePreparedProject(candidate, deps, 'changing projects');
+    await vi.waitFor(() => expect(deps.runtime.openProject).toHaveBeenCalledOnce());
+    void gate.settled().then(() => { settled = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(candidate.commit).not.toHaveBeenCalled();
+
+    finishOpening();
+    await activating;
+    await gate.settled();
+    expect(settled).toBe(true);
+    expect(candidate.commit).toHaveBeenCalledOnce();
+  });
+
+  it('opens the activation gate after a failed project change', async () => {
+    const candidate = activation();
+    const gate = createProjectActivationGate();
+    const deps = { ...services(), activationGate: gate };
+    deps.runtime.openProject.mockRejectedValueOnce(new Error('candidate failed'));
+
+    await expect(activatePreparedProject(candidate, deps, 'changing projects')).rejects.toThrow('candidate failed');
+    await expect(gate.settled()).resolves.toBeUndefined();
+    expect(candidate.rollback).toHaveBeenCalledOnce();
   });
 
   it('leaves all activation state untouched when settings loading fails', async () => {

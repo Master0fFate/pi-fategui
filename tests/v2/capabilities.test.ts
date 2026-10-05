@@ -8,9 +8,10 @@ import { createLocalIpcContext } from '../../src/core/dispatch/RequestContext';
 const absent = { monitor: false, nativeBrowser: false, microphone: false, hotkeys: false, updater: false, ambientAudio: false, manualTerminal: false, localFileOpen: false, clipboardText: false };
 // The real desktop runtime has hundreds of methods; these fixtures exercise only
 // the named Monitor seam and never construct Electron or a provider runtime.
-function monitorAdapter(owner: object, registry: object, host?: ConstructorParameters<typeof CoreIpcAdapter>[4]) {
+function monitorAdapter(owner: object, registry: object, host?: ConstructorParameters<typeof CoreIpcAdapter>[4],
+  activationSettled?: ConstructorParameters<typeof CoreIpcAdapter>[6]) {
   return new CoreIpcAdapter(owner as ConstructorParameters<typeof CoreIpcAdapter>[0],
-    registry as ConstructorParameters<typeof CoreIpcAdapter>[1], () => true, undefined, host);
+    registry as ConstructorParameters<typeof CoreIpcAdapter>[1], () => true, undefined, host, undefined, activationSettled);
 }
 const emptyDashboard = {
   projectPath: '/project', sessionId: null, checkedAt: 1, revision: 'rev', overall: 'normal' as const,
@@ -105,6 +106,30 @@ describe('T21 capability policy', () => {
     const adapter = monitorAdapter(owner, registry, host);
     expect(await adapter.monitor({})).toMatchObject({ projectPath: root, sessionId: selectedSessionId, overall: 'normal' });
     expect(read).toHaveBeenCalledOnce();
+    expect(registry.registerHostPath).toHaveBeenCalledOnce();
+  });
+  it('holds a scoped read until a project change in progress has settled', async () => {
+    const root = '/project';
+    const selected = { getState: () => ({ project: { path: root, trusted: true }, sessionId: 'session' }) };
+    const handle = { id: '20000000-0000-4000-8000-000000000003', root, generation: 1, runtime: selected,
+      admission: { snapshot: () => ({ selectedSessionId: 'session', selectionRevision: 0 }) } };
+    const owner = { asRouter: () => selected, peekWorkspace: () => selected,
+      workspaceOrigin: () => ({ workspaceId: handle.id, workspaceGeneration: 1 }), workspaceSelectionRevision: () => 0 };
+    // Until the host commits the project, its registration check refuses the path.
+    let committed = false;
+    const registry = { registerHostPath: vi.fn(async () => {
+      if (!committed) throw new Error('This project is not registered in the execution host configuration.');
+      return handle;
+    }), resolve: () => handle };
+    let commit!: () => void;
+    const changing = new Promise<void>((resolve) => { commit = () => { committed = true; resolve(); }; });
+    const adapter = monitorAdapter(owner, registry, undefined, () => changing);
+
+    const read = adapter.scoped(({ handle: captured }) => captured.root);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(registry.registerHostPath).not.toHaveBeenCalled();
+    commit();
+    await expect(read).resolves.toBe(root);
     expect(registry.registerHostPath).toHaveBeenCalledOnce();
   });
   it('refuses a disabled backend monitor read instead of returning an empty dashboard', async () => {

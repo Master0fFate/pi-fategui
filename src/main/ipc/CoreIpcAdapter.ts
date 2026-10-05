@@ -37,7 +37,8 @@ export class CoreIpcAdapter {
   constructor(private readonly runtime: DesktopOwner, private readonly registry: DesktopRegistry,
     private readonly trustedSender: () => boolean, private readonly resolveReferencePath?: (path: string) => Promise<string>,
     private readonly hostCapabilities: HostCapabilities = desktopHostCapabilities,
-    private readonly localTarget: () => boolean = () => true) {}
+    private readonly localTarget: () => boolean = () => true,
+    private readonly activationSettled: () => Promise<void> = async () => undefined) {}
 
   /** A per-call document fence; the underlying window adapter and its IDs stay stable. */
   forInvocation(documentIsCurrent: () => boolean) {
@@ -52,6 +53,10 @@ export class CoreIpcAdapter {
   }
 
   private async capture(senderGuard = this.trustedSender): Promise<Captured> {
+    if (!this.localTarget() || !senderGuard()) throw senderError();
+    // During a project change the runtime already shows the new project, but
+    // the host commits it only after the runtime is open. Wait for that result.
+    await this.activationSettled();
     if (!this.localTarget() || !senderGuard()) throw senderError();
     const router = this.runtime.asRouter();
     const state = router.getState(false);

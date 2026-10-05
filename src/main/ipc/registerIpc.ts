@@ -233,6 +233,32 @@ interface ProjectActivationServices {
   terminal: Pick<TerminalService, 'disposeProjectTerminals'>;
   logs: Pick<AppLogService, 'write'>;
   browser?: Pick<BrowserHost, 'onRootChanged'>;
+  activationGate?: Pick<ProjectActivationGate, 'hold'>;
+}
+
+export type ProjectActivationGate = ReturnType<typeof createProjectActivationGate>;
+
+/**
+ * The runtime shows a project as focused before its activation is committed.
+ * A scoped read that arrives in that time waits for the result here: it must
+ * not be answered against a project the host has not registered yet.
+ */
+export function createProjectActivationGate() {
+  let active: Promise<void> | null = null;
+  return {
+    async hold<T>(work: () => Promise<T>): Promise<T> {
+      let release!: () => void;
+      const mine = new Promise<void>((resolve) => { release = resolve; });
+      active = mine;
+      try { return await work(); } finally {
+        if (active === mine) active = null;
+        release();
+      }
+    },
+    async settled(): Promise<void> {
+      while (active) await active;
+    },
+  };
 }
 
 function errorMessage(error: unknown): string {
@@ -325,11 +351,21 @@ export function createProjectPathFocuser(
   });
 }
 
-export async function activatePreparedProject(
+export function activatePreparedProject(
+  activation: ProjectActivation,
+  services: ProjectActivationServices,
+  action: string,
+  runtimeAction: 'open' | 'focus' = 'open',
+) {
+  const activate = () => activateWithoutGate(activation, services, action, runtimeAction);
+  return services.activationGate ? services.activationGate.hold(activate) : activate();
+}
+
+async function activateWithoutGate(
   activation: ProjectActivation,
   { runtime, files, settings, terminal, logs, browser }: ProjectActivationServices,
   action: string,
-  runtimeAction: 'open' | 'focus' = 'open',
+  runtimeAction: 'open' | 'focus',
 ) {
   // Project switches keep background Pi runs alive. Worktree/session creation
   // remains guarded because it mutates the active project's execution context.
@@ -590,6 +626,7 @@ export function registerIpc({ runtime, core, connections, connectionEditor, proj
       }
     });
   }
+  const activationGate = createProjectActivationGate();
   const coreAdapters = new WeakMap<Electron.WebContents, CoreIpcAdapter>();
   const coreAdapter = (event: Electron.IpcMainInvokeEvent): ReturnType<CoreIpcAdapter['forInvocation']> => {
     if (!core?.workspaces) throw new PiDesktopError({ code: 'RUNTIME_NOT_READY', message: 'The desktop workspace registry is unavailable.', retryable: true });
@@ -600,7 +637,8 @@ export function registerIpc({ runtime, core, connections, connectionEditor, proj
         const owner = BrowserWindow.fromWebContents(sender);
         return !sender.isDestroyed() && !!owner && !owner.isDestroyed() && !!sender.mainFrame
           && isTrustedRendererUrl(sender.mainFrame.url, rendererPolicy);
-      }, (root) => projects.prepareSessionListPath(root), undefined, () => connections?.isLocal !== false);
+      }, (root) => projects.prepareSessionListPath(root), undefined, () => connections?.isLocal !== false,
+      () => activationGate.settled());
       coreAdapters.set(sender, adapter);
     }
     const invocation = invocationGuards.get(event);
@@ -609,7 +647,7 @@ export function registerIpc({ runtime, core, connections, connectionEditor, proj
   };
   registerLearningIpc(handle, runtime, learning, () => settings.getStoragePath());
   registerAgentsIpc(handle, agents);
-  const activationServices = { runtime, files, settings, terminal, logs, browser };
+  const activationServices = { runtime, files, settings, terminal, logs, browser, activationGate };
   const queueProjectActivation = createProjectActivationQueue();
   const localOpenProjectPath = createProjectPathOpener(projects, activationServices, queueProjectActivation);
   const localFocusProjectPath = createProjectPathFocuser(projects, activationServices, queueProjectActivation);
