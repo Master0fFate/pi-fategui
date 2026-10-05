@@ -2001,7 +2001,7 @@ body.is-resizing-horizontal-pane { cursor: row-resize; user-select: none; }
 
 .music-dock {
   position: fixed; z-index: 85; right: calc(14px + var(--music-dock-inset, 0px)); bottom: 10px; display: flex; width: min(320px, calc(100vw - 28px - var(--music-dock-inset, 0px)));
-  align-items: flex-end; flex-direction: column; pointer-events: none;
+  align-items: flex-end; flex-direction: column; pointer-events: none; user-select: none;
   transition: right 150ms ease, width 150ms ease;
 }
 .music-dock-stage { position: relative; width: 100%; pointer-events: none; }

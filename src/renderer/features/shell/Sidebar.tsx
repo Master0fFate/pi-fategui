@@ -1318,13 +1318,18 @@ function DesktopSidebar({ collapsed, onToggle }: SidebarProps) {
         ? <Virtuoso customScrollParent={folderScrollParent} data={sortedSessions} defaultItemHeight={27} itemContent={(_index, session) => renderCompactActiveItem(session)} />
         : <div className="folder-preview-state">Preparing session list…</div>
       : sortedSessions.map((session) => renderCompactActiveItem(session));
-    const emptySessions = (
-      <div className="empty-sessions empty-sessions--inline">
-        <FileText size={19} />
-        <p>{runtime.status === 'initializing' ? 'Loading sessions…' : query ? 'No matching sessions' : 'No sessions yet'}</p>
-        <span>{runtime.status === 'initializing' ? 'Reading this folder’s saved Pi sessions.' : runtime.status === 'auth-required' ? 'Saved sessions remain available; authenticate to prompt Pi.' : 'Create a session to start working with Pi.'}</span>
-      </div>
-    );
+    const emptyTitle = runtime.status === 'initializing' ? 'Loading sessions…' : query ? 'No matching sessions' : 'No sessions yet';
+    const emptyDetail = runtime.status === 'initializing' ? 'Reading this folder’s saved Pi sessions.' : runtime.status === 'auth-required' ? 'Saved sessions remain available; authenticate to prompt Pi.' : 'Create a session to start working with Pi.';
+    // Compact sessions keep the density of a session row: one line, no icon block.
+    const emptySessions = compactSessions
+      ? <div className="folder-preview-state" title={emptyDetail}>{emptyTitle}</div>
+      : (
+        <div className="empty-sessions empty-sessions--inline">
+          <FileText size={19} />
+          <p>{emptyTitle}</p>
+          <span>{emptyDetail}</span>
+        </div>
+      );
     return (
       <section className={`folder-group${isActive ? ' folder-group--active' : ''}${expanded ? ' folder-group--expanded' : ''}`} key={project.path}>
         {renderFolderHeader(project)}

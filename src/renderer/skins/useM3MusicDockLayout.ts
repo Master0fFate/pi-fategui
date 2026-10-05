@@ -3,9 +3,12 @@ import { getAppliedSkin, subscribeSkinChanges } from '../skin';
 import { useUiStore } from '../stores/uiStore';
 
 const properties = ['--m3-music-left', '--m3-music-width', '--m3-music-bottom'] as const;
+/** The player is a compact card. A wide inspector must not stretch it. */
+const MAX_PLAYER_WIDTH = 360;
 
 /** The player remains mounted (including its audio element); only its geometry changes.
  * Align to the real inspector without reserving an opaque footer: this is an overlay.
+ * It fills a narrow inspector and stays at the right edge of a wide one.
  * Browser-shift and collapsed-inspector layouts keep the existing floating-dock behavior. */
 export function useM3MusicDockLayout(panel: RefObject<HTMLElement>, enabled: boolean, browserInset: number): void {
   const skin = useSyncExternalStore(subscribeSkinChanges, getAppliedSkin, getAppliedSkin);
@@ -18,7 +21,8 @@ export function useM3MusicDockLayout(panel: RefObject<HTMLElement>, enabled: boo
     const measure = () => {
       const bounds = inspector.getBoundingClientRect();
       const inset = 12;
-      const values = [bounds.left + inset, Math.max(0, bounds.width - inset * 2), window.innerHeight - bounds.bottom + inset];
+      const width = Math.min(MAX_PLAYER_WIDTH, Math.max(0, bounds.width - inset * 2));
+      const values = [bounds.left + bounds.width - inset - width, width, window.innerHeight - bounds.bottom + inset];
       properties.forEach((property, index) => {
         const value = `${values[index]}px`;
         if (root.style.getPropertyValue(property) !== value) root.style.setProperty(property, value);

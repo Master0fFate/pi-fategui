@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Activity, ArrowUpRight, ChevronLeft, ChevronRight, LayoutDashboard, ListChecks, Loader2, Play, RefreshCw, TriangleAlert, Users } from 'lucide-react';
 import type { WireResultOf } from '../../../shared/protocol/methods';
 import { monitorItemSchema, type MonitorDashboard, type MonitorItem } from '../../../shared/contracts/monitorDashboard';
 import type { NetworkMonitor } from '../../../shared/protocol/diagnostics';
@@ -14,11 +15,14 @@ import './monitorDashboard.css';
 
 const SECTIONS = ['overview', 'runs', 'teams', 'tasks', 'activity'] as const;
 const PAGE_SIZE = 25;
+const SECTION_LABELS = { overview: 'Overview', runs: 'Runs', teams: 'Teams', tasks: 'Tasks', activity: 'Activity' } as const;
+const ROW_ICONS = { run: Play, 'team-node': Users, task: ListChecks, event: Activity } as const;
+const clock = (value: number) => new Date(value).toLocaleTimeString();
 
 function DetailLink({ item, projectPath }: { item: MonitorItem; projectPath: string }) {
   const openTeamNode = useUiStore((state) => state.openAgentTeamNode);
-  if (item.ref.kind === 'run') return <button type="button" onClick={() => void openAgentNotice(projectPath, item.ref.id)}>Open run</button>;
-  if (item.ref.kind === 'team-node' && item.ref.teamId) return <button type="button" onClick={() => openTeamNode(item.ref.teamId!, item.ref.id)}>Open agent</button>;
+  if (item.ref.kind === 'run') return <button type="button" className="activity-refresh" onClick={() => void openAgentNotice(projectPath, item.ref.id)}>Open run<ArrowUpRight size={10} aria-hidden="true" /></button>;
+  if (item.ref.kind === 'team-node' && item.ref.teamId) return <button type="button" className="activity-refresh" onClick={() => openTeamNode(item.ref.teamId!, item.ref.id)}>Open agent<ArrowUpRight size={10} aria-hidden="true" /></button>;
   return null;
 }
 
@@ -150,66 +154,83 @@ export function MonitorDashboardPanel({ webScope }: { webScope?: WebWorkspace & 
     finally { if (request === detailRequest.current) setNavigating(false); }
   };
 
-  if (!supported) return <section className="monitor-dashboard monitor-dashboard--empty" aria-label="Monitoring dashboard"><strong>Monitor unavailable</strong><p>{unavailableExplanation.monitor}</p></section>;
-  if (!sessionId || (!webScope && !project?.trusted)) return <div className="monitor-dashboard monitor-dashboard--empty">Open a trusted project and session.</div>;
+  if (!supported) return <section className="monitor-dashboard monitor-panel monitor-dashboard--empty" aria-label="Monitoring dashboard">
+    <div className="inspector-empty"><LayoutDashboard size={22} aria-hidden="true" /><strong>Monitor unavailable</strong><p>{unavailableExplanation.monitor}</p></div>
+  </section>;
+  if (!sessionId || (!webScope && !project?.trusted)) return <div className="monitor-dashboard monitor-panel monitor-dashboard--empty">
+    <div className="inspector-empty"><LayoutDashboard size={22} aria-hidden="true" /><strong>Nothing to monitor</strong><p>Open a trusted project and session.</p></div>
+  </div>;
   const shown = dashboard && dashboard.section === section && dashboard.offset === offset
     && (webScope ? !('projectPath' in dashboard) && dashboard.sessionId === webScope.sessionId
       && dashboard.selectionRevision === webScope.selectionRevision
       : 'projectPath' in dashboard && dashboard.projectPath === project?.path && dashboard.sessionId === sessionId)
     ? dashboard : null;
+  const unknownSources = shown ? Object.entries(shown.sources).filter(([, status]) => status === 'unknown').map(([name]) => name) : [];
   return (
-    <section className="monitor-dashboard" aria-label="Monitoring dashboard">
-      <header className="monitor-dashboard-header">
-        <div><strong>Monitor</strong>{shown ? <span className={`monitor-state monitor-state--${shown.overall}`}>{shown.overall}</span> : null}</div>
-        <button type="button" onClick={() => { supersedeDetail(); setRefresh((value) => value + 1); }}>Refresh</button>
+    <section className="monitor-dashboard monitor-panel activity-panel" aria-label="Monitoring dashboard">
+      <header className="monitor-dashboard-header activity-head">
+        <strong>Monitor</strong>
+        {shown ? <span className={`monitor-state monitor-state--${shown.overall}`}>{shown.overall}</span> : null}
+        {shown ? <span className="monitor-dashboard-metrics activity-counts" aria-label="Work status">
+          <span data-tone={shown.counts.attention > 0 ? 'attention' : undefined}><strong>{shown.counts.attention}</strong> attention</span>
+          {' '}<span data-tone={shown.counts.active > 0 ? 'active' : undefined}><strong>{shown.counts.active}</strong> active</span>
+        </span> : null}
+        <button type="button" className="activity-refresh" onClick={() => { supersedeDetail(); setRefresh((value) => value + 1); }}><RefreshCw size={10} aria-hidden="true" />Refresh</button>
       </header>
-      {shown ? <>
-        <div className="monitor-dashboard-metrics" aria-label="Work status">
-          <span><strong>{shown.counts.attention}</strong> attention</span>
-          <span><strong>{shown.counts.active}</strong> active</span>
-          <time dateTime={new Date(shown.checkedAt).toISOString()} title={new Date(shown.checkedAt).toLocaleString()}>{new Date(shown.checkedAt).toLocaleTimeString()}</time>
-        </div>
-        <div className="monitor-dashboard-sources" aria-label="Source check times">
-          {(Object.keys(shown.sources) as Array<keyof typeof shown.sources>).map((name) => <span key={name}>
-            {name} {shown.sourceCheckedAt[name] === null ? '—' : new Date(shown.sourceCheckedAt[name]!).toLocaleTimeString()}
-          </span>)}
-        </div>
-        {Object.entries(shown.sources).some(([, status]) => status === 'unknown') ? <p className="monitor-dashboard-unknown">Unavailable: {Object.entries(shown.sources).filter(([, status]) => status === 'unknown').map(([name]) => name).join(', ')}</p> : null}
-        {shown.sources.runs === 'partial' ? <p className="monitor-dashboard-unknown">Runs: latest 1,000 only.</p> : null}
-      </> : null}
-      <nav className="monitor-dashboard-sections" aria-label="Dashboard sections">
-        {SECTIONS.map((name) => <button key={name} type="button" aria-current={section === name ? 'page' : undefined}
-          onClick={() => { supersedeDetail(); setSection(name); setOffset(0); }}>{name === 'overview' ? 'Overview' : `${name[0]!.toUpperCase()}${name.slice(1)}${shown ? ` ${shown.counts[name]}` : ''}`}</button>)}
+      <nav className="monitor-dashboard-sections activity-filters" aria-label="Dashboard sections">
+        {SECTIONS.map((name) => <button key={name} type="button" className="activity-chip" aria-current={section === name ? 'page' : undefined}
+          onClick={() => { supersedeDetail(); setSection(name); setOffset(0); }}>{SECTION_LABELS[name]}{name !== 'overview' && shown ? <>{' '}<span className="monitor-dashboard-count">{shown.counts[name]}</span></> : null}</button>)}
       </nav>
-      {error ? <p role="alert" className="monitor-dashboard-error">{error}</p> : null}
-      {!shown && !error ? <p className="monitor-dashboard-empty">Loading…</p> : null}
-      {shown?.items.length === 0 && !error ? <p className="monitor-dashboard-empty">{shown.overall === 'unknown' || Object.values(shown.sources).some((status) => status !== 'ready')
-        ? 'No rows returned. A source is partial or unknown; this does not prove there is no active work.'
-        : `No ${section === 'overview' ? 'active or flagged work' : section}.`}</p> : null}
-      {shown ? <ol className="monitor-dashboard-list" start={offset + 1}>
-        {shown.items.map((item) => <li key={item.id} className={`monitor-dashboard-row monitor-dashboard-row--${item.state}`}>
-          <div className="monitor-dashboard-row-head"><span className="monitor-dashboard-row-state">{item.state}</span><time dateTime={new Date(item.updatedAt).toISOString()}>{new Date(item.updatedAt).toLocaleString()}</time></div>
-          <strong>{item.title}</strong>
-          {webScope && 'navigation' in item && item.navigation ? <button type="button" aria-label={`Open Monitor row ${item.id}`} onClick={() => void readDetail(item.id)}>Open details</button>
-            : webScope ? <p>Detail navigation unavailable for this row.</p> : null}
-          {!webScope && 'detail' in item && typeof item.detail === 'string' && item.detail ? <p>{item.detail}</p> : null}
-          {!webScope && project && monitorItemSchema.safeParse(item).success
-            ? <DetailLink item={monitorItemSchema.parse(item)} projectPath={project.path} /> : null}
-        </li>)}
-      </ol> : null}
-      {webScope && shown ? <p className="monitor-dashboard-unknown">Detail links use opaque host-issued row bindings. The host checks scope, selection and lifetime before each read.</p> : null}
-      {webScope && detailScopeKey === currentNetworkScope()?.key && detail.status !== 'unavailable' && <section aria-label="Monitor row details">
-        {detail.status === 'ready' ? <><h3>{detail.value.title}</h3><p>{detail.value.state} · {detail.value.kind} · {new Date(detail.value.updatedAt).toLocaleString()}</p>
-          <p style={{ whiteSpace: 'pre-wrap' }}>{detail.value.detail}</p>{detail.value.redacted && <p>Provider/private detail is withheld by host policy.</p>}
-          {detail.value.target ? <button type="button" disabled={navigating || !web?.isConnected} onClick={() => void navigate()}>Open corresponding work</button>
-            : <p>This bounded source detail has no canonical task, Team node or criterion target. No run ID is invented.</p>}
-          {navigationError && <p role="alert">{navigationError}</p>}</> : <p role={detail.status === 'error' ? 'alert' : 'status'}>{detail.status === 'error' ? 'Detail unavailable or stale. Refresh this scoped page; unknown is not empty.' : 'Reading scoped detail…'}</p>}
-      </section>}
+      {unknownSources.length > 0 ? <p className="monitor-dashboard-unknown activity-bounded"><TriangleAlert size={11} aria-hidden="true" /><span>Unavailable: {unknownSources.join(', ')}</span></p> : null}
+      {shown?.sources.runs === 'partial' ? <p className="monitor-dashboard-unknown activity-bounded"><TriangleAlert size={11} aria-hidden="true" /><span>Runs: latest 1,000 only.</span></p> : null}
+      {error ? <p role="alert" className="monitor-dashboard-error activity-status activity-status--error">{error}</p> : null}
+      <div className="monitor-dashboard-body">
+        {!shown && !error ? <p className="monitor-dashboard-empty activity-status" role="status"><Loader2 size={11} className="activity-spinner" aria-hidden="true" />Loading…</p> : null}
+        {shown?.items.length === 0 && !error ? <p className="monitor-dashboard-empty">{shown.overall === 'unknown' || Object.values(shown.sources).some((status) => status !== 'ready')
+          ? 'No rows returned. A source is partial or unknown; this does not prove there is no active work.'
+          : `No ${section === 'overview' ? 'active or flagged work' : section}.`}</p> : null}
+        {shown ? <ol className="monitor-dashboard-list" start={offset + 1}>
+          {shown.items.map((item) => {
+            const kind = 'ref' in item ? item.ref.kind : 'navigation' in item && item.navigation ? item.navigation.kind : null;
+            const Icon = kind ? ROW_ICONS[kind] : Activity;
+            const detailText = !webScope && 'detail' in item && typeof item.detail === 'string' ? item.detail : '';
+            return <li key={item.id} className={`monitor-dashboard-row monitor-dashboard-row--${item.state} activity-row`}>
+              <span className="monitor-dashboard-row-state">{item.state}</span>
+              <span className="activity-kind"><Icon size={12} aria-hidden="true" /></span>
+              <span className="activity-text">
+                <strong>{item.title}</strong>
+                {detailText ? <small title={detailText}>{detailText}</small> : null}
+                {webScope && !('navigation' in item && item.navigation) ? <small>Detail navigation unavailable for this row.</small> : null}
+              </span>
+              <span className="monitor-dashboard-row-side">
+                <time className="activity-time" dateTime={new Date(item.updatedAt).toISOString()} title={new Date(item.updatedAt).toLocaleString()}>{clock(item.updatedAt)}</time>
+                {webScope && 'navigation' in item && item.navigation
+                  ? <button type="button" className="activity-refresh" aria-label={`Open Monitor row ${item.id}`} onClick={() => void readDetail(item.id)}>Open details<ArrowUpRight size={10} aria-hidden="true" /></button> : null}
+                {!webScope && project && monitorItemSchema.safeParse(item).success
+                  ? <DetailLink item={monitorItemSchema.parse(item)} projectPath={project.path} /> : null}
+              </span>
+            </li>;
+          })}
+        </ol> : null}
+        {webScope && detailScopeKey === currentNetworkScope()?.key && detail.status !== 'unavailable' && <section className="monitor-dashboard-detail" aria-label="Monitor row details">
+          {detail.status === 'ready' ? <><h3>{detail.value.title}</h3><p className="monitor-dashboard-detail-meta">{detail.value.state} · {detail.value.kind} · {new Date(detail.value.updatedAt).toLocaleString()}</p>
+            <p className="monitor-dashboard-detail-text">{detail.value.detail}</p>{detail.value.redacted && <p className="monitor-dashboard-detail-meta">Provider/private detail is withheld by host policy.</p>}
+            {detail.value.target ? <button type="button" className="activity-refresh" disabled={navigating || !web?.isConnected} onClick={() => void navigate()}>Open corresponding work<ArrowUpRight size={10} aria-hidden="true" /></button>
+              : <p className="monitor-dashboard-detail-meta">This bounded source detail has no canonical task, Team node or criterion target. No run ID is invented.</p>}
+            {navigationError && <p role="alert" className="monitor-dashboard-error">{navigationError}</p>}</> : <p className="monitor-dashboard-detail-meta" role={detail.status === 'error' ? 'alert' : 'status'}>{detail.status === 'error' ? 'Detail unavailable or stale. Refresh this scoped page; unknown is not empty.' : 'Reading scoped detail…'}</p>}
+        </section>}
+        {webScope && shown ? <p className="monitor-dashboard-note activity-disclosure">Detail links use opaque host-issued row bindings. The host checks scope, selection and lifetime before each read.</p> : null}
+      </div>
       {shown && shown.total > PAGE_SIZE ? <div className="monitor-dashboard-pagination">
-        <button type="button" disabled={offset === 0} onClick={() => { supersedeDetail(); setOffset((value) => Math.max(0, value - PAGE_SIZE)); }}>Previous</button>
+        <button type="button" className="activity-refresh" disabled={offset === 0} onClick={() => { supersedeDetail(); setOffset((value) => Math.max(0, value - PAGE_SIZE)); }}><ChevronLeft size={10} aria-hidden="true" />Previous</button>
         <span>{offset + 1}–{Math.min(offset + PAGE_SIZE, shown.total)} / {shown.total}</span>
-        <button type="button" disabled={offset + PAGE_SIZE >= shown.total} onClick={() => { supersedeDetail(); setOffset((value) => value + PAGE_SIZE); }}>Next</button>
+        <button type="button" className="activity-refresh" disabled={offset + PAGE_SIZE >= shown.total} onClick={() => { supersedeDetail(); setOffset((value) => value + PAGE_SIZE); }}>Next<ChevronRight size={10} aria-hidden="true" /></button>
       </div> : null}
+      {shown ? <footer className="monitor-dashboard-sources" aria-label="Source check times"
+        title={(Object.keys(shown.sources) as Array<keyof typeof shown.sources>).map((name) =>
+          `${name} ${shown.sourceCheckedAt[name] === null ? '—' : clock(shown.sourceCheckedAt[name]!)}`).join(' · ')}>
+        <time dateTime={new Date(shown.checkedAt).toISOString()}>Checked {clock(shown.checkedAt)}</time>
+      </footer> : null}
     </section>
   );
 }

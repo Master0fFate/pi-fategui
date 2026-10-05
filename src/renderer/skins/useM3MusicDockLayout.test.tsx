@@ -36,4 +36,18 @@ describe('M3 dock geometry', () => {
     expect(style.getPropertyValue('--m3-music-reserve')).toBe('');
     expect(disconnect).toHaveBeenCalled();
   });
+
+  it('keeps a compact player at the right edge of a wide inspector', () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    useUiStore.setState({ inspectorCollapsed: false });
+    const inspector = document.createElement('aside');
+    inspector.className = 'inspector';
+    inspector.getBoundingClientRect = () => ({ left: 800, width: 600, bottom: 750 } as DOMRect);
+    document.body.append(inspector);
+    applySkin('m3-expressive');
+    render(<Player />);
+    const style = document.documentElement.style;
+    expect(style.getPropertyValue('--m3-music-width')).toBe('360px');
+    expect(style.getPropertyValue('--m3-music-left')).toBe('1028px');
+  });
 });

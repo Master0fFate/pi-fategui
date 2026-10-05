@@ -1,28 +1,56 @@
+/* The login page and the host Git read share this plain frame. */
 .monitor-dashboard { height: 100%; overflow: auto; padding: 12px; color: var(--theme-text); font-size: 11px; }
-.monitor-dashboard--empty, .monitor-dashboard-empty { padding: 14px 0; color: var(--theme-muted); }
-.monitor-dashboard button { border: 1px solid var(--theme-border); border-radius: 0; padding: 5px 7px; color: var(--theme-text); background: transparent; cursor: pointer; font: inherit; }
-.monitor-dashboard button:hover, .monitor-dashboard button[aria-current="page"] { background: var(--theme-raised); border-color: var(--theme-border-strong); }
-.monitor-dashboard button:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 2px; }
-.monitor-dashboard button:disabled { opacity: .4; cursor: default; }
-.monitor-dashboard-header, .monitor-dashboard-header > div, .monitor-dashboard-metrics, .monitor-dashboard-row-head, .monitor-dashboard-pagination { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
-.monitor-dashboard-header { border-bottom: 1px solid var(--theme-border); padding-bottom: 10px; }
-.monitor-dashboard-header > div { justify-content: flex-start; }
-.monitor-dashboard-header strong { text-transform: uppercase; letter-spacing: .08em; }
-.monitor-state { padding: 2px 5px; border: 1px solid var(--theme-border); text-transform: uppercase; font-size: 9px; }
-.monitor-state--attention, .monitor-dashboard-row--attention .monitor-dashboard-row-state, .monitor-dashboard-error { color: var(--theme-danger, #e5484d); }
-.monitor-state--unknown, .monitor-dashboard-unknown { color: var(--theme-muted); }
-.monitor-dashboard-metrics { justify-content: flex-start; flex-wrap: wrap; margin: 11px 0; color: var(--theme-muted); }
-.monitor-dashboard-metrics strong { color: var(--theme-text); }
-.monitor-dashboard-metrics time { margin-left: auto; font-variant-numeric: tabular-nums; }
-.monitor-dashboard-sources { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 0 0 10px; color: var(--theme-muted); font: 9px var(--font-code); }
-.monitor-dashboard-unknown { margin: 5px 0 11px; }
-.monitor-dashboard-sections { display: flex; flex-wrap: wrap; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid var(--theme-border); }
-.monitor-dashboard-list { list-style: none; margin: 0; padding: 0; }
-.monitor-dashboard-row { padding: 11px 0; border-bottom: 1px solid var(--theme-border); overflow-wrap: anywhere; }
-.monitor-dashboard-row-head { color: var(--theme-muted); font-size: 9px; margin-bottom: 5px; }
-.monitor-dashboard-row-state { text-transform: uppercase; letter-spacing: .06em; }
-.monitor-dashboard-row > strong { font-weight: 600; line-height: 1.4; }
-.monitor-dashboard-row > p { margin: 5px 0; color: var(--theme-muted); line-height: 1.45; }
-.monitor-dashboard-row > button { margin-top: 4px; }
-.monitor-dashboard-pagination { padding: 12px 0; font-variant-numeric: tabular-nums; }
-.monitor-dashboard-error { overflow-wrap: anywhere; }
+.monitor-dashboard:not(.monitor-panel) button { border: 1px solid var(--theme-border); border-radius: var(--skin-control-radius, 6px); padding: 5px 7px; color: var(--theme-text); background: transparent; cursor: pointer; font: inherit; }
+.monitor-dashboard:not(.monitor-panel) button:hover { background: var(--theme-raised); border-color: var(--theme-border-strong); }
+.monitor-dashboard:not(.monitor-panel) button:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 2px; }
+.monitor-dashboard:not(.monitor-panel) button:disabled { opacity: .4; cursor: default; }
+
+/* Monitor panel. It is built from the Activity panel parts (head, chips, rows),
+   so every skin that styles Activity styles Monitor in the same way. */
+.monitor-panel { padding: 0; overflow: hidden; }
+.monitor-panel :is(.activity-refresh, .activity-chip):disabled { opacity: .4; cursor: default; }
+.monitor-panel .activity-chip { flex: none; gap: 5px; }
+.monitor-panel .activity-chip[aria-current="page"] { border-color: color-mix(in srgb, var(--theme-accent) 55%, var(--theme-border)); background: var(--theme-accent-soft); color: var(--theme-accent); font-weight: 650; }
+.monitor-dashboard-sections { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.monitor-dashboard-count { color: var(--theme-subtle); font: 8px/1 var(--font-code); font-variant-numeric: tabular-nums; }
+.monitor-panel .activity-chip[aria-current="page"] .monitor-dashboard-count { color: inherit; }
+
+.monitor-state, .monitor-dashboard-row-state { display: inline-flex; flex: none; height: 16px; align-items: center; justify-content: center; padding: 0 5px; border-radius: 4px; color: var(--theme-text-soft); background: var(--theme-raised); font: 8px/1 var(--font-interface); font-weight: 650; letter-spacing: .03em; text-transform: uppercase; }
+.monitor-dashboard-row-state { min-width: 50px; }
+.monitor-state--attention, .monitor-dashboard-row--attention .monitor-dashboard-row-state { color: var(--theme-danger); background: color-mix(in srgb, var(--theme-danger) 14%, transparent); }
+.monitor-state--active, .monitor-dashboard-row--active .monitor-dashboard-row-state { color: var(--theme-accent); background: var(--theme-accent-soft); }
+.monitor-state--unknown { color: var(--theme-muted); background: transparent; box-shadow: inset 0 0 0 1px var(--theme-border); }
+.monitor-dashboard-metrics { display: inline-flex; align-items: center; gap: 8px; }
+.monitor-dashboard-metrics strong { color: var(--theme-text); font: inherit; font-weight: 650; }
+.monitor-dashboard-metrics [data-tone="attention"], .monitor-dashboard-metrics [data-tone="attention"] strong { color: var(--theme-danger); }
+.monitor-dashboard-metrics [data-tone="active"] strong { color: var(--theme-accent); }
+
+.monitor-dashboard-unknown { margin: 0; }
+.monitor-dashboard-error { margin: 0; overflow-wrap: anywhere; color: var(--theme-danger); }
+.monitor-dashboard-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.monitor-dashboard-empty { margin: 0; padding: 14px 10px; color: var(--theme-subtle); font-size: 10px; line-height: 1.5; }
+.monitor-dashboard-empty.activity-status { padding: 6px 10px; border-bottom: 0; }
+.monitor-dashboard-list { margin: 0; padding: 0; list-style: none; }
+.monitor-dashboard-row.activity-row { grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: start; color: var(--theme-text); }
+.monitor-dashboard-row .activity-kind { height: 16px; align-items: center; }
+.monitor-dashboard-row .activity-text { gap: 3px; padding-top: 2px; }
+.monitor-dashboard-row .activity-text strong { display: -webkit-box; overflow: hidden; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.monitor-dashboard-row .activity-text small { display: -webkit-box; overflow: hidden; font-family: var(--font-interface); line-height: 1.4; white-space: normal; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.monitor-dashboard-row-side { display: flex; flex: none; flex-direction: column; align-items: flex-end; gap: 5px; padding-top: 3px; }
+
+.monitor-dashboard-detail { margin: 10px; padding: 10px; border: 1px solid var(--theme-border); border-radius: var(--skin-panel-radius, 8px); background: var(--theme-panel); }
+.monitor-dashboard-detail h3 { margin: 0 0 3px; color: var(--theme-text); font-size: 11px; font-weight: 650; line-height: 1.4; overflow-wrap: anywhere; }
+.monitor-dashboard-detail p { margin: 0 0 8px; }
+.monitor-dashboard-detail-meta { color: var(--theme-subtle); font-size: 9px; line-height: 1.45; }
+.monitor-dashboard-detail-text { color: var(--theme-text-soft); font-size: 10px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.monitor-dashboard-note { border-top: 1px solid var(--theme-border); border-bottom: 0; }
+
+.monitor-dashboard-pagination { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-top: 1px solid var(--theme-border); background: var(--theme-panel); color: var(--theme-muted); font: 9px/1 var(--font-code); font-variant-numeric: tabular-nums; }
+.monitor-dashboard-sources { flex: none; padding: 5px 10px; border-top: 1px solid var(--theme-border); color: var(--theme-subtle); font: 9px/1.4 var(--font-code); font-variant-numeric: tabular-nums; }
+
+/* Skin hooks: the same surfaces as the Activity panel. */
+:root[data-skin][data-skin-styled] :is(.monitor-state, .monitor-dashboard-row-state, .monitor-dashboard-detail) { border-radius: var(--surface-control-radius); }
+:root[data-skin][data-skin-styled] :is(.monitor-dashboard-pagination, .monitor-dashboard-sources) { font-family: var(--font-interface); }
+:root[data-skin="m3-expressive"] :is(.monitor-state, .monitor-dashboard-row-state) { border-radius: 8px; }
+:root[data-skin="m3-expressive"] .monitor-dashboard-detail { border-radius: 12px; }
+:root[data-skin="dreamcore"] :is(.monitor-state, .monitor-dashboard-row-state, .monitor-dashboard-detail) { border-radius: 0; }
