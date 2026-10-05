@@ -111,7 +111,7 @@ Ctrl+C requests controlled host shutdown. Wait for real settlement before restar
    ```
 
    Arrange an explicitly approved secure transfer of this client file to a private desktop location. The command does not transfer it. This is neither the SSH private key nor the server owner/provider credential.
-4. In the desktop host selector, add an SSH profile. Enter the SSH alias, remote port, verified server ID, workspace ID/generation and label. Use the native picker for the private client file, then confirm the server identity. Saving a profile does not deploy, connect or start agent work.
-5. Select the saved profile, or use `fate connect PROFILE`, where `PROFILE` is the saved profile identifier. The main process owns the tunnel and credential read. It verifies identity, protocol, workspace and readiness before permitting work. Failure does not start a local agent as a fallback.
+4. In the desktop app, open **Settings → Hosts** and select **Add SSH host**. Enter the SSH alias, remote port, verified server ID, workspace ID/generation and label. Use the native picker for the private client file, then confirm the server identity. Saving a profile does not deploy, connect or start agent work.
+5. Select the saved host in **Settings → Hosts**, or use `fate connect PROFILE`, where `PROFILE` is the saved profile identifier. The main process owns the tunnel and credential read. It verifies identity, protocol, workspace and readiness before permitting work. Failure does not start a local agent as a fallback.
 
 Disconnect closes only the owned tunnel. Independently hosted work may remain active and incur provider charges. [Troubleshooting](troubleshooting.md) covers host verification, stale state and uncertain outcomes. Real SSH, native picker, service and active-loss acceptance remain pending for the final candidate.

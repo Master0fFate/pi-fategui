@@ -3,6 +3,7 @@ import { useRuntimeStore as useWebWorkspaceStore, selectSessionView, canMutateNe
 import { thinkingLevelSchema } from '../../../shared/contracts/ipc';
 import { GoalMaxRail } from '../goalmaxxing/GoalMaxRail';
 import { NetworkConnectionControls } from '../connections/NetworkConnectionControls';
+import { ExecutionHostButton } from '../connections/ExecutionHostButton';
 import { GoalMaxTaskStrip } from '../goalmaxxing/GoalMaxTaskStrip';
 import { unavailableExplanation } from '../../platform/capabilityPolicy';
 import { FolderOpen, FolderSearch, GitPullRequest, Globe2, KeyRound, PanelRightClose, PanelRightOpen, Search, SearchCode, TerminalSquare } from 'lucide-react';
@@ -319,6 +320,7 @@ function DesktopWorkspace({ inspectorCollapsed, onToggleInspector }: WorkspacePr
             <WorkspaceActivityPulse />
           </div>
           <div className="session-controls">
+            <ExecutionHostButton />
             <IconButton
               label="Open command palette"
               terminalLabel="cmd"

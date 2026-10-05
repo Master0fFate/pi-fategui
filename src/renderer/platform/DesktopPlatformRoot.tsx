@@ -1,21 +1,25 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { App } from '../app/App';
 import './desktop-connections.css';
 import { getDesktopConnectionsOptional, getDesktopConnectionRevision, getDesktopConnectionState,
   getFateApiOptional, initializeDesktopConnections, subscribeDesktopConnection } from './api';
-import type { DesktopConnectionApi } from '../../shared/contracts/connections';
-import { ConnectionProfileEditor } from '../features/connections/ConnectionProfileEditor';
-import { ConnectionFeedback } from '../features/connections/ConnectionFeedback';
+import type { ConnectionProfile } from '../../shared/contracts/connections';
+import { ExecutionHostContext, type ExecutionHost } from './executionHost';
 
-/** Native selection is resolved before local hydration. An unavailable remote remains remote. */
+/**
+ * Native selection is resolved before local hydration. An unavailable remote remains remote.
+ * This root draws nothing above the workbench: the host controls live in Settings → Hosts and
+ * in one button of the workspace header, so the first row of the window stays the title bar.
+ */
 export function DesktopPlatformRoot() {
   useSyncExternalStore(subscribeDesktopConnection, getDesktopConnectionRevision, getDesktopConnectionRevision);
   const connections = getDesktopConnectionsOptional();
   const state = getDesktopConnectionState();
-  const [profiles, setProfiles] = useState<Awaited<ReturnType<DesktopConnectionApi['listConnectionProfiles']>>>([]);
+  const [profiles, setProfiles] = useState<readonly ConnectionProfile[]>([]);
   const [initialized, setInitialized] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const busyRef = useRef(false);
   useEffect(() => {
     let active = true;
     if (!connections) { setInitialized(true); return; }
@@ -24,30 +28,27 @@ export function DesktopPlatformRoot() {
     }).catch(() => { if (active) { setError('The saved execution host is unavailable. Select a host explicitly; local fallback is disabled.'); setInitialized(true); } });
     return () => { active = false; };
   }, [connections]);
-  const run = async (action: () => Promise<unknown>) => {
-    if (busy) return;
-    setBusy(true); setError(null);
-    try { await action(); await initializeDesktopConnections(); }
-    catch { setError('Host selection or connection was not confirmed. No local fallback was made.'); }
-    finally { setBusy(false); }
-  };
+  const host = useMemo<ExecutionHost | null>(() => {
+    if (!connections) return null;
+    const run = async (action: () => Promise<unknown>) => {
+      if (busyRef.current) return;
+      busyRef.current = true; setBusy(true); setError(null);
+      try { await action(); await initializeDesktopConnections(); }
+      catch { setError('Host selection or connection was not confirmed. No local fallback was made.'); }
+      finally { busyRef.current = false; setBusy(false); }
+    };
+    return {
+      api: connections, state, profiles, busy, error,
+      select: (id) => void run(() => connections.selectConnectionProfile(id === 'local' ? { kind: 'local' } : { kind: 'remote', profileId: id })),
+      connect: () => void run(() => getFateApiOptional()!.remote!.connect()),
+      disconnect: () => void run(() => getFateApiOptional()!.remote!.disconnect()),
+      reloadProfiles: async () => setProfiles(await connections.listConnectionProfiles()),
+    };
+  }, [connections, state, profiles, busy, error]);
   const key = state ? `${state.kind}:${state.generation}:${state.profile?.id ?? ''}:${state.serverEpoch ?? ''}` : 'selection-unconfirmed';
-  return <div className="desktop-platform-root">
-    {connections && <section className="desktop-host-selector" aria-label="Execution host">
-      <ConnectionProfileEditor api={connections} onSaved={async () => setProfiles(await connections.listConnectionProfiles())} />
-      {(profiles.length > 0 || state?.kind !== 'local') && <><label>Execution host <select aria-label="Execution host" disabled={busy} value={state?.kind === 'local' ? 'local' : state?.profile?.id ?? ''}
-        onChange={(event) => { const id = event.target.value; void run(() => connections.selectConnectionProfile(id === 'local' ? { kind: 'local' } : { kind: 'remote', profileId: id })); }}>
-        {(!state || state.kind === 'remote' && !profiles.some((profile) => profile.id === state.profile?.id)) &&
-          <option value={state?.profile?.id ?? ''} disabled>{state?.profile?.label ?? 'Selection unconfirmed'} — remote unavailable; no local execution</option>}
-        <option value="local">This computer — local execution</option>
-        {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label} — remote execution</option>)}
-      </select></label>
-      {state?.kind === 'remote' && <><ConnectionFeedback state={state} /><span>Remote files are not local files.</span>
-        <button type="button" disabled={busy} onClick={() => void run(() => getFateApiOptional()!.remote!.connect())}>Connect selected host</button>
-        <button type="button" disabled={busy} onClick={() => void run(() => getFateApiOptional()!.remote!.disconnect())}>Disconnect selected host</button></>}
-      </>}
-      {error && <p role="alert">{error}</p>}
-    </section>}
-    {initialized ? <App key={key} /> : <p role="status">Checking the saved execution host. Local execution has not started.</p>}
-  </div>;
+  return <ExecutionHostContext.Provider value={host}>
+    <div className="desktop-platform-root">
+      {initialized ? <App key={key} /> : <p className="desktop-platform-status" role="status">Checking the saved execution host. Local execution has not started.</p>}
+    </div>
+  </ExecutionHostContext.Provider>;
 }

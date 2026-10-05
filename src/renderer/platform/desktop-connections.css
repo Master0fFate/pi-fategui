@@ -1,12 +1,27 @@
 .desktop-platform-root { height: 100vh; display: flex; flex-direction: column; min-width: 0; }
 .desktop-platform-root > .app-shell { flex: 1; min-height: 0; height: auto; }
-.desktop-host-selector { display: flex; flex: none; min-width: 0; flex-wrap: wrap; align-items: center; gap: 6px; padding: 3px 8px; border-bottom: 1px solid var(--theme-border); background: var(--theme-canvas); color: var(--theme-text-soft); font-size: 11px; }
-.desktop-host-selector :is(select, button) { min-height: 26px; max-width: 100%; border: 1px solid var(--theme-border); border-radius: var(--skin-control-radius, 6px); background: var(--theme-panel); color: inherit; font: inherit; }
-.desktop-host-selector > label { min-width: 0; }
-.desktop-host-selector :is(select, button):focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 2px; }
-.desktop-host-selector p { margin: 0; overflow-wrap: anywhere; }
-.desktop-host-action { display: inline-flex; flex: none; align-items: center; gap: 5px; padding: 3px 8px; color: var(--theme-muted); background: var(--theme-raised); cursor: pointer; font-size: 11px; }
-.desktop-host-action:hover:not(:disabled) { color: var(--theme-text); background: var(--theme-raised-hover); }
+/* The platform root draws nothing above the workbench; the first row of the window is the title bar. */
+.desktop-platform-status { display: grid; flex: 1; place-items: center; margin: 0; padding: 24px; color: var(--theme-muted); font-size: 11px; text-align: center; app-region: drag; -webkit-app-region: drag; }
+
+/* Header button: present only when a host is saved, selected or failed. The mark shows the connection. */
+.workspace-host-button { position: relative; }
+.workspace-host-button[data-tone]:not([data-tone="local"])::after { content: ""; position: absolute; top: 5px; right: 4px; width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 0 2px var(--theme-canvas); background: var(--theme-success); }
+.workspace-host-button[data-tone="waiting"]::after { background: var(--theme-warning); }
+.workspace-host-button[data-tone="failed"]::after { background: var(--theme-danger); }
+.workspace-host-button[data-tone="ready"] { color: var(--theme-text-soft); }
+.workspace-host-button[data-tone="failed"] { color: var(--theme-danger); }
+
+/* Settings → Hosts: the shared Settings rows, plus the few parts those rows lack. */
+.settings-host-error { margin: 10px 0 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--theme-danger) 45%, var(--theme-border)); border-radius: var(--skin-control-radius, 7px); color: var(--theme-danger); background: color-mix(in srgb, var(--theme-danger) 8%, transparent); font-size: 11px; line-height: 1.5; }
+.settings-host-select { flex: 0 1 240px; min-width: 0; }
+.settings-host-actions { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.settings-host-value { flex: none; color: var(--theme-muted); font-size: 11px; }
+.settings-host-value[data-active="true"] { color: var(--theme-accent); font-weight: 600; }
+.settings-select-row .settings-host-id { font-family: var(--font-code); font-size: 9px; overflow-wrap: anywhere; }
+.settings-host-add { display: inline-flex; align-items: center; gap: 6px; }
+.settings-inline-action:disabled { opacity: .55; cursor: not-allowed; }
+:root[data-skin="dreamcore"] .settings-host-error { border-radius: 0; }
+:root[data-skin="m3-expressive"] .settings-host-error { border-radius: 12px; }
 
 /* Same Radix portal/lifecycle and Team workspace-dialog frame, palette and row
    rhythm. The editor never expands the workbench's in-flow host rail. */

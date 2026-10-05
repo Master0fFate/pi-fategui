@@ -16,8 +16,20 @@ const messages: Record<DesktopConnectionState['message'], string> = {
   'workspace-mismatch': 'The workspace ID or generation changed. Verify the selected host workspace.',
   'provider-auth-required': 'Host connection verified. Configure provider authorization on the execution host before sending work.',
 };
+const settled = new Set<DesktopConnectionState['message']>(['local', 'ready']);
+const waiting = new Set<DesktopConnectionState['message']>(['selected', 'connecting', 'ssh-connecting', 'ssh-stop-pending', 'refresh-required', 'provider-auth-required']);
+
+export type ConnectionTone = 'ready' | 'waiting' | 'failed';
+/** A coarse signal for one status mark. The message stays the source of meaning. */
+export function connectionTone(state: Pick<DesktopConnectionState, 'message'>): ConnectionTone {
+  return settled.has(state.message) ? 'ready' : waiting.has(state.message) ? 'waiting' : 'failed';
+}
+
+export function connectionMessage(state: Pick<DesktopConnectionState, 'message' | 'providerStatus'>): string {
+  return `${messages[state.message]}${state.providerStatus === 'auth-required' && state.message !== 'provider-auth-required'
+    ? ' Provider authorization is required on the execution host.' : ''}`;
+}
+
 export function ConnectionFeedback({ state }: { state: Pick<DesktopConnectionState, 'message' | 'providerStatus'> }) {
-  return <span role="status">{messages[state.message]}
-    {state.providerStatus === 'auth-required' && state.message !== 'provider-auth-required' && ' Provider authorization is required on the execution host.'}
-  </span>;
+  return <span role="status">{connectionMessage(state)}</span>;
 }

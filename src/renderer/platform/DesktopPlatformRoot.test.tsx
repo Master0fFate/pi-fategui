@@ -9,7 +9,11 @@ const fixture = vi.hoisted(() => ({
   pick: vi.fn(async () => null),
   save: vi.fn(),
 }));
-vi.mock('../app/App', () => ({ App: () => <div className="app-shell" data-testid="fixture-workbench">Renderer fixture; no core startup.</div> }));
+// The workbench fixture mounts the real Settings page for hosts: the only place with host controls.
+vi.mock('../app/App', async () => {
+  const { HostSettings } = await import('../features/connections/HostSettings');
+  return { App: () => <div className="app-shell" data-testid="fixture-workbench"><HostSettings /></div> };
+});
 vi.mock('./api', () => ({
   subscribeDesktopConnection: () => () => undefined,
   getDesktopConnectionRevision: () => 1,
@@ -32,9 +36,22 @@ it('discloses list initialization failure for a local target even with no loaded
   expect(fixture.state.kind).toBe('local'); expect(fixture.select).not.toHaveBeenCalled();
   expect(fixture.pick).not.toHaveBeenCalled(); expect(fixture.save).not.toHaveBeenCalled();
 });
-it('keeps a genuinely empty local host rail compact without an error or a target change', async () => {
+it('keeps a genuinely empty local host page without an error, a selector or a target change', async () => {
   render(<DesktopPlatformRoot />); await screen.findByTestId('fixture-workbench');
   expect(screen.queryByRole('alert')).toBeNull(); expect(screen.queryByRole('combobox', { name: 'Execution host' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Add SSH host' })).toBeInTheDocument();
   expect(fixture.select).not.toHaveBeenCalled(); expect(fixture.pick).not.toHaveBeenCalled(); expect(fixture.save).not.toHaveBeenCalled();
+});
+it('draws nothing above the workbench, so the first row of the window is the title bar', async () => {
+  const { container } = render(<DesktopPlatformRoot />);
+  const workbench = await screen.findByTestId('fixture-workbench');
+  expect(container.querySelector('.desktop-platform-root')!.firstElementChild).toBe(workbench);
+  expect(container.querySelector('.desktop-host-selector')).toBeNull();
+});
+it('offers the saved hosts in Settings and selects one only on an explicit choice', async () => {
+  fixture.list.mockResolvedValue([{ id: '30000000-0000-4000-8000-000000000001', label: 'Build box', hostId: '30000000-0000-4000-8000-000000000002' }] as never);
+  render(<DesktopPlatformRoot />); await screen.findByTestId('fixture-workbench');
+  expect(await screen.findByRole('combobox', { name: 'Execution host' })).toHaveTextContent('This computer');
+  expect(screen.getByRole('tabpanel')).toHaveTextContent('Build box');
+  expect(fixture.select).not.toHaveBeenCalled();
 });

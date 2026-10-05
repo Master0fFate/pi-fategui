@@ -7,7 +7,7 @@ import { useSkinComponents } from '../../skins/SkinProvider';
 
 type ProfileEditorApi = Pick<DesktopConnectionApi, 'pickConnectionCredential' | 'saveSshConnectionProfile'>;
 type Pending = 'pick' | 'save' | 'refresh' | null;
-export function ConnectionProfileEditor({ api, onSaved }: { api: ProfileEditorApi; onSaved: () => Promise<void> }) {
+export function ConnectionProfileEditor({ api, onSaved, triggerClassName = 'settings-inline-action' }: { api: ProfileEditorApi; onSaved: () => Promise<void>; triggerClassName?: string }) {
   const { ActionContent } = useSkinComponents();
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null), firstField = useRef<HTMLInputElement>(null), pendingRef = useRef(false);
@@ -52,7 +52,7 @@ export function ConnectionProfileEditor({ api, onSaved }: { api: ProfileEditorAp
     else if (!pendingRef.current) { setOpen(true); setSelectionId(null); setTrust(false); setError(null); setTouched(new Set()); }
   }}>
     <Dialog.Trigger asChild>
-      <button ref={trigger} className="desktop-host-action" type="button" disabled={busy} aria-label="Add SSH host">
+      <button ref={trigger} className={triggerClassName} type="button" disabled={busy} aria-label="Add SSH host">
         <Plus size={13} aria-hidden="true" /><ActionContent text="add ssh host">Add SSH host</ActionContent>
       </button>
     </Dialog.Trigger>

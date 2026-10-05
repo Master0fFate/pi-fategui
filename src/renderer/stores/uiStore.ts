@@ -34,6 +34,7 @@ export const BROWSER_PANE_MIN = 360;
 export const BROWSER_PANE_MAX = 2400;
 
 export type SidebarTab = 'sessions' | 'resources' | 'agents';
+export type SettingsSection = 'general' | 'skins' | 'compaction' | 'agent' | 'mcp' | 'hosts' | 'learning' | 'voice' | 'workspace' | 'system';
 export type InspectorTab = 'changes' | 'files' | 'tools' | 'sessions' | 'resources' | 'context' | 'goal' | 'activity' | 'monitor';
 export type InspectorDestination = 'work' | 'run' | 'system';
 export type InspectorLastViews = Record<InspectorDestination, InspectorTab>;
@@ -62,6 +63,8 @@ interface UiState {
   inspectorCollapsed: boolean;
   paletteOpen: boolean;
   settingsOpen: boolean;
+  /** A one-time request to show a section. The dialog owns the section it shows. */
+  settingsSectionRequest: SettingsSection | null;
   terminalOpen: boolean;
   browserOpen: boolean;
   browserPaneWidth: number;
@@ -91,6 +94,7 @@ interface UiState {
   toggleInspector: () => void;
   setPaletteOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
+  openSettingsSection: (section: SettingsSection) => void;
   setTerminalOpen: (open: boolean) => void;
   toggleTerminal: () => void;
   setBrowserOpen: (open: boolean) => void;
@@ -170,6 +174,7 @@ export const useUiStore = create<UiState>()(
       inspectorCollapsed: false,
       paletteOpen: false,
       settingsOpen: false,
+      settingsSectionRequest: null,
       terminalOpen: false,
       browserOpen: false,
       browserPaneWidth: 520,
@@ -199,6 +204,7 @@ export const useUiStore = create<UiState>()(
       toggleInspector: () => set((state) => ({ inspectorCollapsed: !state.inspectorCollapsed })),
       setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
       setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+      openSettingsSection: (settingsSectionRequest) => set({ settingsSectionRequest, settingsOpen: true }),
       setTerminalOpen: (terminalOpen) => set({ terminalOpen }),
       toggleTerminal: () => set((state) => ({ terminalOpen: !state.terminalOpen })),
       setBrowserOpen: (browserOpen) => set((state) => ({ browserOpen, inspectorCollapsed: browserOpen ? true : state.inspectorCollapsed })),

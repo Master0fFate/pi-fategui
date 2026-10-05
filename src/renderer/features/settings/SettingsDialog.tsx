@@ -16,6 +16,7 @@ import {
   Rows3,
   Save,
   ShieldCheck,
+  Server,
   SlidersHorizontal,
   Mic2,
   Download,
@@ -34,6 +35,8 @@ import { builtInSkins, builtInSkinName, skinPackThemeId, type SkinId, type SkinC
 import { getSkinDefinitions, persistAppliedSkin, setSkinDefinitions } from '../../skin';
 import { SkinPackSettings, type RemovedSkin } from './SkinPackSettings';
 import { McpSettings } from './McpSettings';
+import { HostSettings } from '../connections/HostSettings';
+import { useExecutionHost } from '../../platform/executionHost';
 import type { ThemeDefinition } from '../../../shared/themes';
 import {
   defaultImageGenerationModel,
@@ -53,7 +56,7 @@ import { getFontOptions, getFontStatus, subscribeFontStatus } from '../../fonts'
 import { overrideSkinAppearance, resetSkinAppearance, resolveSkinAppearance, removePackFontPreferences } from '../../../shared/skinAppearance';
 import { fallbackThemes, persistAppliedTheme, resolveTheme } from '../../theme';
 import { useRuntimeStore } from '../../stores/runtimeStore';
-import { useUiStore } from '../../stores/uiStore';
+import { useUiStore, type SettingsSection } from '../../stores/uiStore';
 import { enumerateMicrophones, microphoneAccessError, requestMicrophoneDevices, type MicrophoneDevice } from './microphoneDevices';
 import { ProviderConnectDialog } from '../../components/ProviderConnectDialog';
 import { ProviderModelsDialog } from './ProviderModelsDialog';
@@ -69,7 +72,6 @@ const fallback: AppSettings = {
   memoryLearning: defaultMemoryLearning,
 };
 
-type SettingsSection = 'general' | 'skins' | 'compaction' | 'agent' | 'mcp' | 'learning' | 'voice' | 'workspace' | 'system';
 type SettingsToast = { kind: 'success' | 'error'; title: string; message: string };
 
 const sections = [
@@ -78,6 +80,7 @@ const sections = [
   { id: 'compaction', label: 'Compaction', detail: 'Density controls', icon: Rows3 },
   { id: 'agent', label: 'Agent', detail: 'Models & workspaces', icon: Bot },
   { id: 'mcp', label: 'MCP', detail: 'External tools', icon: GitBranch },
+  { id: 'hosts', label: 'Hosts', detail: 'Remote execution', icon: Server },
   { id: 'learning', label: 'Memory Learning', detail: 'Reviewed knowledge', icon: Brain },
   { id: 'voice', label: 'Voice', detail: 'Local speech-to-text', icon: Mic2 },
   { id: 'workspace', label: 'Workspace', detail: 'Trust & terminal', icon: ShieldCheck },
@@ -164,7 +167,16 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
     () => providerGroups.filter((group) => group.models.some((model) => isOpenAICompatibleImageApi(model.api))),
     [providerGroups],
   );
-  const [activeSection, setActiveSection] = useState<SettingsSection>('general');
+  const executionHost = useExecutionHost();
+  const sectionRequest = useUiStore((state) => state.settingsSectionRequest);
+  const [selectedSection, setActiveSection] = useState<SettingsSection>(() => useUiStore.getState().settingsSectionRequest ?? 'general');
+  // Hosts exists only where the desktop can select an execution host.
+  const activeSection = selectedSection === 'hosts' && !executionHost ? 'general' : selectedSection;
+  useEffect(() => {
+    if (!sectionRequest) return;
+    setActiveSection(sectionRequest);
+    useUiStore.setState({ settingsSectionRequest: null });
+  }, [sectionRequest]);
   const [selectedProvider, setSelectedProvider] = useState('');
   const [themeCatalog, setThemeCatalog] = useState(initialThemeCatalog);
   const [skinCatalog, setSkinCatalog] = useState<SkinCatalog>(() => ({ skins: [...getSkinDefinitions()], storagePath: '', diagnostics: [] }));
@@ -671,7 +683,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
           {desktopSettingsAvailable ? <>
           <div className="settings-layout">
             <nav className="settings-nav" aria-label="Settings categories" role="tablist" aria-orientation="vertical">
-              {sections.map(({ id, label, detail, icon: Icon }) => (
+              {sections.filter(({ id }) => id !== 'hosts' || executionHost !== null).map(({ id, label, detail, icon: Icon }) => (
                 <button key={id} type="button" role="tab" id={`settings-tab-${id}`} aria-selected={activeSection === id} aria-controls={`settings-panel-${id}`} onClick={() => chooseSection(id)}>
                   <Symbol text={activeSection === id ? '>' : ' '}><Icon size={14} aria-hidden="true" /></Symbol>
                   <span><strong>{label}</strong><small>{detail}</small></span>
@@ -928,6 +940,7 @@ export function SettingsDialog({ themeCatalog: initialThemeCatalog = fallbackThe
               )}
 
               {activeSection === 'mcp' && <McpSettings />}
+              {activeSection === 'hosts' && <HostSettings />}
               {activeSection === 'system' && (
                 <div className="settings-panel" role="tabpanel" id="settings-panel-system" aria-labelledby="settings-tab-system">
                   <div className="settings-title"><div><h3>Pi diagnostics</h3><p>Local runtime details for troubleshooting.</p></div></div>
