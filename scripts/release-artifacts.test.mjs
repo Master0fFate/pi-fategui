@@ -76,31 +76,30 @@ describe('release artifact verification', () => {
       .rejects.toMatchObject({ stderr: expect.stringContaining('Release artifact set mismatch') });
   });
 
-  it('reports a clean tag, exact titled release, and stable classification', async () => {
+  it('reports a clean tag, exact titled release, and pre-release classification', async () => {
     const metadata = async (field) => (await execFileAsync(process.execPath, [script, 'metadata', '--field', field], { cwd: root })).stdout.trim();
-    await expect(metadata('version')).resolves.toBe('1.1.0');
-    await expect(metadata('tag')).resolves.toBe('v1.1.0');
-    await expect(metadata('display-version')).resolves.toBe('V1.1.0 - Axiom');
-    await expect(metadata('is-prerelease')).resolves.toBe('false');
-    await expect(execFileAsync(process.execPath, [script, 'validate-tag', '--tag', 'v1.1.0'], { cwd: root })).resolves.toMatchObject({
-      stdout: expect.stringContaining('title V1.1.0 - Axiom'),
+    await expect(metadata('version')).resolves.toBe('2.0.1-beta');
+    await expect(metadata('tag')).resolves.toBe('v2.0.1-beta');
+    await expect(metadata('display-version')).resolves.toBe('V2.0.1-beta - Radian');
+    await expect(metadata('is-prerelease')).resolves.toBe('true');
+    await expect(execFileAsync(process.execPath, [script, 'validate-tag', '--tag', 'v2.0.1-beta'], { cwd: root })).resolves.toMatchObject({
+      stdout: expect.stringContaining('title V2.0.1-beta - Radian'),
     });
     await expect(execFileAsync(process.execPath, [script, 'validate-tag', '--tag', 'V1.1.0 - Modulo'], { cwd: root }))
-      .rejects.toMatchObject({ stderr: expect.stringContaining('does not match package version 1.1.0') });
+      .rejects.toMatchObject({ stderr: expect.stringContaining('does not match package version 2.0.1-beta') });
   });
 
   it('prints a safe gh latest flag from the current package and published tag', async () => {
     const policy = async (...args) => (await execFileAsync(process.execPath, [script, 'latest-policy', ...args], { cwd: root })).stdout.trim();
-    await expect(policy()).resolves.toBe('--latest');
-    await expect(policy('--published-tag', 'v0.9.9')).resolves.toBe('--latest');
-    await expect(policy('--published-tag', 'v0.9.9-beta4')).resolves.toBe('--latest');
-    await expect(policy('--published-tag', 'v1.0.1-beta1')).resolves.toBe('--latest');
-    await expect(policy('--published-tag', 'v1.0.0')).resolves.toBe('--latest');
+    await expect(policy()).resolves.toBe('--latest=false');
+    await expect(policy('--published-tag', 'v0.9.9')).resolves.toBe('--latest=false');
+    await expect(policy('--published-tag', 'v0.9.9-beta4')).resolves.toBe('--latest=false');
+    await expect(policy('--published-tag', 'v1.0.1-beta1')).resolves.toBe('--latest=false');
+    await expect(policy('--published-tag', 'v1.0.0')).resolves.toBe('--latest=false');
     await expect(policy('--published-tag', 'v1.1.0')).resolves.toBe('--latest=false');
     await expect(policy('--published-tag', 'v1.2.0-beta1')).resolves.toBe('--latest=false');
-    await expect(policy('--published-tag', 'V1.0.0 - Old Title')).rejects.toMatchObject({
-      stderr: expect.stringContaining('Published release tag is invalid'),
-    });
+    // The package is a pre-release: it is never marked latest, so the published tag is not read.
+    await expect(policy('--published-tag', 'V1.0.0 - Old Title')).resolves.toBe('--latest=false');
   });
 
   it('keeps computed latest policy off drafts and verifies latest through gh release list', async () => {
