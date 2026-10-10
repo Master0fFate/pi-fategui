@@ -178,7 +178,6 @@ export class PiEventNormalizer {
   private activeAssistantId: string | null = null;
   /** Kept through post-run retry, compaction, and queue draining until Pi settles. */
   private settlementRunId: string | null = null;
-  private settlementAborted = false;
   private readonly toolProvenance = new Map<string, ToolProvenance>();
   private readonly runningToolIds = new Set<string>();
 
@@ -191,7 +190,6 @@ export class PiEventNormalizer {
   resetSession(): void {
     this.activeAssistantId = null;
     this.settlementRunId = null;
-    this.settlementAborted = false;
     this.toolProvenance.clear();
     this.runningToolIds.clear();
   }
@@ -213,7 +211,6 @@ export class PiEventNormalizer {
         const runId = this.runId();
         if (!runId) return [];
         this.settlementRunId = runId;
-        this.settlementAborted = false;
         return [{ type: 'run.started', runId, timestamp: now }];
       }
       case 'agent_end': {
@@ -221,17 +218,13 @@ export class PiEventNormalizer {
         const runId = this.settlementRunId ?? this.runId();
         if (!runId) return [];
         this.settlementRunId = runId;
-        const last = event.messages.at(-1) as { stopReason?: string } | undefined;
-        this.settlementAborted = last?.stopReason === 'aborted';
         return [];
       }
       case 'agent_settled': {
         this.runningToolIds.clear();
         const runId = this.settlementRunId ?? this.runId();
-        const aborted = this.settlementAborted;
         this.settlementRunId = null;
-        this.settlementAborted = false;
-        return runId ? [{ type: 'run.completed', runId, aborted, timestamp: now }] : [];
+        return runId ? [{ type: 'run.completed', runId, aborted: event.aborted, timestamp: now }] : [];
       }
       case 'message_start': {
         const role = messageRole(event.message);
@@ -325,6 +318,7 @@ export class PiEventNormalizer {
           ...(runIds ? { subagentRunIds: runIds } : {}),
           ...(provenance ? { provenance } : {}),
           error: event.isError,
+          ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
           timestamp: now,
         }];
       }

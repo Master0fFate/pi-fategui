@@ -602,6 +602,7 @@ export const runtimeToolSchema = z.object({
   startedAt: z.number().finite(),
   updatedAt: z.number().finite(),
   endedAt: z.number().finite().optional(),
+  durationMs: z.number().finite().nonnegative().optional(),
   timelinePosition: z.number().finite().optional(),
   images: z.array(runtimeImageSchema).max(8).optional(),
   subagentRunIds: z.array(z.string().min(1).max(100)).optional(),
@@ -1076,7 +1077,7 @@ const assistantTextEventSchema = eventBaseSchema.extend({ type: z.literal('assis
 const assistantReasoningEventSchema = eventBaseSchema.extend({ type: z.literal('assistant.reasoning'), messageId: z.string().min(1), delta: z.string().min(1).max(32_000) });
 const toolStartedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.started'), toolCallId: z.string().min(1), name: z.string().min(1), input: z.string().max(65_000), subagentRunIds: z.array(z.string().min(1).max(100)).optional(), provenance: toolProvenanceSchema.optional() });
 const toolUpdatedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.updated'), toolCallId: z.string().min(1), output: z.string().max(65_000), subagentRunIds: z.array(z.string().min(1).max(100)).optional(), provenance: toolProvenanceSchema.optional() });
-const toolCompletedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.completed'), toolCallId: z.string().min(1), name: z.string().min(1), output: z.string().max(65_000), images: z.array(runtimeImageSchema).max(8).optional(), error: z.boolean(), subagentRunIds: z.array(z.string().min(1).max(100)).optional(), provenance: toolProvenanceSchema.optional() });
+const toolCompletedEventSchema = eventBaseSchema.extend({ type: z.literal('tool.completed'), toolCallId: z.string().min(1), name: z.string().min(1), output: z.string().max(65_000), images: z.array(runtimeImageSchema).max(8).optional(), error: z.boolean(), durationMs: z.number().finite().nonnegative().optional(), subagentRunIds: z.array(z.string().min(1).max(100)).optional(), provenance: toolProvenanceSchema.optional() });
 const queueChangedEventSchema = eventBaseSchema.extend({ type: z.literal('queue.changed'), steering: z.number().int().nonnegative(), followUp: z.number().int().nonnegative() });
 const contextCompactionEventSchema = eventBaseSchema.extend({ type: z.literal('context.compaction'), phase: z.enum(['started', 'completed', 'failed']), aborted: z.boolean().optional(), error: appErrorSchema.optional() });
 const errorEventSchema = eventBaseSchema.extend({ type: z.literal('error'), error: appErrorSchema });

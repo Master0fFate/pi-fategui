@@ -65,7 +65,7 @@ describe('host-local native migration CLI', () => {
     // Windows mode bits say nothing about the NTFS DACL; check the live ACL there.
     if (process.platform === 'win32') await expect(assertPrivateWindowsAcl(f.planFile)).resolves.toBeUndefined();
     else expect((await fs.stat(f.planFile)).mode & 0o077).toBe(0);
-    const envelope = JSON.parse(bytes.toString()); expect(envelope).toMatchObject({ nativeFormat: nativeMigrationFormat, nativeSdkVersion: '1.0.0', selector: { kind: server ? 'server' : 'desktop' } });
+    const envelope = JSON.parse(bytes.toString()); expect(envelope).toMatchObject({ nativeFormat: nativeMigrationFormat, nativeSdkVersion: '1.1.0', selector: { kind: server ? 'server' : 'desktop' } });
     expect(summary).not.toHaveProperty('plan'); expect(summary).not.toHaveProperty('projects');
     expect(await f.execute('apply', String(summary.planDigest))).toMatchObject({ status: 'activated', workResumed: false, restart: 'ordinary-host-startup' });
     expect(await f.execute('apply', String(summary.planDigest))).toMatchObject({ status: 'activated' });

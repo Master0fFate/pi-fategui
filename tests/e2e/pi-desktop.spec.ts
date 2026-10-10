@@ -244,7 +244,7 @@ test('the Monitor tab reads the same compact dashboard through desktop IPC', asy
     await openInspectorView(page, 'Run', 'Monitor');
     const monitor = page.getByRole('region', { name: 'Monitoring dashboard' });
     await expect(monitor.getByText('normal', { exact: true })).toBeVisible();
-    await expect(monitor.getByLabel('Source check times')).toContainText('runs');
+    await expect(monitor.getByLabel('Source check times')).toHaveAttribute('title', /^runs .+ · teams /u);
     await monitor.getByRole('button', { name: 'Teams 0' }).click();
     await expect(monitor.getByText('No teams.')).toBeVisible();
     await monitor.getByRole('button', { name: 'Refresh' }).click();

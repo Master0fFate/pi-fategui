@@ -192,7 +192,7 @@ export class FakePiSdkAdapter implements PiSdkAdapter {
         streaming = false;
         this.record({ kind: 'settled', sessionId, turnId });
         emit({ type: 'agent_end', messages: [], willRetry: false });
-        emit({ type: 'agent_settled' });
+        emit({ type: 'agent_settled', aborted: false });
         // Holding this models a dropped acknowledgment after an observable effect.
         await control.barriers.wait('acknowledge');
       } finally { streaming = false; pending = false; }

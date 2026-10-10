@@ -50,20 +50,20 @@ describe('PiEventNormalizer', () => {
       type: 'agent_end',
       messages: [{ role: 'assistant', content: [], stopReason: 'stop' }],
     }))).toEqual([]);
-    expect(normalizer.normalize(event({ type: 'agent_settled' }))).toEqual([
+    expect(normalizer.normalize(event({ type: 'agent_settled', aborted: false }))).toEqual([
       expect.objectContaining({ type: 'run.completed', runId: 'run-1', aborted: false }),
     ]);
   });
 
-  it('preserves the final abort state until Pi settles the run', () => {
+  it('reports the abort state Pi gives when it settles the run', () => {
     const normalizer = new PiEventNormalizer(() => 'run-1');
     normalizer.normalize(event({ type: 'agent_start' }));
     normalizer.normalize(event({
       type: 'agent_end',
-      messages: [{ role: 'assistant', content: [], stopReason: 'aborted' }],
+      messages: [{ role: 'assistant', content: [], stopReason: 'stop' }],
     }));
 
-    expect(normalizer.normalize(event({ type: 'agent_settled' }))).toEqual([
+    expect(normalizer.normalize(event({ type: 'agent_settled', aborted: true }))).toEqual([
       expect.objectContaining({ type: 'run.completed', runId: 'run-1', aborted: true }),
     ]);
   });

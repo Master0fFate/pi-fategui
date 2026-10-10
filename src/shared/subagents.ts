@@ -375,6 +375,7 @@ export function applySubagentChildEvent(input: SubagentRun, event: SubagentChild
       startedAt: existing?.startedAt ?? event.timestamp,
       updatedAt: event.timestamp,
       endedAt: event.timestamp,
+      ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
       timelinePosition: existing?.timelinePosition ?? nextPosition(run),
       ...(event.images === undefined ? {} : { images: event.images }),
       ...(event.subagentRunIds === undefined ? {} : { subagentRunIds: event.subagentRunIds }),

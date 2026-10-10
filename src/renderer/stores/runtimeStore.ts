@@ -1035,6 +1035,7 @@ export const useRuntimeStore = create<RuntimeStore>((set, get) => ({
           startedAt: existing?.startedAt ?? event.timestamp,
           updatedAt: event.timestamp,
           endedAt: event.timestamp,
+          ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
           ...(event.images === undefined ? {} : { images: event.images }),
           ...((event.subagentRunIds ?? existing?.subagentRunIds) ? { subagentRunIds: event.subagentRunIds ?? existing?.subagentRunIds } : {}),
           ...((event.provenance ?? existing?.provenance) ? { provenance: event.provenance ?? existing?.provenance } : {}),

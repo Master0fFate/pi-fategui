@@ -805,7 +805,7 @@ function toTools(messages: readonly unknown[], isToolRunning: (toolCallId: strin
   const notYetStarted = new Set<string>();
   messages.forEach((message, messageIndex) => {
     if (!message || typeof message !== 'object') return;
-    const value = message as { role?: unknown; content?: unknown; timestamp?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown; details?: unknown };
+    const value = message as { role?: unknown; content?: unknown; timestamp?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown; details?: unknown; durationMs?: unknown };
     const timestamp = typeof value.timestamp === 'number' ? value.timestamp : 0;
     if (value.role === 'assistant' && Array.isArray(value.content)) {
       const content = value.content;
@@ -846,6 +846,7 @@ function toTools(messages: readonly unknown[], isToolRunning: (toolCallId: strin
       startedAt: existing?.startedAt ?? timestamp,
       updatedAt: timestamp,
       endedAt: timestamp,
+      ...(typeof value.durationMs === 'number' && Number.isFinite(value.durationMs) && value.durationMs >= 0 ? { durationMs: value.durationMs } : {}),
       timelinePosition: existing?.timelinePosition ?? messageIndex,
       ...(images.length ? { images } : {}),
       ...(runIds ? { subagentRunIds: runIds } : {}),

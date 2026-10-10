@@ -8,8 +8,8 @@ import { MessageImages } from './RichMessageContent';
 import { previewHotPathText, shouldAutoShowRunningOutput } from './hotPathBudgets';
 import { type DetailExpansionCommand, useDetailExpansion } from './detailExpansion';
 
-function elapsed(start: number, end: number): string {
-  const milliseconds = Math.max(0, end - start);
+function elapsed(tool: RuntimeTool): string {
+  const milliseconds = tool.durationMs ?? Math.max(0, (tool.endedAt ?? tool.updatedAt) - tool.startedAt);
   return milliseconds < 1_000 ? `${milliseconds} ms` : `${(milliseconds / 1_000).toFixed(1)} s`;
 }
 
@@ -64,7 +64,7 @@ export const ToolCard = memo(function ToolCard({ toolCallId, compact = false, wa
       <button className="tool-card-header" type="button" aria-expanded={expanded} onClick={toggle}>
         <Symbol text={presentedStatus === 'running' ? '[run]' : presentedStatus === 'error' ? '[err]' : presentedStatus === 'stopped' ? '[stop]' : '[ok]'}><Icon size={13} className={`tool-status-icon${presentedStatus === 'running' ? ' tool-spinner' : ''}`} aria-hidden="true" /></Symbol>
         <span className="tool-heading icon-label"><strong>{tool.name}</strong><small>{summary}</small></span>
-        <span className="tool-meta icon-label">{isSubagentTool ? presentedStatusLabel : tool.status === 'running' ? 'Running' : elapsed(tool.startedAt, tool.endedAt ?? tool.updatedAt)}</span>
+        <span className="tool-meta icon-label">{isSubagentTool ? presentedStatusLabel : tool.status === 'running' ? 'Running' : elapsed(tool)}</span>
         <Symbol text={expanded ? '-' : '+'}>{expanded ? <ChevronDown className="tool-disclosure-icon" size={13} /> : <ChevronRight className="tool-disclosure-icon" size={13} />}</Symbol>
       </button>
       {hasChildLink ? (

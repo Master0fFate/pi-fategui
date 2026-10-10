@@ -1510,7 +1510,7 @@ describe('PiRuntimeService', () => {
     write.renderCall?.(
       { path: 'probe.txt', content: 'before' },
       sdkTheme,
-      { args: { path: 'probe.txt', content: 'before' }, toolCallId: 'write', invalidate: vi.fn(), lastComponent: undefined, state: undefined, cwd: '/project', executionStarted: false, argsComplete: true, isPartial: false, expanded: false, showImages: false, isError: false },
+      { args: { path: 'probe.txt', content: 'before' }, toolCallId: 'write', invalidate: vi.fn(), lastComponent: undefined, state: undefined, cwd: '/project', executionStarted: false, argsComplete: true, isPartial: false, expanded: false, showImages: false, isError: false, durationMs: undefined, outputPad: 0 },
     );
     await write.execute('write', { path: 'probe.txt', content: 'before' }, undefined, undefined, {} as never);
 
